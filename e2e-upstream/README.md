@@ -1,7 +1,7 @@
 # e2e-upstream
 
 A controllable fake IPTV provider for the E2E suite: an M3U playlist, an XMLTV EPG, a paced
-looping MPEG-TS stream, and a control API that flips twelve fault modes mid-test.
+looping MPEG-TS stream, and a control API that flips thirteen fault modes mid-test.
 
 **This is test infrastructure.** It is never built into the product image, never shipped, and has
 no code path a released Dispatcharr instance can reach. It exists so `e2e/` tests can say "the
@@ -219,7 +219,7 @@ to every profile — it is Redirect-specific.
 ## Fault catalogue
 
 `appliedTo` in the response is how many *live* connections the fault reached — not whether the
-fault is now armed. Nine of the twelve faults can only affect the **next** request, because a live
+fault is now armed. Ten of the thirteen faults can only affect the **next** request, because a live
 response has already sent its headers by the time the fault is applied; `appliedTo: 0` is the
 correct, expected result for those, not a sign nothing happened. "Arm `not-found` for the next
 reconnect" is a normal test.
@@ -238,8 +238,9 @@ reconnect" is a normal test.
 | `no-tv-archive` | new only (`appliedTo: 0`) | `get_live_streams` omits `tv_archive`/`tv_archive_duration` for the channel(s) it reaches | Whether Dispatcharr offers catch-up for a channel at all |
 | `catchup-layout-404` | new only (`appliedTo: 0`) | 404s catch-up requests on one named layout (`{ layout: 'path' \| 'query' }`) while leaving the other layout serving | The seven-candidate `build_timeshift_candidate_urls` cascade — the layout most likely to be wrong |
 | `range-unsupported` | new only (`appliedTo: 0`) | VOD (`/movie\|series/`) answers 200 with the whole asset and no `Accept-Ranges`, ignoring any `Range` header | `multi_worker_connection_manager`'s no-seek-metadata fallback path |
+| `slow-playlist` | new only (`appliedTo: 0`) | Withholds the `/playlist.m3u` response for `delayMs` (required when arming, 1–120,000), then serves it unchanged | Holding an M3U refresh in flight for a test, instead of contending decoy accounts (#197) |
 
-`appliedTo: 0` is correct for the nine "new only" rows above — they can only take effect on the
+`appliedTo: 0` is correct for the ten "new only" rows above — they can only take effect on the
 next connection attempt, never on one already streaming. This is not a partial failure of the
 control API; it's the whole of what those faults can do.
 
@@ -248,9 +249,17 @@ always scenario-wide — the handshake it changes has no channel or VOD id to na
 `no-tv-archive` and `catchup-layout-404` accept the usual `channel` filter (`catchup-layout-404`'s
 channel is the catch-up stream id). `range-unsupported` is **scenario-wide only**: arming it with a
 `channel` filter is rejected with a `400` at the control API (`parseFaultRequest`,
-`src/faults.ts:107-111`, pinned by `test/faults.test.ts:344-346` and
+`src/faults.ts:119-127`, pinned by `test/faults.test.ts:409-415` and
 `test/xc-faults.test.ts:233-235`), because a VOD id is not a channel id and there is nothing for it
 to mean. `xc-auth-envelope` is rejected the same way, for the same reason.
+
+**`slow-playlist` is scenario-wide only too, for the same structural reason**: a playlist refresh
+has no single channel in play, so a `channel` filter on it is rejected with a `400`
+(`test/faults.test.ts`'s `slow-playlist rejects a channel, since a playlist has none`).
+**It requires `{ delayMs }` when arming, but not when clearing** — the same shape as
+`catchup-layout-404`'s `layout` immediately below, and for the same reason: a delay-less arm has
+nothing to withhold for, and defaulting it silently would make "armed but the test forgot
+`delayMs`" indistinguishable from "off".
 
 **`catchup-layout-404` requires `{ layout: 'path' | 'query' }` when arming, but not when clearing.**
 A layout-less arm would be indistinguishable from `not-found` and would block both catch-up layouts

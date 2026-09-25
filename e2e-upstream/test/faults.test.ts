@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FaultStore, parseFaultRequest } from '../src/faults.js';
+import { FaultStore, parseFaultRequest, FAULT_NAMES, MAX_PLAYLIST_DELAY_MS } from '../src/faults.js';
 import { ConnectionRegistry } from '../src/connections.js';
 import type { LiveConnection } from '../src/connections.js';
 import { ScenarioRegistry } from '../src/scenario.js';
@@ -285,6 +285,78 @@ describe('parseFaultRequest', () => {
     expect(() =>
       parseFaultRequest({ fault: 'redirect-chain', active: true, depth: 21 })
     ).toThrow(BadRequestError);
+  });
+
+  it('slow-playlist requires delayMs when arming, and not when clearing', () => {
+    // Mirrors catchup-layout-404: a delay-less arm has nothing to withhold
+    // for, and defaulting it would make "armed but forgot delayMs"
+    // indistinguishable from "off" (#197).
+    expect(() => parseFaultRequest({ fault: 'slow-playlist', active: true })).toThrow(/delayMs/);
+    expect(
+      parseFaultRequest({ fault: 'slow-playlist', active: true, delayMs: 400 }).delayMs
+    ).toBe(400);
+    expect(parseFaultRequest({ fault: 'slow-playlist', active: false })).toEqual({
+      fault: 'slow-playlist',
+      active: false,
+    });
+  });
+
+  it('slow-playlist rejects a delayMs that is not an integer between 1 and 120000', () => {
+    expect(() =>
+      parseFaultRequest({ fault: 'slow-playlist', active: true, delayMs: 0 })
+    ).toThrow(BadRequestError);
+    expect(() =>
+      parseFaultRequest({ fault: 'slow-playlist', active: true, delayMs: 1.5 })
+    ).toThrow(BadRequestError);
+    expect(() =>
+      parseFaultRequest({
+        fault: 'slow-playlist',
+        active: true,
+        delayMs: MAX_PLAYLIST_DELAY_MS + 1,
+      })
+    ).toThrow(BadRequestError);
+    expect(
+      parseFaultRequest({ fault: 'slow-playlist', active: true, delayMs: MAX_PLAYLIST_DELAY_MS })
+        .delayMs
+    ).toBe(MAX_PLAYLIST_DELAY_MS);
+    // A garbage delayMs on clear is still garbage on the way out, same as
+    // catchup-layout-404's layout check.
+    expect(() =>
+      parseFaultRequest({ fault: 'slow-playlist', active: false, delayMs: 0 })
+    ).toThrow(BadRequestError);
+  });
+
+  it('slow-playlist rejects a channel, since a playlist has none', () => {
+    // A playlist refresh has no single channel in play — same reasoning as
+    // xc-auth-envelope and range-unsupported (#197).
+    expect(() =>
+      parseFaultRequest({ fault: 'slow-playlist', active: true, delayMs: 400, channel: 1 })
+    ).toThrow(/channel.*scenario-wide/);
+  });
+
+  it('delayMs is rejected on every fault except slow-playlist', () => {
+    // `active: false` sidesteps catchup-layout-404's own required-layout
+    // check, which would otherwise throw on its own `layout` message before
+    // ever reaching the delayMs check this test means to exercise.
+    for (const fault of FAULT_NAMES.filter((name) => name !== 'slow-playlist')) {
+      expect(() => parseFaultRequest({ fault, active: false, delayMs: 400 })).toThrow(/delayMs/);
+    }
+  });
+
+  it('slow-playlist reports appliedTo 0: it can only affect the next request', () => {
+    // A live response has already sent its headers, so arming this against
+    // an already-open connection cannot reach it — proven, not assumed, by
+    // opening a real connection first (same shape as the G8 test below).
+    const scenario = new ScenarioRegistry().create({ channels: 1 });
+    const store = new FaultStore();
+    const connections = new ConnectionRegistry();
+    const { connection } = fakeConnection(scenario.id, 1);
+    connections.tryAcquire(scenario, connection);
+
+    expect(
+      store.apply(scenario.id, { fault: 'slow-playlist', active: true, delayMs: 400 }, connections)
+        .appliedTo
+    ).toBe(0);
   });
 });
 
