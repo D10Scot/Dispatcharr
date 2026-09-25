@@ -22,12 +22,14 @@ Closes the timestamp/duration/ordering scope of #192 (survivor), #260 and #55.
 
 import math
 import re
+import zoneinfo
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import Mock
 from zoneinfo import ZoneInfo
 
 from django.test import SimpleTestCase
-from hypothesis import example, given, settings as hyp_settings, strategies as st
+from hypothesis import assume, example, given, settings as hyp_settings, strategies as st
 
 from apps.timeshift.helpers import (
     DEFAULT_DURATION_MINUTES,
@@ -180,6 +182,11 @@ class TimestampReshapeProperties(SimpleTestCase):
         with self.assertLogs("apps.timeshift.helpers", level="ERROR") as logs:
             for formatter, _ in self.FORMATTERS:
                 self.assertEqual(formatter(value), value)
+        # Exactly one ERROR per formatter is the documented contract, not an
+        # incidental count: each of the four formatters independently calls
+        # _reshape_timestamp, which logs once on its own failure path
+        # (helpers.py:127-129). A change that logs more or fewer per call is a
+        # logging-behaviour regression this pins on purpose (review round 1).
         self.assertEqual(len(logs.records), len(self.FORMATTERS))
 
     @given(case=wall_clock_inputs)
@@ -199,15 +206,21 @@ class ProviderTimezoneProperties(SimpleTestCase):
         dt=instants.map(lambda d: d.replace(microsecond=0)),
         zone=st.text(alphabet="abcXYZ/_.-+0123456789 \x00", min_size=1, max_size=24),
     )
+    # This alphabet could in principle spell a real IANA zone name, and a bare
+    # try/except ZoneInfo(zone) around the assertion silently skipped the
+    # example when it did instead of failing loudly -- so a draw that never
+    # hit an invalid zone would pass without ever exercising the WARNING-log
+    # branch. assume() excludes real zones deterministically instead. "\x00"
+    # can never be part of a real zone name, so the @example below pins the
+    # branch even if no invalid zone is otherwise drawn (review round 1).
+    @example(dt=datetime(2026, 1, 15, 12, 0, 0), zone="abc\x00")
     def test_unknown_zone_returns_the_input_unchanged(self, dt, zone):
         if zone in PROVIDER_ZONES or zone == "UTC":
             return
-        try:
-            ZoneInfo(zone)
-        except Exception:
-            text = dt.strftime("%Y-%m-%d:%H-%M")
-            with self.assertLogs("apps.timeshift.helpers", level="WARNING"):
-                self.assertEqual(convert_timestamp_to_provider_tz(text, zone), text)
+        assume(zone not in zoneinfo.available_timezones())
+        text = dt.strftime("%Y-%m-%d:%H-%M")
+        with self.assertLogs("apps.timeshift.helpers", level="WARNING"):
+            self.assertEqual(convert_timestamp_to_provider_tz(text, zone), text)
 
     @given(
         dt=instants.map(lambda d: d.replace(microsecond=0)),
@@ -257,6 +270,23 @@ class DurationWindowProperties(SimpleTestCase):
         self.assertEqual(result, window if window is not None else DEFAULT_DURATION_MINUTES)
         self.assertGreaterEqual(result, 1)
         self.assertLessEqual(result, MAX_DURATION_MINUTES)
+
+    def test_unparseable_timestamp_falls_back_to_default_before_any_epg_lookup(self):
+        """Distinct from the property above: here ``channel.epg_data`` is a truthy
+        Mock, so if ``get_programme_duration`` fell through to the EPG-absent
+        branch it would call ``epg_data.programs.filter`` (and blow up on the
+        unrelated Mock arithmetic). Asserting the Mock was never touched pins
+        that the unparseable-timestamp result comes from the earlier
+        ``parse_catchup_timestamp(...) is None`` return (helpers.py, near :184),
+        not from the EPG-absent branch the property test above exercises with
+        ``epg_data=None`` (review round 1)."""
+        epg_data = Mock()
+        channel = SimpleNamespace(epg_data=epg_data)
+        result = resolve_catchup_duration(
+            channel, "not-a-real-catchup-timestamp", client_hint=None,
+        )
+        self.assertEqual(result, DEFAULT_DURATION_MINUTES)
+        epg_data.programs.filter.assert_not_called()
 
 
 # A stream as order_catchup_streams_for_timestamp sees it: only catchup_days matters.

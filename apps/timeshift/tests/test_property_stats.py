@@ -149,6 +149,12 @@ class PlaybackBaseProperties(SimpleTestCase):
             existing_playback_base=str(previous_base).encode(), range_start=start,
             representation_length=total, programme_duration_secs=3600, now=now,
         )
+        # anchor is a str here on purpose: resolve_stats_playback_fields keeps
+        # the existing_position_anchor value's own str type when it reuses it
+        # unchanged rather than normalising to float. That's the implementation's
+        # contract, confirmed in D-3's review; a future normalisation to float
+        # is a deliberate contract change made here on purpose, not a drive-by
+        # fix to this test (review round 1).
         self.assertEqual((base, anchor), (previous_base, str(previous_anchor)))
 
     @given(range_start=st.none() | st.integers(min_value=0, max_value=10**11),

@@ -143,6 +143,15 @@ class ContentRangeParserProperties(SimpleTestCase):
     @given(content_range=st.none() | content_range_text,
            content_length=st.none() | st.text(max_size=12)
            | st.integers(min_value=0, max_value=10**12).map(str))
+    # "0" and "-1" are truthy strings, so _extract_representation_length's
+    # ``if content_length:`` check does not treat them as absent: it returns
+    # int("0") == 0 and int("-1") == -1 respectively (views.py, near :1151).
+    # Pinned explicitly rather than left to the derandomized draw: "0" is a
+    # likely boundary value from the integers() branch, but "-1" is reachable
+    # only through the free-text branch and is not guaranteed to be drawn in
+    # 200 examples (review round 1).
+    @example(content_range=None, content_length="0")
+    @example(content_range=None, content_length="-1")
     def test_representation_length_prefers_the_content_range_total(
         self, content_range, content_length,
     ):

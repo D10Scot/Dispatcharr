@@ -41,8 +41,16 @@ hyp_settings.register_profile(
 hyp_settings.load_profile("dispatcharr-ci")
 
 # Credentials a hostile or careless provider account could carry, weighted toward
-# URL-structural characters.
-credential = st.text(max_size=24) | st.text(alphabet="&=/?#%+ ;:@a1", max_size=12)
+# URL-structural characters. Lone surrogates (Unicode category Cs) are excluded:
+# quote(..., safe='') (helpers.py:422/435) encodes with the strict UTF-8 codec
+# and raises UnicodeEncodeError on them, so an unfiltered derandomized draw
+# could crash the test on an out-of-domain input never sent by a real
+# provider account (mirrors the timestamps module's exclude_categories guard;
+# review round 1).
+credential = (
+    st.text(st.characters(exclude_categories=("Cs",)), max_size=24)
+    | st.text(alphabet="&=/?#%+ ;:@a1", max_size=12)
+)
 server_url = st.builds(
     lambda host, port, slashes: f"http://{host}{port}{'/' * slashes}",
     st.from_regex(r"[a-z][a-z0-9.-]{0,20}", fullmatch=True),
