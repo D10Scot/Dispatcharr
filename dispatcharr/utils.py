@@ -24,11 +24,15 @@ LOCAL_NETWORK_CIDRS = [
     "fe80::/10",
 ]
 
+# Default trusted-proxy networks when DISPATCHARR_TRUSTED_PROXIES is unset:
+# loopback only. See _trusted_proxy_networks() for why (#182).
+_DEFAULT_TRUSTED_PROXIES = ("127.0.0.0/8", "::1/128")
+
 SETUP_ALLOWED_IP_ENV = "DISPATCHARR_SETUP_ALLOWED_IP"
 TRUSTED_PROXIES_ENV = "DISPATCHARR_TRUSTED_PROXIES"
 
 # Parsed trusted-proxy networks. Rebuilt when the config key changes.
-# Config key is "__default_local__", "__none__", or the raw env string.
+# Config key is "__default_loopback__", "__none__", or the raw env string.
 _trusted_proxies_key = None
 _trusted_proxies_networks = ()
 
@@ -300,16 +304,18 @@ def _normalize_ip(value):
 def _trusted_proxy_networks():
     """Return networks whose peers may set X-Real-IP / X-Forwarded-For.
 
-    When DISPATCHARR_TRUSTED_PROXIES is unset, defaults to LOCAL_NETWORK_CIDRS
-    so Docker/Traefik-style reverse proxies on private networks work without
-    configuration. Set the env to a comma-separated IP/CIDR list to narrow
-    trust, or to none / off / false / empty to trust no proxy headers.
+    When DISPATCHARR_TRUSTED_PROXIES is unset, only loopback peers are
+    trusted. On nginx's uwsgi_pass locations REMOTE_ADDR is the client
+    itself and nginx forwards the client's own X-Real-IP, so trusting every
+    private peer let a LAN client choose its own address (#182). Behind a
+    reverse proxy, set the env to that proxy's IP/CIDR; set it to none / off
+    / false / empty to trust no proxy headers at all.
     """
     global _trusted_proxies_key, _trusted_proxies_networks
 
     if TRUSTED_PROXIES_ENV not in os.environ:
-        key = "__default_local__"
-        source = LOCAL_NETWORK_CIDRS
+        key = "__default_loopback__"
+        source = _DEFAULT_TRUSTED_PROXIES
     else:
         raw = os.environ.get(TRUSTED_PROXIES_ENV, "").strip()
         if raw.lower() in _TRUSTED_PROXIES_NONE:
@@ -343,9 +349,10 @@ def get_client_ip(request):
     """Return the client IP for ACLs and logging.
 
     Proxy headers (X-Real-IP, X-Forwarded-For) are honored only when
-    REMOTE_ADDR is a trusted proxy. By default that means private/loopback
-    peers (LOCAL_NETWORK_CIDRS). Override with DISPATCHARR_TRUSTED_PROXIES.
-    Public peers never get header trust unless explicitly listed.
+    REMOTE_ADDR is a trusted proxy. By default that means loopback peers
+    only (_DEFAULT_TRUSTED_PROXIES). Override with DISPATCHARR_TRUSTED_PROXIES
+    to trust a reverse proxy's address or CIDR. Public and other private
+    peers never get header trust unless explicitly listed.
     IPv4-mapped IPv6 addresses are returned in IPv4 form.
     """
     peer_str = request.META.get("REMOTE_ADDR") or ""

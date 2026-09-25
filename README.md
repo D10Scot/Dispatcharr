@@ -106,7 +106,7 @@ docker run -d \
 
 First-time web setup is limited to local/private networks by default. If you are installing on a VPS or otherwise reaching the UI from a public IP, either create the admin with `docker exec <container> python manage.py createsuperuser`, or set `DISPATCHARR_SETUP_ALLOWED_IP` to your client IP (see comments in the compose files). The setup page also shows the IP Dispatcharr sees.
 
-Behind a reverse proxy, set `DISPATCHARR_TRUSTED_PROXIES` to your proxy's IP or CIDR so Network Access, Stats, and rate limits see real client IPs (defaults trust private/loopback peers; use `none` to ignore forwarded headers).
+Behind a reverse proxy, set `DISPATCHARR_TRUSTED_PROXIES` to your proxy's IP or CIDR so Network Access, Stats, and rate limits see real client IPs (defaults trust loopback peers only; set it to your proxy's address or CIDR, or the whole private range if you must, when running behind one; use `none` to ignore forwarded headers).
 
 ---
 

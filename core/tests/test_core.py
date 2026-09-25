@@ -776,12 +776,44 @@ class GetClientIpTests(SimpleTestCase):
             )
             self.assertEqual(get_client_ip(request), "203.0.113.99")
 
-    def test_default_trusts_private_peer_headers(self):
-        """Unset env defaults to local CIDRs so Docker/Traefik peers work."""
+    def test_a_lan_client_spoofed_its_address_with_x_real_ip_by_default(self):
+        """Unset env trusts loopback only, so a private peer's own header is
+        ignored (#182)."""
         from dispatcharr.utils import get_client_ip
 
         with patch.dict("os.environ"):
             os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "172.18.0.1",
+                HTTP_X_REAL_IP="203.0.113.50",
+            )
+            self.assertEqual(get_client_ip(request), "172.18.0.1")
+
+    def test_default_still_trusts_a_loopback_peer(self):
+        """Unset env still trusts a loopback peer's own header."""
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict("os.environ"):
+            os.environ.pop("DISPATCHARR_TRUSTED_PROXIES", None)
+            request = self._request(
+                "127.0.0.1",
+                HTTP_X_REAL_IP="203.0.113.50",
+            )
+            self.assertEqual(get_client_ip(request), "203.0.113.50")
+
+    def test_listing_the_private_ranges_restores_the_old_default(self):
+        """The documented escape hatch for a Traefik-style deployment: list
+        the old default private ranges explicitly."""
+        from dispatcharr.utils import get_client_ip
+
+        with patch.dict(
+            "os.environ",
+            {
+                "DISPATCHARR_TRUSTED_PROXIES": (
+                    "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16"
+                )
+            },
+        ):
             request = self._request(
                 "172.18.0.1",
                 HTTP_X_REAL_IP="203.0.113.50",

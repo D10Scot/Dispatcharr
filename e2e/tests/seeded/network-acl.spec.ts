@@ -25,11 +25,16 @@ import { listRows } from '../../setup/http';
  * TCP peer — is itself a trusted proxy. In this container that peer is not
  * nginx's own address; it is the Docker bridge gateway that `include
  * uwsgi_params` forwards as nginx's `$remote_addr` (Probe A measured
- * `172.25.0.1`), which is inside `LOCAL_NETWORK_CIDRS` and therefore trusted
- * by default. nginx's `uwsgi_pass` routes neither set nor strip `X-Real-IP`,
- * so a client that supplies its own header is believed verbatim
- * ([#81](https://github.com/D10Scot/Dispatcharr/issues/81)). Test 1 pins
- * this as a fact about *this* topology, not a portable one.
+ * `172.25.0.1`). Since #182, `DISPATCHARR_TRUSTED_PROXIES` defaults to
+ * loopback only, so this peer is trusted **only because
+ * `scripts/e2e_up.sh` resolves the network's own gateway and passes it as
+ * `DISPATCHARR_TRUSTED_PROXIES`** on `docker run` — the same thing a real
+ * deployment behind a reverse proxy on a Docker network has to configure.
+ * nginx's `uwsgi_pass` routes neither set nor strip `X-Real-IP`, so a
+ * client that supplies its own header is believed verbatim once that trust
+ * is configured ([#81](https://github.com/D10Scot/Dispatcharr/issues/81)).
+ * Test 1 pins this as a fact about *this configured* topology, not a
+ * portable one, and not the product's default any more.
  *
  * `network_access["UI"]` is never written by any test in this file, under
  * any circumstance. `apps/accounts/permissions.py:Authenticated` gates every
@@ -100,11 +105,13 @@ function isXcRefused(res: { status(): number }): boolean {
   return [401, 403].includes(res.status());
 }
 
-// @characterization: pins a fact about this container's nginx/uwsgi
-// topology (that X-Real-IP from the Docker-bridge peer is honoured), which a
-// deployment with DISPATCHARR_TRUSTED_PROXIES=none correctly fails. Every
-// other test in this file depends on this holding, and this test is their
-// premise, not a portable contract of its own.
+// @characterization: pins a fact about this container's *configured*
+// nginx/uwsgi topology (that X-Real-IP from the Docker-bridge peer is
+// honoured because scripts/e2e_up.sh passes that peer as
+// DISPATCHARR_TRUSTED_PROXIES on docker run — since #182 the product no
+// longer trusts it by default). Every other test in this file depends on
+// this holding, and this test is their premise, not a portable contract of
+// its own.
 test(
   'the network-access check resolves client_ip from an unheadered request and from a spoofed X-Real-IP',
   { tag: '@characterization' },
@@ -114,8 +121,11 @@ test(
     const failureContext =
       'This is the premise for tests 2 and 3 in this file: they only mean something if ' +
       "this container's nginx/uwsgi topology honours X-Real-IP from the Docker-bridge " +
-      'peer. If this fails, check DISPATCHARR_TRUSTED_PROXIES (dispatcharr/utils.py) — a ' +
-      'deployment that sets it to "none" correctly fails this test — and ' +
+      'peer, which since #182 requires scripts/e2e_up.sh to have passed that peer as ' +
+      'DISPATCHARR_TRUSTED_PROXIES on docker run (a container started before that change ' +
+      'needs --down or --recreate to pick it up). If this fails, check ' +
+      'DISPATCHARR_TRUSTED_PROXIES (dispatcharr/utils.py) — a deployment that sets it to ' +
+      '"none" correctly fails this test — and ' +
       'https://github.com/D10Scot/Dispatcharr/issues/81.';
 
     const plain = await request.post('/api/core/settings/check/', {

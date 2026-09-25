@@ -247,16 +247,31 @@ elif docker ps -a --format '{{.Names}}' | grep -qx "$NAME"; then
   # every interface. `--down` and start again to pick the new binding up.
   docker start "$NAME" >/dev/null
 else
+  # get_client_ip() (dispatcharr/utils.py) trusts only loopback peers by
+  # default (#182): the peer nginx sees on a uwsgi_pass location is the
+  # e2e network's own bridge gateway, not the client, so
+  # network-acl.spec.ts's spoofed-X-Real-IP tests need that gateway trusted
+  # explicitly — exactly what a deployment behind a reverse proxy does.
+  GATEWAY="$(docker network inspect "$NETWORK" -f '{{(index .IPAM.Config 0).Gateway}}')"
+  if [[ -z "$GATEWAY" ]]; then
+    echo "Could not resolve the gateway address of network '$NETWORK'." >&2
+    exit 1
+  fi
+
   # /data must be a mounted volume: the entrypoint has no fallback and
   # crashes on mktemp against a nonexistent directory.
   #
   # 127.0.0.1 is load-bearing, not cosmetic — see the header.
+  #
+  # A container created before this change keeps its old environment; run
+  # with --down or --recreate to pick up DISPATCHARR_TRUSTED_PROXIES.
   docker run -d --name "$NAME" \
     --network "$NETWORK" \
     -p "127.0.0.1:${PORT}:9191" \
     -v "${VOLUME}:/data" \
     -e DISPATCHARR_ENV=aio \
     -e DISPATCHARR_LOG_LEVEL=info \
+    -e DISPATCHARR_TRUSTED_PROXIES="$GATEWAY" \
     "$IMAGE" >/dev/null
 fi
 ensure_on_network "$NAME"
