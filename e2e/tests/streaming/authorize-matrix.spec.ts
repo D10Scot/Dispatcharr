@@ -330,9 +330,10 @@ test(
     // an error and answers the client 500; error_page 403 =
     // @authorize_denied is what puts the real code back. Every other test
     // in this file asserts 403, so a config that dropped that mapping
-    // entirely would still pass all of them — this is the one row that
-    // actually exercises the restoration, on the one status a stale
-    // playlist's unknown UUID must produce.
+    // entirely would still pass all of them — this is the row that
+    // exercises the restoration's 404 branch, on the one status a stale
+    // playlist's unknown UUID must produce. The 429 branch has its own row:
+    // `tests/streaming-failover/stream-limit-429.spec.ts`.
     await expectRefused(
       streamClient,
       `/proxy/ts/stream/${randomUUID()}`,
