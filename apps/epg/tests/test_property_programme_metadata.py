@@ -8,7 +8,8 @@ Surfaces (seed a54b09a9), all fed by provider XMLTV:
   programme of every refresh.
 * ``_programme_to_dict`` (:2939) - the current-programme API's serializer.
 * ``_parse_programme_element`` (:242) - the parser behind the offset lookups;
-  both callers (``:3197``, ``:3291``) catch exactly ``etree.XMLSyntaxError``.
+  both callers (``:3197``, ``:3291``) catch ``(etree.XMLSyntaxError,
+  UnicodeDecodeError)`` and also skip a bare ``None`` result.
 * ``detect_file_format`` (:2787) - magic bytes first, then the extension.
 * ``validate_icon_url_fast`` (:325) - the icon-URL length guard.
 
@@ -322,7 +323,7 @@ class ParseProgrammeElementProperties(SimpleTestCase):
         # Three outcomes, and nothing else, may escape _parse_programme_element:
         # an Element, a bare None, or one of the exceptions both call sites
         # catch, (etree.XMLSyntaxError, UnicodeDecodeError) at
-        # apps/epg/tasks.py:3284, :3393. C-2 (#420, round 2) parses with
+        # apps/epg/tasks.py:3285, :3394. C-2 (#420, round 2) parses with
         # recover=True, so libxml2 does not raise when it cannot find a root
         # element -- it returns None instead, which both callers already
         # handle (`if prog is None: continue`). C-2 (#420, rounds 3-5) also
