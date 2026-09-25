@@ -78,15 +78,24 @@ import type { Recording, RecurringRule } from '../../fixtures';
  *     bounded by the caller's own `end_date`, not by any system horizon —
  *     which also means a rule created with a far-future `end_date` would
  *     materialise every matching day between now and then synchronously, in
- *     one request, with nothing capping it.
+ *     one request. `sync_recurring_rule_impl` itself is unbounded (#138); the
+ *     request is bounded one layer up instead, by
+ *     `RecurringRecordingRuleSerializer.validate` (`apps/channels/serializers.py`),
+ *     which refuses an `end_date` more than `RECURRING_RULE_MAX_DAYS` (365)
+ *     days from today in the system time zone, on create and on any `PATCH`
+ *     that sets `end_date`. An in-cap rule — this one included — still
+ *     materialises every matching day up to its own `end_date` synchronously
+ *     inside the request exactly as described above, so the row-count
+ *     reasoning below is unchanged.
  *
  *     This test reproduces the row count the brief wanted by choosing its
- *     own `end_date` 14 days out — deliberately, not because the endpoint
- *     enforces it. `start_date` is set two days in the past (safely before
- *     "today" in any timezone this suite could be running relative to the
- *     system's configured one) so `start_window` above resolves to
- *     `local_today` regardless of clock skew between this process and the
- *     container.
+ *     own `end_date` 14 days out — deliberately, not because the endpoint's
+ *     horizon enforces it, and well inside the 365-day cap by choice, not
+ *     because the cap would refuse anything wider here. `start_date` is set
+ *     two days in the past (safely before "today" in any timezone this suite
+ *     could be running relative to the system's configured one) so
+ *     `start_window` above resolves to `local_today` regardless of clock
+ *     skew between this process and the container.
  *
  * ---------------------------------------------------------------------------
  * The row count: 14 or 15, not 13 or 14
