@@ -278,28 +278,35 @@ async function openOutcome(
 }
 
 /**
- * Backstop, not the primary cleanup — the primary is the `try`/`finally`
- * inside the first test below. A Playwright timeout abandons a test body
- * without running its `finally` (only `afterEach` hooks still run), so
- * without this an abandoned run would leave `api-uwsgi` stopped for the rest
- * of the project and the second test would fail naming something unrelated.
+ * Backstop, not the primary cleanup — the primary is each test's own
+ * `try`/`finally`. A Playwright timeout abandons a test body without running
+ * its `finally` (only `afterEach` hooks still run), so without this an
+ * abandoned run would leave `api-uwsgi` or `celery-default` stopped for the
+ * rest of the project and a later test would fail naming something
+ * unrelated. `celery-default` joined this hook in review round 2, for the
+ * same reason and the same shape as `api-uwsgi`: the second test's `try` body
+ * holds a 25s restart, a 60s RUNNING poll, a 120s tune poll and a 60s read
+ * before its own `finally` restarts the pool, all inside `playwright.config.ts`'s
+ * 600s test timeout but long enough that an abandoned run is not implausible.
  * Checks the actual status rather than trusting a variable the abandoned body
- * never got to set, and is a no-op — one cheap `supervisorctl status` call —
- * for the second test, which never touches `api-uwsgi`.
+ * never got to set, and is a no-op — one cheap `supervisorctl status` call
+ * per program — for the first test, which touches neither.
  */
 test.afterEach(async ({ instance }) => {
-  const status = await instance.supervisorctl(['status', 'api-uwsgi']);
-  if (!/RUNNING/.test(status.stdout)) {
-    // Asserted, not fired and forgotten: `supervisorctl()` returns the exit
-    // code rather than throwing, so a `start` that failed here would
-    // otherwise leave the hook green and the next test would fail elsewhere,
-    // naming a symptom instead of this cause.
-    const started = await instance.supervisorctl(['start', 'api-uwsgi']);
-    expect(
-      started.code,
-      `afterEach could not restart api-uwsgi (exit ${started.code}): ` +
-        `${started.stdout}${started.stderr}`
-    ).toBe(0);
+  for (const program of ['api-uwsgi', 'celery-default']) {
+    const status = await instance.supervisorctl(['status', program]);
+    if (!/RUNNING/.test(status.stdout)) {
+      // Asserted, not fired and forgotten: `supervisorctl()` returns the exit
+      // code rather than throwing, so a `start` that failed here would
+      // otherwise leave the hook green and the next test would fail elsewhere,
+      // naming a symptom instead of this cause.
+      const started = await instance.supervisorctl(['start', program]);
+      expect(
+        started.code,
+        `afterEach could not restart ${program} (exit ${started.code}): ` +
+          `${started.stdout}${started.stderr}`
+      ).toBe(0);
+    }
   }
 });
 
@@ -627,8 +634,19 @@ test(
     let celeryStopped = false;
     let refreshTriggeredAt: number;
     try {
-      await instance.supervisorctl(['stop', 'celery-default']);
+      // Asserted, not fired and forgotten: `supervisorctl()` returns the exit
+      // code rather than throwing (same convention as the `api-uwsgi`
+      // afterEach above), so a stop that silently failed — a renamed
+      // program, a supervisord hiccup — would otherwise leave the pool
+      // running, the tracked task executing rather than queued by the time
+      // the restart happens, and this test green in exactly the hollow shape
+      // review round 1 found.
+      const stopped = await instance.supervisorctl(['stop', 'celery-default']);
       celeryStopped = true;
+      expect(
+        stopped.code,
+        `could not stop celery-default (exit ${stopped.code}): ${stopped.stdout}${stopped.stderr}`
+      ).toBe(0);
 
       refreshTriggeredAt = Date.now();
       const triggered = await api.post(`/api/m3u/refresh/${account.id}/`, {});
@@ -665,13 +683,24 @@ test(
       // time out rather than this assertion firing, which is why this check
       // and that poll together are what proves the D15 regression stays
       // caught, not this check alone.
+      //
+      // Exactly `${before.status}:unchanged`, not merely `.not.toBe('success:bumped')`.
+      // The looser form also accepts `fetching:unchanged` — the value a
+      // running worker writes the instant it picks the task up (review
+      // round 1's own finding) — so it cannot tell "the stop above worked"
+      // from "the stop silently failed and a worker got to the message
+      // anyway". A worker that IS running can only ever produce a value the
+      // looser check still passes, which is exactly the gap review round 2
+      // closes: this check now fails whenever anything wrote a state the
+      // stop should have made impossible.
       const midRestart = await refreshState();
       console.log(`[relay-restart] relay-uwsgi: tracked refresh state at restart return: '${midRestart}'`);
       expect(
         midRestart,
-        `the refresh had already reached '${midRestart}' by the moment the restart returned, so ` +
-          'the poll below would prove nothing about surviving the relay start path'
-      ).not.toBe('success:bumped');
+        `the refresh had already moved to '${midRestart}' by the moment the restart returned ` +
+          `(expected '${before.status}:unchanged', meaning celery-default genuinely never touched ` +
+          'it) — either the stop above silently failed, or something else is running the task'
+      ).toBe(`${before.status}:unchanged`);
 
       await expectRunning(instance, 'relay-uwsgi', 'relay-uwsgi did not return to RUNNING');
 
@@ -731,7 +760,20 @@ test(
       // below in the success path, and instead of it on any failure path,
       // either way leaving celery-default running for whatever test shares
       // this container next.
-      if (celeryStopped) await instance.supervisorctl(['start', 'celery-default']);
+      //
+      // Asserted for the same reason the stop is: an unasserted failed
+      // start here would surface, several lines away, as the completion
+      // poll's own timeout message — which names a stuck task lock
+      // (D10Scot/Dispatcharr#59) as the likely cause, the wrong one, since
+      // the real cause would be that no worker is running at all.
+      if (celeryStopped) {
+        const started = await instance.supervisorctl(['start', 'celery-default']);
+        expect(
+          started.code,
+          `could not restart celery-default (exit ${started.code}): ` +
+            `${started.stdout}${started.stderr}`
+        ).toBe(0);
+      }
     }
 
     // D15's Celery half: the message dispatched a moment before the restart —

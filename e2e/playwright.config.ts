@@ -175,9 +175,10 @@ export default defineConfig({
       use: { storageState: 'playwright/.auth/admin.json' },
     },
     {
-      // Owns one supervisord program at a time: `supervisorctl stop api-uwsgi`
-      // and `supervisorctl restart relay-uwsgi` inside the shared container.
-      // Its own project, not a spec under `streaming-greybox`, for the reason
+      // Owns the supervisord programs it touches: `supervisorctl stop
+      // api-uwsgi`, and — since review round 2 — `celery-default` stopped
+      // across a `supervisorctl restart relay-uwsgi`, inside the shared
+      // container. Its own project, not a spec under `streaming-greybox`, for the reason
       // the lifecycle projects have their own: in CI every matrix project gets
       // its own container, so a project is the only unit that confines an
       // outage. A greybox spec would stop the API process inside a container
@@ -198,7 +199,12 @@ export default defineConfig({
       // tune, 60s on the first packet, 120s on the refresh (which itself
       // absorbs the fake provider's `slow-playlist` fault delay,
       // `SLOW_PLAYLIST_DELAY_MS` = 30s — see that constant's own comment).
-      // 600s is that 385s plus ~215s of margin for what precedes it — two
+      // Since review round 2 this also brackets a `celery-default` stop and
+      // start (`docker/supervisord.d/celery-default.conf`'s own
+      // `stopwaitsecs=30` plus `startsecs=5` and its own wait-for-stores
+      // pass) around the relay-uwsgi restart — worst case well under a
+      // minute, and still comfortably inside 600s alongside everything else
+      // here. 600s is that 385s plus ~215s of margin for what precedes it — two
       // `expectRunning` pre-checks at 60s each and `seed.upstreamM3UAccount`,
       // which wraps a refresh wait of its own. That margin is not the sum of those worst
       // cases (they total ~350s, so the theoretical worst case is ~735s); it
