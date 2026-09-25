@@ -39,7 +39,8 @@ export type FaultName =
   | 'xc-auth-envelope'
   | 'no-tv-archive'
   | 'catchup-layout-404'
-  | 'range-unsupported';
+  | 'range-unsupported'
+  | 'slow-playlist';
 
 export interface FaultOptions {
   channel?: number;
@@ -54,23 +55,32 @@ export interface FaultOptions {
    */
   layout?: 'path' | 'query';
   depth?: number;
+  /**
+   * Required to arm `slow-playlist` — rejected with a 400 naming
+   * `'delayMs'` if missing or not an integer between 1 and 120,000. Not
+   * required to clear it (a value given to clear must still be valid).
+   * Rejected on every other fault. Milliseconds the `/playlist.m3u` route
+   * withholds its response before serving it unchanged (#197).
+   */
+  delayMs?: number;
 }
 
 export interface FaultResult {
   fault: FaultName;
   active: boolean;
   /**
-   * How many *live* connections the fault reached. Nine of the twelve
+   * How many *live* connections the fault reached. Ten of the thirteen
    * faults can only affect the next request — headers are already sent on
    * an open response — so 0 is correct and expected for them: the original
    * five (`not-found`, `auth-failure`, `connection-limit`, `redirect-chain`,
-   * `non-ts-bytes`) plus all four G8 additions (`xc-auth-envelope`,
-   * `no-tv-archive`, `catchup-layout-404`, `range-unsupported`), none of
-   * which act on an open long-lived stream — `player_api.php`, catalogue
-   * listing, catch-up and VOD are all single-shot requests. Arming
-   * `not-found` for a reconnect that has not happened yet is a normal test.
-   * Assert on this value when your test means to disrupt something already
-   * streaming; do not assume it is always positive.
+   * `non-ts-bytes`) plus the five later additions (`xc-auth-envelope`,
+   * `no-tv-archive`, `catchup-layout-404`, `range-unsupported`,
+   * `slow-playlist`), none of which act on an open long-lived stream —
+   * `player_api.php`, catalogue listing, catch-up, VOD and the playlist
+   * refresh are all single-shot requests. Arming `not-found` for a
+   * reconnect that has not happened yet is a normal test. Assert on this
+   * value when your test means to disrupt something already streaming; do
+   * not assume it is always positive.
    */
   appliedTo: number;
 }
