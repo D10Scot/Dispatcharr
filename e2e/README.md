@@ -85,7 +85,11 @@ differs from a sibling's is loud about it on stdout.
 
 **Choose a private provider** — a second, differently-named upstream
 container — when your worktree changes `e2e-upstream/`, so a sibling stack's
-scenarios are never disturbed by your rebuilds:
+scenarios are never disturbed by your rebuilds. A private provider requires a
+scoped stack too (`check_scope` refuses `_UPSTREAM_CONTAINER`/`_UPSTREAM_PORT`
+set with none of the four stack variables above, the reverse of the case
+this section opened with — the shared app container's own data would
+otherwise be what `--down`/`--reset` acts on):
 
 ```bash
 export DISPATCHARR_E2E_UPSTREAM_CONTAINER=e2e-upstream-h1 \
@@ -228,14 +232,17 @@ npm run test:lifecycle-scheduling # resets its instance; leaves an enabled hourl
 
 **A container event forgets every upstream scenario, and no error says so.**
 `instance.restart()` and `up({ reset: true })` both stop the `e2e-upstream`
-provider (`scripts/e2e_up.sh`'s `--stop` and `destroy()` branches) — unless
-another stack's network is attached to it, which cannot happen here since
-`lifecycle`/`lifecycle-upgrade` always run alone against the default,
-unscoped stack — and `ScenarioRegistry` is an in-memory `Map`
-(`e2e-upstream/src/scenario.ts`) — so
-a scenario created before the event does not exist after it. The provider
-answers `404 no scenario <uuid>`, which surfaces first as a *teardown
-diagnostic* rather than as a failed assertion, and is easy to read as noise.
+provider (`scripts/e2e_up.sh`'s `--stop` and `destroy()` branches) — true in
+CI, and locally whenever no other stack shares the provider. Running alone
+among Playwright projects does not by itself stop a sibling Docker stack
+from sharing `e2e-upstream`: if one is, the provider is left running instead
+and its scenarios survive, and `tests/lifecycle/backup-restore.spec.ts`'s
+"reset also recreates the provider" comment holds only in the no-sibling
+case. When the provider is recreated, `ScenarioRegistry` is an in-memory
+`Map` (`e2e-upstream/src/scenario.ts`), so a scenario created before the
+event does not exist after it. The provider answers `404 no scenario
+<uuid>`, which surfaces first as a *teardown diagnostic* rather than as a
+failed assertion, and is easy to read as noise.
 
 The consequence for anything written in `tests/lifecycle/`: **assert against
 Dispatcharr's own database through its own API, never by re-querying the

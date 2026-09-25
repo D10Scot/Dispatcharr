@@ -76,8 +76,9 @@ upstream_other_networks() {
 # real hour-waster on a dev machine that already had a same-named container.
 # Attach it to the network on every start rather than only at `docker run`.
 ensure_on_network() {
-  local container="$1"
-  if ! container_networks "$container" | grep -qxF "$NETWORK"; then
+  local container="$1" nets
+  nets="$(container_networks "$container")"
+  if ! printf '%s\n' "$nets" | grep -qxF "$NETWORK"; then
     docker network connect "$NETWORK" "$container" >/dev/null 2>&1 || true
   fi
 }
@@ -131,6 +132,15 @@ check_scope() {
   [[ -n "${DISPATCHARR_E2E_UPSTREAM_PORT:-}" ]] && up_p=1
   if (( up_c != up_p )); then
     problems+="  DISPATCHARR_E2E_UPSTREAM_CONTAINER and _UPSTREAM_PORT go together"$'\n'
+  fi
+  # The reverse of the check above: a private provider with no scoped stack
+  # is the #187 failure class in the other direction. Without this, setting
+  # only the two upstream variables leaves every stack variable defaulted to
+  # the shared app container, and --down/--reset then destroy it and its
+  # volume -- not the provider's business to protect, but a private provider
+  # is only ever wanted alongside a private stack, so require one.
+  if (( up_c == 1 || up_p == 1 )) && [[ -z "$set_names" ]]; then
+    problems+="  a private provider needs a scoped stack: set DISPATCHARR_E2E_CONTAINER, _VOLUME, _NETWORK and _PORT"$'\n'
   fi
   local host port
   if [[ -n "${E2E_UPSTREAM_INTERNAL_URL:-}" ]]; then

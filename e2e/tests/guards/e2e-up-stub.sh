@@ -213,7 +213,11 @@ case "$cmd" in
   rm)
     name=""
     for a in "$@"; do
-      [[ "$a" == -* ]] || name="$a"
+      case "$a" in
+        -f) ;;
+        -*) unhandled "rm" "$@" ;;
+        *) name="$a" ;;
+      esac
     done
     if [[ -z "$name" ]]; then unhandled "rm" "$@"; fi
     dir="$(container_dir "$name")"
@@ -260,6 +264,9 @@ case "$cmd" in
           ;;
         -v)
           shift 2
+          ;;
+        -*)
+          unhandled "run" "$@"
           ;;
         *)
           image="$1"

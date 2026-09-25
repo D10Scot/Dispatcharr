@@ -75,8 +75,36 @@ test.beforeAll(() => {
   );
 });
 
+test.afterAll(() => {
+  fs.rmSync(TMP_BIN, { recursive: true, force: true });
+  for (const dir of createdStates) {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 function scopedPath(): string {
   return `${TMP_BIN}:${process.env.PATH ?? ''}`;
+}
+
+/**
+ * `process.env` with every `DISPATCHARR_E2E_*`/`E2E_UPSTREAM_*` key removed.
+ *
+ * Without this, a shell already exporting the plan's Global constraint 6
+ * overrides — exactly the environment every H-2..H-5 implementer works in —
+ * leaked into every test here: the script saw a stack or provider it was
+ * never told about by the test itself, not the one the test seeded. Verified
+ * by mutation: with those exports set in the shell, 25 of 27 tests failed
+ * before this function existed; reverting to a plain `...process.env` spread
+ * reproduces that failure.
+ */
+function cleanBaseEnv(): NodeJS.ProcessEnv {
+  const base: NodeJS.ProcessEnv = {};
+  const leaks = /^(DISPATCHARR_E2E_|E2E_UPSTREAM_)/;
+  for (const [k, v] of Object.entries(process.env)) {
+    if (leaks.test(k)) continue;
+    base[k] = v;
+  }
+  return base;
 }
 
 /**
@@ -117,8 +145,13 @@ function mkStack() {
   };
 }
 
+/** Every state dir created this run, so `afterAll` can remove them. */
+const createdStates: string[] = [];
+
 function createState(): string {
-  return fs.mkdtempSync(path.join(os.tmpdir(), 'h1g-state-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'h1g-state-'));
+  createdStates.push(dir);
+  return dir;
 }
 
 function seedNetwork(state: string, name: string): void {
@@ -162,6 +195,10 @@ function containerExists(state: string, name: string): boolean {
   return fs.existsSync(path.join(state, 'c', name));
 }
 
+function networkExists(state: string, name: string): boolean {
+  return fs.existsSync(path.join(state, 'n', name));
+}
+
 function containerRunning(state: string, name: string): boolean {
   return fs.existsSync(path.join(state, 'c', name, 'running'));
 }
@@ -192,7 +229,7 @@ function runScript(
   bashPath = 'bash',
 ): RunResult {
   const fullEnv: NodeJS.ProcessEnv = {
-    ...process.env,
+    ...cleanBaseEnv(),
     ...env,
     STUB_STATE: state,
     PATH: scopedPath(),
@@ -244,6 +281,7 @@ test.describe('e2e_up.sh: stack teardown scoping', () => {
       expect(containerExists(state, stack.upstream)).toBe(true);
       expect(containerNetworks(state, stack.upstream)).toEqual(['h1g-other-net']);
       expect(result.log.some((l) => l === `docker rm -f ${stack.upstream}`)).toBe(false);
+      expect(networkExists(state, stack.network)).toBe(false);
       expectNoUnhandled(result.log);
     },
   );
@@ -431,6 +469,32 @@ test.describe('e2e_up.sh: check_scope (#187)', () => {
         },
       );
     }
+  }
+
+  // The reverse direction of the loop above (#187 in the other direction,
+  // found in review round 1): a private provider set with no scoped stack
+  // at all used to pass check_scope, leaving --down/--reset free to act on
+  // the *shared* app container, its volume and its network.
+  for (const mode of ALL_MODES) {
+    test(
+      `a private provider with no scoped stack refuses before touching docker, mode '${mode || '(none)'}' (#187)`,
+      { tag: '@characterization' },
+      () => {
+        const state = createState();
+        const env: NodeJS.ProcessEnv = {
+          DISPATCHARR_E2E_UPSTREAM_CONTAINER: `h1g-${randomSuffix()}-up`,
+          DISPATCHARR_E2E_UPSTREAM_PORT: '39402',
+        };
+
+        const result = runScript(mode, env, state);
+
+        expect(result.status).toBe(2);
+        expect(result.stderr).toContain(
+          'a private provider needs a scoped stack: set DISPATCHARR_E2E_CONTAINER, _VOLUME, _NETWORK and _PORT',
+        );
+        expect(result.log).toEqual([]);
+      },
+    );
   }
 
   test(
