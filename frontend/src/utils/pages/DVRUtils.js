@@ -65,7 +65,13 @@ export const categorizeRecordings = (recordings, toUserTime, now) => {
   for (const rec of upcomingDedup) {
     const cp = rec.custom_properties || {};
     const prog = cp.program || {};
-    const key = `${prog.tvg_id || ''}|${(prog.title || '').toLowerCase()}`;
+    // A recording with neither tvg_id nor title (no EPG match, no user-set
+    // title) would otherwise key on the same empty string '|' and collapse
+    // together in the Map below (#71). Key on the recording itself instead.
+    const key =
+      prog.tvg_id || prog.title
+        ? `${prog.tvg_id || ''}|${(prog.title || '').toLowerCase()}`
+        : `rec:${rec.id ?? `${rec.channel}|${rec.start_time}`}`;
     if (!grouped.has(key)) {
       grouped.set(key, { rec, count: 1 });
     } else {
