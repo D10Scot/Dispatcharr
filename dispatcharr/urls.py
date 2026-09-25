@@ -1,7 +1,9 @@
 from django.contrib import admin
+from django.http import JsonResponse
 from django.urls import path, include, re_path
 from django.conf import settings
 from django.conf.urls.static import static
+from django.views.decorators.csrf import csrf_exempt
 from django.views.generic import TemplateView, RedirectView
 from .routing import websocket_urlpatterns
 from apps.output.views import xc_player_api, xc_panel_api, xc_get, xc_xmltv
@@ -11,9 +13,18 @@ from apps.proxy.vod_proxy.views import stream_xc_movie, stream_xc_episode
 from apps.timeshift.views import timeshift_proxy, timeshift_proxy_query
 from dispatcharr.utils import XC_STREAM_ID_PATTERN
 
+
+@csrf_exempt
+def api_not_found(request, *args, **kwargs):
+    """#57: an /api/ path the API urlconf does not match is a JSON 404, never
+    the SPA shell. Any method: a POST to a typo'd endpoint is also a 404."""
+    return JsonResponse({"detail": "Not found."}, status=404)
+
+
 urlpatterns = [
     # API Routes
     path("api/", include(("apps.api.urls", "api"), namespace="api")),
+    re_path(r"^api/", api_not_found),
     path("api", RedirectView.as_view(url="/api/", permanent=True)),
     # Swagger redirects (Swagger UI is served at /api/swagger/)
     path("swagger/", RedirectView.as_view(url="/api/swagger/", permanent=True)),
