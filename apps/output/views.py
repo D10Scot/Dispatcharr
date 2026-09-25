@@ -103,6 +103,13 @@ def epg_endpoint(request, profile_name=None, user=None):
 
     return generate_epg(request, profile_name, user)
 
+def _m3u_attr(value):
+    """A value for a double-quoted #EXTINF attribute (#80). Only `"` is
+    escaped: players and apps/m3u/tasks.py's importer read attributes
+    literally, so a general HTML escape would turn "AT&T" into "AT&amp;T"."""
+    return str(value).replace('"', "&quot;")
+
+
 @csrf_exempt
 @require_http_methods(["GET", "POST", "HEAD"])
 def generate_m3u(request, profile_name=None, user=None):
@@ -297,12 +304,13 @@ def generate_m3u(request, profile_name=None, user=None):
         tvc_guide_stationid = ""
         if effective_tvc_guide:
             tvc_guide_stationid = (
-                f'tvc-guide-stationid="{effective_tvc_guide}" '
+                f'tvc-guide-stationid="{_m3u_attr(effective_tvc_guide)}" '
             )
 
         extinf_line = (
-            f'#EXTINF:-1 tvg-id="{tvg_id}" tvg-name="{tvg_name}" tvg-logo="{tvg_logo}" '
-            f'tvg-chno="{formatted_channel_number}" {tvc_guide_stationid}group-title="{group_title}",{effective_name}\n'
+            f'#EXTINF:-1 tvg-id="{_m3u_attr(tvg_id)}" tvg-name="{_m3u_attr(tvg_name)}" '
+            f'tvg-logo="{_m3u_attr(tvg_logo)}" tvg-chno="{_m3u_attr(formatted_channel_number)}" '
+            f'{tvc_guide_stationid}group-title="{_m3u_attr(group_title)}",{effective_name}\n'
         )
 
         # Determine the stream URL based on request type
@@ -672,7 +680,7 @@ def xc_get_live_categories(user):
             # User has specific limited profiles assigned
             filters = {
                 "channels__channelprofilemembership__enabled": True,
-                "channels__user_level": 0,
+                "channels__user_level__lte": user.user_level,
                 "channels__channelprofilemembership__channel_profile__in": user.channel_profiles.all(),
                 **hidden_exclusion,
             }
