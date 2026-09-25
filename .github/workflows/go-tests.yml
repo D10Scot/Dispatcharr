@@ -61,8 +61,10 @@ jobs:
       # (base-image.yml, built from docker/DispatcharrBase): it ships the
       # production ffmpeg (9.0), which the `build` job's container: now
       # uses so parity-matrix row 4's real-ffmpeg pin runs against the
-      # version production and the harness capture actually use, not
-      # whatever a bare ubuntu-latest runner's apt carries.
+      # version production actually uses (the harness capture stays a
+      # historical 8.1.2 recording -- relay/internal/relaytest/testdata/
+      # ffmpeg_stderr/, CAPTURE.md), not whatever a bare ubuntu-latest
+      # runner's apt carries.
       - name: Select base image
         id: base_image
         env:
@@ -151,7 +153,7 @@ jobs:
     # blind to every progress line, not just quantitatively different, and
     # row 4's detector can never arm against it: a plain `apt-get install
     # ffmpeg` on ubuntu-latest resolved to 6.1.1 and reddened this row in
-    # CI while every local and 9.0 run stayed green. Filed as #299
+    # CI while every local and 8.1.2 run stayed green. Filed as #299
     # (2026-09-14 CI fix round; spec Amendment A4.7, Done log). Do not
     # widen the parser or this test to accommodate 6.x -- #299 owns that.
     container:

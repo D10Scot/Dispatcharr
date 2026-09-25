@@ -176,15 +176,15 @@ RUN groupadd -r -g 109 render || true
 RUN rm -f /etc/localtime && cp -a /usr/share/zoneinfo/Etc/UTC /etc/localtime
 
 # /usr/local/lib ahead of the distro multiarch path, for every process (#226).
-# linuxserver's ffmpeg links /usr/local/lib/librist.so.4 (4.11); vlc pulls in
-# the distro's 4.3.1 through libavformat60. On arm64 aarch64-linux-gnu.conf
+# linuxserver's ffmpeg links /usr/local/lib/librist.so.4 (4.12.1); vlc pulls
+# in the distro's 4.4.0 through libavformat62. On arm64 aarch64-linux-gnu.conf
 # sorts before libc.conf (which lists /usr/local/lib), so the old copy won and
 # ffmpeg died on rist_peer_config_defaults_set_versioned wherever
 # docker/entrypoint.sh had not exported LD_LIBRARY_PATH -- the hook container
 # and CI's `--entrypoint ""` jobs. amd64 already sorted /usr/local/lib first.
 # Production is unchanged: entrypoint.sh already exports
 # LD_LIBRARY_PATH=/usr/local/lib for every supervised process, so VLC's distro
-# libavformat60 already loads the 4.11 librist there. This only makes the
+# libavformat62 already loads the 4.12.1 librist there. This only makes the
 # contexts that skip the entrypoint (hook container, CI, docker exec) match.
 # comskip is unaffected: it carries DT_RPATH to the distro libs (see above).
 # The ffmpeg run fails this build if the ordering ever regresses on either arch.
