@@ -26,10 +26,10 @@ done:
 | Command | Effect |
 |---|---|
 | `./scripts/e2e_up.sh` | Start, reusing an existing container and its data |
-| `./scripts/e2e_up.sh --stop` | Stop it, keep the container and the volume. Start again to resume with the same superuser and seeded rows |
-| `./scripts/e2e_up.sh --reset` | Destroy container + volume, then start fresh |
+| `./scripts/e2e_up.sh --stop` | Stop it, keep the container and the volume. Start again to resume with the same superuser and seeded rows. Stops the shared upstream provider too, **but only when no other stack's network is attached to it** |
+| `./scripts/e2e_up.sh --reset` | Destroy container + volume, then start fresh. Same provider caveat as `--stop` |
 | `./scripts/e2e_up.sh --recreate` | Replace the container, keeping the volume, network and provider. The one mode that expresses an upgrade: honours `DISPATCHARR_E2E_IMAGE`, so setting it and re-running actually serves the new image, unlike every mode above |
-| `./scripts/e2e_up.sh --down` | Destroy container + volume, start nothing |
+| `./scripts/e2e_up.sh --down` | Destroy container + volume, start nothing. Same provider caveat as `--stop` |
 
 `DISPATCHARR_E2E_PORT`, `_CONTAINER`, `_VOLUME` and `_IMAGE` override the
 defaults, and every command above respects them. `DISPATCHARR_E2E_REPO_OWNER`
@@ -39,14 +39,11 @@ only when `$IMAGE` is absent locally: to switch owners on an existing checkout,
 `docker rmi -f dispatcharr-e2e:local` (the running container still references
 the image, so a plain `docker rmi` refuses with a "conflict" error; `-f`
 untags it so the build guard misses) or point `_IMAGE` at a new tag, then run
-`--recreate` so the container serves the rebuilt image. The equivalent
-`DISPATCHARR_E2E_UPSTREAM_CONTAINER`/`_PORT` variables exist for the fake
-upstream provider but are **not safe to change**: unlike the variables
-above, nothing downstream of `scripts/e2e_up.sh` reads them back — the
-provider's own default origin, the `upstream` fixture's base URLs, and its
-DNS-failure detection all hardcode `e2e-upstream` and `9402`. Overriding
-either starts a working container under a name or port the suite can no
-longer find.
+`--recreate` so the container serves the rebuilt image. `_UPSTREAM_CONTAINER`
+and `_UPSTREAM_PORT` are safe to change **when paired with**
+`E2E_UPSTREAM_CONTROL_URL`/`E2E_UPSTREAM_INTERNAL_URL` (`e2e/fixtures/upstream.ts`) —
+see "Running a second stack" below, which `scripts/e2e_up.sh`'s own
+`check_scope` now enforces before any Docker call.
 
 **The container is published on `127.0.0.1` only.** Once bootstrap has run it
 holds a superuser whose password is committed to this repository in plain
@@ -55,12 +52,67 @@ otherwise have an admin account on it. A container created *before* this was
 the case keeps its old binding: `--down`, then start again, to pick the new
 one up. CI binds the same way.
 
+## Running a second stack
+
+A stack is the four scoping variables — `DISPATCHARR_E2E_CONTAINER`,
+`_VOLUME`, `_NETWORK` and `_PORT` — plus, optionally, a private provider.
+`scripts/e2e_up.sh` refuses a half-set stack before touching Docker at all
+([#187](https://github.com/D10Scot/Dispatcharr/issues/187)): set any of
+`_CONTAINER`/`_VOLUME`/`_NETWORK` and the other two, and `_PORT`, must be set
+too. `_PORT` alone is still a legal, independent override — it selects no
+shared resource.
+
+```bash
+export DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-h1 \
+       DISPATCHARR_E2E_VOLUME=dispatcharr-e2e-h1-data \
+       DISPATCHARR_E2E_NETWORK=dispatcharr-e2e-h1-net \
+       DISPATCHARR_E2E_PORT=39191
+./scripts/e2e_up.sh
+E2E_BASE_URL=http://localhost:39191 npm run test:seeded
+```
+
+The fake upstream provider is **shared by default**, whatever the four
+variables above say, and that is now safe to leave running beside: since
+[#168](https://github.com/D10Scot/Dispatcharr/issues/168), `--stop`, `--reset`
+and `--down` stop or remove it only when no other stack's network is still
+attached to it — otherwise they disconnect this stack's network from it (or,
+for `--stop`, just leave it running) and say so. A provider recreated because
+its image moved (any start rebuilds it from whatever `e2e-upstream/` looks
+like in *this* worktree) is reattached to every network it served, but every
+sibling stack's scenarios are lost regardless — `ScenarioRegistry` is an
+in-memory `Map` — so a start from a worktree whose `e2e-upstream/src/`
+differs from a sibling's is loud about it on stdout.
+
+**Choose a private provider** — a second, differently-named upstream
+container — when your worktree changes `e2e-upstream/`, so a sibling stack's
+scenarios are never disturbed by your rebuilds:
+
+```bash
+export DISPATCHARR_E2E_UPSTREAM_CONTAINER=e2e-upstream-h1 \
+       DISPATCHARR_E2E_UPSTREAM_PORT=39402 \
+       DISPATCHARR_E2E_UPSTREAM_IMAGE=dispatcharr-e2e-upstream-h1:local
+export E2E_UPSTREAM_CONTROL_URL=http://127.0.0.1:39402 \
+       E2E_UPSTREAM_INTERNAL_URL=http://e2e-upstream-h1:8080
+./scripts/e2e_up.sh
+```
+
+`_UPSTREAM_CONTAINER` and `_UPSTREAM_PORT` go together (both or neither);
+`check_scope` also cross-checks the two Playwright-side URLs against them
+when those are set, and refuses a mismatch naming both sides — the exact
+shape of [#187](https://github.com/D10Scot/Dispatcharr/issues/187)'s original
+incident, where the script defaulted to the shared provider while Playwright
+had been told to expect a renamed one. The provider is started with
+`-e UPSTREAM_INTERNAL_ORIGIN=http://<its own name>:8080`, so its playlists
+point at a host this stack's network can actually resolve, whatever it is
+named; a provider created before this change keeps its old environment until
+it is recreated (`--down`/`--recreate`).
+
 ## Projects
 
 | Project | What it is for |
 |---|---|
 | `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `streaming-split`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
-| `guards` | Static analysis over this suite's own source. **No container, no browser, no fixtures** — it runs in about a second and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`), the `e2e-upstream` contract-version check and the Phase 2 parity matrix's format |
+| `guards` | Static analysis over this suite's own source, plus one behavioural check of `scripts/e2e_up.sh` against a stub `docker`. **No container, no browser, no fixtures** — it runs in a few seconds and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`), the `e2e-upstream` contract-version check, the Phase 2 parity matrix's format, and `e2e_up.sh`'s stack-scoping behaviour (`e2e-up-stacks.spec.ts`) |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
 | `streaming` | Byte-level tests. Long timeouts, fewer workers |
@@ -157,9 +209,11 @@ issue, not here.
 `lifecycle` and `lifecycle-upgrade` go further than needing a differently
 configured instance: they **destroy** it. Both import
 `e2e/fixtures/instance.ts`, which stops, replaces or removes the shared
-container outright, and `scripts/e2e_up.sh`'s `destroy()` takes the shared
-Docker network and the `e2e-upstream` provider container down with it — see
-that file's header for the full reasoning. A lifecycle spec running beside
+container outright, and `scripts/e2e_up.sh`'s `destroy()` always removes this
+stack's own Docker network, and removes the `e2e-upstream` provider too when
+this stack is its last user (see that file's header for the full reasoning,
+and "Running a second stack" above). In the default, single-stack case that
+this project always runs in, that is every case. A lifecycle spec running beside
 any other project would not merely disturb it, it would delete the instance
 out from under it mid-assertion, with the failure surfacing in whichever
 project lost its container. That is why both run alone, in their own job and
@@ -174,8 +228,11 @@ npm run test:lifecycle-scheduling # resets its instance; leaves an enabled hourl
 
 **A container event forgets every upstream scenario, and no error says so.**
 `instance.restart()` and `up({ reset: true })` both stop the `e2e-upstream`
-provider (`scripts/e2e_up.sh`'s `--stop` and `destroy()` branches), and
-`ScenarioRegistry` is an in-memory `Map` (`e2e-upstream/src/scenario.ts`) — so
+provider (`scripts/e2e_up.sh`'s `--stop` and `destroy()` branches) — unless
+another stack's network is attached to it, which cannot happen here since
+`lifecycle`/`lifecycle-upgrade` always run alone against the default,
+unscoped stack — and `ScenarioRegistry` is an in-memory `Map`
+(`e2e-upstream/src/scenario.ts`) — so
 a scenario created before the event does not exist after it. The provider
 answers `404 no scenario <uuid>`, which surfaces first as a *teardown
 diagnostic* rather than as a failed assertion, and is easy to read as noise.

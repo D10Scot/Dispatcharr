@@ -9,8 +9,10 @@
  *
  * The two are not the same risk. A lifecycle spec stops, replaces and
  * destroys the container every other project shares, and
- * `scripts/e2e_up.sh`'s `destroy()` removes the shared network and the
- * `e2e-upstream` provider with it. `streaming-split` never calls
+ * `scripts/e2e_up.sh`'s `destroy()` removes the shared network, and the
+ * `e2e-upstream` provider too when this stack is its last user (always true
+ * here: the lifecycle projects run against the default, unscoped stack).
+ * `streaming-split` never calls
  * `up`/`restart`/`recreate`/`down` at all: it stops and starts one
  * supervisord program inside a container that stays. That is a smaller blast
  * radius and still a container-wide one — the API process is gone for every
@@ -20,8 +22,10 @@
  *
  * Every other project in this suite shares one container for the length of a
  * run. This fixture stops, replaces and destroys that container, and
- * `scripts/e2e_up.sh`'s `destroy()` also removes the shared Docker network and
- * the `e2e-upstream` provider container along with it. A lifecycle spec
+ * `scripts/e2e_up.sh`'s `destroy()` also removes the shared Docker network,
+ * taking the `e2e-upstream` provider container down with it in the common
+ * case (no other stack's network attached — always true against the default,
+ * unscoped stack these projects use). A lifecycle spec
  * running beside `seeded` would therefore not merely disturb it — it would
  * delete the instance out from under it mid-assertion, and the failures would
  * surface in the *other* project, naming nothing.
@@ -314,7 +318,11 @@ export class Instance {
     return `${stdout}${stderr}`;
   }
 
-  /** Destroy the container, its volume, the network and the provider. */
+  /**
+   * Destroy the container, its volume and the network. Also removes the
+   * provider, but only when this stack is its last user — always true here,
+   * since the lifecycle projects run against the default, unscoped stack.
+   */
   async down(): Promise<string> {
     const output = await this.script(['--down']);
     this.owned = false;
