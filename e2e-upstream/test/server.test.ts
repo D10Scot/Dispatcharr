@@ -547,6 +547,56 @@ describe('faults on the stream, playlist and EPG routes', () => {
     const absent = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/epg.xml`);
     expect(absent.status).toBe(401);
   });
+
+  it('an armed slow-playlist withholds the playlist for delayMs, then serves it unchanged', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario();
+    const unarmed = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/playlist.m3u`);
+    expect(unarmed.status).toBe(200);
+    const unarmedBody = await unarmed.text();
+
+    await armFault(scenario.id, { fault: 'slow-playlist', active: true, delayMs: 400 });
+
+    const start = Date.now();
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/playlist.m3u`);
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(200);
+    expect(elapsed).toBeGreaterThanOrEqual(400);
+    expect(await res.text()).toBe(unarmedBody);
+  });
+
+  it('a cleared slow-playlist serves the playlist promptly', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario();
+    await armFault(scenario.id, { fault: 'slow-playlist', active: true, delayMs: 400 });
+    await armFault(scenario.id, { fault: 'slow-playlist', active: false });
+
+    const start = Date.now();
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/playlist.m3u`);
+    const elapsed = Date.now() - start;
+
+    expect(res.status).toBe(200);
+    expect(elapsed).toBeLessThan(400);
+  });
+
+  it('slow-playlist leaves the EPG and stream routes alone', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario();
+    await armFault(scenario.id, { fault: 'slow-playlist', active: true, delayMs: 400 });
+
+    const epgStart = Date.now();
+    const epg = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/epg.xml`);
+    expect(epg.status).toBe(200);
+    expect(Date.now() - epgStart).toBeLessThan(400);
+
+    const streamStart = Date.now();
+    const stream = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/stream/1.ts`, {
+      method: 'HEAD',
+    });
+    expect(stream.status).toBe(200);
+    expect(Date.now() - streamStart).toBeLessThan(400);
+  });
 });
 
 describe('the redirect-chain fault, using the real streamed asset', () => {

@@ -120,39 +120,19 @@ const RUNNING_TIMEOUT_MS = 60_000;
 const RELAY_RESTART_CEILING_MS = 30_000;
 
 /**
- * How many filler channels the Celery scenario's dedicated M3U catalogue
- * carries, and how many decoy `M3UAccount`s share it.
+ * How long the fake provider withholds the tracked account's playlist, so its
+ * refresh is still running when `supervisorctl restart relay-uwsgi` returns.
  *
- * A single account's own refresh cannot be made to outlast the restart by
- * catalogue size alone: the fake provider's `POST /scenarios` caps the
- * request body at 1 MiB (`e2e-upstream/src/server.ts`), which tops out
- * around 10,000 channels, and measured against this container even an
- * 8,000-channel refresh completes in ~2-3s — nowhere near
- * `RELAY_RESTART_CEILING_MS`'s ~7-9s measured restart duration. What
- * reliably takes longer is **queueing behind other work**: Celery's
- * `default` queue autoscales to 6 workers
- * (`docker/supervisord.d/celery-default.conf`), so `SLOW_REFRESH_DECOY_COUNT`
- * accounts against the same 8,000-channel catalogue, refreshed in the same
- * instant as the tracked account, force it to wait through several
- * worker-queue waves.
- * Measured empirically (see the whole-branch fix round in
- * task-4-report.md): 30 decoys, refreshed in the same instant as the
- * tracked account, pushed its completion to ~20s, roughly 2-3x the
- * restart's own duration — margin against reasonable host-to-host variance
- * in worker throughput, not a number tuned to just clear it.
- *
- * The decoys are created inactive and activated only at the moment they are
- * triggered (see the CI fix round below, same report), so this contention
- * lands entirely inside the TIMED phase. **Raising `SLOW_REFRESH_DECOY_COUNT`
- * alone is still not free**: activation is one PATCH per decoy (cheap,
- * unqueued), but the `Promise.all` that fires it and the trigger batch are
- * both still one HTTP round trip per decoy from the test process, and a much
- * larger count would need that batching reconsidered — this number was
- * chosen for margin over the restart, not stress-tested for how high it can
- * go before request fan-out itself becomes the bottleneck.
+ * Derived, not tuned: at least 3x the measured relay-uwsgi restart
+ * (6,867 ms, e2e/COVERAGE.md's bounded-restart row) and below
+ * fetch_m3u_lines' 60 s read timeout (apps/m3u/tasks.py, `timeout=(30, 60)`),
+ * which a withheld response counts against. A refresh fetches the playlist
+ * once, so the delay is paid once. If the in-flight assertion below ever
+ * fires, raise this within that bound; if the restart outgrows a third of
+ * the timeout, the formula no longer has room and the design needs
+ * revisiting.
  */
-const SLOW_REFRESH_CHANNEL_COUNT = 8_000;
-const SLOW_REFRESH_DECOY_COUNT = 30;
+const SLOW_PLAYLIST_DELAY_MS = 30_000;
 
 async function expectRunning(
   instance: Instance,
@@ -499,48 +479,24 @@ test(
     });
     const proxy = await lockedProfile(api, 'Proxy');
     // The Celery half needs a refresh that is provably still running the
-    // instant the blocking restart returns — a two-channel catalogue's
-    // refresh finished inside that ~7s window in measurement, which made the
-    // in-flight assertion below fail (correctly: the task had already
-    // completed, so nothing about surviving the restart was under test).
-    // `SLOW_REFRESH_CHANNEL_COUNT`/`SLOW_REFRESH_DECOY_COUNT`'s own comment
-    // has the reasoning and the measurements; the streaming scenario above
-    // stays small on purpose since scenario size has no bearing on tune
-    // latency.
+    // instant the blocking restart returns. Held in flight with the fake
+    // provider's `slow-playlist` fault (#197) rather than by contending
+    // decoy accounts against a large catalogue — see
+    // `SLOW_PLAYLIST_DELAY_MS`'s own comment for the timing. The streaming
+    // scenario above and this one both stay small on purpose since scenario
+    // size has no bearing on tune latency, and the fault — not catalogue
+    // size — is what makes the refresh slow.
     const slowScenario = await upstream.scenario({
-      channels: Array.from({ length: SLOW_REFRESH_CHANNEL_COUNT }, (_, i) => ({
-        id: i + 1,
-        name: `slow-refresh-filler-${i + 1}`,
-        tvgId: `slow-refresh-filler-${i + 1}.e2e`,
-        logo: null,
-      })),
+      channels: [
+        { id: 1, name: 'split slow refresh 1', tvgId: 'split-slow-refresh-1.e2e', logo: null },
+        { id: 2, name: 'split slow refresh 2', tvgId: 'split-slow-refresh-2.e2e', logo: null },
+      ],
     });
-    // Created inactive, via the bare `seed.m3uAccount()` — NOT
-    // `seed.upstreamM3UAccount()`, and NOT settled here. `M3UAccount`'s
-    // `post_save` handler fires `refresh_m3u_groups.delay()` on every
-    // create regardless of `is_active` (`apps/m3u/signals.py`), but that
-    // task's own first line is `M3UAccount.objects.get(id=…, is_active=True)`
-    // (`apps/m3u/tasks.py:1561`) — inactive, it raises `DoesNotExist` and
-    // returns immediately, so 30 concurrent creates cost 30 near-instant
-    // failed lookups, not 30 real catalogue parses. This is the fix CI's
-    // slow-host failure asked for: the first version of this test settled
-    // each decoy through its own create-time refresh before proceeding
-    // (`seed.upstreamM3UAccount`), which put SLOW_REFRESH_DECOY_COUNT
-    // catalogue parses on the SAME worker pool DURING setup — exactly the
-    // contention this test means to create, just at the wrong time, against
-    // fixed 30s/20s "did the refresh start / settle" budgets in
-    // `fixtures/wait.ts` that assume ordinary, uncontended setup. Decoys
-    // stay inactive, and therefore inert, all the way through channel
-    // seeding, tuning and the first packet read below.
-    const decoys = await Promise.all(
-      Array.from({ length: SLOW_REFRESH_DECOY_COUNT }, () =>
-        seed.m3uAccount({ server_url: upstream.playlistUrl(slowScenario) })
-      )
-    );
     // An M3U account is the Celery half: refreshing one is a real queued task
     // whose completion is visible over REST. Seeded (and refreshed) before
-    // anything else so the create-time group refresh has settled and the
-    // account's task lock is free by the time the test triggers its own.
+    // anything else so the create-time group refresh has settled — with no
+    // fault armed yet — and the account's task lock is free by the time the
+    // test triggers its own, later, slow-playlist-held refresh.
     const account = await seed.upstreamM3UAccount(slowScenario);
     const { channel: running } = await seed.upstreamChannel(scenario, {
       channelIds: [1],
@@ -639,34 +595,13 @@ test(
       return `${body.status}:${body.updated_at === before.updated_at ? 'unchanged' : 'bumped'}`;
     }
 
-    // Activated the instant before triggering, not at creation: `is_active`
-    // going true on an UPDATE does not re-run the create-only `post_save`
-    // handler that dispatches `refresh_m3u_groups` (`if created and …` in
-    // `apps/m3u/signals.py`), so this PATCH queues nothing — it only makes
-    // `refresh_single_m3u_account`'s own `is_active=True` lookup succeed once
-    // triggered below, turning each decoy from an inert row into real
-    // catalogue work at exactly the moment this test wants contention.
-    await Promise.all(
-      decoys.map((d) => api.patch(`/api/m3u/accounts/${d.id}/`, { is_active: true }))
-    );
-
-    // Every decoy and the tracked account fire in the SAME `Promise.all`,
-    // tracked account last: submitted together, Celery's workers pull
-    // roughly in submission order, so the tracked refresh queues behind
-    // whichever decoys land on a worker first rather than racing them for
-    // the very first slot. This is the exact shape measured in the
-    // calibration this constant's comment cites — firing the tracked
-    // account from a separate, later call would not reproduce it.
-    const triggerResponses = await Promise.all([
-      ...decoys.map((d) => api.post(`/api/m3u/refresh/${d.id}/`, {})),
-      api.post(`/api/m3u/refresh/${account.id}/`, {}),
-    ]);
-    const triggered = triggerResponses[triggerResponses.length - 1];
-    expect(
-      triggerResponses.every((res) => res.status() === 202),
-      'every refresh — decoys and the tracked account alike — must be queued, or the tracked ' +
-        'refresh is not actually contending for a worker slot'
-    ).toBe(true);
+    // Armed after `before` is read: the fault must not withhold the
+    // create-time refresh settled above, only the tracked refresh triggered
+    // below (#197).
+    await upstream.fault(slowScenario, 'slow-playlist', { delayMs: SLOW_PLAYLIST_DELAY_MS });
+    const refreshTriggeredAt = Date.now();
+    const triggered = await api.post(`/api/m3u/refresh/${account.id}/`, {});
+    expect(triggered.status(), 'the tracked refresh must be queued').toBe(202);
 
     // ---- restart 2: relay-uwsgi, for D15's Celery half ----
     //
@@ -692,19 +627,13 @@ test(
     // during the restart itself rather than surviving it — `wait-for-stores.sh`
     // runs `wait_for_redis.py` on relay-uwsgi's own start, the only place a
     // reintroduced flush could bite, and a refresh that finished before that
-    // point would never exercise it. If this fires reliably, the fix is more
-    // contention, but `SLOW_REFRESH_DECOY_COUNT` cannot move on its own: the
-    // decoys' create-time `.delay()` calls above (near-instant, but real
-    // queue entries) sit ahead of the tracked account's own create-time
-    // settle at `seed.upstreamM3UAccount(slowScenario)`, which waits on
-    // `fixtures/wait.ts`'s fixed 30s/20s "did the refresh start / settle"
-    // budgets — raising the count deepens that same queue and can blow those
-    // budgets before this assertion ever runs. Move the count together with
-    // those budgets, or batch the decoy seeding so it no longer shares one
-    // queue with the create-time settle; do not loosen this assertion, since
-    // the spec asks for a task that survives the relay's start path, not one
-    // that merely predates it.
+    // point would never exercise it. If this fires reliably, the fix is a
+    // larger `SLOW_PLAYLIST_DELAY_MS`, within that constant's own formula
+    // (3x the measured restart, under `fetch_m3u_lines`' 60s read timeout) —
+    // never a loosened assertion here, since the spec asks for a task that
+    // survives the relay's start path, not one that merely predates it.
     const midRestart = await refreshState();
+    console.log(`[relay-restart] relay-uwsgi: tracked refresh state at restart return: '${midRestart}'`);
     expect(
       midRestart,
       `the refresh had already reached '${midRestart}' by the moment the restart returned, so ` +
@@ -778,5 +707,9 @@ test(
           'was triggered (D10Scot/Dispatcharr#59) rather than the restart having eaten it',
       })
       .toBe('success:bumped');
+    console.log(
+      `[relay-restart] tracked refresh reached 'success:bumped' ` +
+        `${Date.now() - refreshTriggeredAt}ms after it was triggered`
+    );
   }
 );

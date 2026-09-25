@@ -195,13 +195,12 @@ export default defineConfig({
       // projects' 300s. Each test here is a chain of sequential poll budgets,
       // and the sum is what has to fit. Scenario B's post-restart chain is
       // 385s: 25s in the restart, 60s waiting for RUNNING, 120s polling for a
-      // tune, 60s on the first packet, 120s on the refresh. 600s is that 385s
-      // plus ~215s of margin for what precedes it — two `expectRunning`
-      // pre-checks at 60s each, `seed.upstreamM3UAccount`, which wraps a
-      // refresh wait of its own, and (as of the whole-branch fix round)
-      // settling `SLOW_REFRESH_DECOY_COUNT` decoy M3U accounts before
-      // Scenario B's timed phase — measured at ~20-60s in `task-4-report.md`,
-      // itself inside this margin. That margin is not the sum of those worst
+      // tune, 60s on the first packet, 120s on the refresh (which itself
+      // absorbs the fake provider's `slow-playlist` fault delay,
+      // `SLOW_PLAYLIST_DELAY_MS` = 30s — see that constant's own comment).
+      // 600s is that 385s plus ~215s of margin for what precedes it — two
+      // `expectRunning` pre-checks at 60s each and `seed.upstreamM3UAccount`,
+      // which wraps a refresh wait of its own. That margin is not the sum of those worst
       // cases (they total ~350s, so the theoretical worst case is ~735s); it
       // is deliberately sized for one thing going wrong at a time, because a
       // run in which the pre-checks AND the seeding AND the restart all take

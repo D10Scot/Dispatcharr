@@ -13,7 +13,8 @@ export type FaultName =
   | 'xc-auth-envelope'
   | 'no-tv-archive'
   | 'catchup-layout-404'
-  | 'range-unsupported';
+  | 'range-unsupported'
+  | 'slow-playlist';
 
 export const FAULT_NAMES: readonly FaultName[] = [
   'dead-air',
@@ -28,6 +29,7 @@ export const FAULT_NAMES: readonly FaultName[] = [
   'no-tv-archive',
   'catchup-layout-404',
   'range-unsupported',
+  'slow-playlist',
 ];
 
 function isFaultName(value: unknown): value is FaultName {
@@ -46,8 +48,17 @@ function isFaultName(value: unknown): value is FaultName {
  * and the fault would silently do nothing. `connection-limit` is the only
  * other fault that could plausibly be "scenario-wide" and it genuinely is
  * channel-scopable, so there is no precedent for a loose door here.
+ * `slow-playlist` joins this group for the same reason as `range-unsupported`:
+ * a playlist refresh has no single channel in play, so a `channel` scope on
+ * it could never be read back by the playlist route's `isActive`/`configOf`
+ * calls, which never pass one (#197).
  */
-const SCENARIO_WIDE_ONLY_FAULTS: readonly FaultName[] = ['xc-auth-envelope', 'range-unsupported'];
+const SCENARIO_WIDE_ONLY_FAULTS: readonly FaultName[] = [
+  'xc-auth-envelope',
+  'range-unsupported',
+  'slow-playlist',
+];
+export const MAX_PLAYLIST_DELAY_MS = 120_000;
 
 export interface FaultRequest {
   fault: FaultName;
@@ -63,6 +74,12 @@ export interface FaultRequest {
   depth?: number;
   /** catchup-layout-404. Required when arming; optional when clearing. */
   layout?: 'path' | 'query';
+  /**
+   * slow-playlist. Required when arming; optional (but still validated) when
+   * clearing. Milliseconds the playlist route withholds its response before
+   * serving it unchanged.
+   */
+  delayMs?: number;
 }
 
 export interface FaultResult {
@@ -171,6 +188,41 @@ export function parseFaultRequest(body: Record<string, unknown>): FaultRequest {
     request.layout = body.layout;
   }
 
+  if (request.fault === 'slow-playlist' && request.active) {
+    // Required only when arming, mirroring catchup-layout-404 above: a
+    // playlist route with no delay configured has nothing to withhold for,
+    // and defaulting it silently would make "the fault is armed but the
+    // test forgot delayMs" indistinguishable from "the fault is off" (#197).
+    if (
+      typeof body.delayMs !== 'number' ||
+      !Number.isInteger(body.delayMs) ||
+      body.delayMs < 1 ||
+      body.delayMs > MAX_PLAYLIST_DELAY_MS
+    ) {
+      throw new BadRequestError(
+        `'slow-playlist' requires 'delayMs', an integer between 1 and ${MAX_PLAYLIST_DELAY_MS}`,
+      );
+    }
+    request.delayMs = body.delayMs;
+  } else if (body.delayMs !== undefined) {
+    if (request.fault !== 'slow-playlist') {
+      throw new BadRequestError(`'delayMs' is only meaningful on 'slow-playlist'`);
+    }
+    // Clearing with an explicit delayMs is accepted, but still must be a
+    // real one — garbage is still garbage on the way out.
+    if (
+      typeof body.delayMs !== 'number' ||
+      !Number.isInteger(body.delayMs) ||
+      body.delayMs < 1 ||
+      body.delayMs > MAX_PLAYLIST_DELAY_MS
+    ) {
+      throw new BadRequestError(
+        `'delayMs' must be an integer between 1 and ${MAX_PLAYLIST_DELAY_MS}`,
+      );
+    }
+    request.delayMs = body.delayMs;
+  }
+
   return request;
 }
 
@@ -209,12 +261,12 @@ const scopeOf = (channel: number | undefined): Scope => channel ?? '*';
  * scenario-wide, then arm one channel differently" both behave as
  * independent per-scope state rather than one clobbering the other.
  *
- * `appliedTo` counts only connections a fault actually reached. Nine of the
- * twelve faults (`not-found`, `auth-failure`, `connection-limit`,
+ * `appliedTo` counts only connections a fault actually reached. Ten of the
+ * thirteen faults (`not-found`, `auth-failure`, `connection-limit`,
  * `redirect-chain`, `non-ts-bytes`, `xc-auth-envelope`, `no-tv-archive`,
- * `catchup-layout-404`, `range-unsupported`) can only affect the *next*
- * request, because a live response has already sent its headers — for
- * those, `appliedTo: 0` is correct and expected, not a sign nothing
+ * `catchup-layout-404`, `range-unsupported`, `slow-playlist`) can only affect
+ * the *next* request, because a live response has already sent its headers —
+ * for those, `appliedTo: 0` is correct and expected, not a sign nothing
  * happened. "Arm not-found so the next reconnect fails" is a normal test.
  */
 export class FaultStore {
@@ -258,9 +310,9 @@ export class FaultStore {
         default:
           // not-found, auth-failure, connection-limit, redirect-chain,
           // non-ts-bytes, xc-auth-envelope, no-tv-archive,
-          // catchup-layout-404, range-unsupported: headers are already sent
-          // on a live response, so these can only affect the next request.
-          // appliedTo stays 0.
+          // catchup-layout-404, range-unsupported, slow-playlist: headers
+          // are already sent on a live response, so these can only affect
+          // the next request. appliedTo stays 0.
           break;
       }
     }
