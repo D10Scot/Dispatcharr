@@ -283,25 +283,43 @@ test('GET /api/vod/categories/ accepts an m3u_account filter', { tag: '@contract
   upstream,
   seed,
   api,
+  waitFor,
 }) => {
   test.setTimeout(150_000);
 
-  // refresh-vod does not need to complete — the filter raises before any row
-  // is read — so this does NOT make the post-fix assertion (every returned
-  // category actually relates to this account) meaningful: seedCatalogue()
-  // fires the refresh and returns on its 202 with no wait for the
-  // categories to actually exist, the same unsynchronised gap fixed in the
-  // category-rows test above. Once VODCategoryFilter is fixed, this body
-  // races the same Celery task and can just as easily run the loop below
-  // over zero rows as over three.
-  const { account } = await seedCatalogue(upstream, seed, api);
+  const { prefix, account } = await seedCatalogue(upstream, seed, api);
 
-  const res = await api.get(`/api/vod/categories/?m3u_account=${account.id}`);
-  // A status-only assertion would go green on a fix that returned 200 with
-  // an unfiltered list — every returned row must actually relate to this
-  // account.
-  expect(res.status()).toBe(200);
-  const categories = await api.json<VodCategory[]>(res, 'vod categories filtered by account');
+  // A status-only assertion is not deterministic on its own: refresh_vod_content
+  // is a separate Celery task queued by the 202 above, not completed by it, so
+  // a read straight after the POST can return 200 with zero rows whether the
+  // filter is scoping correctly or not — that gap would let a wrong relation
+  // path (or an unfiltered list) pass this pin. Wait for the three ${prefix}
+  // categories the category-rows test above declares, the same way it does,
+  // but through the m3u_account filter instead of name — that is the
+  // property under test. Not an exact-length predicate: VODCategoryViewSet.list()
+  // (apps/vod/api_views.py) also get_or_creates a movie and a series
+  // "Uncategorized" category and relation for every active XC account with
+  // VOD enabled, including this one, on every call to this same endpoint —
+  // so a correctly-scoped answer for this account is these three plus up to
+  // two Uncategorized rows, never exactly three. The filter's actual scoping
+  // (as opposed to "eventually returns these 3 among possibly more") is
+  // pinned deterministically by apps.vod.tests.test_vod_category_account_filter,
+  // which seeds two accounts up front and asserts the other account's
+  // category is absent.
+  const expectedNames = [`${prefix}-movies-a`, `${prefix}-movies-b`, `${prefix}-shows`];
+  const categories = await waitFor.resource<VodCategory[]>(
+    `/api/vod/categories/?m3u_account=${account.id}`,
+    (body) => expectedNames.every((n) => body.some((c) => c.name === n)),
+    { description: `all 3 ${prefix} categories via the m3u_account filter`, timeoutMs: 120_000 }
+  );
+
+  for (const name of expectedNames) {
+    const category = categories.find((c) => c.name === name);
+    expect(category, `${name} among the m3u_account-filtered categories`).toBeDefined();
+  }
+  // Every returned row must actually relate to this account — a status-only
+  // or count-only assertion would go green on a fix that returned 200 with
+  // an unfiltered list that happened to include these three.
   for (const category of categories) {
     expect(category.m3u_accounts.some((r) => r.m3u_account === account.id)).toBe(true);
   }

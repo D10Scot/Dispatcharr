@@ -416,10 +416,12 @@ test('the XC series actions, and the series_id/Movie.pk asymmetry, and adult fil
 // — the wrong object's truthiness. A movie whose provider payload carries
 // none of trailer/director/actors/backdrop has Movie.custom_properties = None
 // (clean_custom_properties({}) returns None, apps/vod/tasks.py), so bitrate,
-// video, audio, cover_big and the plot override never reached an XC client
-// even though refresh_movie_advanced_data had just fetched and stored them on
-// the relation. /api/vod/movies/<pk>/provider-info/ reads the same relation
-// and returns them correctly, which is what made the two disagree. Both
+// video, audio, the plot override and the name/year/genre/rating/id overrides
+// never reached an XC client even though refresh_movie_advanced_data had just
+// fetched and stored them on the relation (cover_big is unaffected — it comes
+// from movie_cover, not from this merge). /api/vod/movies/<pk>/provider-info/
+// reads the same relation and returns them correctly, which is what made the
+// two disagree. Both
 // dictionaries are now read unconditionally, so this test asserts they still
 // agree.
 //
