@@ -567,10 +567,29 @@ describe('faults on the stream, playlist and EPG routes', () => {
   });
 
   it('a cleared slow-playlist serves the playlist promptly', async () => {
+    // Asserts the arm's and the clear's own status and body, rather than
+    // going through the shared armFault() helper, which discards the
+    // response: without this, a fault silently rejected as unknown (a 400)
+    // would still leave the timing assertion below green, since nothing was
+    // ever armed to make it slow. That is a real gap the shared helper's
+    // callers above tolerate only because their assertions are on faults
+    // proven elsewhere to arm correctly; this is the fault under test here.
     server = await startServer(0);
     const scenario = await createScenario();
-    await armFault(scenario.id, { fault: 'slow-playlist', active: true, delayMs: 400 });
-    await armFault(scenario.id, { fault: 'slow-playlist', active: false });
+
+    const armed = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/fault`, {
+      method: 'POST',
+      body: JSON.stringify({ fault: 'slow-playlist', active: true, delayMs: 400 }),
+    });
+    expect(armed.status).toBe(200);
+    expect(await readJson(armed)).toMatchObject({ fault: 'slow-playlist', active: true });
+
+    const cleared = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/fault`, {
+      method: 'POST',
+      body: JSON.stringify({ fault: 'slow-playlist', active: false }),
+    });
+    expect(cleared.status).toBe(200);
+    expect(await readJson(cleared)).toMatchObject({ fault: 'slow-playlist', active: false });
 
     const start = Date.now();
     const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/playlist.m3u`);
@@ -581,9 +600,18 @@ describe('faults on the stream, playlist and EPG routes', () => {
   });
 
   it('slow-playlist leaves the EPG and stream routes alone', async () => {
+    // Same reasoning as the "cleared" test above: the arm's own status and
+    // body are asserted directly, not through armFault(), so a silently
+    // rejected arm cannot leave this passing for the wrong reason.
     server = await startServer(0);
     const scenario = await createScenario();
-    await armFault(scenario.id, { fault: 'slow-playlist', active: true, delayMs: 400 });
+
+    const armed = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/fault`, {
+      method: 'POST',
+      body: JSON.stringify({ fault: 'slow-playlist', active: true, delayMs: 400 }),
+    });
+    expect(armed.status).toBe(200);
+    expect(await readJson(armed)).toMatchObject({ fault: 'slow-playlist', active: true });
 
     const epgStart = Date.now();
     const epg = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/epg.xml`);

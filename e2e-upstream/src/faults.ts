@@ -60,6 +60,16 @@ const SCENARIO_WIDE_ONLY_FAULTS: readonly FaultName[] = [
 ];
 export const MAX_PLAYLIST_DELAY_MS = 120_000;
 
+/** The one range check `slow-playlist`'s arm and clear branches share. */
+function isValidDelayMs(value: unknown): value is number {
+  return (
+    typeof value === 'number' &&
+    Number.isInteger(value) &&
+    value >= 1 &&
+    value <= MAX_PLAYLIST_DELAY_MS
+  );
+}
+
 export interface FaultRequest {
   fault: FaultName;
   active: boolean;
@@ -193,12 +203,7 @@ export function parseFaultRequest(body: Record<string, unknown>): FaultRequest {
     // playlist route with no delay configured has nothing to withhold for,
     // and defaulting it silently would make "the fault is armed but the
     // test forgot delayMs" indistinguishable from "the fault is off" (#197).
-    if (
-      typeof body.delayMs !== 'number' ||
-      !Number.isInteger(body.delayMs) ||
-      body.delayMs < 1 ||
-      body.delayMs > MAX_PLAYLIST_DELAY_MS
-    ) {
+    if (!isValidDelayMs(body.delayMs)) {
       throw new BadRequestError(
         `'slow-playlist' requires 'delayMs', an integer between 1 and ${MAX_PLAYLIST_DELAY_MS}`,
       );
@@ -210,12 +215,7 @@ export function parseFaultRequest(body: Record<string, unknown>): FaultRequest {
     }
     // Clearing with an explicit delayMs is accepted, but still must be a
     // real one — garbage is still garbage on the way out.
-    if (
-      typeof body.delayMs !== 'number' ||
-      !Number.isInteger(body.delayMs) ||
-      body.delayMs < 1 ||
-      body.delayMs > MAX_PLAYLIST_DELAY_MS
-    ) {
+    if (!isValidDelayMs(body.delayMs)) {
       throw new BadRequestError(
         `'delayMs' must be an integer between 1 and ${MAX_PLAYLIST_DELAY_MS}`,
       );

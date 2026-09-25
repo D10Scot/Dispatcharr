@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { FaultStore, parseFaultRequest, MAX_PLAYLIST_DELAY_MS } from '../src/faults.js';
+import { FaultStore, parseFaultRequest, FAULT_NAMES, MAX_PLAYLIST_DELAY_MS } from '../src/faults.js';
 import { ConnectionRegistry } from '../src/connections.js';
 import type { LiveConnection } from '../src/connections.js';
 import { ScenarioRegistry } from '../src/scenario.js';
@@ -334,10 +334,13 @@ describe('parseFaultRequest', () => {
     ).toThrow(/channel.*scenario-wide/);
   });
 
-  it('delayMs is rejected on every other fault', () => {
-    expect(() =>
-      parseFaultRequest({ fault: 'not-found', active: true, delayMs: 400 })
-    ).toThrow(/delayMs/);
+  it('delayMs is rejected on every fault except slow-playlist', () => {
+    // `active: false` sidesteps catchup-layout-404's own required-layout
+    // check, which would otherwise throw on its own `layout` message before
+    // ever reaching the delayMs check this test means to exercise.
+    for (const fault of FAULT_NAMES.filter((name) => name !== 'slow-playlist')) {
+      expect(() => parseFaultRequest({ fault, active: false, delayMs: 400 })).toThrow(/delayMs/);
+    }
   });
 
   it('slow-playlist reports appliedTo 0: it can only affect the next request', () => {
