@@ -199,6 +199,7 @@ See `CONTRIBUTING.md` for the upstream PR process and fuller style guide.
 - **Triage labels**: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 - **Domain docs**: `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 - **Metrics dashboard**: three agent-maintained files under `metrics/curated/` (catalogue, milestones, defect ledger) feed https://d10scot.github.io/Dispatcharr/. A PR that closes a ledger issue, adds a `test.fail()` pin, merges a goal, or ticks a Done log updates them in the same PR. Validate with `python -m metrics.build --validate-only`. See `docs/agents/metrics.md`.
+- **Process skills**: four model-invoked skills under `.claude/skills/` chain every change: `worktree-per-change` (one worktree per change, occupancy checks, tidy-up on merge), `plan-review-fix` (plan → pinned independent review → fix → PASS), `implement-review-escalate` (sonnet implementer → pinned opus review → fix rounds → fable after two failed rounds; the test-modification rule) and `pr-merge-gate` (draft → ready → bot verdict and/or threads resolved → CI green → squash merge → housekeeping). Each is generic in `SKILL.md` with this repository's names in `references/project.md`; see `.claude/skills/README.md` for porting.
 
 ## Agentic workflows (gh-aw)
 
