@@ -23,6 +23,7 @@ from apps.channels.epg_matching import (
     apply_matched_epg_to_channels,
     build_epg_matching_catalog,
     cleanup_after_matching,
+    get_preferred_region_code,
     match_channels_to_epg,
     normalize_name,
     run_single_channel_epg_match,
@@ -238,11 +239,7 @@ def match_epg_channels():
         logger.info("Starting integrated EPG matching...")
 
         # Get region preference
-        try:
-            region_obj = CoreSettings.objects.get(key="preferred-region")
-            region_code = region_obj.value.strip().lower()
-        except CoreSettings.DoesNotExist:
-            region_code = None
+        region_code = get_preferred_region_code()
 
         # Get channels that don't have EPG data assigned
         channels_without_epg = Channel.objects.filter(epg_data__isnull=True)
@@ -342,11 +339,7 @@ def match_selected_channels_epg(channel_ids):
         logger.info(f"Starting integrated EPG matching for {len(channel_ids)} selected channels...")
 
         # Get region preference
-        try:
-            region_obj = CoreSettings.objects.get(key="preferred-region")
-            region_code = region_obj.value.strip().lower()
-        except CoreSettings.DoesNotExist:
-            region_code = None
+        region_code = get_preferred_region_code()
 
         # Selected-channel matching always runs, including channels that already have EPG.
         selected_channels = Channel.objects.filter(id__in=channel_ids)
@@ -1035,8 +1028,8 @@ def _build_output_paths(channel, program, start_time, end_time, recording_id):
     library_root = '/data/recordings'
 
     is_movie, season, episode, year, sub_title = _parse_epg_tv_movie_info(program)
-    show = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
-    title = _safe_name(program.get('title') if isinstance(program, dict) else channel.name)
+    name = (program.get('title') if isinstance(program, dict) else None) or channel.name
+    show = title = _safe_name(name)
     sub_title = _safe_name(sub_title)
     season = int(season) if season is not None else 0
     episode = int(episode) if episode is not None else 0
@@ -1496,7 +1489,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
         "updates",
         {
             "type": "update",
-            "data": {"success": True, "type": "recording_started", "channel": channel.name}
+            "data": {"success": True, "type": "recording_started", "channel": channel.name, "recording_id": recording_id}
         },
     )
 
@@ -2145,7 +2138,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 "updates",
                 {
                     "type": "update",
-                    "data": {"success": True, "type": "recording_ended", "channel": channel.name}
+                    "data": {"success": True, "type": "recording_ended", "channel": channel.name, "recording_id": recording_id}
                 },
             )
             # After the loop, the file and response are closed automatically.
@@ -2523,7 +2516,7 @@ def run_recording(recording_id, channel_id, start_time_str, end_time_str):
                 "updates",
                 {
                     "type": "update",
-                    "data": {"success": True, "type": "recording_ended", "channel": channel.name},
+                    "data": {"success": True, "type": "recording_ended", "channel": channel.name, "recording_id": recording_id},
                 },
             )
         except Exception:

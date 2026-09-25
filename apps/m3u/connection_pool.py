@@ -50,7 +50,7 @@ def compute_credential_fingerprint(username: str, password: str) -> Optional[str
     """Return a stable hash for grouping accounts with the same IPTV login."""
     if not username or not password:
         return None
-    normalized = f"{username.strip().lower()}\0{password.strip()}"
+    normalized = f"{username.strip().casefold()}\0{password.strip()}"
     return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
 
 
@@ -232,6 +232,10 @@ def move_credential_slot_on_profile_switch(
 def _safe_decr(redis_client, key: str) -> None:
     current = int(redis_client.get(key) or 0)
     if current <= 0:
+        if current < 0:
+            # A drifted-negative counter (no TTL) would otherwise stay negative
+            # and admit streams past max_streams; repair it on sight.
+            redis_client.set(key, 0)
         return
     new_count = redis_client.decr(key)
     if new_count < 0:
@@ -270,6 +274,11 @@ def _reserve_server_group_slot_for_profile(
         return True, None
 
     cred_count = redis_client.incr(cred_key)
+    if cred_count < 1:
+        # The counter was negative before this reservation; count this stream
+        # once and discard the drift so the cap applies from here on.
+        redis_client.set(cred_key, 1)
+        cred_count = 1
     if cred_count <= profile.max_streams:
         return True, cred_key
 

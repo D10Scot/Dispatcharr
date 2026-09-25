@@ -152,21 +152,19 @@ test('the EPG actions 404 without a stream_id', { tag: '@contract' }, async ({ s
   }
 });
 
-// The non-inverted control for the test.fail() below ('a profiled user sees
-// the category of every channel it can list'): get_live_streams filters
-// `user_level__lte=user.user_level` in every branch, so it should
-// list a level-1 channel for a profiled level-1 user — the pin's own
-// premise assertion, currently reachable only inside its test.fail() body.
-// The test at the top of the file ('the XC live catalogue lists a seeded
+// The non-inverted control for 'a profiled user sees the category of every
+// channel it can list' below (a `test.fail()` pin until #427):
+// get_live_streams filters `user_level__lte=user.user_level` in every
+// branch, so it should list a level-1 channel for a profiled level-1
+// user — the same premise that test's own body establishes before
+// asserting on the category, duplicated here as its own assertion. The
+// test at the top of the file ('the XC live catalogue lists a seeded
 // channel under its own category') also calls xcLiveStreams with a
 // profiled user, but against a user_level 0 channel, so it does not
-// exercise this at level-1 — and no other *non-inverted* test in this file
-// calls xcLiveStreams at level-1: the pin below does too, but from inside
-// its own test.fail() body, which is exactly the gap this control closes,
-// not a second control. A break in this listing (not just in category
-// assignment) would be swallowed by the pin below as an "expected failure",
-// since test.fail() is satisfied by ANY failure in its body, not
-// specifically the category defect it exists to pin.
+// exercise this at level-1. The category test below also calls
+// xcLiveStreams at level-1, as its own premise check, so this control is
+// no longer the only non-inverted assertion of that fact — it stays as an
+// explicit, independent one.
 test('a profiled level-1 user lists a level-1 channel', { tag: '@contract' }, async ({
   seed,
   request,
@@ -183,36 +181,13 @@ test('a profiled level-1 user lists a level-1 channel', { tag: '@contract' }, as
   ).toContain(channel.id);
 });
 
-// Asserts the behaviour Dispatcharr SHOULD have. `xc_get_live_categories` in
-// apps/output/views.py has three branches. The no-profiles branch and the
-// admin branch both filter `channels__user_level__lte=user.user_level`. The
-// has-profiles branch — the one a user with at least one Channel Profile
-// takes — filters `"channels__user_level": 0`, an exact match.
-//
-// Symptom, and what this test asserts against: a channel at user_level 1 is
-// listed by get_live_streams (which uses __lte everywhere) but its category
-// is missing from get_live_categories, so an XC client shows a stream that
-// belongs to no category.
-//
-// 'the XC live catalogue lists a seeded channel under its own category'
-// above is not a positive control for this test, despite the matching
-// setup: it shares this test's profiled-user shape
-// (`channel_profiles: [profile.id]`) but at channel user_level 0, where
-// get_live_categories' has-profiles exact-match filter
-// (channels__user_level == 0) and get_live_streams' __lte filter agree by
-// construction — it cannot confirm the level-1 half of this test's premise.
-// It is a contrast case: the two tests differ in exactly one field (the
-// channel's user_level), which is what makes this a located defect rather
-// than a guess.
-//
-// This test's own body already performs that level-1 premise sequence, but
-// inside this test.fail() block, where it is guarded only by test.fail()'s
-// "any failure" net rather than by the assertion itself — see the
-// non-inverted control above ('a profiled level-1 user lists a level-1
-// channel') for why that gap matters and what closes it.
-//
-// Issue: https://github.com/D10Scot/Dispatcharr/issues/85
-test.fail('a profiled user sees the category of every channel it can list', { tag: '@contract' }, async ({
+// Fixed (#85). `xc_get_live_categories`'s has-profiles branch (the one a
+// user with at least one Channel Profile takes) filtered
+// `"channels__user_level": 0`, an exact match, where the no-profiles
+// branch, the admin branch and `get_live_streams` all use `__lte`. It now
+// filters `channels__user_level__lte=user.user_level` too, so a level-1
+// user's level-1 channel has a category again.
+test('a profiled user sees the category of every channel it can list', { tag: '@contract' }, async ({
   seed,
   request,
 }) => {
@@ -221,10 +196,10 @@ test.fail('a profiled user sees the category of every channel it can list', { ta
   const profile = await seed.channelProfile();
   const user = await seed.xcUser({ user_level: 1, channel_profiles: [profile.id] });
 
-  // Establish the premise before asserting the defect: the channel really is
-  // visible to this user. Without this, a missing category could equally mean
-  // the channel was filtered out for an unrelated reason, and the test would
-  // indict the wrong line.
+  // Establish the premise before asserting on the category: the channel
+  // really is visible to this user. Without this, a missing category could
+  // equally mean the channel was filtered out for an unrelated reason, and
+  // the test would indict the wrong line.
   const streams = await xcLiveStreams(request, user);
   expect(streams.map((s) => s.stream_id)).toContain(channel.id);
 

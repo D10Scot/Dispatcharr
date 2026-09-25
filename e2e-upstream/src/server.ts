@@ -497,6 +497,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       sendJson(res, 401, { error: 'bad credentials' });
       return;
     }
+    // A refresh the test wants held in flight (#197). Withholds the headers,
+    // so the client's read timeout is what bounds a delay — Dispatcharr's
+    // fetch_m3u_lines allows 60 s. Scenario-wide only: a playlist has no
+    // channel.
+    const slow = faults.configOf(scenario.id, 'slow-playlist');
+    if (slow && faults.isActive(scenario.id, 'slow-playlist')) {
+      await new Promise((resolve) => setTimeout(resolve, slow.delayMs));
+      if (res.destroyed) return; // the client gave up; nothing to write
+    }
     const body = renderPlaylist(scenario, INTERNAL_ORIGIN);
     logRequest(scenario, req, url, 200);
     res.writeHead(200, {

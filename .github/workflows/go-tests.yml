@@ -315,9 +315,10 @@ jobs:
 
   # Gate 2's Go counterpart (spec § Stage 2c, the 2c-9 row; § Testing). A bare
   # runner, deliberately: the gate parses the profile with awk and compares
-  # hashes, so it needs no Go toolchain and no base image — and it needs git
-  # and a full history, which this repo's base image does not ship (see
-  # backend-tests.yml's coverage-gate, which installs git for exactly this).
+  # hashes, so it needs no Go toolchain and no base image — it needs only git
+  # and a full history, which a bare ubuntu-latest runner already ships
+  # (unlike this repo's base image before #254/#416, which backend-tests.yml's
+  # coverage-gate job used to install git for; that install step is gone).
   coverage:
     name: Coverage gate
     runs-on: ubuntu-latest

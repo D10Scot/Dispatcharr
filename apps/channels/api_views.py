@@ -877,7 +877,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 ChannelProfileMembership.objects.bulk_create([
                     ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
                     for profile in profiles
-                ])
+                ], ignore_conflicts=True)
             elif isinstance(channel_profile_ids, list) and len(channel_profile_ids) == 0:
                 # Empty array -> add to no profiles
                 pass
@@ -887,7 +887,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 ChannelProfileMembership.objects.bulk_create([
                     ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
                     for profile in profiles
-                ])
+                ], ignore_conflicts=True)
             else:
                 # Specific profile IDs
                 try:
@@ -906,7 +906,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                             enabled=True
                         )
                         for profile in channel_profiles
-                    ])
+                    ], ignore_conflicts=True)
                 except Exception as e:
                     return Response(
                         {"error": f"Error creating profile memberships: {str(e)}"},
@@ -2074,7 +2074,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 ChannelProfileMembership.objects.bulk_create([
                     ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
                     for profile in profiles
-                ])
+                ], ignore_conflicts=True)
             elif isinstance(channel_profile_ids, list) and len(channel_profile_ids) == 0:
                 # Empty array -> add to no profiles
                 pass
@@ -2084,7 +2084,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                 ChannelProfileMembership.objects.bulk_create([
                     ChannelProfileMembership(channel_profile=profile, channel=channel, enabled=True)
                     for profile in profiles
-                ])
+                ], ignore_conflicts=True)
             else:
                 # Specific profile IDs
                 try:
@@ -2103,7 +2103,7 @@ class ChannelViewSet(viewsets.ModelViewSet):
                             enabled=True
                         )
                         for profile in channel_profiles
-                    ])
+                    ], ignore_conflicts=True)
                 except Exception as e:
                     return Response(
                         {"error": f"Error creating profile memberships: {str(e)}"},
@@ -3584,6 +3584,7 @@ class RecordingViewSet(viewsets.ModelViewSet):
                 "success": True,
                 "type": "recording_stopped",
                 "channel": channel_name,
+                "recording_id": recording_id,
             })
         except Exception:
             pass

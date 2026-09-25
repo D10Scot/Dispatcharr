@@ -8,6 +8,7 @@ from django_celery_beat.models import ClockedSchedule, PeriodicTask
 from .models import Channel, Stream, ChannelStream, ChannelProfile, ChannelProfileMembership, ChannelOverride, Recording
 from apps.m3u.models import M3UAccount
 from apps.epg.tasks import parse_programs_for_tvg_id
+from core.scheduling import get_or_create_schedule
 import json
 import logging
 from .tasks import run_recording, prefetch_recording_artwork
@@ -238,7 +239,7 @@ def create_profile_memberships(sender, instance, created, **kwargs):
         ChannelProfileMembership.objects.bulk_create([
             ChannelProfileMembership(channel_profile=instance, channel=channel)
             for channel in channels
-        ])
+        ], ignore_conflicts=True)
 
 def _dvr_task_name(recording_id):
     """Predictable PeriodicTask name for a DVR recording."""
@@ -268,7 +269,7 @@ def schedule_recording_task(instance, eta=None):
         str(instance.end_time),
     ]
 
-    clocked, _ = ClockedSchedule.objects.get_or_create(clocked_time=eta)
+    clocked = get_or_create_schedule(ClockedSchedule, clocked_time=eta)
     task_name = _dvr_task_name(instance.id)
     PeriodicTask.objects.update_or_create(
         name=task_name,
@@ -379,11 +380,9 @@ def schedule_task_on_save(sender, instance, created, **kwargs):
             try:
                 prefetch_recording_artwork.apply_async(args=[instance.id], countdown=1)
             except Exception as e:
-                print("Error scheduling artwork prefetch:", e)
+                logger.warning("Error scheduling artwork prefetch: %s", e)
     except Exception as e:
-        import traceback
-        print("Error in post_save signal:", e)
-        traceback.print_exc()
+        logger.exception("Error in post_save signal: %s", e)
 
 @receiver(post_delete, sender=Recording)
 def revoke_task_on_delete(sender, instance, **kwargs):
