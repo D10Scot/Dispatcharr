@@ -255,12 +255,6 @@ jobs:
     env:
       SYNC_PYTHON_DEPS: 'true'
     steps:
-      - name: Install git
-        # The base image ships no git, so actions/checkout falls back to a tarball with
-        # no .git/ and the floor comparison below cannot fetch the base ref. Unversioned
-        # apt is the base image's own convention (CLAUDE.md, build reproducibility).
-        run: apt-get update && apt-get install -y --no-install-recommends git
-
       - name: Checkout code
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
