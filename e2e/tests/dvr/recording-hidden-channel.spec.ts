@@ -103,7 +103,7 @@ test(
       }
     );
 
-    const finished = await waitForRecordingStatus(waitFor, recording.id, ['completed']);
+    const finished = await waitForRecordingStatus(waitFor, recording.id, ['completed', 'interrupted']);
     const finishedCp = (finished.custom_properties ?? {}) as Record<string, unknown>;
     expect(
       finishedCp.status,
