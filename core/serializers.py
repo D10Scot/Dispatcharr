@@ -3,7 +3,7 @@ import json
 import ipaddress
 
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY
+from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, PROXY_SETTINGS_KEY
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -83,6 +83,14 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
                     else []
                 )
 
+        # #257: the settings page writes proxy_settings HERE, not through
+        # core/api_views.py's ProxySettingsViewSet (never routed, now deleted).
+        # Validate the effective value -- stored group merged over code
+        # defaults, then the incoming keys -- so a save stores all seven keys
+        # and an out-of-range value is refused rather than stored.
+        if instance.key == PROXY_SETTINGS_KEY and "value" in validated_data:
+            validated_data["value"] = _validated_proxy_settings(validated_data["value"])
+
         result = super().update(instance, validated_data)
 
         # Note: Cache invalidation and notification sync is handled by post_save signal
@@ -138,6 +146,17 @@ class ProxySettingsSerializer(serializers.Serializer):
         if value < 0 or value > 120:
             raise serializers.ValidationError("New client buffer must be between 0 and 120 seconds")
         return value
+
+
+def _validated_proxy_settings(value):
+    if not isinstance(value, dict):
+        raise serializers.ValidationError({"value": "proxy_settings must be an object."})
+    serializer = ProxySettingsSerializer(
+        data={**CoreSettings.get_proxy_settings(), **value}
+    )
+    if not serializer.is_valid():
+        raise serializers.ValidationError({"value": serializer.errors})
+    return dict(serializer.validated_data)
 
 
 class SystemNotificationSerializer(serializers.ModelSerializer):

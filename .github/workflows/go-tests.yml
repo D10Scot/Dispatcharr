@@ -178,6 +178,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Trust the workspace for git
+        # The base image gains git (#254); a container job runs as root against a
+        # checkout owned by another uid, and a raw git call (Go's VCS stamping in
+        # `go build`) is refused as "dubious ownership" without this. A no-op on
+        # an image without git.
+        run: if command -v git >/dev/null; then git config --global --add safe.directory "$GITHUB_WORKSPACE"; fi
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -306,9 +313,10 @@ jobs:
 
   # Gate 2's Go counterpart (spec § Stage 2c, the 2c-9 row; § Testing). A bare
   # runner, deliberately: the gate parses the profile with awk and compares
-  # hashes, so it needs no Go toolchain and no base image — and it needs git
-  # and a full history, which this repo's base image does not ship (see
-  # backend-tests.yml's coverage-gate, which installs git for exactly this).
+  # hashes, so it needs no Go toolchain and no base image — it needs only git
+  # and a full history, which a bare ubuntu-latest runner already ships
+  # (unlike this repo's base image before #254/#416, which backend-tests.yml's
+  # coverage-gate job used to install git for; that install step is gone).
   coverage:
     name: Coverage gate
     runs-on: ubuntu-latest
