@@ -115,22 +115,13 @@ type localManagerPayload struct {
 // detailPayload is get_detailed_channel_info, field for field and in
 // RelayChannelDetailSerializer's declaration order.
 //
-// TWO FIELDS THE SERIALIZER DECLARES ARE ABSENT HERE AND UNREACHABLE THERE,
-// which is exact parity by doing nothing -- the same shape as logo_id on the
-// list endpoint (channels.go):
-//
-//	source_bitrate  ChannelMetadataField.SOURCE_BITRATE has NO WRITER in the
-//	                tree. channel_status.py:359 is its only reference beside
-//	                the constant itself.
-//	ffmpeg_bitrate  channel_status.py:404 reads ChannelMetadataField
-//	                .FFMPEG_BITRATE ("ffmpeg_bitrate"), and the writer at
-//	                input/manager.py:1269 writes FFMPEG_OUTPUT_BITRATE
-//	                ("ffmpeg_output_bitrate"), which nothing reads. The two
-//	                constants are different strings (constants.py:90-91), so
-//	                the operator's output-bitrate reading never reaches this
-//	                payload in either relay.
-//
-// Both are reproduced as absences per D5 and filed rather than fixed.
+// ffmpeg_bitrate IS THE OUTPUT BITRATE THE STDERR READER PARSES, which is
+// issue #314's fix. In the Python relay it was read under one constant
+// ("ffmpeg_bitrate", channel_status.py:404) and written under another
+// ("ffmpeg_output_bitrate", input/manager.py:1269), so it never reached this
+// payload; the Go relay held the value in channel.Stats and dropped it here.
+// source_bitrate, which the serializer also declared and nothing in either
+// relay ever wrote, was removed from the serializer by the same fix.
 type detailPayload struct {
 	ChannelID      string                `json:"channel_id"`
 	State          *string               `json:"state"`
@@ -168,6 +159,7 @@ type detailPayload struct {
 	FFmpegSpeed    *float64              `json:"ffmpeg_speed,omitempty"`
 	FFmpegFPS      string                `json:"ffmpeg_fps,omitempty"`
 	ActualFPS      string                `json:"actual_fps,omitempty"`
+	FFmpegBitrate  string                `json:"ffmpeg_bitrate,omitempty"`
 	StreamType     string                `json:"stream_type,omitempty"`
 	Clients        []detailClientPayload `json:"clients"`
 }
@@ -347,6 +339,9 @@ func describeChannelDetail(c *channel.Channel, at time.Time) detailPayload {
 	}
 	if stats.ActualFPS != nil {
 		out.ActualFPS = pythonFloat(*stats.ActualFPS)
+	}
+	if stats.FFmpegOutputBitrate != nil {
+		out.FFmpegBitrate = pythonFloat(*stats.FFmpegOutputBitrate)
 	}
 	if stats.StreamType != nil {
 		out.StreamType = *stats.StreamType

@@ -130,7 +130,6 @@ class RelayChannelDetailSerializer(serializers.Serializer):
     video_bitrate = serializers.CharField(required=False)
     source_fps = serializers.CharField(required=False)
     pixel_format = serializers.CharField(required=False)
-    source_bitrate = serializers.CharField(required=False)
     audio_codec = serializers.CharField(required=False)
     sample_rate = serializers.CharField(required=False)
     audio_channels = serializers.CharField(required=False)

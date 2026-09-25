@@ -6,8 +6,11 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -155,6 +158,51 @@ func TestTheListEndpointCarriesTheFfmpegDerivedFields(t *testing.T) {
 	}
 	if got := ch["state"]; got != string(channel.StateActive) {
 		t.Errorf("state = %v, want active: the normal capture never dips below the default threshold", got)
+	}
+}
+
+// Issue #314: the output bitrate the stderr reader parses reaches the DETAIL
+// endpoint as ffmpeg_bitrate, a string rounded to one place as Python stored
+// it. The expected value is read off the capture with a test-local pattern,
+// not through the parser under test.
+func TestTheDetailEndpointCarriesTheFFmpegOutputBitrate(t *testing.T) {
+	_, records := relaytest.SplitCorpus(relaytest.Corpus("normal"))
+	m := regexp.MustCompile(`bitrate=\s*([0-9.]+)kbits/s`).FindSubmatch(records[len(records)-1])
+	if m == nil {
+		t.Fatal("the normal capture's last record carries no bitrate=; re-derive (CAPTURE.md)")
+	}
+	kbps, _ := strconv.ParseFloat(string(m[1]), 64)
+	want := strconv.FormatFloat(math.Round(kbps*10)/10, 'f', -1, 64)
+	if !strings.Contains(want, ".") {
+		want += ".0"
+	}
+
+	r := transcodeRig(t, nil, "--stderr-corpus", relaytest.CorpusPath("normal"), "--stderr-interval", "0")
+	response := r.tuneAs(t, "c-bitrate", "client-a")
+	defer func() { _ = response.Body.Close() }()
+	waitForHead(t, r, "c-bitrate", 1)
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		stats := r.Manager.Get("c-bitrate").Stats()
+		if stats.FFmpegOutputBitrate != nil && *stats.FFmpegOutputBitrate == math.Round(kbps*10)/10 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the output bitrate settled at %v, want the capture's last record %v", stats.FFmpegOutputBitrate, kbps)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	status, body := r.internalCall(t, http.MethodGet, "/proxy/relay/channels/c-bitrate", nil)
+	if status != http.StatusOK {
+		t.Fatalf("the detail endpoint answered %d", status)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal(body, &detail); err != nil {
+		t.Fatalf("decoding the detail body: %v", err)
+	}
+	if got := detail["ffmpeg_bitrate"]; got != want {
+		t.Fatalf("ffmpeg_bitrate = %v (%T), want %q: the parsed output bitrate did not reach the detail payload (#314)", got, got, want)
 	}
 }
 
