@@ -16,6 +16,7 @@ channel_stream:* and stream_profile:* a single writer.
 
 import logging
 from typing import List, Optional
+from urllib.parse import quote
 
 import regex
 from django.db import close_old_connections
@@ -60,7 +61,10 @@ def _resolve_live_stream_url(stream, m3u_account, m3u_profile):
         )
         if server_url and username and password:
             base = server_url.rstrip("/")
-            return f"{base}/live/{username}/{password}/{stream.stream_id}.ts"
+            return (
+                f"{base}/live/{quote(str(username), safe='')}"
+                f"/{quote(str(password), safe='')}/{stream.stream_id}.ts"
+            )
 
     return transform_url(
         stream.url or "",
