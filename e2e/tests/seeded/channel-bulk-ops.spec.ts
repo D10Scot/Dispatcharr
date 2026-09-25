@@ -14,11 +14,13 @@ import type { ApiClient, Channel } from '../../fixtures';
  * real `insert_after_id` and stays inside its own three-channel band, which
  * is what makes the shift both observable and safe to provoke.
  *
- * **D18.** [#72](https://github.com/D10Scot/Dispatcharr/issues/72) is
- * deliberately not reproduced. This file creates channels, never
- * concurrently with a profile-membership operation, because provoking that
- * race leaves a partially-populated membership set on a shared instance, and
- * a reproduction that fails to fire is a green test proving nothing.
+ * **D18.** [#72](https://github.com/D10Scot/Dispatcharr/issues/72) is fixed
+ * (`apps/channels/tests/test_profile_membership_race.py` pins it backend-side
+ * with a deterministic simulation) but deliberately still not reproduced
+ * live here. This file creates channels, never concurrently with a
+ * profile-membership operation, because provoking that race leaves a
+ * partially-populated membership set on a shared instance, and a
+ * reproduction that fails to fire is a green test proving nothing.
  *
  * ---------------------------------------------------------------------------
  * The worker band
