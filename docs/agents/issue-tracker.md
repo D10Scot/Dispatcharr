@@ -30,6 +30,30 @@ forks) and were enabled as part of this setup.
 - **Apply / remove labels**: `gh issue edit <number> --repo D10Scot/Dispatcharr --add-label "..."` / `--remove-label "..."`
 - **Close**: `gh issue close <number> --repo D10Scot/Dispatcharr --comment "..."`
 
+## Closing keywords: only the PR that lands the fix carries one
+
+GitHub reads `close`, `closes`, `closed`, `fix`, `fixes`, `fixed`, `resolve`, `resolves` or
+`resolved` followed by `#<n>` **anywhere** in a PR body or in a squash-commit message, and closes
+issue `<n>` when the PR merges to the default branch, whatever the PR actually changes. It does
+not know the difference between a fix and a document that describes one. On 2026-09-24 a
+docs-only PR quoted a future fix's description, keyword and all, and its merge closed thirteen
+issues that no code had touched; each had to be found and reopened by hand.
+
+So, in any plan, spec, memo, review or issue comment that goes into a PR body or a commit
+message:
+
+- Name an issue as **`#<n> (planned in PR X)`**, or `#<n>, addressed by …`, never as
+  `Closes #<n>` or `fixes #<n>`.
+- Copy a fix's description into a plan **without** its closing line; the keyword belongs to the
+  PR that lands the change, and only that PR carries it.
+- A keyword in the PR body fires on merge whether or not it reaches the squash commit, and one
+  in the squash-commit message fires on its own. Check both before merging.
+
+Only the PR whose diff makes the issue true writes `Closes #<n>`. If a merge closes something it
+should not have, reopen it with `gh issue reopen <n> --repo D10Scot/Dispatcharr --comment
+"Closed by a docs merge, not a fix"` and leave the `ready-for-agent` or other triage label as it
+was.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
