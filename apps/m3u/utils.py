@@ -1,13 +1,81 @@
 # apps/m3u/utils.py
+import codecs
 import regex
 import threading
 import logging
 from django.db import models
 
+from dispatcharr.utils import redact_url
+
 lock = threading.Lock()
 # Dictionary to track usage: {m3u_account_id: current_usage}
 active_streams_map = {}
 logger = logging.getLogger(__name__)
+
+# Per-search bound for operator-authored stream filter regexes (#262). A
+# nested-quantifier or alternation pattern can otherwise stall a refresh for
+# minutes across a large stream count. The rename path
+# (apps/m3u/tasks.py's rename_regex_timeout), the URL transform
+# (apps/proxy/next_source.py's URL_TRANSFORM_REGEX_TIMEOUT) and the
+# WebSocket preview (dispatcharr/consumers.py's
+# _M3U_PROFILE_TEST_REGEX_TIMEOUT) each carry the same 0.1s value
+# independently; this is the first one shared as a named constant.
+M3U_FILTER_REGEX_TIMEOUT = 0.1
+
+
+class _BoundedFilterPattern:
+    """Wrap a compiled ``regex`` pattern so every ``.search()`` is time-bounded.
+
+    A stream filter's pattern is operator-authored and can carry catastrophic
+    backtracking that survives ``regex``'s own optimizer. Once a search times
+    out, the pattern trips: it logs once (naming the pattern) and returns
+    non-matching (``None``) for the rest of this compiled set, i.e. for the
+    rest of that refresh, instead of paying the timeout cost again for every
+    remaining stream. A timed-out *exclude* filter therefore lets streams
+    through (fail-open), matching the rename path's policy.
+    """
+
+    def __init__(self, compiled_pattern, timeout=M3U_FILTER_REGEX_TIMEOUT):
+        self._compiled = compiled_pattern
+        self._timeout = timeout
+        self.tripped = False
+
+    @property
+    def pattern(self):
+        return self._compiled.pattern
+
+    def search(self, target):
+        if self.tripped:
+            return None
+        try:
+            return self._compiled.search(target, timeout=self._timeout)
+        except TimeoutError:
+            self.tripped = True
+            logger.warning(
+                "Stream filter pattern %r timed out after %.2fs; treating "
+                "as non-matching for the rest of this refresh",
+                self.pattern,
+                self._timeout,
+            )
+            return None
+
+
+def m3u_cp1252_fallback(error):
+    """Codec error handler: decode an invalid UTF-8 byte run as cp1252.
+
+    Registered once, below, as the ``m3u_cp1252_fallback`` error handler and
+    used at every playlist decode site (#217). Provider playlists are not
+    always valid UTF-8 -- Latin-1/Windows-1252 with accented channel names
+    ("Séries", "Cinéma") is common -- and the strict decode used to raise
+    UnicodeDecodeError there instead of importing with the right names.
+    cp1252's five undefined byte codes (0x81, 0x8D, 0x8F, 0x90, 0x9D) fall
+    back to the U+FFFD replacement character rather than raising again.
+    """
+    bad_bytes = error.object[error.start:error.end]
+    return bad_bytes.decode("cp1252", errors="replace"), error.end
+
+
+codecs.register_error("m3u_cp1252_fallback", m3u_cp1252_fallback)
 
 
 def convert_js_numbered_backreferences(replacement):
@@ -54,7 +122,11 @@ def normalize_stream_url(url):
     # The @ symbol in VLC means "listen on all interfaces" but FFmpeg doesn't use this syntax
     if url.startswith('udp://@'):
         normalized = url.replace('udp://@', 'udp://', 1)
-        logger.debug(f"Normalized VLC-style UDP URL: {url} -> {normalized}")
+        logger.debug(
+            "Normalized VLC-style UDP URL: %s -> %s",
+            redact_url(url),
+            redact_url(normalized),
+        )
         return normalized
 
     # Could add other normalizations here in the future (rtp://@, etc.)
