@@ -211,9 +211,14 @@ export class Seeder {
   }
 
   stream(overrides: StreamOverrides = {}): Promise<Stream> {
+    // No `is_custom` and no `m3u_account`: both are read-only on
+    // StreamSerializer (#15), so the server ignores either if sent. Every
+    // created stream is still custom -- the set_default_m3u_account
+    // pre_save receiver sets is_custom=True whenever m3u_account is empty,
+    // which it always is from this factory. See StreamOverrides's comment
+    // in types.ts.
     const body: StreamOverrides & { name: string } = {
       url: 'http://127.0.0.1:9/stream.ts',
-      is_custom: true,
       ...overrides,
       name: this.generatedName('stream'),
     };
