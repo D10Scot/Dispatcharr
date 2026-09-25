@@ -79,15 +79,27 @@ codecs.register_error("m3u_cp1252_fallback", m3u_cp1252_fallback)
 
 
 def convert_js_numbered_backreferences(replacement):
-    """Translate JS-style ``$1``/``$2`` backreferences to Python ``\\1``/``\\2``.
+    """Translate JS-style ``$1``/``$01`` backreferences to Python ``\\g<N>``.
 
     Auto-sync replace patterns are authored in JS regex syntax, but Python's
     regex engines honor backslash backreferences, not ``$1``. The live rename
     and the UI preview must convert identically, so both call this single
     helper and cannot drift apart (otherwise the preview promises an output
     the sync would never produce).
+
+    The token grammar is JavaScript's own ``$n``/``$nn`` (#171): exactly two
+    digits ``01``-``99``, or one digit ``1``-``9``, and nothing longer. A
+    bare ``$0`` (and ``$00``, ``$001``, ...) is therefore never a token and
+    is left as literal text -- ``$`` has no special meaning in a Python
+    replacement template. This matters because the previous rule,
+    ``\\$(\\d+) -> \\1``, fed a bare ``$0`` to Python's replacement-template
+    parser as ``\\0``, which is the octal escape for a NUL byte (``$01``
+    likewise became the control byte ``\\x01``), corrupting whatever URL or
+    credential string the template was substituted into. ``\\g<N>`` (rather
+    than ``\\N``) is used so a two-digit group number is never misread as a
+    one-digit group followed by a literal digit.
     """
-    return regex.sub(r"\$(\d+)", r"\\\1", replacement)
+    return regex.sub(r"\$(0[1-9]|[1-9]\d?)", r"\\g<\1>", replacement)
 
 
 def parse_is_adult(value):
