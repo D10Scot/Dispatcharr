@@ -125,6 +125,13 @@ ENV UV_LINK_MODE=copy
 # python3.13 + libpython3.13 back the copied venv; libpcre2-8-0 backs uWSGI;
 # libopenblas0 backs the legacy NumPy wheel; libargtable2-0 is for comskip;
 # ca-certificates/gnupg2/curl/wget are kept for TLS and the AIO runtime apt step.
+# iproute2 (`ip`) is explicit, not incidental: 24.04's image pulled it in
+# transitively, but 26.04 does not, and docker/init/03-init-dispatcharr.sh's
+# `ip -6 addr show` IPv6 probe silently takes its "not available" branch and
+# deletes nginx's `listen [::]:NGINX_PORT` line without it -- every
+# deployment on this base would stop answering IPv6 through nginx, with
+# only a warning line on stdout to show for it (#277's 9.0 migration,
+# caught in review).
 # deadsnakes is added by pinned fingerprint, not `add-apt-repository` — see the
 # builder stage above for why. software-properties-common is deliberately not
 # installed here: it pulls in dbus/systemd/policykit/packagekit (70+ packages) as
@@ -140,7 +147,7 @@ RUN apt-get update && apt-get upgrade -y && apt-get install --no-install-recomme
     && apt-get update \
     && apt-get install --no-install-recommends -y \
     python3.13 python3.13-venv libpython3.13 \
-    libpcre2-8-0 libopenblas0 procps pciutils git \
+    libpcre2-8-0 libopenblas0 procps pciutils git iproute2 \
     nginx libargtable2-0 \
     vlc-bin vlc-plugin-base \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
