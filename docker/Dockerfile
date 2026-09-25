@@ -62,6 +62,10 @@ WORKDIR /app
 COPY . /app
 # Copy nginx configuration
 COPY ./docker/nginx.conf /etc/nginx/sites-enabled/default
+# The pristine copy 03-init renders sites-enabled/default from on every boot
+# (#180). Outside /etc (a read-only-rootfs deployment tmpfs's it) and outside
+# /app (a dev bind mount replaces it).
+COPY ./docker/nginx.conf /usr/share/dispatcharr/nginx.conf.template
 COPY ./docker/dispatcharr_api_params.conf /etc/nginx/dispatcharr_api_params.conf
 COPY ./docker/dispatcharr_api_params_proxy.conf /etc/nginx/dispatcharr_api_params_proxy.conf
 # Fix line endings and make entrypoint scripts executable
