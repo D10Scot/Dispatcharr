@@ -1,4 +1,5 @@
 """Tests for M3U stream filter compilation and batch application."""
+import time
 from unittest.mock import MagicMock, patch
 
 from django.test import SimpleTestCase, TestCase
@@ -8,6 +9,7 @@ from apps.m3u.tasks import (
     _stream_passes_m3u_filters,
     process_m3u_batch_direct,
 )
+from apps.m3u.utils import M3U_FILTER_REGEX_TIMEOUT
 
 
 class CompileM3UStreamFiltersTests(SimpleTestCase):
@@ -154,3 +156,61 @@ class ProcessM3UBatchFilterTests(TestCase):
 
         self.assertIn("1 created", result)
         mock_stream_cls.objects.bulk_create.assert_called_once()
+
+
+class StreamFilterRegexTimeoutTests(SimpleTestCase):
+    """Guards #262: an operator-authored filter regex with catastrophic
+    backtracking must not stall the M3U refresh, and a search that does
+    time out is treated as non-matching rather than raised."""
+
+    def _compiled(self, pattern, *, filter_type="name", exclude=False):
+        filter_obj = MagicMock()
+        filter_obj.filter_type = filter_type
+        filter_obj.exclude = exclude
+        filter_obj.regex_pattern = pattern
+        filter_obj.custom_properties = {}
+        return _compile_m3u_stream_filters([filter_obj])
+
+    def test_nested_quantifier_filter_does_not_stall_refresh(self):
+        """The issue's shrunk counterexample: stdlib re takes seconds on
+        this input (measured 0.60s at 24 'a's, worse at 28); the regex
+        module's optimizer handles it without needing the timeout to fire."""
+        compiled = self._compiled(r"(a+)+$")
+        pattern, _ = compiled[0]
+        target = "a" * 28 + "b"
+
+        start = time.monotonic()
+        pattern.search(target)
+        elapsed = time.monotonic() - start
+
+        self.assertLess(elapsed, M3U_FILTER_REGEX_TIMEOUT * 20)
+
+    def test_filter_search_that_times_out_is_non_matching_and_warned_once(self):
+        """A pattern that still times out under the regex module's optimizer
+        (the house test idiom) trips the wrapper: every remaining stream in
+        this compiled set is treated as non-matching (fail-open for an
+        exclude filter, matching the rename path's policy), and only the
+        first timeout logs -- not one warning per stream."""
+        compiled = self._compiled(r"(a|a)*$", exclude=True)
+        names = ["a" * 28 + "!"] * 3
+
+        with self.assertLogs("apps.m3u.utils", level="WARNING") as cm:
+            for name in names:
+                self.assertTrue(
+                    _stream_passes_m3u_filters(name, "http://x", "News", compiled)
+                )
+
+        self.assertEqual(len(cm.records), 1)
+
+    def test_applies_to_is_time_bounded(self):
+        """M3UFilter.applies_to -- the model method's own non-test caller --
+        is bounded the same way as the batch compile path."""
+        from apps.m3u.models import M3UFilter
+
+        filter_obj = M3UFilter(filter_type="name", regex_pattern=r"(a+)+$")
+
+        start = time.monotonic()
+        filter_obj.applies_to("a" * 28 + "b", "group")
+        elapsed = time.monotonic() - start
+
+        self.assertLess(elapsed, M3U_FILTER_REGEX_TIMEOUT * 20)
