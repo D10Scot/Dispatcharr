@@ -15,6 +15,7 @@ U+03BC. So the two spellings of one login fingerprint differently and escape
 the shared cap. C-5 switches to ``.casefold()``.
 """
 
+import re
 import string
 
 from django.test import SimpleTestCase
@@ -117,7 +118,21 @@ class ExtractCredentialsProperties(SimpleTestCase):
         url = f"{host}/{kind}/{user}/{password}/{tail}"
         self.assertEqual(extract_credentials_from_stream_url(url), (user, password))
 
-    @given(path=st.text(alphabet=string.ascii_letters + "/.", max_size=40))
+    # The domain is filtered directly, rather than stripping the three words
+    # from an unconstrained draw: ``_XC_URL_CREDENTIALS_RE`` is IGNORECASE, and
+    # a case-sensitive ``str.replace`` chain can rebuild the word it just
+    # removed (``'livlivee'.replace('live', '')`` leaves ``'live'``, and
+    # ``'LIVE'`` is untouched by a lowercase-only replace) -- a property built
+    # on that draw was false and green only by the fixed derandomized draw.
+    # The positive case (a kind segment DOES yield credentials, including an
+    # upper-case spelling) is exercised by
+    # ``test_xtream_url_round_trips_user_and_password``'s ``kind`` values
+    # ``"LIVE"``/``"Movie"`` above.
+    @given(
+        path=st.text(alphabet=string.ascii_letters + "/.", max_size=40).filter(
+            lambda p: not re.search(r"(?i)live|movie|series", p)
+        )
+    )
     def test_a_url_without_a_kind_segment_yields_no_credentials(self, path):
-        url = "http://h/" + path.replace("live", "").replace("movie", "").replace("series", "")
+        url = "http://h/" + path
         self.assertEqual(extract_credentials_from_stream_url(url), (None, None))

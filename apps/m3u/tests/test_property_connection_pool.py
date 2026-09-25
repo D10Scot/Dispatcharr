@@ -155,8 +155,8 @@ class ReserveReleaseConservationProperties(SimpleTestCase):
         ONE release key per profile id, and the first release deletes it
         (``:257``). A second stream on the same pooled profile therefore
         never returns its credential slot. That is a defect filed separately
-        (plan I, finding F-4), not behaviour this test blesses. Widen ``held``
-        to a multiset once it is fixed.
+        (#356), not behaviour this test blesses. Widen ``held`` to a
+        multiset once it is fixed.
         """
         redis = FakeRedis({CRED_KEY: start})
         held = set()

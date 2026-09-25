@@ -141,6 +141,6 @@ class NormalizeServerUrlProperties(SimpleTestCase):
     def test_normalising_twice_changes_nothing(self, value):
         # ';' is excluded: urlparse splits ';params' off the LAST path segment
         # and the rebuild drops them, so 'http://h/a;b' loses ';b' and ';/'
-        # takes two passes to settle (plan I, finding F-9).
+        # takes two passes to settle (#363).
         once = normalize_server_url(value)
         self.assertEqual(normalize_server_url(once), once)

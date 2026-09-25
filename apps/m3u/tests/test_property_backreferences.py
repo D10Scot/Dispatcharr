@@ -1,4 +1,4 @@
-"""Property tests for ``convert_js_numbered_backreferences`` (issues #218, #69; seam #171).
+r"""Property tests for ``convert_js_numbered_backreferences`` (issues #218, #69; seam #171).
 
 Surface at seed a54b09a9: ``apps/m3u/utils.py:13``. The helper turns a
 JavaScript-style replacement template (``$1``) into a Python ``regex``
@@ -7,13 +7,16 @@ template, and the auto-sync rename feeds the result to ``regex.sub``
 does -- ``regex.sub(pattern, convert(template), target)`` -- because the
 defect (#171) is what the converted template *does*, not what it looks like.
 
-Both properties hold under either reading of ``$0`` that C-4 offers the user
-(literal ``$0``, the default, or the whole match), so they do not depend on
-that ruling:
+C-4 merged with ``$0`` literal, so neither property below hedges on that
+reading:
 
 1. The output contains no character that is in neither the target nor the
-   template. Before C-4, ``$0`` became ``\\0`` (a NUL byte) and ``$01`` became
-   ``\\01`` (U+0001).
+   template. Before C-4, ``$0`` became ``\0`` (a NUL byte) and ``$01`` became
+   ``\01`` (U+0001). Generated templates exclude the backslash: the helper
+   hands a backslash straight to Python's replacement-template parser, which
+   JavaScript never does, so a template containing one reopens exactly this
+   symptom (#452). The alphabet widens to include the backslash once #452 is
+   ruled.
 2. For templates whose tokens are ``$N`` or ``$0N`` with 1 <= N <= the group
    count, and whose next literal character is not a digit, the output equals
    a hand-written model of JavaScript's ``String.prototype.replace`` with a
@@ -26,10 +29,18 @@ C-4's adopted rule is ``\$(0[1-9]|[1-9]\d?)`` -> ``\g<N>``, JavaScript's own
 as ``$0n``. ``test_multi_digit_tokens_read_exactly_as_javascript_does`` pins
 the multi-digit cases against outputs recorded from Node 22's
 ``String.prototype.replace`` (the oracle is a table of constants, not the
-code under test). The one remaining divergence is JavaScript's fallback
-when group ``nn`` does not exist (``$10`` with two groups reads ``$1`` then
-``0``); the helper refuses it instead, and C-4 records that as pre-existing,
-so it is not asserted here.
+code under test).
+
+Out of scope, per C-4 review finding F2, and not asserted by either property
+above (property 2's literal runs exclude ``$``, so they cannot drift into
+covering these by accident): ``$$`` stays ``$$``; ``$$1`` reads as a literal
+``$`` followed by group 1 (``$a``); the whole-match, pre-match and post-match
+tokens (``$&``, the backtick token, ``$'``) stay literal; and a reference to
+a group that does not exist raises rather than falling back to a literal
+token. One divergence C-4 records as pre-existing and this plan does not
+change: JavaScript's own fallback when group ``nn`` does not exist (``$10``
+with two groups reads ``$1`` then a literal ``0``) -- the helper refuses the
+whole template instead.
 """
 
 import regex
@@ -60,7 +71,10 @@ PATTERNS = [
 ]
 targets = st.text(alphabet="abhu/-0123456789xy", max_size=24)
 # Templates as the operator types them: literals, digits and ``$``, but no
-# backslash (a JS template has no backslash escapes; that is outside #171).
+# backslash. The helper hands a backslash straight to Python's replacement-
+# template parser, which JavaScript never does, so a template containing one
+# reopens #171's corrupted-output symptom (#452); the alphabet widens once
+# #452 is ruled.
 templates = st.text(alphabet="ab/-[]$0123456789x", max_size=16)
 
 
@@ -105,16 +119,58 @@ def _javascript_replace(pattern, pieces, target):
     return "".join(out)
 
 
+# One near-guaranteed matching seed per PATTERNS entry (review finding 3):
+# property 1's free-form ``templates``/``targets`` draw a live ``$N``
+# substitution on only about 1 in 200 calls, because a random 16-character
+# template rarely happens to contain a syntactically valid token, and a
+# random 24-character target rarely happens to match the pattern at all. Half
+# of property 1's draws instead build a template from ``js_templates`` (which
+# always emits a well-formed token whenever it emits a "group" piece) against
+# a target seeded with a substring the pattern is virtually certain to match,
+# so the property actually exercises a live substitution rather than only its
+# two ``@example`` rows.
+_MATCHING_SEED = {
+    r"(a)": "a",
+    r"(a)(b)": "ab",
+    r"(.)(.)?": "ab",  # matches almost any non-empty target; seed is just clarity
+    r"(.*)$": "",  # matches every target, including empty
+    r"(h)/(u)": "h/u",
+    r"([a-z]+)-(\d+)?": "a-1",
+}
+
+
+@st.composite
+def matching_targets(draw, pattern):
+    seed = _MATCHING_SEED[pattern]
+    prefix = draw(st.text(alphabet="abhu/-0123456789xy", max_size=8))
+    suffix = draw(st.text(alphabet="abhu/-0123456789xy", max_size=8))
+    return prefix + seed + suffix
+
+
 class JsBackreferenceConversionProperties(SimpleTestCase):
-    @given(case=st.sampled_from(PATTERNS), template=templates, target=targets)
+    @given(case=st.sampled_from(PATTERNS), data=st.data())
     # #171: transform_url("/", r"(.*)$", "$0") returned '\x00\x00'.
-    @example(case=(r"(.*)$", 1), template="$0", target="/")
+    @example(case=(r"(.*)$", 1), data=None)
     # #171: "$01" became "\01", a U+0001 control byte.
-    @example(case=(r"(h)/(u)", 2), template="$01/$2", target="http://h/u/p/1.ts")
+    @example(case=(r"(h)/(u)", 2), data=None)
     def test_conversion_never_introduces_a_character_absent_from_target_and_template(
-        self, case, template, target
+        self, case, data
     ):
-        pattern, _ = case
+        pattern, group_count = case
+        if data is None:
+            # The two #171 regressions above: literal templates the free-form
+            # strategy is unlikely to draw unaided.
+            template, target = {
+                (r"(.*)$", 1): ("$0", "/"),
+                (r"(h)/(u)", 2): ("$01/$2", "http://h/u/p/1.ts"),
+            }[case]
+        elif data.draw(st.booleans()):
+            pieces = data.draw(js_templates(group_count))
+            template = "".join(text for _, _, text in pieces)
+            target = data.draw(matching_targets(pattern))
+        else:
+            template = data.draw(templates)
+            target = data.draw(targets)
         result = _apply(pattern, template, target)
         if result is None:
             return
