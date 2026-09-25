@@ -876,8 +876,9 @@ class GetHostAndPortDeploymentShapeTests(SimpleTestCase):
 
     These are guards against the tempting wrong fix (adding an
     `uwsgi_param HTTP_X_FORWARDED_*` in our own nginx), not defect pins:
-    they already pass on the seed. See CLAUDE.md's #81 finding and this
-    plan's PR G-7."""
+    they already pass on the seed. See issue #81 and
+    docs/superpowers/plans/2026-09-23-fixplan-G-ci-hooks-tooling.md
+    (finding 3, PR G-7)."""
 
     def setUp(self):
         from django.test import RequestFactory
