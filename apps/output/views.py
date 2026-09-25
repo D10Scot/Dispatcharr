@@ -960,7 +960,12 @@ def xc_get_epg(request, user, short=False):
 
     from apps.channels.utils import resolve_xc_epg_prev_days
 
-    limit = int(request.GET.get('limit', 4))
+    try:
+        limit = int(request.GET.get('limit', 4))
+    except (ValueError, TypeError):
+        limit = 4
+    if limit < 0:
+        limit = 4
     user_custom = user.custom_properties or {}
     try:
         num_days = int(request.GET.get('days', user_custom.get('epg_days', 0)))

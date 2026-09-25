@@ -455,7 +455,10 @@ def generate_custom_dummy_programs(
                         hour = hour % 24  # Wrap around just in case
                     logger.debug(f"Extracted time (24-hour): {hour}:{minute:02d}")
 
-                time_info = {'hour': hour, 'minute': minute}
+                if 0 <= hour <= 23 and 0 <= minute <= 59:
+                    time_info = {'hour': hour, 'minute': minute}
+                else:
+                    logger.warning(f"Invalid time values: hour={hour}, minute={minute}")
             except (ValueError, TypeError) as e:
                 logger.warning(f"Error parsing time: {e}")
 
@@ -467,6 +470,8 @@ def generate_custom_dummy_programs(
         if date_match:
             date_groups = date_match.groupdict()
             try:
+                import calendar
+
                 # Support various date group names: month, day, year
                 month_str = date_groups.get('month', '')
                 day_str = date_groups.get('day', '')
@@ -485,7 +490,6 @@ def generate_custom_dummy_programs(
                         month = int(month_str)
                     else:
                         # Try to parse text month names
-                        import calendar
                         month_str_lower = month_str.lower()
                         # Check full month names
                         for i, month_name in enumerate(calendar.month_name):
@@ -503,7 +507,17 @@ def generate_custom_dummy_programs(
                 if month is None:
                     month = now.month
 
-                if month and 1 <= month <= 12 and 1 <= day <= 31:
+                # The year bound is one year inside datetime's own 1..9999 range on
+                # purpose: a date at the very edge of that range can still overflow
+                # later, once a timezone shift or program_duration is added to it
+                # (e.g. year 9999 plus a positive UTC offset, or year 1 minus one).
+                # Evaluate the year and month bounds before month/day ever reaches
+                # calendar.monthrange(), which requires both to already be valid.
+                if (
+                    month and 1 <= month <= 12
+                    and 2 <= year <= 9998
+                    and 1 <= day <= calendar.monthrange(year, month)[1]
+                ):
                     date_info = {'year': year, 'month': month, 'day': day}
                     logger.debug(f"Extracted date: {year}-{month:02d}-{day:02d}")
                 else:
@@ -528,13 +542,13 @@ def generate_custom_dummy_programs(
     channel_logo_url = None
     if channel_logo_url_template:
         channel_logo_url = format_template(channel_logo_url_template, all_groups, url_encode=True)
-        logger.debug(f"Formatted channel logo URL: {channel_logo_url}")
+        logger.debug(f"Formatted channel logo URL: {channel_logo_url}")  # credential-logging: ignore - a dummy-EPG logo template, not a provider URL; carries no credential
 
     # Format program poster URL if template provided (with URL encoding)
     program_poster_url = None
     if program_poster_url_template:
         program_poster_url = format_template(program_poster_url_template, all_groups, url_encode=True)
-        logger.debug(f"Formatted program poster URL: {program_poster_url}")
+        logger.debug(f"Formatted program poster URL: {program_poster_url}")  # credential-logging: ignore - a dummy-EPG poster template, not a provider URL; carries no credential
 
     # Add formatted time strings for better display (handles minutes intelligently)
     if time_info:
