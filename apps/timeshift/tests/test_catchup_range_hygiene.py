@@ -1,8 +1,10 @@
-"""Catch-up Range and timestamp hygiene: #216, #141 and #111.
+"""Catch-up Range and timestamp hygiene: #216, #141, #111 and #491.
 
 Each test is named for the defect it pins. The #141 and #216 inputs are the
 shrunk counterexamples from the issue bodies, kept verbatim.
 """
+
+from types import SimpleNamespace
 
 from django.test import SimpleTestCase
 
@@ -154,3 +156,85 @@ class ProviderTimezoneSecondsTests(SimpleTestCase):
                     convert_timestamp_to_provider_tz(utc_input, "Europe/Brussels"),
                     expected,
                 )
+
+
+class ProviderContentLengthHygieneTests(SimpleTestCase):
+    """#491: a provider Content-Length of "-1" or "0" was forwarded verbatim.
+
+    ``_extract_representation_length``'s old ``if content_length:`` check
+    treated both as truthy (int("-1") == -1, int("0") == 0), and even after
+    that helper returned None, ``_build_downstream_length_headers``'s raw
+    ``elif upstream_content_length:`` fallback on the plain streaming 200
+    branch put the untouched header text straight on the response. A client
+    receiving ``Content-Length: -1`` treats it as malformed.
+    """
+
+    def _upstream(self, content_length=None, content_range=None):
+        headers = {}
+        if content_length is not None:
+            headers["Content-Length"] = content_length
+        if content_range is not None:
+            headers["Content-Range"] = content_range
+        return SimpleNamespace(headers=headers)
+
+    def test_a_negative_content_length_on_a_plain_streaming_200_was_forwarded(self):
+        upstream = self._upstream(content_length="-1")
+        headers = views._build_downstream_length_headers(
+            range_header=None,
+            status_code=200,
+            representation_length=views._extract_representation_length(upstream),
+            upstream_content_range=upstream.headers.get("Content-Range"),
+            upstream_content_length=upstream.headers.get("Content-Length"),
+            streaming=True,
+        )
+        self.assertNotIn("Content-Length", headers)
+
+    def test_a_zero_content_length_on_a_plain_streaming_200_was_forwarded(self):
+        upstream = self._upstream(content_length="0")
+        headers = views._build_downstream_length_headers(
+            range_header=None,
+            status_code=200,
+            representation_length=views._extract_representation_length(upstream),
+            upstream_content_range=upstream.headers.get("Content-Range"),
+            upstream_content_length=upstream.headers.get("Content-Length"),
+            streaming=True,
+        )
+        self.assertNotIn("Content-Length", headers)
+
+    def test_a_positive_content_length_on_a_plain_streaming_200_is_still_advertised(self):
+        upstream = self._upstream(content_length="12345")
+        headers = views._build_downstream_length_headers(
+            range_header=None,
+            status_code=200,
+            representation_length=views._extract_representation_length(upstream),
+            upstream_content_range=upstream.headers.get("Content-Range"),
+            upstream_content_length=upstream.headers.get("Content-Length"),
+            streaming=True,
+        )
+        self.assertEqual(headers.get("Content-Length"), "12345")
+
+    def test_a_zero_content_length_on_a_non_streaming_answer_is_a_genuinely_empty_body(self):
+        # Only the non-streaming path (no long-lived stream to preempt with a
+        # seek) may advertise a "0" -- the issue's own carve-out.
+        headers = views._build_downstream_length_headers(
+            range_header=None,
+            status_code=200,
+            representation_length=None,
+            upstream_content_range=None,
+            upstream_content_length="0",
+            streaming=False,
+        )
+        self.assertEqual(headers.get("Content-Length"), "0")
+
+    def test_extract_representation_length_treats_non_positive_or_non_digit_as_absent(self):
+        for content_length in ("-1", "0", "²"):
+            with self.subTest(content_length=content_length):
+                self.assertIsNone(
+                    views._extract_representation_length(
+                        self._upstream(content_length=content_length)
+                    )
+                )
+        self.assertEqual(
+            views._extract_representation_length(self._upstream(content_length="1234")),
+            1234,
+        )
