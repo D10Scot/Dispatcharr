@@ -273,13 +273,18 @@ class DurationWindowProperties(SimpleTestCase):
 
     def test_unparseable_timestamp_falls_back_to_default_before_any_epg_lookup(self):
         """Distinct from the property above: here ``channel.epg_data`` is a truthy
-        Mock, so if ``get_programme_duration`` fell through to the EPG-absent
-        branch it would call ``epg_data.programs.filter`` (and blow up on the
-        unrelated Mock arithmetic). Asserting the Mock was never touched pins
-        that the unparseable-timestamp result comes from the earlier
-        ``parse_catchup_timestamp(...) is None`` return (helpers.py, near :184),
-        not from the EPG-absent branch the property test above exercises with
-        ``epg_data=None`` (review round 1)."""
+        Mock, so the EPG-absent branch the property test exercises with
+        ``epg_data=None`` cannot fire the same way. This does NOT pin the
+        specific early ``dt is None`` return in ``get_programme_duration``
+        (helpers.py, near :184) -- deleting that line still returns
+        ``DEFAULT_DURATION_MINUTES`` here, via the broad ``except Exception``
+        a couple of lines down catching ``None.replace(...)``'s
+        AttributeError before ``epg_data`` is ever touched. What this pins is
+        narrower but real: no EPG lookup happens before the timestamp parses,
+        by whichever mechanism. Reordering the checks so ``epg_data`` is
+        consulted first (before the timestamp is known to be unparseable)
+        fails this test with "Expected 'filter' to not have been called"
+        (review round 1/2)."""
         epg_data = Mock()
         channel = SimpleNamespace(epg_data=epg_data)
         result = resolve_catchup_duration(

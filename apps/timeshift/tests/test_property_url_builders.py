@@ -41,12 +41,12 @@ hyp_settings.register_profile(
 hyp_settings.load_profile("dispatcharr-ci")
 
 # Credentials a hostile or careless provider account could carry, weighted toward
-# URL-structural characters. Lone surrogates (Unicode category Cs) are excluded:
-# quote(..., safe='') (helpers.py:422/435) encodes with the strict UTF-8 codec
-# and raises UnicodeEncodeError on them, so an unfiltered derandomized draw
-# could crash the test on an out-of-domain input never sent by a real
-# provider account (mirrors the timestamps module's exclude_categories guard;
-# review round 1).
+# URL-structural characters. quote(..., safe='') (helpers.py:422/435) encodes
+# with the strict UTF-8 codec and raises UnicodeEncodeError on a lone surrogate
+# (Unicode category Cs); st.text()'s default alphabet in Hypothesis 6.165.10 is
+# already characters(codec='utf-8'), which cannot draw one, so
+# exclude_categories=("Cs",) here is making that default explicit rather than
+# changing it (review round 1/2; 20,000 draws confirmed none appear either way).
 credential = (
     st.text(st.characters(exclude_categories=("Cs",)), max_size=24)
     | st.text(alphabet="&=/?#%+ ;:@a1", max_size=12)
