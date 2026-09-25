@@ -100,9 +100,9 @@ export default defineConfig({
       // process's cumulative speed= to cross a threshold. 300s is the same
       // ceiling `streaming` uses and is not generous here.
       timeout: 300_000,
-      // One worker, unlike its siblings: two specs in this directory mutate
-      // container-global state for the duration of their run, and this
-      // project's serialisation is what keeps both safe.
+      // One worker, unlike its siblings: three specs in this directory
+      // mutate container-global state for the duration of their run, and
+      // this project's serialisation is what keeps all three safe.
       //
       // `failover-buffering.spec.ts` mutates the global `proxy_settings` row
       // (raising `buffering_speed`). That is only safe because every other
@@ -124,9 +124,9 @@ export default defineConfig({
       // `proxy_settings` above, wider blast radius: while it is flipped,
       // *every* channel in the container answers a session-less catch-up or
       // live request with a 302 to the provider instead of proxying it. The
-      // single worker is what makes that safe. Two specs in this directory
-      // now depend on it; do not raise `workers` back to 2 without
-      // confirming neither still needs serialising.
+      // single worker is what makes that safe. Three specs in this
+      // directory now depend on it; do not raise `workers` back to 2
+      // without confirming none of them still needs serialising.
       //
       // The same row is also mutated by
       // `streaming-greybox/vod-redirect-profile.spec.ts` — a different
@@ -136,6 +136,16 @@ export default defineConfig({
       // guarantee. This project's single worker protects only against
       // overlap *within* streaming-failover; it says nothing about
       // streaming-greybox.
+      //
+      // `stream-limit-429.spec.ts` mutates the third:
+      // `user_limit_settings.terminate_on_limit_exceeded`, turned off for
+      // the duration of its run so a user at `stream_limit` gets refused
+      // (429) instead of having their oldest stream terminated for them —
+      // the default. Narrower blast radius than the two above (it only
+      // changes behaviour for a user already at a nonzero `stream_limit`),
+      // but the same reason for living here: a concurrent worker tuning any
+      // channel as a `stream_limit`-bound user would race the flipped
+      // setting.
       //
       // Note what the single worker does NOT protect: a run that dies
       // between either spec's write and its `finally` leaves the container

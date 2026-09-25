@@ -158,6 +158,20 @@ export const GLOBAL_SETTINGS_WRITE: Capability = {
     // original `value` dict back verbatim, every key, run before the
     // recording/channel cleanup and independent of whether it succeeds.
     'tests/dvr/comskip.spec.ts',
+    // Writes `user_limit_settings`, and only `terminate_on_limit_exceeded`
+    // within it — merged into a spread copy of the row's existing `value`.
+    // Nothing else reads it in a way that matters: the flipped value only
+    // changes behaviour for a user whose `stream_limit > 0` and who is
+    // already at that limit, and the only other such user seeded anywhere
+    // in this suite (`tests/seeded/xc-auth.spec.ts`, `stream_limit: 3`)
+    // never opens a stream. Teardown restores it in an unconditional
+    // `afterEach` that PATCHes the captured original `value` dict back
+    // verbatim — the `tests/dvr/comskip.spec.ts` shape, because a
+    // timed-out test skips a body-level `try`/`finally` but not fixture
+    // teardown. `CoreSettings._get_group` invalidates the whole group in
+    // Redis on `post_save`, reaching every worker immediately, so there is
+    // no settling sleep before tuning.
+    'tests/streaming-failover/stream-limit-429.spec.ts',
     // Narrows network_access["XC_API"] from its default 0.0.0.0/0 to the
     // local CIDRs, for its one PATCH-writing test. Which group: the
     // `network_access` row, and only the `XC_API` key inside it —
