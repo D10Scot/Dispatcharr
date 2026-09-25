@@ -27,6 +27,14 @@ declare -a PAIRS=(
   "channels:apps.channels.tests"
 )
 
+# Every argument is forwarded to the in-container script, not just the first.
+# Until fix plan J-4 the final call was `${1:---report} /tmp/combined`, so
+# `--write-floor --shape-only` arrived as a FULL --write-floor -- one that
+# records `missing` from this single local round, which the floor's rule
+# forbids. No argument still means --report.
+if [ "$#" -eq 0 ]; then set -- --report; fi
+FORWARD="$(printf '%q ' "$@")"
+
 rm -rf "$OUT"; mkdir -p "$OUT"
 
 # A failing label must not delete the whole round. Under the previous
@@ -73,7 +81,7 @@ if [ "${#FAILED[@]}" -gt 0 ]; then
   echo "coverage_live_path_isolated: for 'never observed the lead at all' or" >&2
   echo "coverage_live_path_isolated: 'too few distinct speeds' before" >&2
   echo "coverage_live_path_isolated: investigating coverage." >&2
-  case "${1:---report}" in
+  case "$1" in
     --write-floor|--gate)
       echo "coverage_live_path_isolated: refusing ${1} on an incomplete round." >&2
       exit 1
@@ -101,7 +109,7 @@ report_rc=0
 docker exec "${PREFIX}-proxy" bash -lc "export PATH=/dispatcharrpy/bin:\$PATH; export DJANGO_SECRET_KEY=$DJANGO_SECRET_KEY_FOR_EXEC; \
   export COVERAGE_LIVE_PATH_ALLOW_REGRESSION='${COVERAGE_LIVE_PATH_ALLOW_REGRESSION:-}'; \
   export COVERAGE_LIVE_PATH_RUNS='${COVERAGE_LIVE_PATH_RUNS:-0}'; cd /repo && \
-  bash scripts/coverage_live_path.sh ${1:---report} /tmp/combined" || report_rc=$?
+  bash scripts/coverage_live_path.sh ${FORWARD}/tmp/combined" || report_rc=$?
 
 if [ "${#FAILED[@]}" -gt 0 ]; then exit 1; fi
 exit "$report_rc"
