@@ -456,8 +456,12 @@ class StreamFromProviderStatusMappingTests(TestCase):
         no_sync_records = [msg for msg in cm.output if "no TS sync" in msg]
         self.assertEqual(len(no_sync_records), 1)
         msg = no_sync_records[0]
-        self.assertFalse(any(ord(c) < 32 for c in msg))
-        self.assertIn("\\x1b", msg)
+        raw = [c for c in msg if ord(c) < 32]
+        self.assertEqual(
+            raw, [],
+            f"raw control bytes {raw!r} reached the 'no TS sync' warning: {msg!r}",
+        )
+        self.assertIn("\\x1b", msg, "ESC not repr-escaped in the warning")
 
     @patch.object(views, "_open_upstream")
     def test_416_range_not_satisfiable_passes_through(self, mocked_open):
