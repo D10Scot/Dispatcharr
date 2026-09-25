@@ -1000,7 +1000,10 @@ def send_websocket_notification(notification):
 def get_host_and_port(request):
     """
     Returns (host, port) for building absolute URIs.
-    - Prefers X-Forwarded-Host/X-Forwarded-Port (nginx).
+    - Prefers X-Forwarded-Host/X-Forwarded-Port when a client or an outer
+      reverse proxy sends them; this image's nginx sets none of its own on
+      uwsgi_pass locations and passes the client's through
+      (uwsgi_pass_request_headers, on by default) (#81).
     - Falls back to Host header.
     - Returns None for port if using standard ports (80/443) to omit from URLs.
     - In dev, uses 5656 as a guess if port cannot be determined.
@@ -1008,7 +1011,7 @@ def get_host_and_port(request):
     scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
     standard_port = "443" if scheme == "https" else "80"
 
-    # 1. Try X-Forwarded-Host (may include port) - set by our nginx
+    # 1. Try X-Forwarded-Host (may include port) - from an outer proxy, never our nginx
     xfh = request.META.get("HTTP_X_FORWARDED_HOST")
     if xfh:
         if ":" in xfh:

@@ -3253,14 +3253,16 @@ def _stream_from_provider(
                 winning_index = orig_idx
                 used_cached_final = cached_final
                 break
-            snippet = peek[:200].decode("utf-8", errors="replace") if peek else "(empty)"
+            # repr(), not a lossy decode: an error page can carry NUL/ESC/BEL,
+            # which made the whole log (and a test run's output) binary (#183).
+            snippet = repr(peek[:120]) if peek else "(empty)"
             logger.warning(  # credential-logging: ignore - already redacted by
-                # the local _redact_url() helper (:3621), not redact_url().
+                # the local _redact_url() helper (:3580), not redact_url().
                 "Timeshift upstream returned %d but no TS sync in first %d "
                 "bytes (likely PHP error): %s, url=%s",
                 response.status_code,
                 len(peek) if peek else 0,
-                snippet.replace("\n", " ")[:120],
+                snippet,
                 _redact_url(url),
             )
             response.close()

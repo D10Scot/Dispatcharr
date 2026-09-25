@@ -2,7 +2,7 @@
 # Gate `git commit` on the tests covering whatever is being committed.
 #
 # Wired two ways, sharing this one script:
-#   * Claude Code PreToolUse hook on Bash(git commit*) — fires when Claude commits.
+#   * Claude Code PreToolUse hook on Bash(git *) — fires when Claude commits.
 #   * .git/hooks/pre-commit (optional) — fires when a human commits.
 # Detected via $1 == "--git-hook", which skips the stdin payload parse.
 #
@@ -21,11 +21,43 @@ source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_hook_common.sh"
 CONTAINER="${DISPATCHARR_TEST_CONTAINER:-dispatcharr-testrunner}"
 
 CD_ANCHOR=""
+# gate_note_exit <message>: say it in the PreToolUse JSON shape the rest of
+# this script uses for warnings, then let the command through. Used before
+# the WARNINGS machinery below exists.
+gate_note_exit() {
+  jq -cn --arg m "$1" '{systemMessage:$m,hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$m}}'
+  exit 0
+}
 if [ "${1:-}" = "--git-hook" ]; then
   CMD="git commit"
 else
   CMD="$(jq -r '.tool_input.command // empty')"
-  case "$CMD" in *"git commit"*) ;; *) exit 0 ;; esac
+  # Issue #278: settings.json used to filter on `Bash(git commit*)` and this
+  # line on the literal substring "git commit", so `git -C <dir> commit`
+  # matched neither and committed with no gate at all. settings.json now
+  # filters on `Bash(git *)` -- every git subcommand, and the harness runs the
+  # hook anyway on a command it cannot parse -- and this regex decides: `git`, then
+  # any global options (`-C <dir>`, `-c k=v`, `--git-dir=...`, `--no-pager`,
+  # ...), then `commit` as a whole word. `git log --grep commit` does not
+  # match: `log` is not an option.
+  GIT_GLOBAL="([[:space:]]+(-[Cc][[:space:]]+(\"[^\"]*\"|'[^']*'|[^[:space:]]+)|--(git-dir|work-tree|namespace)([[:space:]]+|=)[^[:space:]]+|--?[A-Za-z][-A-Za-z]*))*"
+  COMMIT_RE="(^|[;&|(\`[:space:]])git${GIT_GLOBAL}[[:space:]]+commit([[:space:]]|\$)"
+  [[ "$CMD" =~ $COMMIT_RE ]] || exit 0
+  # Everything up to and including the matched `git ... commit`.
+  UPTO="${CMD%%"${BASH_REMATCH[0]}"*}${BASH_REMATCH[0]}"
+
+  # A Bash call that stages and commits in one invocation (`git add x && git
+  # commit`, or the same with `git -C <dir>` on either half) cannot be seen
+  # correctly by this hook: PreToolUse fires BEFORE the command executes, so
+  # any index/working-tree inspection here reflects state from *before* the
+  # `git add` ran too — there is no script-side fix for that, only refusing
+  # to guess. Checked before the directory forms below, because it is
+  # refused whichever tree the commit lands in.
+  ADD_RE="(^|[;&|(\`[:space:]])git${GIT_GLOBAL}[[:space:]]+add([[:space:]]|\$)"
+  if [[ "$CMD" == *"git add"* || "$CMD" =~ $ADD_RE ]]; then
+    printf 'COMMIT BLOCKED — this command stages files with `git add` and commits in the same Bash call. PreToolUse hooks run before the command executes, so this gate cannot see what gets staged and would silently skip verification.\n\nRun `git add <files>` as its own Bash call, then `git commit` as a separate call.\n' >&2
+    exit 2
+  fi
 
   # A plain `git commit` runs inside the worktree it commits to, and the cwd
   # this script inherits already IS that worktree — but PreToolUse fires
@@ -34,21 +66,21 @@ else
   # the exact defect class issue #258 fixed for this script's own path,
   # relocated to the inherited cwd instead. Measured: a commit landing in a
   # tree that staged a live_proxy test derived apps.epg.tests from the stale
-  # cwd instead. Handle only the documented, anchored simple form — refuse to
-  # guess at anything more complex (multiple `cd`s, `git -C`, a `;` before the
-  # `cd`, etc.) since general shell parsing isn't safe here.
+  # cwd instead. Handle only the documented, anchored simple forms —
+  # `cd <dir> && git commit` and (#278) `git -C <dir> commit`, optionally with
+  # `-c k=v` options — and refuse to guess at anything more complex (multiple
+  # `cd`s, `--git-dir`, a `;` before the `cd`, etc.) since general shell
+  # parsing isn't safe here.
   if [[ "$CMD" =~ ^[[:space:]]*cd[[:space:]]+([^[:space:]]+)[[:space:]]*\&\&[[:space:]]*git[[:space:]]+commit ]]; then
     CD_ANCHOR="${BASH_REMATCH[1]}"
-    CD_ANCHOR="${CD_ANCHOR%\'}"; CD_ANCHOR="${CD_ANCHOR#\'}"
-    CD_ANCHOR="${CD_ANCHOR%\"}"; CD_ANCHOR="${CD_ANCHOR#\"}"
-  else
-    BEFORE_COMMIT="${CMD%%git commit*}"
-    if [[ "$BEFORE_COMMIT" == *"cd "* || "$BEFORE_COMMIT" == *"git -C "* ]]; then
-      MSG="Commit gate: this command changes directory before \`git commit\` in a form more complex than the documented \`cd <dir> && git commit\` (PreToolUse fires before the command runs, so this hook cannot safely determine which tree the commit will land in). Backend/frontend tests were NOT run for this commit."
-      jq -cn --arg m "$MSG" '{systemMessage:$m,hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:$m}}'
-      exit 0
-    fi
+  elif [[ "$CMD" =~ ^[[:space:]]*git[[:space:]]+-C[[:space:]]+([^[:space:]]+)([[:space:]]+-c[[:space:]]+[^[:space:]]+)*[[:space:]]+commit([[:space:]]|$) ]]; then
+    CD_ANCHOR="${BASH_REMATCH[1]}"
+  elif [[ "$UPTO" == *"cd "* || "$UPTO" == *"pushd "* || "$UPTO" == *"-C "* \
+          || "$UPTO" == *"--git-dir"* || "$UPTO" == *"--work-tree"* ]]; then
+    gate_note_exit "Commit gate: this command changes directory or repository before \`git commit\` in a form other than the documented \`cd <dir> && git commit\` or \`git -C <dir> commit\` (PreToolUse fires before the command runs, so this hook cannot safely determine which tree the commit will land in). Backend/frontend tests were NOT run for this commit."
   fi
+  CD_ANCHOR="${CD_ANCHOR%\'}"; CD_ANCHOR="${CD_ANCHOR#\'}"
+  CD_ANCHOR="${CD_ANCHOR%\"}"; CD_ANCHOR="${CD_ANCHOR#\"}"
 fi
 
 # A `git commit` runs inside the worktree it commits to (and a native
@@ -56,24 +88,25 @@ fi
 # the cwd this script inherits is the right anchor for the plain form — NOT
 # this script's own location, which under CLAUDE_PROJECT_DIR is the main
 # checkout regardless of which worktree is committing (issue #258). For the
-# `cd <dir> && git commit` form, CD_ANCHOR (parsed above) is used instead;
-# anything else already exited above. Resolved before any `cd` below.
-REPO_ROOT="$(hook_repo_root "${CD_ANCHOR:-.}")" || exit 0
-cd "$REPO_ROOT" || exit 0
+# two anchored forms, CD_ANCHOR (parsed above) is used instead; anything else
+# already exited above. Resolved before any `cd` below.
+#
+# Issue #279: a stale CLAUDE_HOOK_REPO_ROOT (status 2) used to end here in a
+# silent `exit 0`. It now says so; status 1 (the anchor is in no git repo at
+# all) stays quiet, because there is nothing to gate.
+RR_ERR_FILE="$(mktemp)"
+REPO_ROOT="$(hook_repo_root "${CD_ANCHOR:-.}" 2>"$RR_ERR_FILE")"
+RR_ST=$?
+RR_ERR="$(cat "$RR_ERR_FILE")"; rm -f "$RR_ERR_FILE"
+if [ $RR_ST -eq 2 ]; then
+  gate_note_exit "Commit gate: ${RR_ERR} Tests were NOT run for this commit. Unset CLAUDE_HOOK_REPO_ROOT, or point it at a worktree root."
+elif [ $RR_ST -ne 0 ]; then
+  exit 0
+fi
+cd "$REPO_ROOT" || gate_note_exit "Commit gate: could not cd into ${REPO_ROOT}. Tests were NOT run for this commit."
 
 WARNINGS=()
 note() { WARNINGS+=("$1"); }
-
-# A Bash call that stages and commits in one invocation (`git add x && git
-# commit`) cannot be seen correctly by this hook: PreToolUse fires BEFORE the
-# command executes, so any index/working-tree inspection here reflects state
-# from *before* the `git add` ran too — there is no script-side fix for that,
-# only refusing to guess. Force the two steps apart so the gate can see what
-# is actually being committed.
-if [[ "$CMD" == *"git add"* ]]; then
-  printf 'COMMIT BLOCKED — this command stages files with `git add` and commits in the same Bash call. PreToolUse hooks run before the command executes, so this gate cannot see what gets staged and would silently skip verification.\n\nRun `git add <files>` as its own Bash call, then `git commit` as a separate call.\n' >&2
-  exit 2
-fi
 
 # `git commit -a` bypasses the index, so compare against HEAD in that case.
 case "$CMD" in

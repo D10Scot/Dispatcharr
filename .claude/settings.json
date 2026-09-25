@@ -26,10 +26,10 @@
         "hooks": [
           {
             "type": "command",
-            "if": "Bash(git commit*)",
+            "if": "Bash(git *)",
             "command": "\"${CLAUDE_PROJECT_DIR:-.}/.claude/hooks/pre-commit-tests.sh\"",
             "timeout": 600,
-            "statusMessage": "Running tests for the staged changes"
+            "statusMessage": "Commit gate: checking the git command"
           }
         ]
       }
