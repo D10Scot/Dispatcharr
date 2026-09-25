@@ -285,7 +285,15 @@ test('GET /api/vod/categories/ accepts an m3u_account filter', { tag: '@contract
   api,
   waitFor,
 }) => {
-  test.setTimeout(150_000);
+  // seedCatalogue() twice (the main account and the decoy) plus two
+  // waitFor.resource calls, each with its own 120s budget: 120_000 * 2 for
+  // the waiters, plus headroom for both seeds and the one-shot status check.
+  // 150_000 was enough for one waiter but not two, and a test-level timeout
+  // fires as Playwright's own generic message rather than either waiter's
+  // "last observed" one, so a regression that reaches only the second wait
+  // would lose its diagnostic text to a budget that was never the point
+  // under test.
+  test.setTimeout(270_000);
 
   const { prefix, account } = await seedCatalogue(upstream, seed, api);
 
