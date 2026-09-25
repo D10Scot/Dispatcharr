@@ -171,8 +171,9 @@ calls `applyRegex` (`frontend/src/utils/forms/M3uProfileUtils.js:34-42`), which 
 (`dispatcharr/consumers.py:163`, through `transform_url`) and stored
 (`frontend/src/WebSocket.jsx:576-580` → `setProfilePreview`, `frontend/src/store/playlists.jsx:144-147`),
 but **nothing reads `profileResult` or `profileSearchPreview`**:
-`grep -rn "profileResult\|profileSearchPreview" frontend/src` finds only the store's own declaration and
-setter (`playlists.jsx:11-12,144-147`). So for an M3U profile the only preview on screen already shows
+`grep -rn "profileResult\|profileSearchPreview" frontend/src` finds the store's own declaration and
+setter (`playlists.jsx:11-12,144-147`) and the store's unit test
+(`frontend/src/store/__tests__/playlists.test.jsx:17-18,32-33,304-305`); no component reads it. So for an M3U profile the only preview on screen already shows
 `\1`, `\0` and `\x01` as literal text (table above, JavaScript column), and the help text on both
 replace fields says "Use $1, $2, etc. to reference regex capture groups"
 (`M3UProfile.jsx:309`, `:369`). An operator relying on Python-style `\1` in a URL profile has been
@@ -185,8 +186,11 @@ could have typed `\1` there and seen it work. That is the population option (a) 
 migration note is written for them.
 
 User-facing documentation of `replace_pattern` outside the form: none. `grep -rln -i "replace_pattern\|replace pattern" --include='*.md' .`
-(excluding plans) finds only `CHANGELOG.md` entries describing the feature (none states a grammar)
-and `e2e/COVERAGE.md:205`'s coverage gap row.
+(excluding `docs/superpowers/plans/` and `docs/superpowers/specs/`) finds only `CHANGELOG.md` entries
+describing the feature (none states a grammar) and `e2e/COVERAGE.md:205`'s coverage gap row. The two
+specs it also hits (`2026-08-29-e2e-xc-provider-emulation-design.md:90`,
+`2026-09-01-e2e-coverage-completions-design.md:79,269,437`) are e2e design notes and state no grammar
+either.
 
 ### Ruling — recommended default: (a), a backslash is literal text on all five paths
 
@@ -324,8 +328,9 @@ Only these parts change; everything not named stays as written.
 - **Property module:** property 1's alphabet widens as planned (a rejected template returns `None` and
   is skipped). Property 2's `js_templates` alphabet stays backslash-free: its model is JavaScript, and
   under (b) `\1` is not JavaScript. Its docstring then records (b) as the reason.
-- **BC-1** becomes: let the allowlist also accept `\a`; property 1 should redden with
-  `AssertionError: {'\x07'} not less than or equal to {'a', '\\'} : '\x07'`. That line was measured under
+- **BC-1** becomes: let the allowlist also accept `\a`; property 1 should redden with an
+  `AssertionError:` line containing `not less than or equal to` and ending `: '\x07'` (the two set reprs' element order varies per
+  process; see Task 1's note). That line was measured under
   this plan's BC-1 (the denylist, which leaves `\a` unrejected the same way); it was **not** re-measured
   under a (b) implementation, which does not exist yet. BC-2 and BC-3 are unchanged.
 - **Migration note:** instead of "rewrite `\1` as `$1`", it lists the rejected escapes, and states that
@@ -392,7 +397,11 @@ Only these parts change; everything not named stays as written.
       - `IndexError: unknown group` (rename preview and the `[\g<x>]` subTest)
       - `AssertionError: 'http://[\x00]host/p' != 'http://[\\0]host/p'` (twice: `transform_url`, VOD)
       - `AssertionError: 'http://\\g<host>/p' != 'http://\\host/p'` (`transform_url`'s second named-group assertion)
-      - `AssertionError: {'\x00', '[', ']'} not less than or equal to {'[', ']', '0', '\\', 'a'} : '[\x00]'` (property 1, the new `@example`)
+      - property 1, the new `@example`: an `AssertionError:` line containing `not less than or equal to`
+        and ending `: '[\x00]'`. The two sets in that line (one measured run printed
+        `{'\x00', '[', ']'}` and `{'[', ']', '0', '\\', 'a'}`) are Python set reprs, whose element order
+        changes with per-process string-hash randomisation, so match only the stable part:
+        `grep -aE "not less than or equal to .* : '\[\\\\x00\]'$" <log>`.
       - `AssertionError: 'a\x00' != 'a\\0'` inside `Hypothesis found 2 distinct failures` (property 2)
       Any `ImportError`, `NameError` or `SyntaxError` is a STOP. The three ordering guards
       (`test_vod_transform_named_group_still_substitutes`,
@@ -424,8 +433,9 @@ next one.
       Run `apps.m3u.tests.test_replace_template_backslash.HelperBackslashTests apps.m3u.tests.test_property_backreferences apps.proxy.tests.test_next_source_edges.TransformUrlBackslashTests`.
       Expected: `Ran 8 tests`, `FAILED (failures=9, errors=4)`, including
       `AssertionError: '[a]' != '[\\1]'` (subTest `template='[\\1]'`) and
-      `AssertionError: {'\x07'} not less than or equal to {'a', '\\'} : '\x07'` (property 1 finds
-      `\a`, a BEL byte, that the denylist forgot). `git checkout -- apps/m3u/utils.py`.
+      property 1's `AssertionError:` line containing `not less than or equal to` and ending `: '\x07'`
+      (it finds `\a`, a BEL byte, that the denylist forgot; set order varies per process, as in Task 1:
+      `grep -aE "not less than or equal to .* : '\\\\x07'$" <log>`). `git checkout -- apps/m3u/utils.py`.
 - [ ] **BC-2 (a URL site keeps the seed call order).** In `apps/proxy/vod_proxy/views.py`, restore the
       seed's two lines in place of the one call, and the seed import:
       `from apps.m3u.utils import convert_js_numbered_backreferences`, then
@@ -496,7 +506,7 @@ domain widens, and one `@example` is added. Every line (Appendix B, second file)
 | `:104` `js_templates` first char | `st.sampled_from("ab/-[]x")` | `st.sampled_from("ab/-[]x\\")` |
 | `:105` `js_templates` rest | `alphabet="ab/-[]x0123456789"` | `alphabet="ab/-[]x0123456789\\"` |
 | after `:155` | two `@example`s | a third: `@example(case=(r"(a)", 1), data=None)` with comment `# #452: "[\0]" reached the template parser as a NUL byte.` |
-| `:160` comment, `:163-166` dict | two #171 rows | "The #171 and #452 regressions above", plus `(r"(a)", 1): (r"[\0]", "a")` |
+| `:161` comment, `:163-166` dict | two #171 rows | "The #171 and #452 regressions above", plus `(r"(a)", 1): (r"[\0]", "a")` |
 
 Why it is the behaviour being changed: property 1 ("no character absent from target and template") and
 property 2 (equals the JavaScript model) excluded the backslash **only** because of #452, as the module
