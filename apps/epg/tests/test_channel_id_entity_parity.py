@@ -31,6 +31,12 @@ _DIVERGENT_ROWS = [
     ("numeric_character_reference", "a&#233;b", False),
     ("literal_tab", "a\tb", False),
     ("entity_missing_semicolon", "a&eacuteb", False),
+    # Review round 3, nit 2: every C0 control byte, not just tab/LF/CR, must
+    # take the lxml decode path -- the import's own recover-mode parser
+    # replaces any of them with U+FFFD, and the fast path's plain
+    # errors="replace" decode left them untouched instead.
+    ("nul_control_byte", "a\x00b", False),
+    ("soh_control_byte", "a\x01b", False),
 ]
 
 

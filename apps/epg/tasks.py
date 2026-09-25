@@ -256,19 +256,23 @@ def _parse_programme_element(element_bytes):
     (e.g. &#xD800;) parse successfully, stored by libxml2 as an unpaired
     surrogate that only raises UnicodeDecodeError when its text is actually
     decoded to a Python str -- which .text/.tail/.attrib access do lazily.
-    Force that decode here, for every node and attribute, so a bad reference
-    fails at parse time like any other malformed element, and the callers'
-    `except (etree.XMLSyntaxError, UnicodeDecodeError): continue` skips it
-    uniformly rather than raising later out of the result-building code."""
+    Force that decode here by serialising the whole element with
+    etree.tostring() and discarding the result, so a bad reference anywhere
+    in it (text, tail, an attribute, or a nested element) fails at parse
+    time like any other malformed element, and the callers' `except
+    (etree.XMLSyntaxError, UnicodeDecodeError): continue` skips it uniformly
+    rather than raising later out of the result-building code. A per-node
+    `elem.iter()` walk touching `.text`/`.tail`/`.attrib.values()` did this
+    too in an earlier revision, but lxml's attribute lookup by name is O(n)
+    per node, making that walk O(n^2) in attribute count; a hand-built
+    provider element with thousands of attributes cost seconds per call.
+    tostring() serialises once, linearly."""
     parser = etree.XMLParser(
         resolve_entities=True, load_dtd=True, no_network=True, recover=True
     )
     elem = etree.fromstring(_HTML_ENTITY_DOCTYPE + element_bytes, parser)
     if elem is not None:
-        for node in elem.iter():
-            node.text
-            node.tail
-            list(node.attrib.values())
+        etree.tostring(elem, encoding='unicode')
     return elem
 
 
@@ -2941,7 +2945,7 @@ _MAX_START_TAG = 4096  # generous upper bound for a start tag with namespaces/ex
 _OFFSET_CAP = 10  # max block-starts recorded per channel; exceeding this flags the channel as interleaved
 
 
-_NEEDS_LXML_DECODE = (b'&', b'\t', b'\n', b'\r')
+_NEEDS_LXML_DECODE = (b'&',) + tuple(bytes([c]) for c in range(0x20))
 
 
 @functools.lru_cache(maxsize=4096)
@@ -2949,9 +2953,11 @@ def _decode_channel_id(raw, quote=b'"', entity_doctype=True):
     """Return the channel id exactly as lxml's recover-mode iterparse reads it
     (entity resolution under the same injected-DOCTYPE decision as
     _open_xmltv_file; entities a file declares itself are not resolved,
-    attribute-value whitespace normalisation), stripped -- so byte-level
-    index keys equal EPGData.tvg_id. Ids with no entity or whitespace escape
-    take a fast path."""
+    attribute-value whitespace normalisation, and every C0 control byte --
+    not just tab/LF/CR -- reads as U+FFFD, matching how the XML import's own
+    parser replaces an invalid character), stripped -- so byte-level index
+    keys equal EPGData.tvg_id. Ids with no entity reference or C0 control
+    byte take a fast path."""
     if not any(b in raw for b in _NEEDS_LXML_DECODE):
         return raw.decode('utf-8', errors='replace').strip()
     prefix = _HTML_ENTITY_DOCTYPE if entity_doctype else b''
