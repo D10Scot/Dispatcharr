@@ -142,6 +142,67 @@ class GetTransformedCredentialsTests(TestCase):
         self.assertEqual(username, "bob")
         self.assertEqual(password, "other")
 
+    def test_the_raw_suffix_shortcut_is_exact_not_a_loose_heuristic(self):
+        """Round 1 review questioned whether the raw-suffix shortcut in
+        get_transformed_credentials could "false-positive" on a profile whose
+        output merely happens to end with the raw credential suffix without
+        the pattern actually being a credential-preserving rewrite. It
+        cannot: the suffix is the literal string "/live/{raw user}/{raw
+        pass}/1234.ts", built from the SAME raw fields the function would
+        otherwise return, so whenever the transformed URL provably ends with
+        it, those are in fact the credentials in the URL — whatever the
+        pattern did to everything before that suffix. Two cases:
+
+        1. A host rewrite to a bare hostname, leaving an EMPTY base path.
+           The shortcut still fires correctly and returns an empty-path
+           server URL, not a false positive.
+        2. A pattern that appends a query string AFTER the credential
+           suffix. The transformed URL no longer literally ENDS with the raw
+           suffix (it ends with the query string instead), so the shortcut
+           correctly declines to fire and falls through to the split-based
+           extraction — which also recovers the right credentials, because
+           urlparse discards the query when rebuilding the server URL. This
+           is the case that would risk a false positive if the check were a
+           looser heuristic; it isn't one.
+        """
+        # Case 1: bare-hostname rewrite, empty base path.
+        account = M3UAccount.objects.create(
+            name="Bare host rewrite XC",
+            account_type="XC",
+            server_url="https://h",
+            username="alice",
+            password="secret",
+        )
+        profile = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        profile.search_pattern = r"^https://h(/.*)$"
+        profile.replace_pattern = r"https://other$1"
+        profile.save()
+
+        server_url, username, password = get_transformed_credentials(account, profile)
+
+        self.assertEqual(server_url, "https://other")
+        self.assertEqual(username, "alice")
+        self.assertEqual(password, "secret")
+
+        # Case 2: query string appended after the credential suffix.
+        account2 = M3UAccount.objects.create(
+            name="Query string rewrite XC",
+            account_type="XC",
+            server_url="https://h",
+            username="alice",
+            password="secret",
+        )
+        profile2 = M3UAccountProfile.objects.get(m3u_account=account2, is_default=True)
+        profile2.search_pattern = r"^(https://h/live/alice/secret/1234\.ts)$"
+        profile2.replace_pattern = r"$1?nocache=1"
+        profile2.save()
+
+        server_url2, username2, password2 = get_transformed_credentials(account2, profile2)
+
+        self.assertEqual(server_url2, "https://h")
+        self.assertEqual(username2, "alice")
+        self.assertEqual(password2, "secret")
+
 
 class ResolveLiveStreamUrlTests(TestCase):
     def test_builds_url_from_normalized_base_not_raw_account_url(self):
@@ -189,6 +250,50 @@ class ResolveLiveStreamUrlTests(TestCase):
             url,
             "https://myserver.fun/server1/live/alice/p%2Fss%25w%40rd/12345.ts",
         )
+
+    def test_live_and_catch_up_quote_the_same_reserved_password_identically(self):
+        """_resolve_live_stream_url (apps/proxy/next_source.py:63) and the
+        catch-up URL builders (apps/timeshift/helpers.py's
+        build_timeshift_url_format_a/_b) both quote with
+        quote(str(x), safe=''). The two are only kept in sync by that shared
+        call shape and a comment, not by a single implementation, so this
+        pins that they produce byte-identical encodings of the same
+        reserved-character credential rather than merely trusting the
+        comment.
+        """
+        from apps.timeshift.helpers import (
+            TimeshiftCredentials,
+            build_timeshift_url_format_b,
+        )
+
+        account = M3UAccount.objects.create(
+            name="Live vs catch-up encoding XC",
+            account_type="XC",
+            server_url="https://myserver.fun/server1",
+            username="alice",
+            password="p/ss%w@rd",
+        )
+        profile = M3UAccountProfile.objects.get(m3u_account=account, is_default=True)
+        stream = Stream.objects.create(
+            name="Test Channel",
+            m3u_account=account,
+            stream_id="12345",
+            url="https://myserver.fun/server1/live/olduser/oldpass/12345.ts",
+        )
+
+        live_url = _resolve_live_stream_url(stream, account, profile)
+
+        creds = TimeshiftCredentials(account.server_url, account.username, account.password)
+        catchup_url = build_timeshift_url_format_b(creds, "12345", "2026-05-12:19-00", 40)
+
+        # Both builders put the encoded password in a path segment of its
+        # own, at different positions (live: .../{pass}/{id}.ts; catch-up
+        # format B: .../{pass}/{duration}/{timestamp}/{id}.ts), so check
+        # containment of the exact encoded segment rather than parsing by
+        # position.
+        expected_encoded_password = "p%2Fss%25w%40rd"
+        self.assertIn(f"/{expected_encoded_password}/", live_url)
+        self.assertIn(f"/{expected_encoded_password}/", catchup_url)
 
     def test_std_account_uses_stored_stream_url(self):
         account = M3UAccount.objects.create(
