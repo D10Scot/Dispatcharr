@@ -22,9 +22,10 @@ proxy_settings cache first. A warm cache hides the CoreSettings reads
 (memory: warm state hides a query), and CLAUDE.md records that TSConfig's
 cache attribute shadows BaseConfig's, so both are reset.
 
-CHANGING A LEDGER ENTRY is a behaviour change to the tune path and follows
-the repo's test-modification rule: the PR lists the entry before and after
-and says why the query moved.
+CHANGING A LEDGER ENTRY. A ledger entry changes only in a PR whose
+production-code diff causes the move. Re-measure cold and name the change
+that moved each entry. Never copy the `observed:` line to turn a red run
+green. An entry that moved with no code change is a finding.
 """
 
 import ast
@@ -44,15 +45,17 @@ from apps.proxy.tests.test_next_source_api import RelayApiTestCase
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
+_UPDATE = re.compile(r'^\s*UPDATE\s+"([a-z0-9_]+)"', re.S | re.I)
 _STATEMENT = re.compile(
-    r'^\s*(SELECT|INSERT|UPDATE|DELETE)\b.*?(?:FROM|INTO|UPDATE)\s+"([a-z0-9_]+)"',
+    r'^\s*(SELECT|INSERT|DELETE)\b.*?(?:FROM|INTO)\s+"([a-z0-9_]+)"',
     re.S | re.I,
 )
 _SETTINGS_KEY = re.compile(r"'([a-z_]+)'")
 
 S = "SELECT"
 
-# Measured at 6319768f (the tree this PR is based on), typed by hand (Task 1).
+# Measured at 6319768f (the tree this PR is based on), typed by hand -- see
+# docs/superpowers/plans/2026-09-23-fixplan-J-phase2-closeout.md, PR J-3, Task 1.
 LEDGER = {
     # nginx auth_request, once per tune: STREAMS ACL, stream settings, the channel.
     "authorize_live_uuid": {
@@ -95,14 +98,60 @@ LEDGER = {
 
 
 def _signature(query):
-    match = _STATEMENT.match(query["sql"])
-    if not match:
-        return (query["sql"].split()[0].upper(), "?")
-    verb, table = match.group(1).upper(), match.group(2)
+    update = _UPDATE.match(query["sql"])
+    if update:
+        verb, table = "UPDATE", update.group(1)
+    else:
+        match = _STATEMENT.match(query["sql"])
+        if not match:
+            return (query["sql"].split()[0].upper(), "?")
+        verb, table = match.group(1).upper(), match.group(2)
     if table == "core_coresettings":
         key = _SETTINGS_KEY.search(query["sql"])
         return (verb, table, key.group(1) if key else "?")
     return (verb, table)
+
+
+class SignatureFunctionTests(SimpleTestCase):
+    """_signature() on hand-typed SQL literals, one per verb. Review round 1
+    found UPDATE falling through to the untabled ('UPDATE', '?') branch
+    because the general pattern's table-name lookahead only matched FROM or
+    INTO; an UPDATE ... SET query never carries either keyword before its
+    table name. Red on this test before the dedicated _UPDATE pattern was
+    added, green after."""
+
+    def test_select_names_its_table(self):
+        query = {"sql": 'SELECT "id" FROM "dispatcharr_channels_channel" WHERE "id" = 1'}
+        self.assertEqual(_signature(query), ("SELECT", "dispatcharr_channels_channel"))
+
+    def test_insert_names_its_table(self):
+        query = {
+            "sql": 'INSERT INTO "dispatcharr_channels_channel" ("id") VALUES (1)'
+        }
+        self.assertEqual(_signature(query), ("INSERT", "dispatcharr_channels_channel"))
+
+    def test_delete_names_its_table(self):
+        query = {
+            "sql": 'DELETE FROM "dispatcharr_channels_channel" WHERE "id" = 1'
+        }
+        self.assertEqual(_signature(query), ("DELETE", "dispatcharr_channels_channel"))
+
+    def test_update_names_its_table(self):
+        query = {
+            "sql": 'UPDATE "dispatcharr_channels_stream" SET "name" = %s WHERE "id" = 1'
+        }
+        self.assertEqual(_signature(query), ("UPDATE", "dispatcharr_channels_stream"))
+
+    def test_core_coresettings_carries_its_settings_group_key(self):
+        query = {
+            "sql": (
+                'SELECT "core_coresettings"."value" FROM "core_coresettings" '
+                "WHERE \"core_coresettings\".\"key\" = 'proxy_settings'"
+            )
+        }
+        self.assertEqual(
+            _signature(query), ("SELECT", "core_coresettings", "proxy_settings")
+        )
 
 
 def _cold():
@@ -169,7 +218,8 @@ class TunePathQueryLedgerTests(RelayApiTestCase):
 # does not move when lines move. What it cannot see: a new read made through
 # an instance method or a related-object descriptor (channel.get_stream(),
 # stream.m3u_account). The ledger sees those on the mainline drives only.
-# Typed by hand from a measurement at 6319768f (Task 1 Step 4).
+# Typed by hand from a measurement at 6319768f -- see
+# docs/superpowers/plans/2026-09-23-fixplan-J-phase2-closeout.md, PR J-3, Task 1 Step 4.
 BOUNDARY_MODULES = {
     "apps/proxy/next_source.py": {
         "model_imports": {
