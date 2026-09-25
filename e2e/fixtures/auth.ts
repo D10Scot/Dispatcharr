@@ -148,10 +148,10 @@ async function login(
  * The check below catches a *missing* entry. A **stale** one — tokens for a
  * principal the container no longer has, i.e. a `principals.json` left over
  * from a container that was reset without re-running `bootstrap` — passes it
- * and fails later, on first use, as `token refresh failed: 500` (the product
- * answers 500 rather than 401 when a refresh token names a deleted user:
- * D10Scot/Dispatcharr#12). If you see that, delete `playwright/.auth/` and run
- * again — `bootstrap` re-provisions from scratch.
+ * and fails later, on first use, as `token refresh failed: 401` (a refresh
+ * token naming a deleted user used to answer 500 instead:
+ * D10Scot/Dispatcharr#12, fixed). If you see that, delete `playwright/.auth/`
+ * and run again — `bootstrap` re-provisions from scratch.
  */
 export async function makePrincipalClient(
   ctx: APIRequestContext,
