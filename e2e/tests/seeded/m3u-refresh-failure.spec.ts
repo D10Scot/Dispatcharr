@@ -138,18 +138,19 @@ test('a 401 from the playlist does not disturb an already-ingested catalogue', {
 });
 
 /**
- * Known bug: D10Scot/Dispatcharr#60. `fetch_m3u_lines` writes a
- * status-code-specific `last_message` ("M3U file not found (404) at URL: …"),
- * and `_refresh_single_m3u_account_impl` then overwrites it with the generic
- * "Failed to refresh M3U groups - download failed or other error", identically
- * for 404, 401, 403, 500 and a connection refusal. The specific text reaches
- * only the WebSocket and the log. Also referenced by #56, which tracks the
- * shared `(message, None)` return-shape conflation behind all three related
- * findings (#59, #60, #56 itself).
- *
- * Asserts the CORRECT behaviour and is expected to fail until #60 is fixed.
+ * Fixed: D10Scot/Dispatcharr#60. `fetch_m3u_lines` writes a
+ * status-code-specific `last_message` ("M3U file not found (404) at URL: …")
+ * and marks the account ERROR before returning; `_refresh_single_m3u_account_impl`
+ * used to overwrite it unconditionally with the generic "Failed to refresh
+ * M3U groups - download failed or other error", identically for 404, 401,
+ * 403, 500 and a connection refusal. It now checks whether the account's
+ * current status is already ERROR -- meaning the failing step already
+ * recorded its own message -- and leaves it alone in that case, only falling
+ * back to the generic text when nothing more specific was recorded. Also
+ * referenced by #56, which tracks the shared `(message, None)` return-shape
+ * conflation behind all three related findings (#59, #60, #56 itself).
  */
-test.fail('a failed refresh keeps the HTTP-status-specific message', { tag: '@contract' }, async ({
+test('a failed refresh keeps the HTTP-status-specific message', { tag: '@contract' }, async ({
   upstream,
   seed,
   waitFor,
@@ -177,20 +178,21 @@ test.fail('a failed refresh keeps the HTTP-status-specific message', { tag: '@co
   await seed.waitForCreateTimeGroupRefreshToSettle(account.id);
   const failed = await waitFor.m3uRefreshComplete(account.id);
 
-  // A second, narrower race, internal to the *triggered* refresh itself:
-  // `_refresh_single_m3u_account_impl` writes the specific message (via
-  // `fetch_m3u_lines`, called synchronously) and then, milliseconds later,
-  // overwrites it with the generic one — that overwrite is #60 itself.
-  // `waitFor.m3uRefreshComplete`'s second phase returns on the *first*
-  // terminal status it observes once the refresh is confirmed in flight,
-  // with no check that a later write hasn't superseded it, so it can
-  // occasionally return that fleeting first write instead of the settled
-  // one. Verified empirically against this container: a 1s settle-read after
-  // `m3uRefreshComplete` resolves showed the generic (overwritten) message in
-  // 25/25 runs — including the runs where the immediate return above had
-  // already (incorrectly) surfaced the specific one. Re-reading here rather
-  // than changing `wait.ts`'s own polling semantics, which is shared with
-  // G5/G6 and outside this task.
+  // A second, narrower race used to exist here, internal to the *triggered*
+  // refresh itself: `_refresh_single_m3u_account_impl` wrote the specific
+  // message (via `fetch_m3u_lines`, called synchronously) and then,
+  // milliseconds later, unconditionally overwrote it with the generic one --
+  // that overwrite was #60 itself. `waitFor.m3uRefreshComplete`'s second
+  // phase returns on the *first* terminal status it observes once the
+  // refresh is confirmed in flight, with no check that a later write hasn't
+  // superseded it, so it could occasionally return that fleeting first write
+  // instead of the settled one. Now that the caller only overwrites the
+  // message when the account is not already ERROR, there is nothing left to
+  // race: the specific message, once recorded, is never superseded. This
+  // settle-read stays as proof of that -- it is what showed the generic
+  // (overwritten) message in 25/25 runs before the fix. Re-reading here
+  // rather than changing `wait.ts`'s own polling semantics, which is shared
+  // with G5/G6 and outside this task.
   await new Promise((resolve) => setTimeout(resolve, 1_000));
   const settled = await api.json<M3uAccount>(
     await api.get(`/api/m3u/accounts/${account.id}/`),
