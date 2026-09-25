@@ -691,11 +691,10 @@ export type StreamProfileOverrides = {
 
 /**
  * The writable fields on `M3UAccountSerializer` this harness uses, minus the
- * generated `name`. A curated subset: `server_group`, `status`, `exp_date`,
- * `locked` and `updated_at` are writable on that serializer and are not here.
- * The last two only because `read_only_fields` is declared on the serializer
- * class rather than on `Meta`, so DRF ignores it — D10Scot/Dispatcharr#15.
- * Treating them as writable in this contract would encode that bug.
+ * generated `name`. A curated subset: `server_group`, `status` and
+ * `exp_date` are writable on that serializer and are not here. `locked` and
+ * `updated_at` are read-only on that serializer (`read_only_fields` lives in
+ * `Meta`) and are excluded for that reason.
  *
  * **`refresh_interval` is load-bearing when accounts are created
  * concurrently.** Two creates racing on the same value both insert an
@@ -773,9 +772,9 @@ export type GroupSettingRow = {
 
 /**
  * The writable fields on `EPGSourceSerializer` this harness uses, minus the
- * generated `name`. A curated subset: `status` and `updated_at` are writable
- * there and are not here — `updated_at` only because of the same misplaced
- * `read_only_fields` as above (D10Scot/Dispatcharr#15).
+ * generated `name`. A curated subset: `status` is writable there and is not
+ * here. `updated_at` is read-only on that serializer too and is excluded for
+ * the same reason.
  *
  * `refresh_interval` carries the same concurrency hazard as
  * {@link M3uAccountOverrides} — `EPGSource.refresh_interval` lands on the same
@@ -794,10 +793,19 @@ export type EpgSourceOverrides = {
   custom_properties?: Record<string, unknown>;
 };
 
-/** Omits `name`: the factory owns it. See the ordering note in seed.ts. */
+/**
+ * Omits `name`: the factory owns it. See the ordering note in seed.ts. Also
+ * omits `is_custom`: `StreamSerializer.read_only_fields` now covers it
+ * (#15), so the server ignores it on write. `seed.stream()` no longer sends
+ * it either -- every created stream is still custom, because
+ * `apps/channels/signals.py`'s `set_default_m3u_account` pre_save receiver
+ * sets `is_custom=True` whenever `m3u_account` is empty, which it always is
+ * here (`m3u_account` is also read-only and this factory never supplies
+ * one). See seed-fixture.spec.ts's 'seed.stream creates a custom stream
+ * with a generated name'.
+ */
 export type StreamOverrides = {
   url?: string;
-  is_custom?: boolean;
   channel_group?: number | null;
 };
 
