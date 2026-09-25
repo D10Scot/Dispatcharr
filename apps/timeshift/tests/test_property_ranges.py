@@ -229,7 +229,12 @@ class DownstreamHeaderProperties(SimpleTestCase):
             # #491: a forwarded Content-Length is always ASCII digits, never a
             # sign or a Latin-1 digit look-alike ("-1" fails this by shape).
             self.assertTrue(value.isascii() and value.isdigit(), (value, headers))
-            if streaming:
+            # Scoped to the path #491 changed: representation_length=0 on the
+            # untouched streaming-200 branch (e.g. the presentation path)
+            # legitimately forwards Content-Length: 0, and a valid upstream
+            # Content-Range legitimately derives a total of 0 -- neither is
+            # part of this fix's contract.
+            if streaming and representation_length is None and upstream_content_range is None:
                 self.assertGreater(int(value), 0, headers)
         if "Content-Range" in headers:
             self.assertIsNotNone(
@@ -247,6 +252,7 @@ class DownstreamHeaderProperties(SimpleTestCase):
         if (
             streaming and status_code == 200 and not range_header
             and representation_length is None
+            and upstream_content_range is None
             and not upstream_length_is_positive_digits
         ):
             self.assertNotIn("Content-Length", headers, headers)
