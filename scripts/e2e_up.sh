@@ -41,16 +41,34 @@ PORT="${DISPATCHARR_E2E_PORT:-9191}"
 READY_ATTEMPTS="${DISPATCHARR_E2E_READY_ATTEMPTS:-60}"
 
 NETWORK="${DISPATCHARR_E2E_NETWORK:-dispatcharr-e2e-net}"
-# _CONTAINER and _PORT are honoured here, but nowhere past this script: the
-# provider's own UPSTREAM_INTERNAL_ORIGIN default, the fixture's `internal`/
-# `control` base URLs, and describeFetchFailure()'s hostname check all bake
-# in the literal `e2e-upstream` name and port 9402. Overriding either
-# variable here starts a working container under a different name or port
-# and then breaks every test that talks to it — so this is a known
-# limitation, documented rather than plumbed through further, not a bug.
+# _UPSTREAM_CONTAINER and _UPSTREAM_PORT start the provider under another
+# name and port. The provider is told its name (UPSTREAM_INTERNAL_ORIGIN,
+# below), so its playlists point at a host this stack's network resolves.
+# Playwright must be told too: E2E_UPSTREAM_CONTROL_URL and
+# E2E_UPSTREAM_INTERNAL_URL (e2e/fixtures/upstream.ts). check_scope refuses
+# a mismatch between the two sides when both are set.
 UPSTREAM_NAME="${DISPATCHARR_E2E_UPSTREAM_CONTAINER:-e2e-upstream}"
 UPSTREAM_IMAGE="${DISPATCHARR_E2E_UPSTREAM_IMAGE:-dispatcharr-e2e-upstream:local}"
 UPSTREAM_PORT="${DISPATCHARR_E2E_UPSTREAM_PORT:-9402}"
+
+# One network per line. A Go template over the map's keys, never a grep of
+# {{json .NetworkSettings.Networks}}: each real endpoint object carries a
+# dozen nested keys, and a line grep for names matches them (#261's review).
+# A stopped container still lists its attachments. A missing one exits 1
+# with `no such object` on stderr and one blank line on stdout, which the
+# sed strips, so it yields no names here.
+container_networks() {
+  docker inspect -f '{{range $n, $_ := .NetworkSettings.Networks}}{{println $n}}{{end}}' \
+    "$1" 2>/dev/null | sed '/^$/d' || true
+}
+
+# The provider's networks other than this stack's. Non-empty means another
+# stack still uses it (#168). Captured, not piped into grep -q: under
+# pipefail a grep -q that exits early can SIGPIPE the writer and report 141.
+upstream_other_networks() {
+  container_networks "$UPSTREAM_NAME" \
+    | grep -vxF -e "$NETWORK" -e bridge -e host -e none || true
+}
 
 # A container created before $NETWORK existed (or created with `--network`
 # pointed elsewhere) gets reused as-is by the branches below, and
@@ -58,16 +76,27 @@ UPSTREAM_PORT="${DISPATCHARR_E2E_UPSTREAM_PORT:-9402}"
 # real hour-waster on a dev machine that already had a same-named container.
 # Attach it to the network on every start rather than only at `docker run`.
 ensure_on_network() {
-  local container="$1"
-  if ! docker inspect -f '{{json .NetworkSettings.Networks}}' "$container" 2>/dev/null \
-      | grep -q "\"${NETWORK}\""; then
+  local container="$1" nets
+  nets="$(container_networks "$container")"
+  if ! printf '%s\n' "$nets" | grep -qxF "$NETWORK"; then
     docker network connect "$NETWORK" "$container" >/dev/null 2>&1 || true
   fi
 }
 
+# A provider still attached to another stack's network is shared, not ours
+# alone (#168): removing it here would break every sibling stack. Disconnect
+# it from this stack's network and leave it running instead; only remove it
+# outright when this stack was its last user.
 destroy() {
+  local others
   docker rm -f "$NAME" >/dev/null 2>&1 || true
-  docker rm -f "$UPSTREAM_NAME" >/dev/null 2>&1 || true
+  others="$(upstream_other_networks)"
+  if [[ -n "$others" ]]; then
+    echo "Leaving $UPSTREAM_NAME running for:" $others
+    docker network disconnect "$NETWORK" "$UPSTREAM_NAME" >/dev/null 2>&1 || true
+  else
+    docker rm -f "$UPSTREAM_NAME" >/dev/null 2>&1 || true
+  fi
   docker volume rm "$VOLUME" >/dev/null 2>&1 || true
   docker network rm "$NETWORK" >/dev/null 2>&1 || true
 }
@@ -81,6 +110,56 @@ if [[ $# -gt 1 ]]; then
   sed -n '2,7p' "$SELF" >&2
   exit 2
 fi
+
+# A second stack is safe only if it is scoped completely (#187). Every
+# variable below defaults independently, so a half-exported shell used to act
+# on a mix of a private stack and the shared one. Strings, not arrays: under
+# set -u, bash < 4.4 (macOS /bin/bash is 3.2) treats an empty "${a[@]}" as
+# unbound.
+check_scope() {
+  local v set_names="" missing="" problems=""
+  for v in DISPATCHARR_E2E_CONTAINER DISPATCHARR_E2E_VOLUME DISPATCHARR_E2E_NETWORK; do
+    if [[ -n "${!v:-}" ]]; then set_names+=" $v"; else missing+=" $v"; fi
+  done
+  if [[ -n "$set_names" && -n "$missing" ]]; then
+    problems+="  set:${set_names}; also required:${missing}"$'\n'
+  fi
+  if [[ -n "$set_names" && -z "${DISPATCHARR_E2E_PORT:-}" ]]; then
+    problems+="  a scoped stack needs DISPATCHARR_E2E_PORT too"$'\n'
+  fi
+  local up_c=0 up_p=0
+  [[ -n "${DISPATCHARR_E2E_UPSTREAM_CONTAINER:-}" ]] && up_c=1
+  [[ -n "${DISPATCHARR_E2E_UPSTREAM_PORT:-}" ]] && up_p=1
+  if (( up_c != up_p )); then
+    problems+="  DISPATCHARR_E2E_UPSTREAM_CONTAINER and _UPSTREAM_PORT go together"$'\n'
+  fi
+  # The reverse of the check above: a private provider with no scoped stack
+  # is the #187 failure class in the other direction. Without this, setting
+  # only the two upstream variables leaves every stack variable defaulted to
+  # the shared app container, and --down/--reset then destroy it and its
+  # volume -- not the provider's business to protect, but a private provider
+  # is only ever wanted alongside a private stack, so require one.
+  if (( up_c == 1 || up_p == 1 )) && [[ -z "$set_names" ]]; then
+    problems+="  a private provider needs a scoped stack: set DISPATCHARR_E2E_CONTAINER, _VOLUME, _NETWORK and _PORT"$'\n'
+  fi
+  local host port
+  if [[ -n "${E2E_UPSTREAM_INTERNAL_URL:-}" ]]; then
+    host="${E2E_UPSTREAM_INTERNAL_URL#*://}"; host="${host%%[:/]*}"
+    [[ "$host" == "$UPSTREAM_NAME" ]] ||
+      problems+="  E2E_UPSTREAM_INTERNAL_URL names '$host' but the provider is '$UPSTREAM_NAME'"$'\n'
+  fi
+  if [[ -n "${E2E_UPSTREAM_CONTROL_URL:-}" ]]; then
+    port="${E2E_UPSTREAM_CONTROL_URL##*:}"; port="${port%%/*}"
+    [[ "$port" == "$UPSTREAM_PORT" ]] ||
+      problems+="  E2E_UPSTREAM_CONTROL_URL uses port '$port' but the provider publishes '$UPSTREAM_PORT'"$'\n'
+  fi
+  if [[ -n "$problems" ]]; then
+    echo "Refusing a partially scoped stack (see e2e/README.md, 'Running a second stack'):" >&2
+    printf '%s' "$problems" >&2
+    exit 2
+  fi
+}
+check_scope
 
 case "${1:-}" in
   '')
@@ -120,8 +199,12 @@ case "${1:-}" in
   --stop)
     # Keeps the container and its data. `./scripts/e2e_up.sh` restarts it,
     # superuser and seeded rows intact.
-    docker stop "$UPSTREAM_NAME" >/dev/null 2>&1 && echo "Stopped $UPSTREAM_NAME." \
-      || echo "$UPSTREAM_NAME was not running."
+    if [[ -n "$(upstream_other_networks)" ]]; then
+      echo "Leaving $UPSTREAM_NAME running: another stack's network is attached to it."
+    else
+      docker stop "$UPSTREAM_NAME" >/dev/null 2>&1 && echo "Stopped $UPSTREAM_NAME." \
+        || echo "$UPSTREAM_NAME was not running."
+    fi
     docker stop "$NAME" >/dev/null 2>&1 && echo "Stopped $NAME." \
       || echo "$NAME was not running."
     exit 0
@@ -188,9 +271,18 @@ fi
 # container left alone, which keeps the fast path when nothing changed.
 # The provider has no volume, so recreating it costs nothing but a restart.
 UPSTREAM_IMAGE_ID="$(docker image inspect -f '{{.Id}}' "$UPSTREAM_IMAGE")"
+# A recreated provider is shared state, same as destroy() above: record every
+# network besides ours before it is removed, so it can be reattached to every
+# stack it served rather than only to this one (#168). Their scenarios are
+# lost regardless — the registry is an in-memory Map — hence the warning.
+PRIOR_NETWORKS=""
 if EXISTING_IMAGE_ID="$(docker inspect -f '{{.Image}}' "$UPSTREAM_NAME" 2>/dev/null)" \
     && [[ "$EXISTING_IMAGE_ID" != "$UPSTREAM_IMAGE_ID" ]]; then
+  PRIOR_NETWORKS="$(upstream_other_networks)"
   echo "Recreating $UPSTREAM_NAME: the image moved."
+  if [[ -n "$PRIOR_NETWORKS" ]]; then
+    echo "  Other stacks use it (" $PRIOR_NETWORKS "). They keep the provider but lose every scenario they had created."
+  fi
   docker rm -f "$UPSTREAM_NAME" >/dev/null
 fi
 
@@ -199,12 +291,21 @@ if docker ps --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
 elif docker ps -a --format '{{.Names}}' | grep -qx "$UPSTREAM_NAME"; then
   docker start "$UPSTREAM_NAME" >/dev/null
 else
+  # -e UPSTREAM_INTERNAL_ORIGIN: told its own name, so a renamed provider's
+  # playlists point at a host this stack's network can resolve (the #168
+  # comment) instead of the default's literal `e2e-upstream`. A provider
+  # created before this change keeps its old environment until it is
+  # recreated -- run with --down or --recreate to pick it up.
   docker run -d --name "$UPSTREAM_NAME" \
     --network "$NETWORK" \
     -p "127.0.0.1:${UPSTREAM_PORT}:8080" \
+    -e UPSTREAM_INTERNAL_ORIGIN="http://${UPSTREAM_NAME}:8080" \
     "$UPSTREAM_IMAGE" >/dev/null
 fi
 ensure_on_network "$UPSTREAM_NAME"
+for n in $PRIOR_NETWORKS; do
+  docker network inspect "$n" >/dev/null 2>&1 && docker network connect "$n" "$UPSTREAM_NAME" >/dev/null 2>&1 || true
+done
 
 # Wait for the provider before starting Dispatcharr. Dispatcharr does not
 # contact it at boot, so the ordering is not strictly required — but it
