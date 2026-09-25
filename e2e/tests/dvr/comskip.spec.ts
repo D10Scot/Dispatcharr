@@ -275,7 +275,7 @@ test('comskip dispatch reaches a terminal state', { tag: '@characterization' }, 
   // wait cannot miss the event even though it is registered after
   // `scheduleRecording` above — same reasoning recording-execution.spec.ts
   // documents. `recording_started` now also carries `recording_id`
-  // (D10Scot/Dispatcharr#132, fixed in fix/E-3-dvr), but this still
+  // (D10Scot/Dispatcharr#132, fixed by #422), but this still
   // correlates on the seeded channel's generated name — no assertion here
   // depends on the id.
   await ws.waitForMessage('recording_started', {

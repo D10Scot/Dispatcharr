@@ -14,8 +14,8 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  * `schedule_task_on_save` (`apps/channels/signals.py:337-386`, the
  * `Recording` `post_save` receiver) calls `schedule_recording_task`, which
  * does `core.scheduling.get_or_create_schedule(ClockedSchedule, clocked_time=eta)`
- * (`signals.py:272`). Before the fix for D10Scot/Dispatcharr#131 (fixed in
- * fix/E-3-dvr) that line was a bare `ClockedSchedule.objects.get_or_create(clocked_time=eta)`,
+ * (`signals.py:272`). Before the fix for D10Scot/Dispatcharr#131 (fixed by
+ * #422) that line was a bare `ClockedSchedule.objects.get_or_create(clocked_time=eta)`,
  * which is not race-proof against a `clocked_time` two concurrent (or merely
  * close-together) creates both resolve to: if two `ClockedSchedule` rows
  * ever existed for the exact same instant — nothing in the schema stops
@@ -28,7 +28,7 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  * longer breaks scheduling, and a genuine scheduling failure now reaches
  * `logger.exception` at ERROR rather than `print()`. The missing-`recording_id`
  * gap this same signal used to have was the separate D10Scot/Dispatcharr#132,
- * also fixed in fix/E-3-dvr.
+ * also fixed by #422.
  *
  * `uniqueStartTime` exists to make that instant never repeat. A plain
  * `new Date(Date.now() + offsetMs).toISOString()` is not enough on its own:
@@ -37,7 +37,7 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  * future rounding of the result (down to the second, or the minute — exactly
  * what `RecordingUtils.js`'s `createRoundedDate()` does on the frontend, and
  * exactly what produced three collided "Custom Recording" rows during G6's
- * work, filed as D10Scot/Dispatcharr#71, fixed in fix/E-3-dvr) would make an
+ * work, filed as D10Scot/Dispatcharr#71, fixed by #422) would make an
  * accidental collision far *more* likely, not less. **Never round or
  * truncate the string this returns** — a collision no longer breaks
  * scheduling or hides a card (both #131 and #71 are fixed), but it is still
@@ -76,7 +76,7 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  * Skipping that cleanup still has a real cost, even though the sharper of
  * the two this section used to warn about is now fixed:
  *
- *  - **D10Scot/Dispatcharr#71 (fixed in fix/E-3-dvr)** — `categorizeRecordings()`
+ *  - **D10Scot/Dispatcharr#71 (fixed by #422)** — `categorizeRecordings()`
  *    (`frontend/src/utils/pages/DVRUtils.js:63-77`) used to group the DVR
  *    page's "Upcoming Recordings" list by `${program.tvg_id}|${program.title}`,
  *    which collapsed to the literal string `'|'` for every ad-hoc recording
@@ -89,7 +89,7 @@ import type { ApiClient, Recording, WaitOptions, Waiter } from '../../fixtures';
  *    That still widens the row count `uniqueStartTime` exists to keep down:
  *    every leaked row is one more `clocked_time` a later run's
  *    `get_or_create_schedule` can land on. Landing on one is harmless now
- *    (#131 fixed in fix/E-3-dvr — the oldest matching row is reused, and the
+ *    (#131 fixed by #422 — the oldest matching row is reused, and the
  *    recording still schedules), but the row itself is still dead weight in
  *    the shared database, which is reason enough to keep deleting it here.
  *

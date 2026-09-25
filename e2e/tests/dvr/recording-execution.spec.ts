@@ -17,8 +17,8 @@ import {
  * `test()` declarations, not one: a passing premise plus what was a
  * `test.fail()` pinning D10Scot/Dispatcharr#135 — see the comment above the
  * second `test()` for the product defect that split it, discovered
- * verifying the brief's assumption against source, and fixed in
- * fix/E-3-dvr, which flipped the pin to a plain `test()`.
+ * verifying the brief's assumption against source, and fixed by #422,
+ * which flipped the pin to a plain `test()`.
  *
  * Both rows follow `dvr.spec.ts`'s cleanup shape: module-scoped bindings
  * assigned the moment each id resolves, deleted in `afterEach` rather than
@@ -83,7 +83,7 @@ test('a scheduled recording fires, plays back in progress, completes and is serv
   // runs — the fixture awaits `connection_established` at setup — so this
   // wait cannot miss the event even though it is registered after
   // `scheduleRecording` above. `recording_started` now also carries
-  // `recording_id` (D10Scot/Dispatcharr#132, fixed in fix/E-3-dvr), but this
+  // `recording_id` (D10Scot/Dispatcharr#132, fixed by #422), but this
   // still correlates on the seeded channel's generated name — no assertion
   // here depends on the id.
   //
@@ -251,8 +251,8 @@ test('a scheduled recording fires, plays back in progress, completes and is serv
 /**
  * Schedules and primes a fresh recording, waits for it to reach 'recording',
  * and returns its `custom_properties`. Shared by the premise test and the
- * row-2 test below (a former `test.fail()`, now a plain `test()` since
- * fix/E-3-dvr) — both need the identical setup, and duplicating it would let
+ * row-2 test below (a former `test.fail()`, now a plain `test()` fixed by
+ * #422) — both need the identical setup, and duplicating it would let
  * the two drift apart on exactly the fixture shape the defect comment
  * depended on.
  *
@@ -299,7 +299,7 @@ async function primeOutputPathRecording(
 }
 
 // Guards the premise the row-2 test below depends on. That test was a
-// test.fail() until fix/E-3-dvr (D10Scot/Dispatcharr#135): test.fail() is
+// test.fail() until fixed by #422 (D10Scot/Dispatcharr#135): test.fail() is
 // satisfied by ANY failure inside it, so no assertion in that body could
 // guard its own premise, and this row still matters now that it is a plain
 // test() — it asserts the part of the path shape (library_root, the
@@ -330,7 +330,7 @@ test('row 2 premise: an ad-hoc recording writes its fallback file under /data/re
   // `{start}` is `start_time.strftime('%Y%m%d_%H%M%S')` — 8 digits, an
   // underscore, 6 digits. Deliberately not anchored on a `{show}` segment —
   // see the comment above the row-2 test below for why that part was
-  // contested rather than premised, before fix/E-3-dvr fixed it.
+  // contested rather than premised, before #422 fixed it.
   expect(filePath).toMatch(/^\/data\/recordings\/TV_Shows\/(?:[^/]+\/)?\d{8}_\d{6}\.mkv$/);
 
   const hlsDir = cp._hls_dir as string | undefined;
@@ -347,7 +347,7 @@ test('row 2 premise: an ad-hoc recording writes its fallback file under /data/re
 // `else channel.name` branch of the show/title derivation was dead code, so
 // every ad-hoc recording with no EPG match lost the per-channel/show
 // subdirectory `tv_fallback_template`'s `{show}` placeholder exists to
-// provide. Fixed in fix/E-3-dvr, which reaches the channel-name fallback
+// provide. Fixed by #422, which reaches the channel-name fallback
 // whenever the programme has no title. Filed as
 // https://github.com/D10Scot/Dispatcharr/issues/135, closed by that fix.
 test('the recording lands where the DVR templates say it should', { tag: '@characterization' }, async ({

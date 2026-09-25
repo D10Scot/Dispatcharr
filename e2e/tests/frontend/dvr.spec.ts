@@ -59,7 +59,7 @@ async function findRecording(api: ApiClient, channelId: number): Promise<Recordi
 // fresh one and hid it from the DOM. This is exactly how this test failed
 // twice while under development (three leaked debug recordings merged into
 // one card and hid the real assertion target) — filed as
-// https://github.com/D10Scot/Dispatcharr/issues/71, fixed in fix/E-3-dvr:
+// https://github.com/D10Scot/Dispatcharr/issues/71, fixed by #422:
 // the grouping key now falls back to the recording's own id when neither
 // field is set, so a leaked row can no longer hide another run's card. It
 // is still an orphaned server-side recording and `PeriodicTask`/
