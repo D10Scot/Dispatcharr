@@ -436,9 +436,9 @@ same convention G3's and G5's blocks set):
   redirect, byte delivery
 - `e2e/tests/streaming/xc-vod-playback.spec.ts` — the root XC `/movie/`/`/series/` routes, plus
   the `Response`-not-imported (`#100`) and episode-`DoesNotExist`-guard (`#99`) known bugs
-- `e2e/tests/streaming/vod-range.spec.ts` — Range and seek, plus the range-unsupported (`#66`,
-  both the capability row and its byte-level elaboration), suffix-range (`#64`) and
-  fresh-session-416 (`#98`) known bugs
+- `e2e/tests/streaming/vod-range.spec.ts` — Range and seek, plus the range-unsupported (both the
+  capability row and its byte-level elaboration), suffix-range and fresh-session-416 fixes
+  (`#64`, `#66`, `#98`, fixed by `#437`)
 - `e2e/tests/streaming/vod-adult-streamable.spec.ts` — the `stream_xc_movie`/`stream_vod`
   adult-filter fix (`#110`, fixed by `#392`)
 - `e2e/tests/streaming/vod-upstream-error.spec.ts` — the provider-credential disclosure fix
