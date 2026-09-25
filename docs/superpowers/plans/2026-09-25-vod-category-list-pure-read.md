@@ -12,13 +12,13 @@
 | PRs | **one**, small: one method deleted, one helper added, its two callers, two new test modules, two e2e specs (one predicate, comments), `e2e/README.md`, one `e2e/COVERAGE.md` row, one ledger row. |
 | branch | `fix/490-vod-category-list-pure-read` (not `migration/…`: nothing under `docker/` or the relay is touched) |
 | backend labels | `apps.m3u.tests`, `apps.output.tests`, `apps.vod.tests` (measured: `printf '%s\n' <the PR's paths> \| python3 scripts/ci_backend_test_labels.py` → `["apps.m3u.tests", "apps.output.tests", "apps.vod.tests"]`; `apps/vod/` routes to `apps.output.tests` too through `_PATH_ALIASES`, and `apps/m3u/api_views.py` alone → `["apps.m3u.tests"]`) |
-| upstreamable | the backend half, yes: upstream `dev` (`8621e737`, 2026-09-25) carries the same `list()` override (`apps/vod/api_views.py:770`) and the same `create()`/`update()` code (`apps/m3u/api_views.py:144`, `:202`), checked with `gh api "repos/Dispatcharr/Dispatcharr/contents/<path>?ref=dev"`. The e2e, README, COVERAGE and ledger edits are fork-only. |
+| upstreamable | the backend half, yes: upstream `dev` (`8621e737`, 2026-09-25) carries the same `list()` override (`apps/vod/api_views.py:769`) and the same `create()`/`update()` code (`apps/m3u/api_views.py:144`, `:202`), checked with `gh api "repos/Dispatcharr/Dispatcharr/contents/<path>?ref=dev"`. The e2e, README, COVERAGE and ledger edits are fork-only. |
 
 **What this plan finds that the issue does not say.** A reviewer should check these first.
 
-1. **"Back to an exact count" is five, not three, and it would be five with or without this fix.** Every `enable_vod` XC account relates to both "Uncategorized" categories once any VOD refresh has run: `refresh_movies` and `refresh_series` `get_or_create` the category and the account's relation on every refresh (`apps/vod/tasks.py:187-205`, `:242-260`), and `seedCatalogue()` posts `refresh-vod/` (`e2e/tests/seeded/vod-ingest-fidelity.spec.ts:91-93`). So the `?m3u_account=` answer for that account is its three categories plus `movie/Uncategorized` and `series/Uncategorized`. The comment at `:339-344` already says "these three plus up to two Uncategorized rows, never exactly three". Measured on a private e2e stack built from the fixed tree: a `body.length === 3` predicate timed out at 120 s with `last observed: [{"id":1,"name":"Uncategorized","category_type":"movie",…`. The issue's account of the hang ("each poll added an Uncategorized row") is also slightly off: `get_or_create` adds the account's two relations on the **first** poll and nothing after, so the answer was a stable five, never three. What the pure read buys the e2e pin is that the answer no longer depends on whether *a read* has happened. The exact-five predicate passes on the seed image as well (measured, 7/7 on both images), so **the e2e change is a strengthening, not a red→green pin**. The pure-read property is pinned by the backend test (Appendix A), which is red on the seed.
+1. **"Back to an exact count" is five, not three, and it would be five with or without this fix.** Every `enable_vod` XC account relates to both "Uncategorized" categories once any VOD refresh has run: `refresh_movies` and `refresh_series` `get_or_create` the category and the account's relation on every refresh (`apps/vod/tasks.py:187-205`, `:242-260`), and `seedCatalogue()` posts `refresh-vod/` (`e2e/tests/seeded/vod-ingest-fidelity.spec.ts:92-94`: `seed.xcAccount` at `:92`, the POST at `:93`, its 202 at `:94`). So the `?m3u_account=` answer for that account is its three categories plus `movie/Uncategorized` and `series/Uncategorized`. The comment at `:339-344` already says "these three plus up to two Uncategorized rows, never exactly three". Measured on a private e2e stack built from the fixed tree: a `body.length === 3` predicate timed out at 120 s with `last observed: [{"id":1,"name":"Uncategorized","category_type":"movie",…`. The issue's account of the hang ("each poll added an Uncategorized row") is also slightly off: `get_or_create` adds the account's two relations on the **first** poll and nothing after, so the answer was a stable five, never three. What the pure read buys the e2e pin is that the answer no longer depends on whether *a read* has happened. The exact-five predicate passes on the seed image as well (measured, 7/7 on both images), so **the e2e change is a strengthening, not a red→green pin**. The pure-read property is pinned by the backend test (Appendix A), which is red on the seed.
 2. **Deleting the override alone would regress the UI for every new account.** `M3UAccountViewSet.create()` runs `refresh_categories(account_id)` synchronously when the request has `enable_vod` (`apps/m3u/api_views.py:139-144`), and `refresh_categories` creates only the provider's categories (`apps/vod/tasks.py:129-181`, through `batch_create_categories`), never "Uncategorized". The frontend then calls `fetchCategories()` and opens the group filter at once (`frontend/src/components/forms/M3U.jsx:180-185`). That filter lists only categories with a relation to this account (`frontend/src/components/forms/VODCategoryFilter.jsx:38-51`). Today the "Uncategorized" pair appears there because that very `fetchCategories()` GET creates it. With the override gone and nothing else changed, a new account's filter would lack both until the first VOD refresh, so a user could not disable "Uncategorized" before it ingests. `refresh_account_on_save` queues nothing for an XC account (`apps/m3u/signals.py:19-20`), so that refresh does not follow creation automatically. Measured: on the seed, `test_creating_an_xc_account_with_vod_enabled_creates_both_relations` (Appendix B) fails with `AssertionError: {} != {'movie': False, 'series': False}`, which is the state this regression would leave. The fix therefore moves the block into a helper, `ensure_uncategorized_relations(account_id)`, called from `create()` (new) and from `update()` (replacing the identical inline block at `:202-238`).
-3. **`update()` already creates the pair, from a stale instance.** The block at `apps/m3u/api_views.py:202-238` reads `auto_enable_new_groups_vod` from `instance`, fetched at `:150` **before** `super().update()` saves (`:192`), so a PATCH that sets `enable_vod` and `auto_enable_new_groups_vod` together used the pre-PATCH flag. The helper re-reads the account after the save, so that PATCH now uses the new flag. This is the only behaviour change to `update()`; it is the value the old `list()` would also have used had it run first.
+3. **`update()` already creates the pair, from a stale instance.** The block at `apps/m3u/api_views.py:202-238` reads `auto_enable_new_groups_vod` from `instance`, fetched at `:150` **before** `super().update()` saves (`:192`), so a PATCH that sets `enable_vod` and `auto_enable_new_groups_vod` together used the pre-PATCH flag. The helper re-reads the account after the save, so that PATCH now uses the new flag. This is the only behaviour change to `update()`; it is the value the old `list()` would also have used had it run first. It is pinned red→green by `test_enabling_vod_uses_the_flags_the_same_request_saved` (Appendix B): on the seed that PATCH leaves `{'movie': True, 'series': True}` (measured), after Appendix E `{'movie': False, 'series': False}`. A refactor that handed the stale `instance` to the helper would fail it.
 4. **All three copies use `auto_enable_new_groups_vod` for the series relation**, while `refresh_series` reads `auto_enable_new_groups_series` (`apps/vod/tasks.py:251`). The first writer wins, since all use `get_or_create`. The helper keeps the `_vod` flag for both, exactly as `list()` and `update()` did, and its docstring says so. Changing it is out of scope (Open question Q1). The new tests set both flags to the same value, or leave both at the default, so they pin neither reading.
 5. **No data migration.** An existing install where an `enable_vod` account somehow lacks the pair loses nothing but the pair's row in that account's group filter until its next VOD refresh (the account's periodic `refresh_single_m3u_account` queues `refresh_vod_content`, `apps/m3u/tasks.py:4010-4014`), which recreates it. An uncategorised movie cannot be ingested without that refresh, and `refresh_movies` creates the relation before it processes a movie. Existing rows are untouched.
 6. **The two e2e specs and `e2e/README.md` document the write as a hazard, in four places.** `vod-ingest-fidelity.spec.ts:333-344` (the weakened pin), `vod-category-gating.spec.ts:301-306` ("Hazard 1" cites `VODCategoryViewSet.list`, `apps/vod/api_views.py:647`) and `:312-315` ("Hazard 2" reasons from another worker's GET), and `e2e/README.md:362-367` ("it writes rows on every call"). All four are rewritten; no assertion in `vod-category-gating.spec.ts` changes. `CLAUDE.md` names neither the endpoint nor "Uncategorized" (`git grep -n "vod/categories\|VODCategoryViewSet\|Uncategorized" 93d1e424 -- CLAUDE.md` exits 1), so it is not edited. The older G9 plan and spec (`docs/superpowers/plans/2026-08-30-e2e-vod-series.md:26`, `:876`) describe the write too; they are historical records and are not edited.
@@ -73,7 +73,7 @@ Checked at `93d1e424` with `gh pr list --repo D10Scot/Dispatcharr --state open -
 
 1. **The fix is "move the block to a helper", not "delete the override".** Deleting alone loses the pair on a new account's group filter (finding 2). The helper lives in `apps/vod/tasks.py`, beside `refresh_movies`/`refresh_series`, which create the same rows; `apps/m3u/api_views.py` already imports from there lazily (`:142`, `:242`). It is **appended at the end of the file**, not placed near `refresh_movies`, so no existing line of `apps/vod/tasks.py` moves: the e2e specs and `e2e-upstream/` cite that file by line (`vod-category-gating.spec.ts:97`, `:212`, `:271`, `e2e-upstream/src/scenario.ts:69`, …).
 2. **The helper takes an id and re-reads the account.** `ensure_uncategorized_relations(account_id)` loads `M3UAccount.objects.filter(id=account_id, account_type=XC).first()` and returns unless `custom_properties["enable_vod"]` is true. That gate is the stored value, as `list()`'s was (`apps/vod/api_views.py:671-675`), rather than `request.data`: `create()` gates on `request.data.get("enable_vod")` (`apps/m3u/api_views.py:140-141`), which for a multipart request is a string, so `"false"` is truthy there. `list()` also required `is_active=True` (`:665-668`); the helper does not, matching `update()`, which never checked it. For `create()` that is moot: `refresh_categories` raises `DoesNotExist` on an inactive account (`apps/vod/tasks.py:130`) — pre-existing, not touched.
-3. **In `create()` the helper runs before `refresh_categories`.** The pair needs nothing from the provider, so it is created whether or not the provider call that follows succeeds.
+3. **In `create()` the helper runs before `refresh_categories`.** The pair needs nothing from the provider, so it is created whether or not the provider call that follows succeeds. Pinned by `test_the_pair_is_created_before_the_provider_is_asked` (Appendix B), which makes `refresh_categories` raise; `ATOMIC_REQUESTS = False` (`dispatcharr/settings.py:162`), so the account and the pair survive the exception.
 4. **`update()`'s inline block becomes one helper call.** Same rows, same gate (the `old_vod_enabled`/`new_vod_enabled` condition at `:197-201` is unchanged), one behaviour change (finding 3). The comment "Create Uncategorized categories immediately so they're available in the UI" stays.
 5. **`apps/vod/api_views.py` loses `list()` and the now-unused `M3UVODCategoryRelation` import.** `git grep -n "M3UVODCategoryRelation" 93d1e424 -- apps/vod/api_views.py` shows only `:18` and the deleted method; nothing imports the name from that module (`git grep -n "from apps.vod.api_views import"` exits 1).
 6. **The pure-read test counts SQL verbs, not only rows.** `CaptureQueriesContext` collects every statement of the request; a write is any statement starting with `INSERT`, `UPDATE` or `DELETE`. `SAVEPOINT` statements that `get_or_create` issues are not counted, so the test fails on the write itself, not on transaction plumbing. It also asserts `VODCategory` and `M3UVODCategoryRelation` counts are unchanged, and that the answer is exactly the one seeded category. Every case starts from the state in which the old `list()` wrote four rows: an active XC account with `enable_vod`, and no "Uncategorized" row anywhere (asserted in `setUp`).
@@ -109,13 +109,15 @@ Checked at `93d1e424` with `gh pr list --repo D10Scot/Dispatcharr --state open -
   ```bash
   RUN apps.vod.tests.test_vod_category_list_is_pure_read apps.m3u.tests.test_enable_vod_creates_uncategorized
   ```
-  Expected (measured at `93d1e424`): `Ran 8 tests`, `FAILED (failures=3, errors=3)`, exactly:
+  Expected (measured at `93d1e424`): `Ran 10 tests`, `FAILED (failures=5, errors=3)`, exactly:
   - `FAIL: test_listing_categories_writes_nothing` and `FAIL: test_listing_one_accounts_categories_writes_nothing`, each `AssertionError: Lists differ: ['INSERT INTO "vod_vodcategory" ("name", "[… chars]id"'] != []` followed by `First list contains 4 additional elements.` and `First extra element 0: 'INSERT INTO "vod_vodcategory" ("name", "category_type", "created_at", "updated_at") VALUES ('Uncategorized', 'movie', …`. The `[… chars]` count varies with the timestamps (1112–1116 measured). Four inserts: two categories, two relations. This is the defect.
   - `FAIL: test_creating_an_xc_account_with_vod_enabled_creates_both_relations`, `AssertionError: {} != {'movie': False, 'series': False}` — finding 2's gap: on the seed only the listing creates the pair for a new account.
+  - `FAIL: test_the_pair_is_created_before_the_provider_is_asked`, `AssertionError: {} != {'movie': True, 'series': True}` — the same gap, with the provider failing. The log also shows the request's own `RuntimeError: provider down`; that is the mocked provider, which the test expects (`assertRaises`).
+  - `FAIL: test_enabling_vod_uses_the_flags_the_same_request_saved`, `AssertionError: {'movie': True, 'series': True} != {'movie': False, 'series': False}` — finding 3: the seed's `update()` reads the flag from the pre-PATCH instance.
   - `ERROR:` on the three `EnsureUncategorizedRelationsTests` cases, each `ImportError: cannot import name 'ensure_uncategorized_relations' from 'apps.vod.tasks'` — the helper does not exist yet. The import is per test, so the listing tests above still reach their own assertion.
   - `test_creating_an_xc_account_without_vod_creates_neither` and `test_enabling_vod_on_an_existing_account_creates_both_relations` **pass** on the seed. The second is the control that the `update()` refactor keeps what `update()` already did.
 
-- [ ] **Task 2 — the fix, green.** Apply **Appendices C, D and E** (`git -C <wt> apply --whitespace=error <scratch>/C.diff`, and so on). Re-run the Task 1 command. Expected (measured): `Ran 8 tests`, `OK`. Then `cd <wt> && python3 scripts/check_credential_logging.py apps/vod/api_views.py apps/vod/tasks.py apps/m3u/api_views.py apps/vod/tests/test_vod_category_list_is_pure_read.py apps/m3u/tests/test_enable_vod_creates_uncategorized.py; echo "exit=$?"`, expecting `exit=0` (measured).
+- [ ] **Task 2 — the fix, green.** Apply **Appendices C, D and E** (`git -C <wt> apply --whitespace=error <scratch>/C.diff`, and so on). Re-run the Task 1 command. Expected (measured): `Ran 10 tests`, `OK`. Then `cd <wt> && python3 scripts/check_credential_logging.py apps/vod/api_views.py apps/vod/tasks.py apps/m3u/api_views.py apps/vod/tests/test_vod_category_list_is_pure_read.py apps/m3u/tests/test_enable_vod_creates_uncategorized.py; echo "exit=$?"`, expecting `exit=0` (measured).
 
 - [ ] **Task 3 — break-checks.** First copy the three fixed files aside: `cp <wt>/apps/vod/api_views.py <scratch>/vod_api_views.py; cp <wt>/apps/vod/tasks.py <scratch>/vod_tasks.py; cp <wt>/apps/m3u/api_views.py <scratch>/m3u_api_views.py`. Each check is one wrong edit, one module, then a revert by copying the saved file back. Every message below was measured.
   1. **A `list()` that calls the helper** (the plausible wrong fix: "moved to a helper" but still called from the read). In `apps/vod/api_views.py`, inside `VODCategoryViewSet`, after `get_permissions`, add:
@@ -129,14 +131,16 @@ Checked at `93d1e424` with `gh pr list --repo D10Scot/Dispatcharr --state open -
              return super().list(request, *args, **kwargs)
      ```
      `RUN apps.vod.tests.test_vod_category_list_is_pure_read` → `FAILED (failures=2)`: both listing tests, `First list contains 4 additional elements.`, first extra element `INSERT INTO "vod_vodcategory" … ('Uncategorized', 'movie', …`. Names the mechanism: the read inserts the Uncategorized rows. Revert.
-  2. **`create()` without the helper.** In `apps/m3u/api_views.py` delete the line `                ensure_uncategorized_relations(account_id)`. `RUN apps.m3u.tests.test_enable_vod_creates_uncategorized` → `FAILED (failures=1)`: `test_creating_an_xc_account_with_vod_enabled_creates_both_relations`, `AssertionError: {} != {'movie': False, 'series': False}`. Revert.
-  3. **`update()` without the helper.** Delete `            ensure_uncategorized_relations(instance.id)`. Same module → `FAILED (failures=1)`: `test_enabling_vod_on_an_existing_account_creates_both_relations`, `AssertionError: {} != {'movie': True, 'series': True}`. Revert.
+  2. **`create()` without the helper.** In `apps/m3u/api_views.py` delete the line `                ensure_uncategorized_relations(account_id)`. `RUN apps.m3u.tests.test_enable_vod_creates_uncategorized` → `FAILED (failures=2)`: `test_creating_an_xc_account_with_vod_enabled_creates_both_relations`, `AssertionError: {} != {'movie': False, 'series': False}`, and `test_the_pair_is_created_before_the_provider_is_asked`, `AssertionError: {} != {'movie': True, 'series': True}`. Revert.
+  3. **`update()` without the helper.** Delete `            ensure_uncategorized_relations(instance.id)`. Same module → `FAILED (failures=2)`: `test_enabling_vod_on_an_existing_account_creates_both_relations`, `AssertionError: {} != {'movie': True, 'series': True}`, and `test_enabling_vod_uses_the_flags_the_same_request_saved`, `AssertionError: {} != {'movie': False, 'series': False}`. Revert.
   4. **The helper ignores `enable_vod`.** In `apps/vod/tasks.py` delete the two lines `    if not custom_props.get("enable_vod", False):` / `        return`. `RUN apps.vod.tests.test_vod_category_list_is_pure_read` → `FAILED (failures=1)`: `test_an_xc_account_without_vod_gets_nothing`, `AssertionError: {'movie': True, 'series': True} != {}`. Revert.
   5. **The helper ignores the account type.** Replace `id=account_id, account_type=M3UAccount.Types.XC` with `id=account_id`. Same module → `FAILED (failures=1)`: `test_a_standard_account_gets_nothing`, `AssertionError: {'movie': True, 'series': True} != {}`. Revert.
 
-  After the reverts, re-run the Task 1 command (`Ran 8 tests`, `OK`), and confirm `git -C <wt> diff 93d1e424 -- apps/vod/api_views.py apps/vod/tasks.py apps/m3u/api_views.py` is exactly Appendices C, D and E.
+  6. **The helper after the provider call.** In `create()`, swap the two lines so `refresh_categories(account_id)` comes before `ensure_uncategorized_relations(account_id)`. `RUN apps.m3u.tests.test_enable_vod_creates_uncategorized` → `FAILED (failures=1)`: `test_the_pair_is_created_before_the_provider_is_asked`, `AssertionError: {} != {'movie': True, 'series': True}`. Revert.
 
-- [ ] **Task 4 — the labels.** Fresh database, one label per run: `RUN --noinput apps.vod.tests`, `apps.output.tests`, `apps.m3u.tests`. Expected (measured): `apps.vod.tests` `Ran 90 tests` `OK` (85 + 5); `apps.output.tests` `Ran 121 tests` `OK` (unchanged); `apps.m3u.tests` `Ran 248 tests` `OK` (245 + 3). Also `cd <wt> && git status --porcelain --untracked-files=all | cut -c4- | python3 scripts/ci_backend_test_labels.py` (the two new test modules are untracked until Task 7, so `git diff` alone would miss them), expecting `["apps.m3u.tests", "apps.output.tests", "apps.vod.tests"]`.
+  After the reverts, re-run the Task 1 command (`Ran 10 tests`, `OK`). Then compare each file with its appendix, one at a time and ignoring the `index` line (which carries your tree's blob hashes): for Appendix C, `git -C <wt> diff 93d1e424 -- apps/vod/api_views.py | grep -v '^index ' | diff - <(grep -v '^index ' <scratch>/C.diff)` prints nothing; likewise D with `apps/vod/tasks.py` and E with `apps/m3u/api_views.py`. Do not diff the three paths in one command: `git diff` orders `apps/m3u/` before `apps/vod/`.
+
+- [ ] **Task 4 — the labels.** Fresh database, one label per run: `RUN --noinput apps.vod.tests`, `apps.output.tests`, `apps.m3u.tests`. Expected (measured): `apps.vod.tests` `Ran 90 tests` `OK` (85 + 5); `apps.output.tests` `Ran 121 tests` `OK` (unchanged); `apps.m3u.tests` `Ran 250 tests` `OK` (245 + 5). Also `cd <wt> && git status --porcelain --untracked-files=all | cut -c4- | python3 scripts/ci_backend_test_labels.py` (the two new test modules are untracked until Task 7, so `git diff` alone would miss them), expecting `["apps.m3u.tests", "apps.output.tests", "apps.vod.tests"]`.
 
 - [ ] **Task 5 — the e2e edits.** Apply **Appendices F, G and H**, and make the `e2e/COVERAGE.md` edit of **Appendix I.1**. Then `cd <wt>/e2e && npm ci && npx tsc --noEmit -p .; echo "exit=$?"` (expect `exit=0`, measured) and `npx playwright test --project=guards --reporter=line 2>&1 | tail -1` (expect `50 passed`, measured). The `PostToolUse` hook also runs `tsc` on each edited `.ts` file.
 
@@ -184,7 +188,7 @@ Checked at `93d1e424` with `gh pr list --repo D10Scot/Dispatcharr --state open -
 
 - [ ] **Task 8 — the ledger, second commit.** With the PR number `<N>` from Task 7, append the row in **Appendix I.2** to `metrics/curated/defects.yml`, substituting `<N>` and today's date. Then `cd <wt> && python3 -m metrics.build --validate-only; echo "exit=$?"`. Expected (measured with a placeholder number): `ok: 46 metrics, 37 milestones, 47 defects`, `exit=0`. Also `bash <wt>/scripts/run_metrics_tests.sh build 2>&1 | tail -1` → `OK` (measured: `Ran 102 tests`). Commit (`chore(metrics): ledger row for #490`), push.
 
-**Tests added:** `apps/vod/tests/test_vod_category_list_is_pure_read.py` (5 cases), `apps/m3u/tests/test_enable_vod_creates_uncategorized.py` (3 cases). **Tests changed:** the two e2e specs, per Task 5's table. **Tests removed:** none.
+**Tests added:** `apps/vod/tests/test_vod_category_list_is_pure_read.py` (5 cases), `apps/m3u/tests/test_enable_vod_creates_uncategorized.py` (5 cases). **Tests changed:** the two e2e specs, per Task 5's table. **Tests removed:** none.
 
 ### PR description draft (implementation PR)
 
@@ -200,7 +204,7 @@ Checked at `93d1e424` with `gh pr list --repo D10Scot/Dispatcharr --state open -
 >
 > Evidence:
 > - Red on the unfixed tree: <paste Task 1>.
-> - Green: <paste Task 2>. Break-checks: <paste Task 3's five>.
+> - Green: <paste Task 2>. Break-checks: <paste Task 3's six>.
 > - Labels (fresh DB): <paste Task 4>.
 > - e2e, private stack, before and after images: <paste Task 6's two stats lines>; exact-three break-check: <paste>.
 > - `tsc`, guards, metrics validator: <paste>.
@@ -422,6 +426,27 @@ class EnableVodCreatesUncategorizedTests(TestCase):
         refresh_categories.assert_called_once_with(account_id)
         self.assertEqual(self._uncategorized(account_id), {"movie": False, "series": False})
 
+    def test_the_pair_is_created_before_the_provider_is_asked(self):
+        # ensure_uncategorized_relations needs nothing from the provider, so
+        # it runs before refresh_categories: a provider that fails the
+        # synchronous category fetch still leaves the account its pair.
+        body = {
+            "name": "xc-provider-down",
+            "account_type": "XC",
+            "server_url": "http://xc-down.example",
+            "username": "u",
+            "password": "p",
+            "is_active": True,
+            "enable_vod": True,
+        }
+        with mock.patch("apps.m3u.api_views.refresh_m3u_groups"), mock.patch(
+            "apps.vod.tasks.refresh_categories", side_effect=RuntimeError("provider down")
+        ):
+            with self.assertRaises(RuntimeError):
+                self.client.post("/api/m3u/accounts/", body, format="json")
+        account = M3UAccount.objects.get(name="xc-provider-down")
+        self.assertEqual(self._uncategorized(account.id), {"movie": True, "series": True})
+
     def test_creating_an_xc_account_without_vod_creates_neither(self):
         account_id, refresh_categories = self._create(enable_vod=False)
         refresh_categories.assert_not_called()
@@ -442,6 +467,27 @@ class EnableVodCreatesUncategorizedTests(TestCase):
         self.assertEqual(res.status_code, 200, res.content)
         refresh_vod_content.delay.assert_called_once_with(account.id)
         self.assertEqual(self._uncategorized(account.id), {"movie": True, "series": True})
+
+    def test_enabling_vod_uses_the_flags_the_same_request_saved(self):
+        # update() fetched the account before super().update() saved it, so
+        # its inline block read auto_enable_new_groups_vod from the pre-PATCH
+        # row. The helper re-reads after the save.
+        account = M3UAccount.objects.create(
+            name="xc-later-off",
+            server_url="http://xc-later-off.example",
+            account_type=M3UAccount.Types.XC,
+            is_active=True,
+            custom_properties={"enable_vod": False},
+        )
+        with mock.patch("apps.vod.tasks.refresh_vod_content") as refresh_vod_content:
+            res = self.client.patch(
+                f"/api/m3u/accounts/{account.id}/",
+                {"enable_vod": True, "auto_enable_new_groups_vod": False},
+                format="json",
+            )
+        self.assertEqual(res.status_code, 200, res.content)
+        refresh_vod_content.delay.assert_called_once_with(account.id)
+        self.assertEqual(self._uncategorized(account.id), {"movie": False, "series": False})
 ````
 
 ## Appendix C — `apps/vod/api_views.py` (against `93d1e424`)
@@ -807,4 +853,5 @@ index c4580f5c..b6f12d6b 100644
 - Every fix and test above was prototyped in the planner's worktree at `93d1e424`, measured in the private container `fixplan-490-b2`, and reverted; only this document is committed.
 - Appendices C–H were produced with `git diff 93d1e424 -- <path>` from the prototype. After this document was written, each fenced block was **extracted from this file** and applied to a fresh `git archive 93d1e424` tree: `git apply --check --whitespace=error` accepted each one alone and all six together; after applying them and copying Appendices A and B out of this file, each of the eight files was byte-identical (`cmp`) to the measured prototype.
 - Appendix I.1's old literal occurs once in `git show "93d1e424:e2e/COVERAGE.md"`; I.2 with `<N>` = 999 passed `python3 -m metrics.build --validate-only` (`47 defects`).
-- The measured runs: seed baseline (Task 0), red (Task 1), green (Task 2), five break-checks (Task 3), fresh-database labels (Task 4), `tsc` and the guards project (Task 5), before/after images and the exact-three break-check (Task 6).
+- Round 2 (review of `e8d1255c`): Appendix B gained two cases; red, green, break-checks 2, 3 and 6 and the three fresh-database labels were re-measured in a recreated `fixplan-490-b2`, and the round trip above was repeated for Appendix B.
+- The measured runs: seed baseline (Task 0), red (Task 1), green (Task 2), six break-checks (Task 3), fresh-database labels (Task 4), `tsc` and the guards project (Task 5), before/after images and the exact-three break-check (Task 6).
