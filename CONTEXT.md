@@ -160,11 +160,12 @@ vestigial — do not use them.
   behaviour at a time against that matrix, and 2d cut over — nginx flipped
   in 2d-3, `apps/proxy/live_proxy/` deleted in 2d-4. Complete. The Python
   relay process stays, narrowed to VOD and catch-up.
-- **Phase 3** — "remove Redis from the data path": not started, and
-  smaller than its charter describes, because Phase 2's move to
-  in-process state already took the live ring buffer, the ownership leases
-  and the client sets out of Redis. What is left is VOD, catch-up and the
-  provider-slot counters.
+- **Phase 3** — "remove Redis from the data path": closed without being
+  executed, by `docs/adr/0007-phase-3-is-closed-because-phase-2-met-its-charter.md`.
+  Phase 2's move to in-process state already took the live ring buffer, the
+  ownership leases and the client sets out of Redis, which was the whole of
+  the charter. What is left on VOD, catch-up and the provider-slot counters
+  is coordination, and stays in Redis.
 - **Parity matrix** — `docs/relay-parity-matrix.md`: one row per
   externally-observable live-path behaviour, each carrying the source it
   was derived from and the test that pins it. Rows are addressed by number
