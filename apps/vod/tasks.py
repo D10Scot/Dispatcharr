@@ -495,15 +495,29 @@ def process_movie_batch(account, batch, categories, relations, scan_start_time=N
             trailer_raw = movie_data.get('trailer') or movie_data.get('youtube_trailer') or ''
             trailer = extract_string_from_array_or_string(trailer_raw) if trailer_raw else None
             logo_url = movie_data.get('stream_icon') or ''
+            # A provider can send a non-string stream_icon (int, dict); len(logo_url)
+            # below (and again later in this function) would raise TypeError on
+            # anything that isn't a str, so coerce loosely here (#468 neighbour).
+            if not isinstance(logo_url, str):
+                logo_url = ''
 
             director = extract_string_from_array_or_string(
                 movie_data.get('director') or ''
             )
             actors_raw = movie_data.get('actors') or movie_data.get('cast') or ''
             if isinstance(actors_raw, list):
-                actors = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
+                # A provider can send a non-string element (int, float) inside the
+                # list; str() it before stripping so that element doesn't raise
+                # AttributeError (#468). The truthiness filter is unchanged: a
+                # falsy element (0, '', None) is still dropped from the join.
+                actors = ', '.join(str(s).strip() for s in actors_raw if s and str(s).strip()) or None
             else:
-                actors = actors_raw.strip() if actors_raw else None
+                # A non-string, non-list actors/cast value (int, float, dict — #468)
+                # is treated as absent rather than stringified: this mirrors
+                # extract_string_from_array_or_string's own handling of a scalar
+                # (see the else there), and a stringified dict landing in
+                # custom_properties would be worse for the UI than no actors at all.
+                actors = actors_raw.strip() if isinstance(actors_raw, str) and actors_raw else None
             release_date = movie_data.get('release_date') or movie_data.get('releasedate') or ''
 
             custom_props = {}
@@ -2321,7 +2335,10 @@ def refresh_movie_advanced_data(m3u_movie_relation_id, force_refresh=False):
                     actors_raw = info.get(actors_key)
                     if should_update_field(custom_props.get('actors'), actors_raw):
                         if isinstance(actors_raw, list):
-                            custom_props['actors'] = ', '.join(s.strip() for s in actors_raw if s and str(s).strip()) or None
+                            # Same shape as process_movie_batch's list branch (#468):
+                            # str() the element before stripping so a non-string
+                            # element (int, float) doesn't raise AttributeError.
+                            custom_props['actors'] = ', '.join(str(s).strip() for s in actors_raw if s and str(s).strip()) or None
                         else:
                             custom_props['actors'] = extract_string_from_array_or_string(actors_raw)
                         updated = True
