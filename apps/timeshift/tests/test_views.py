@@ -4752,6 +4752,16 @@ class TimeshiftStopPollCadenceTests(TestCase):
         resp.raw.read = MagicMock(side_effect=fake_read)
 
         real_should_poll = views._should_poll_stop_key
+        # Self-check for the isolation itself: if the frame-name match below
+        # ever silently stops matching (e.g. _iter_upstream_with_stop gets
+        # renamed), fake_should_poll degrades to "always delegate", the
+        # pre-read site keeps its own real (fast, 2s/call) gate, and it
+        # would catch the stop just as quickly as the post-yield site would
+        # — the test would still pass at the same count, but it would no
+        # longer be isolating or pinning the post-yield site at all.
+        # Counting how many times the suppression branch actually fires
+        # turns that silent hollowing into a loud assertion failure below.
+        suppressed_count = {"n": 0}
 
         def fake_should_poll(poll_state, now):
             # The pre-read site's own call frame is _iter_upstream_with_stop;
@@ -4766,6 +4776,7 @@ class TimeshiftStopPollCadenceTests(TestCase):
                 frame.function == "_iter_upstream_with_stop"
                 for frame in inspect.stack()
             ):
+                suppressed_count["n"] += 1
                 return False
             return real_should_poll(poll_state, now)
 
@@ -4782,6 +4793,11 @@ class TimeshiftStopPollCadenceTests(TestCase):
             response = views._stream_from_provider(**self.kwargs, redis_client=redis)
             out = list(response.streaming_content)
 
+        self.assertGreater(
+            suppressed_count["n"], 0,
+            "the pre-read site's poll was never suppressed, so this test "
+            "no longer isolates the post-yield site",
+        )
         # peek + chunks 0..stop_after_chunk: the 2s/call clock always exceeds
         # the 1s cadence, so the real post-yield gate polls on its very
         # first chance after the stop is set and catches it immediately,
