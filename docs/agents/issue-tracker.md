@@ -32,13 +32,13 @@ forks) and were enabled as part of this setup.
 
 ## Closing keywords close issues whatever the PR changes
 
-GitHub links an issue to a PR wherever a keyword — `close`/`closes`/`closed`,
-`fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive and optionally followed
-by a colon — is immediately followed by `#N`, `owner/repo#N`, or a full issue URL, anywhere in the
-PR body or in a commit message that lands on the branch. It **closes** the linked issue only once
-the PR merges into the repository's default branch (`main` here — a merge into any other branch
-links but never closes). Each issue needs its own keyword: a single `Closes #A, #B and #C` links
-only #A. Full reference:
+GitHub honours a keyword — `close`/`closes`/`closed`, `fix`/`fixes`/`fixed`,
+`resolve`/`resolves`/`resolved`, case-insensitive and optionally followed by a colon — immediately
+followed by `#N`, `owner/repo#N`, or a full issue URL. **A keyword in the PR body links the issue,
+and the merge closes it. A keyword in a commit message closes the issue once that commit reaches
+the default branch (`main` here), without linking the PR. On a PR that targets any other branch
+the keywords are ignored.** Each issue needs its own keyword: a single `Closes #A, #B and #C`
+links only #A. Full reference:
 https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue
 
 This repository's squash-merge setting builds the merge commit message from the **branch's own
@@ -65,7 +65,7 @@ fix for issue 476 is the precedent).
 - After merging a PR meant to close nothing, list what actually closed around that time —
   `--state closed` with no time filter orders by creation and misses older issues a merge can
   still close:
-  `gh issue list --repo D10Scot/Dispatcharr --state closed --search "closed:>=<merge time, ISO 8601>" --json number,closedAt,title`.
+  `gh issue list --repo D10Scot/Dispatcharr --state closed --search "closed:>=<merge time, ISO 8601>" --limit 200 --json number,closedAt,title`.
   Reopen anything the merge closed, with a comment saying which PR did it.
 
 See `.claude/skills/plan-review-fix/SKILL.md`, `.claude/skills/implement-review-escalate/SKILL.md`
