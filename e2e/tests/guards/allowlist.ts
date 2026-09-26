@@ -62,8 +62,6 @@ export const SUBPROCESS: Capability = {
   allow: [
     // Owns container lifecycle: `docker run`, `docker rm`, e2e_up.sh.
     'fixtures/instance.ts',
-    // The grey-box Redis helper shells into the container's redis-cli.
-    'fixtures/greybox/redis.ts',
     // Counts `ffmpeg` processes with `pgrep -x` to prove Output Profile
     // sharing — a container-wide observable with no client-facing equivalent.
     'tests/streaming-greybox/output-profile-sharing.spec.ts',
@@ -74,21 +72,12 @@ export const SUBPROCESS: Capability = {
   ],
 };
 
-export const GREYBOX_REDIS: Capability = {
-  name: 'the grey-box Redis helper',
-  why: 'Reads Redis key shapes directly. The keys are internal and the extraction is expected to change them.',
-  // EMPTY since Phase 2 stage 2d-3, and deliberately still here rather than
-  // deleted along with `fixtures/greybox/redis.ts`. The suite's last Redis
-  // read — output-profile-sharing.spec.ts's owner-lock assertion — went with
-  // the nginx flip, because the Go relay writes no `live:channel:*` key
-  // (spec D2). An empty allowlist is a STRONGER ratchet than a deleted
-  // guard: with it, any reintroduction of Redis coupling anywhere under
-  // tests/, fixtures/ or setup/ reddens `guards` by name. The helper itself
-  // survives as Phase 3's single-grep bookmark for "every greybox test is
-  // rewritten or deleted", and stays on SUBPROCESS.allow above because it
-  // still imports node:child_process.
-  allow: [],
-};
+// GREYBOX_REDIS, the grey-box Redis helper's capability, is retired. Its
+// allowlist was empty from Phase 2 stage 2d-3, when the suite's last Redis
+// read went with the nginx flip, and the helper `fixtures/greybox/redis.ts`
+// survived only as Phase 3's bookmark. ADR 0007 closed Phase 3 and deleted
+// both. An import of the old path now fails `tsc`; a new helper that shells
+// into the container still lands on SUBPROCESS or CONTAINER_INTROSPECTION.
 
 export const CONTAINER_INTROSPECTION: Capability = {
   name: 'a container-introspection command in a string literal (`pgrep`, `docker `, `manage.py`)',
@@ -103,13 +92,12 @@ export const CONTAINER_INTROSPECTION: Capability = {
 };
 
 /**
- * Eight files match `grep -rln "pgrep\|manage\.py\|docker "`. Exactly two —
- * the two listed above — use a marker in code. **The other six match only in
- * comments** and are deliberately absent:
+ * When this was written, eight files matched
+ * `grep -rln "pgrep\|manage\.py\|docker "`. Exactly two — the two listed
+ * above — use a marker in code. **The other six matched only in comments** and
+ * are deliberately absent. One of them, `fixtures/greybox/redis.ts`, has since
+ * been deleted (ADR 0007); the rest:
  *
- * - `fixtures/greybox/redis.ts` — documents its `docker exec … redis-cli`
- *   command lines in a header comment; assembles the real ones from argument
- *   arrays.
  * - `tests/lifecycle/upgrade-migrations.spec.ts` — drives the container
  *   through the `instance` fixture and only *discusses* docker and
  *   `manage.py`. Its capability is `CONTAINER_LIFECYCLE`, above.
