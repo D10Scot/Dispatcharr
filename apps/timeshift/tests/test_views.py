@@ -4670,16 +4670,30 @@ class TimeshiftStopPollCadenceTests(TestCase):
 
     def test_stop_key_polled_on_a_cadence_not_per_chunk(self):
         # 20 chunks in a zero-elapsed-time window (frozen clock) must poll
-        # the stop key O(1) times across both sites combined, not once per
-        # chunk per site (which would be 40: one pre-read + one post-yield
-        # GET for each of 20 chunks).
+        # the stop key exactly ONCE across both sites combined (the one-time
+        # peek check, which now records into the shared poll_state), not
+        # once per chunk per site (which would be 40: one pre-read + one
+        # post-yield GET for each of 20 chunks) and not even twice (one for
+        # the peek plus one more for the first gated check) — that weaker
+        # bound would pass even if the two sites did NOT share one
+        # poll_state (see the sharing break-check below), so it would not
+        # actually pin the sharing this test exists to pin.
         out, stop_gets = self._run_pipeline(20)
         self.assertEqual(len(out), 21)  # peek + 20 chunks
-        self.assertLessEqual(
-            stop_gets, 3,
-            f"expected the stop key polled at most once per cadence window "
-            f"(plus the one-time pre-loop peek check) for {len(out)} chunks "
-            f"in a zero-elapsed window, got {stop_gets} GETs",
+        self.assertEqual(
+            stop_gets, 1,
+            f"expected the stop key polled exactly once (the peek check, "
+            f"shared into poll_state) for {len(out)} chunks in a "
+            f"zero-elapsed window, got {stop_gets} GETs",
+        )
+
+    def test_should_poll_stop_key_polls_after_a_backward_clock_step(self):
+        # now - last alone (no lower bound) is negative here and negative
+        # is always < the cadence interval, so an unguarded comparison
+        # would skip the poll for the full 3600s of the step. The 0 <= ...
+        # guard must instead treat a backward step as "poll now".
+        self.assertTrue(
+            views._should_poll_stop_key({"last": 1000.0}, 1000.0 - 3600.0),
         )
 
 

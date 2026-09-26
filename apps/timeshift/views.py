@@ -2330,6 +2330,13 @@ def _iter_upstream_with_stop(
     post-yield check) so the two sites share one cadence instead of each
     polling independently. A fresh dict (the default) always polls on this
     call's first check.
+
+    The peek check below is unconditional (peek_data is a one-time,
+    already-buffered chunk, not a blocking read to guard), but it still
+    records into *poll_state* so a gated check immediately after it — in
+    this function's own loop or in the caller's post-yield check — doesn't
+    also poll a moment later; without that record every stream would open
+    with two GETs (the peek's, then the first gated one) instead of one.
     """
     if poll_state is None:
         poll_state = {"last": None}
@@ -2338,6 +2345,7 @@ def _iter_upstream_with_stop(
         should_stop, _ = _stream_stop_requested(
             redis_client, stop_key, stream_generation,
         )
+        poll_state["last"] = time.time()
         if should_stop:
             try:
                 upstream.close()
@@ -2585,9 +2593,17 @@ def _should_poll_stop_key(poll_state, now):
     chunk count as one poll rather than two. ``None`` means "never polled
     yet" and always returns True so the first check in a fresh stream is
     never skipped.
+
+    The elapsed-time check requires a *non-negative* gap before it will
+    skip a poll: ``now - last`` alone (with no lower bound) treats a
+    backward step of the wall clock — a step, not drift; ``time.time()``
+    can jump on an NTP correction or DST change — as "still within the
+    cadence window" for however large the step is, silently suppressing
+    every poll until real time catches back up to where it was before the
+    step. A negative gap instead falls through to "poll now".
     """
     last = poll_state.get("last")
-    if last is not None and now - last < _STOP_KEY_POLL_INTERVAL_SECONDS:
+    if last is not None and 0 <= now - last < _STOP_KEY_POLL_INTERVAL_SECONDS:
         return False
     poll_state["last"] = now
     return True
