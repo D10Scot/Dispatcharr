@@ -435,6 +435,11 @@ CELERY_TASK_SERIALIZER = "json"
 # Prevents unbounded growth from memory fragmentation or unexpected leaks.
 CELERY_WORKER_MAX_MEMORY_PER_CHILD = 524_288  # 512 MB in KB
 
+# Each relay-uwsgi process refreshes a liveness key for the provider-slot
+# reconciler and re-EXPIREs the VOD/catch-up records its streams hold
+# (apps/proxy/vod_proxy/held_records.py, #513). Off only in tests.
+SLOT_HOLDER_REFRESHER_ENABLED = True
+
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers.DatabaseScheduler"
 CELERY_BEAT_SCHEDULE = {
     # Keep the file scanning task

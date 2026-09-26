@@ -39,6 +39,8 @@ from apps.m3u.models import M3UAccount, M3UAccountProfile
 from apps.m3u.tasks import get_transformed_credentials
 from apps.proxy.config_helper import ConfigHelper
 from apps.proxy.constants import ChannelMetadataField, ChannelState
+from apps.proxy.vod_proxy import held_records
+from apps.proxy.vod_proxy.held_records import current_worker_id
 from apps.timeshift.redis_keys import (
     TimeshiftRedisKeys,
     mint_session_id,
@@ -2176,6 +2178,7 @@ def _acquire_idle_pool_session(
             redis_client.hset(key, mapping={
                 "busy": "1",
                 "last_activity": str(time.time()),
+                "worker_id": current_worker_id(),
             })
             redis_client.expire(key, _POOL_ENTRY_TTL)
             return dict(data), profile
@@ -2241,6 +2244,10 @@ def _create_pool_session(
                 "provider_tz_name": str(provider_tz_name or ""),
                 "busy": "1",
                 "last_activity": now,
+                # The process holding the provider connection: the slot
+                # reconciler counts a busy entry only while this worker's
+                # liveness key exists (#513).
+                "worker_id": current_worker_id(),
             })
             redis_client.expire(key, _POOL_ENTRY_TTL)
         try:
@@ -3698,7 +3705,19 @@ def _stream_from_provider(
     def _finish_session_backup():
         _finish_session(close_upstream=True)
 
-    stream_iter = _SlotReleasingStream(stream_generator(), _finish_session_backup)
+    # Held from the first chunk until the generator ends or closes: this
+    # process's refresher keeps the busy pool entry alive and owned through a
+    # pause longer than _POOL_ENTRY_TTL, which the post-yield heartbeat above
+    # cannot do while the player is not reading (#513).
+    stream_iter = _SlotReleasingStream(
+        held_records.this_process().holding(
+            _pool_key(pool_session_id or client_id),
+            stream_generator(),
+            ttl=_POOL_ENTRY_TTL,
+            busy_field="busy",
+        ),
+        _finish_session_backup,
+    )
     response = StreamingHttpResponse(
         stream_iter,
         content_type=content_type,

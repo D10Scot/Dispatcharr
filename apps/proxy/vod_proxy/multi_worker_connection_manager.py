@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from typing import Optional, Dict, Any
 from django.http import StreamingHttpResponse, HttpResponse
 from core.utils import RedisClient
+from apps.proxy.vod_proxy import held_records
 from apps.proxy.vod_proxy.byte_range import (
     UNSATISFIABLE,
     parse_length,
@@ -90,6 +91,10 @@ if ttl and ttl > 0 then
 end
 return 1
 """
+
+# The session hash's TTL, refreshed on every metadata save and, while a
+# generator holds the session, by this process's slot-holder refresher (#513).
+SESSION_TTL_SECONDS = 3600
 
 # Cache register_script handles per redis client (EVALSHA thereafter).
 _vod_script_cache: Dict[int, Dict[str, Any]] = {}
@@ -337,11 +342,11 @@ class RedisBackedVODConnection:
             if include_active_streams:
                 # Session creation: key may not exist yet.
                 self.redis_client.hset(self.connection_key, mapping=data)
-                self.redis_client.expire(self.connection_key, 3600)
+                self.redis_client.expire(self.connection_key, SESSION_TTL_SECONDS)
                 return True
 
             # Flat field/value list for Lua: TTL, then pairs
-            args = ['3600']
+            args = [str(SESSION_TTL_SECONDS)]
             for field, value in data.items():
                 args.extend([str(field), str(value)])
 
@@ -812,15 +817,13 @@ class MultiWorkerVODConnectionManager:
         logger.info(f"MultiWorkerVODConnectionManager initialized for worker {self.worker_id}")
 
     def _get_worker_id(self):
-        """Get unique worker ID for this process"""
-        import os
-        import socket
-        try:
-            # Use combination of hostname and PID for unique worker ID
-            return f"{socket.gethostname()}-{os.getpid()}"
-        except:
-            import random
-            return f"worker-{random.randint(1000, 9999)}"
+        """Get unique worker ID for this process (hostname-PID).
+
+        held_records owns the formula since #513: a catch-up pool entry
+        records the same id, and the provider-slot reconciler reads both
+        against the one liveness key per process.
+        """
+        return held_records.current_worker_id()
 
     def _get_profile_connections_key(self, profile_id: int) -> str:
         """Get Redis key for tracking connections per profile - STANDARDIZED with TS proxy"""
@@ -1308,8 +1311,16 @@ class MultiWorkerVODConnectionManager:
                             cleanup_thread.start()
 
             # Create streaming response
+            # Held from the first chunk until the generator ends or closes, so
+            # this process's refresher keeps the session hash alive and owned
+            # through a pause of any length (#513): a paused player's
+            # generator sits at a yield and the chunk loop never refreshes it.
             response = StreamingHttpResponse(
-                streaming_content=stream_generator(),
+                streaming_content=held_records.this_process().holding(
+                    redis_connection.connection_key,
+                    stream_generator(),
+                    ttl=SESSION_TTL_SECONDS,
+                ),
                 content_type=connection_headers.get('content_type', 'video/mp4')
             )
 
