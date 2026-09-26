@@ -33,8 +33,8 @@ forks) and were enabled as part of this setup.
 ## Closing keywords close issues whatever the PR changes
 
 GitHub honours a keyword — `close`/`closes`/`closed`, `fix`/`fixes`/`fixed`,
-`resolve`/`resolves`/`resolved`, case-insensitive and optionally followed by a colon — immediately
-followed by `#N`, `owner/repo#N`, or a full issue URL. **A keyword in the PR body links the issue,
+`resolve`/`resolves`/`resolved`, case-insensitive and optionally followed by a colon — followed
+by `#N` or `owner/repo#N`. **A keyword in the PR body links the issue,
 and the merge closes it. A keyword in a commit message closes the issue once that commit reaches
 the default branch (`main` here), without linking the PR. On a PR that targets any other branch
 the keywords are ignored.** Each issue needs its own keyword: a single `Closes #A, #B and #C`
@@ -45,7 +45,9 @@ This repository's squash-merge setting builds the merge commit message from the 
 commit messages**, not the PR body — confirmed via
 `gh api repos/D10Scot/Dispatcharr --jq '{squash_merge_commit_title, squash_merge_commit_message}'`
 (`COMMIT_OR_PR_TITLE` / `COMMIT_MESSAGES`). A keyword sitting only in a commit message closes the
-issue exactly as one in the PR body does, so check both before marking a PR ready.
+issue exactly as one in the PR body does, and for any PR with more than one commit the squash
+commit's own subject is the PR title — check the body, the commit messages, and the PR title
+before marking a PR ready.
 
 On 2026-09-24 ten docs-only PRs (#343-#354) carried fix plans that quoted each future fix's draft
 PR description, and merging them closed thirteen issues as completed with nothing fixed; every
@@ -57,8 +59,7 @@ fix for issue 476 is the precedent).
 
 - Check what GitHub will actually link, not a hand-rolled body grep — it reads every form the
   platform honours:
-  `gh pr view <number> --repo D10Scot/Dispatcharr --json closingIssuesReferences --jq
-  '.closingIssuesReferences | length'` — must print `0` before marking ready a PR that only
+  `gh pr view <number> --repo D10Scot/Dispatcharr --json closingIssuesReferences --jq '.closingIssuesReferences | length'` — must print `0` before marking ready a PR that only
   describes a future fix. That field doesn't preview a keyword sitting only in a commit message,
   so also check those directly (misses the full-URL form, which a commit message rarely uses):
   `git log --format=%B main..HEAD | grep -inE '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\b:? *([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'`
