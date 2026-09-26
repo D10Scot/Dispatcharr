@@ -629,6 +629,12 @@ otherwise be guaranteed to land clear of another phase's logins.
 cold run's bootstrap logins can land inside the same minute, so it opts in and
 widens its own timeout rather than depending on file-execution-order luck.
 
+Keep it to one such caller per run: `MAX_THROTTLE_WAITS` is one wait per call,
+not one per window, so two concurrent opt-in callers would both retry into the
+same freed slot and only one can win it — the other exhausts its own wait and
+hard-fails with a message blaming "something outside this run", which is
+exactly wrong when the something is a second caller of this same opt-in.
+
 Measuring it yourself: the container's nginx access log is the ground truth,
 and it records 429s that never reach a test.
 
