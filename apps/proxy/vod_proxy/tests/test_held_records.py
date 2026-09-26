@@ -148,7 +148,7 @@ class HeldRecordsLoopTests(SimpleTestCase):
     def test_recovery_after_a_failure_streak_logs_once(self):
         client = mock.MagicMock()
         script = mock.MagicMock()
-        script.side_effect = [ConnectionError("redis went away"), 0]
+        script.side_effect = [ConnectionError("redis went away"), 0, 0]
         client.register_script.return_value = script
         records = HeldRecords(client, "w1")
         with self.assertLogs(held_records.logger, "WARNING"):
@@ -157,6 +157,13 @@ class HeldRecordsLoopTests(SimpleTestCase):
             self.assertEqual(records.refresh_once(), 0)
         self.assertEqual(len(logs.records), 1, "a recovery should log once, not every beat")
         self.assertIn("recovered", logs.records[0].getMessage())
+        # "not every beat" is the claim above: a second success beat, still
+        # inside the same non-failing run, must log nothing at INFO. Without
+        # this, deleting the `self._failing = False` reset would still pass
+        # the two assertions above (only the FIRST success logs regardless),
+        # leaving the "once" half of the claim unpinned.
+        with self.assertNoLogs(held_records.logger, "INFO"):
+            self.assertEqual(records.refresh_once(), 0)
 
     def test_the_loop_keeps_going_after_an_iteration_raises(self):
         records = HeldRecords(mock.MagicMock(), "w1")
