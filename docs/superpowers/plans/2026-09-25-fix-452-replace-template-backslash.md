@@ -232,7 +232,7 @@ escaped.
 5. **The commonest way a template gets written makes no attempt at Python escaping.** The XC "simple"
    profile mode is the SPA's default: `getDetectedMode` (`frontend/src/utils/forms/M3uProfileUtils.js:20-32`)
    returns `'simple'` unless an advanced search pattern is stored. It writes the operator's new
-   credentials into the template raw (`applyXcSimplePatterns`, `:139-148`; the template at `:147`,
+   credentials into the template raw (`applyXcSimplePatterns`, `:138-149`; the template at `:147`,
    identical at `36e4ce10` and `aa6f376c3d`). Measured in the container, search `myuser/mypass`,
    target `http://h/live/myuser/mypass/1234.ts`:
 
