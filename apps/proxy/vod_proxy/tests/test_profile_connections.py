@@ -8,9 +8,10 @@ Covers:
 
 from unittest.mock import MagicMock, patch, call
 from django.test import TestCase
+from apps.m3u.tests.slot_script_fake import SlotScriptFakeMixin
 
 
-class FakeRedis:
+class FakeRedis(SlotScriptFakeMixin):
     """Minimal in-memory Redis stand-in for counter tests."""
 
     def __init__(self):

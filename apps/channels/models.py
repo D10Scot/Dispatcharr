@@ -757,10 +757,7 @@ class Channel(models.Model):
         if current_profile_id == new_profile_id:
             return True
 
-        from apps.m3u.connection_pool import (
-            move_credential_slot_on_profile_switch,
-            profile_connections_key,
-        )
+        from apps.m3u.connection_pool import switch_profile_slot
         from apps.m3u.models import M3UAccountProfile
 
         old_profile = M3UAccountProfile.objects.select_related(
@@ -770,26 +767,23 @@ class Channel(models.Model):
             "m3u_account__server_group"
         ).get(id=new_profile_id)
 
-        if not move_credential_slot_on_profile_switch(
-            old_profile, new_profile, redis_client
+        # One script call moves both profile counters, the credential counter
+        # when the login changes, and the stream_profile key, bumping each
+        # counter's version as it writes it (#513): this used to be a
+        # credential move followed by its own DECR/SET/INCR pipeline, a
+        # counter writer outside reserve/release that the reconciler could
+        # not see.
+        if not switch_profile_slot(
+            old_profile,
+            new_profile,
+            RedisKeys.stream_profile(stream_id),
+            redis_client,
         ):
             logger.warning(
                 "Shared login pool full for profile %s during stream profile switch",
                 new_profile_id,
             )
             return False
-
-        # Profile counters always move on switch; credential totals move only when login changes.
-        old_profile_connections_key = profile_connections_key(current_profile_id)
-        new_profile_connections_key = profile_connections_key(new_profile_id)
-        old_count = int(redis_client.get(old_profile_connections_key) or 0)
-
-        pipe = redis_client.pipeline()
-        if old_count > 0:
-            pipe.decr(old_profile_connections_key)
-        pipe.set(RedisKeys.stream_profile(stream_id), new_profile_id)
-        pipe.incr(new_profile_connections_key)
-        pipe.execute()
         logger.info(
             f"Updated stream {stream_id} profile from {current_profile_id} to {new_profile_id}"
         )

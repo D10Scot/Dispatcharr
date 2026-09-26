@@ -51,6 +51,18 @@ _PATH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("apps/vod/", ("apps.vod", "apps.output")),
     ("apps/hdhr/", ("apps.output", "apps.channels")),
     ("scripts/coverage_live_path", ("apps.proxy", "apps.channels")),
+    # The provider-slot script (#513) is exercised by every surface that
+    # reserves a slot, and those labels' in-memory fakes run it through
+    # slot_script_fake -- so an edit to either must run all of them, not just
+    # the one label whose directory the file sits in.
+    (
+        "apps/m3u/connection_pool",
+        ("apps.m3u", "apps.channels", "apps.proxy", "apps.proxy.vod_proxy", "apps.timeshift"),
+    ),
+    (
+        "apps/m3u/tests/slot_script_fake",
+        ("apps.m3u", "apps.proxy", "apps.proxy.vod_proxy"),
+    ),
 )
 
 

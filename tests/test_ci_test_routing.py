@@ -73,6 +73,31 @@ class ChangedPathRoutingTests(SimpleTestCase):
             with self.subTest(path=path):
                 self.assertEqual(self._labels(path), expected)
 
+    def test_slot_script_change_runs_every_label_that_reserves_a_slot(self):
+        """Pins: apps/m3u/connection_pool.py selected apps.m3u.tests alone.
+
+        The provider-slot script it holds (#513) is exercised by channels
+        (Channel.get_stream/release_stream/update_stream_profile), proxy
+        (next-source and release), vod_proxy and timeshift, so prefix matching
+        ran one label of five for an edit that can break all five. The fake
+        that runs the script for in-memory Redis stand-ins,
+        apps/m3u/tests/slot_script_fake.py, is imported by three labels'
+        tests, and an edit to it selected only the label it sits in.
+        """
+        pool = {
+            "apps.m3u.tests",
+            "apps.channels.tests",
+            "apps.proxy.tests",
+            "apps.proxy.vod_proxy.tests",
+            "apps.timeshift.tests",
+        }
+        fake = {"apps.m3u.tests", "apps.proxy.tests", "apps.proxy.vod_proxy.tests"}
+        self.assertLessEqual(pool, self.available)
+        self.assertEqual(self._labels("apps/m3u/connection_pool.py"), pool)
+        self.assertEqual(self._labels("apps/m3u/tests/slot_script_fake.py"), fake)
+        # The alias is by path prefix, so the rest of apps/m3u stays narrow.
+        self.assertEqual(self._labels("apps/m3u/tasks.py"), {"apps.m3u.tests"})
+
     def test_unaliased_app_change_selects_only_its_own_tests(self):
         """Control: no alias means exactly one label, so the fixes stay narrow.
 

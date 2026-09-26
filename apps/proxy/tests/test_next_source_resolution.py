@@ -13,10 +13,11 @@ from django.test import SimpleTestCase, TestCase
 
 from apps.channels.models import Channel, ChannelStream, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
+from apps.m3u.tests.slot_script_fake import SlotScriptFakeMixin
 from core.models import StreamProfile
 
 
-class FakeControlPlaneRedis:
+class FakeControlPlaneRedis(SlotScriptFakeMixin):
     """In-memory Redis stand-in covering the keys next_source.py touches:
     channel_stream, stream_profile and profile_connections counters."""
 
