@@ -30,7 +30,7 @@ that scope apart piece by piece:
 | 1 PR 7 | Made the relay's Redis keys private behind `/proxy/relay/…`, "which is what makes Phase 3 possible later, not what performs it now" (Phase 1 spec § Non-goals) |
 | 2 D2 | The ring buffer in Go process memory from day one; the lease, the follower path and the three fail-open paths deleted rather than ported. "Phase 3's live half is absorbed here" (Phase 2 spec D2; ADR 0006) |
 | 2d-3 | The nginx flip. The suite's last grey-box Redis read went with it, and the `GREYBOX_REDIS` allowlist became empty |
-| 2d-4 | Deleted `apps/proxy/live_proxy/` (30,675 lines), with the chunk keys, leases, client sets and switch requests |
+| 2d-4 | Deleted `apps/proxy/live_proxy/` in a 30,675-line deletion across 156 files (`b6ae174b`), with the chunk keys, leases, client sets and switch requests |
 | 2d-6 | Rewrote CLAUDE.md and CONTEXT.md to say Phase 3 was "smaller than its charter describes" |
 
 A reassessment on 2026-09-26, measured at `aa6f376c3d`, put five numbers on
@@ -71,7 +71,8 @@ The slot counters carry no TTL, no owner lease and no reconciliation on any of
 the three surfaces, and they drift in both directions. They over-count when a
 release is lost: a release POST dropped while `api-uwsgi` restarts is logged
 as "it stays counted" and never retried (`relay/httpapi/events.go:56-57`),
-which makes every deploy a leak. They also over-count on a relay or
+which makes a deploy a likely leak: every channel that ends while
+`api-uwsgi` restarts keeps its slot counted. They also over-count on a relay or
 `relay-uwsgi` crash. They under-count after a Redis restart, when a channel
 that spanned it releases a slot some newer stream reserved
 (`apps/proxy/next_source.py:1115-1132`).
@@ -88,7 +89,8 @@ exactly as a Redis one does, and it would keep every over-count across a
 restart that today at least clears them. Every reserve and release would also
 become a write transaction, and on `relay-uwsgi` that transaction queues on
 eight database connections shared by 1,600 greenlets
-(`docker/uwsgi.relay.ini`, `MAX_CONNS=8`). The session hashes stay in Redis
+(`MAX_CONNS=8` at `dispatcharr/settings.py:273`, `gevent` at
+`docker/uwsgi.relay.ini:54`). The session hashes stay in Redis
 either way, so Redis stays on the request path. It is worse than today on the
 properties that matter.
 
@@ -135,9 +137,12 @@ reopens this one.
   had no importer since stage 2d-3 and survived only as Phase 3's single grep
   for "every greybox test is rewritten or deleted". With Phase 3 closed it is
   deleted, along with the `GREYBOX_REDIS` capability and its guard test. A
-  test that imports the deleted path now fails to typecheck, and any new Redis
-  helper would be a new subprocess or introspection use, which the surviving
-  `SUBPROCESS` and `CONTAINER_INTROSPECTION` allowlists still police by name.
+  test that imports the deleted path now fails to typecheck, and a new Redis
+  helper in a new file would be a new subprocess or introspection use, which
+  the surviving `SUBPROCESS` and `CONTAINER_INTROSPECTION` allowlists still
+  police by name. A `redis-cli` call added to a file already on both lists
+  would pass unseen, but the retired guard, which matched only the helper's
+  import path, had the same blind spot, so nothing regressed.
 - **The counter drift is an open defect, tracked by #513.** Until it lands, a
   deploy that restarts `api-uwsgi` under running streams can leave provider
   slots counted with nobody holding them, and a Redis restart can lift a cap
