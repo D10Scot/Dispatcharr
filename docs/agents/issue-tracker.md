@@ -61,7 +61,7 @@ fix for issue 476 is the precedent).
   platform honours:
   `gh pr view <number> --repo D10Scot/Dispatcharr --json closingIssuesReferences --jq '.closingIssuesReferences | length'` — must print `0` before marking ready a PR that only
   describes a future fix. That field doesn't preview a keyword sitting only in a commit message,
-  so also check those directly (misses the full-URL form, which a commit message rarely uses):
+  so also check those directly:
   `git log --format=%B main..HEAD | grep -inE '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\b:? *([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'`
 - After merging a PR meant to close nothing, list what actually closed around that time —
   `--state closed` with no time filter orders by creation and misses older issues a merge can
