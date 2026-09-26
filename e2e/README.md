@@ -153,7 +153,7 @@ touch anything another test in the same project could observe.
 `workers: 1` instead, each for its own container-wide hazard:
 `failover-buffering.spec.ts` mutates the global `proxy_settings` row for the
 duration of its run, `output-profile-sharing.spec.ts` counts every `ffmpeg`
-process running in the container (`pgrep -x ffmpeg`) via `greyboxRedis()`,
+process running in the container (`pgrep -x ffmpeg`),
 and `streaming-split`'s tests stop and restart a supervisord program
 (`api-uwsgi` or `relay-uwsgi`) that the whole container shares. None of
 these hazards is scoped to its own channel, so a second worker running
@@ -164,23 +164,22 @@ mutates Redis directly, the way the deleted ownership-lease flagship did (see
 is why that project doesn't trust every future test to be independently safe
 at higher concurrency either.
 
-**The set of specs allowed to reach for grey-box Redis access is a checked
-allowlist, not a comment asking politely.** `e2e/fixtures/greybox/redis.ts`
-is the sanctioned way a test reaches Redis, and `e2e/tests/guards/allowlist.ts`
-exports the `GREYBOX_REDIS` capability naming every file allowed to import
-it. `e2e/tests/guards/capabilities.spec.ts` parses every spec under `e2e/`
-(AST, not a grep) and asserts the files that actually import `greybox/redis`
-match that list exactly — in either direction: a new grey-box import that
-isn't listed fails the check, and a stale allowlist entry for a file that no
-longer imports it fails the same way. That is what happened when G4's
-ownership-lease flagship (`ownership-lease.spec.ts`) was deleted as an
-unprovable gap (see `COVERAGE.md`'s Streaming/G4 rows) — its allowlist entry
-had to go with it, or `capabilities.spec.ts` would fail on a name that no
-longer exists. `capabilities.spec.ts` also polices three sibling
-capabilities the original `quarantine.spec.ts` did not — container
-lifecycle, subprocess execution and container introspection — for the same
-reason: a convention written down in this file would rot silently; a
-checked allowlist fails CI instead.
+**The set of specs allowed to use a grey-box escape hatch is a checked
+allowlist, not a comment asking politely.** `e2e/tests/guards/allowlist.ts`
+exports one capability per hatch (container lifecycle, subprocess execution,
+container introspection), each naming every file allowed to use it.
+`e2e/tests/guards/capabilities.spec.ts` parses every spec under `e2e/`
+(AST, not a grep) and asserts the files that actually use each hatch match
+its list exactly — in either direction: a new use that isn't listed fails
+the check, and a stale entry for a file that no longer uses it fails the
+same way. That is what happened when G4's ownership-lease flagship
+(`ownership-lease.spec.ts`) was deleted as an unprovable gap (see
+`COVERAGE.md`'s Streaming/G4 rows) — its entry had to go with it. A fourth
+capability, grey-box Redis, and its helper `e2e/fixtures/greybox/redis.ts`
+were retired by ADR 0007 when Phase 3 closed: the allowlist had been empty
+since the Phase 2 nginx flip, and no test reads Redis. The principle is the
+original `quarantine.spec.ts`'s: a convention written down in this file
+would rot silently; a checked allowlist fails CI instead.
 
 `pristine` deliberately has no `bootstrap` dependency — it needs the
 superuser *not* to exist yet, which is the entire point of that project, and
