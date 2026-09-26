@@ -31,7 +31,7 @@ Numbered so a step can cite one. A conflict between a constraint and a step is a
 
 1. **Anchor every command** with an absolute path or a leading `cd <your worktree> &&`. The cwd is correlated across concurrent agents (CLAUDE.md § Repository and direction). Never `cd` into another agent's worktree or into the main checkout. No bare `git stash`.
 2. **`set -o pipefail`** on any pipeline whose exit status you read; never `2>/dev/null` a git query whose emptiness you interpret. Brace refs in `git show "${sha}:path"` (the zsh `:s` modifier trap).
-3. **Scope is this plan's file list and nothing else.** No other serializer, hook arm, workflow job or doc changes. The hook header's stale "Seven checks" count (`run-affected-tests.sh:4`) stays as it is.
+3. **Scope is this plan's file list and nothing else.** No other serializer, hook arm, workflow job or doc changes. The hook header's stale "Seven checks" count (`run-affected-tests.sh:4`) stays as it is, and so does `test_hooks.sh`'s header comment (`:4-5`), which says "two throwaway git repos" where the seed builds three and Appendix D adds a fourth (`repo-c`); Appendix D does not touch that header.
 4. **Byte-exact appendices.** Appendices A and B are the full text of the two new files; C, D and E are diff hunks against `36e4ce10` that `git apply --check --whitespace=error` accepted on a fresh `git archive 36e4ce10` tree. Apply them, do not retype them. If a hunk does not apply, STOP and report: the tree moved.
 5. **The live hooks are not the edited hooks.** The `PostToolUse` hook that fires on your edits is `${CLAUDE_PROJECT_DIR}/.claude/hooks/run-affected-tests.sh`, from the main checkout, which does **not** carry the new arm until this PR merges. The only evidence for the new arm is invoking your worktree's copy directly (Tasks 6-7), exactly as `.claude/hooks/tests/test_hooks.sh:4-9` says.
 6. **The test container must be yours.** Editing `tests/test_read_only_fields_guard.py` makes the live hook run the whole `tests` package in `dispatcharr-testrunner` (`run-affected-tests.sh:354-371`), against whichever worktree that container is bind-mounted at. Before Task 3, check occupancy (`docker ps --filter name=dispatcharr-testrunner`, and `stat -f '%Sm %N'` on files in the tree it is mounted at), then re-point it with `cd <your worktree> && .claude/hooks/start-test-container.sh`. If another agent holds it, STOP and report.
@@ -42,7 +42,7 @@ Numbered so a step can cite one. A conflict between a constraint and a step is a
 
 ## Overlap with sibling work
 
-Checked at `36e4ce10` with `gh pr list --repo D10Scot/Dispatcharr --state open --json number,title,headRefName,files --limit 100`: four open PRs (#493, #494, #495, #496). None touches any file below.
+Checked at `36e4ce10` with `gh pr list --repo D10Scot/Dispatcharr --state open --json number,title,headRefName,files --limit 100`: four open PRs (#493, #494, #495, #496). None touches any file below. Re-checked on 2026-09-26: draft PR #512 (head `4d768f0123`) touches `CLAUDE.md`, and no other open PR touches any file below.
 
 | file this PR touches | open PR or plan also touching it | resolution |
 |---|---|---|
@@ -52,7 +52,7 @@ Checked at `36e4ce10` with `gh pr list --repo D10Scot/Dispatcharr --state open -
 | `scripts/check_credential_logging.py` | none | **not edited**; it is the precedent only |
 | `tests/test_no_class_body_read_only_fields.py` | none open (E-6, #436, merged it) | deleted |
 | `metrics/curated/defects.yml` | many fix branches edit other rows; none open as a PR | one field on row `:24` only; rebase if a sibling lands first |
-| `CLAUDE.md` | none open | one phrase at `:57` |
+| `CLAUDE.md` | draft PR #512 (head `4d768f0123`) rewrites line `:57` wholesale | one phrase at `:57`. #512 keeps F.2's old literal exactly once (`git show "4d768f0123:CLAUDE.md" \| grep -n -F` finds it on line 57), so F.2 still applies whichever lands first. The two will conflict textually on that line: if #512 merges first, rebase, re-apply F.2 to #512's line 57 and re-run Task 9; if this PR merges first, #512 must carry `scripts/check_read_only_fields.py` into its rewrite. |
 
 If an open PR touching any of these appears before this one is opened, rebase onto `main` after it merges and re-run Task 9.
 
@@ -68,7 +68,7 @@ If an open PR touching any of these appears before this one is opened, rebase on
 6. **The class rule.** A class anywhere in the module (nested ones too), other than one named `Meta`, is a serializer when it meets **any** of these tests:
    - (a) it has a nested `class Meta` (kept from the old rule);
    - (b) one of its bases has a trailing identifier ending in `Serializer`, after two steps: unwrap subscripts (`ModelSerializer[int]` → `ModelSerializer`), then resolve a `from X import Y as Z` alias (`Z` → `Y`, whatever `X` is). This covers `serializers.ModelSerializer`, `HyperlinkedModelSerializer`, `ListSerializer`, `serializers.Serializer`, and a serializer imported from another app;
-   - (c) one of its bases names a class **defined in the same module** that is itself a serializer, iterated to a fixed point (so `class Y(Middle)`, `class Middle(MyBase)`, `class MyBase(ModelSerializer)` makes `Y` one).
+   - (c) one of its bases names a class **defined in the same module** that is itself a serializer, iterated to a fixed point (so `class Y(Middle)`, `class Middle(MyBase)`, `class MyBase(ModelSerializer)` makes `Y` one). The loop is load-bearing, not decorative: `ast.walk` is breadth-first, so a base nested deeper than its subclass (inside an `if` in a function, with the subclass at function level) is visited after it, and one pass misses the subclass. Appendix B's `LOCAL_BASE_VISITED_AFTER_SUBCLASS` pins that order.
 
    The finding is a plain or annotated `read_only_fields` assignment directly in the class's own body. A class named `Meta` is never judged, so the correct placement is never reached. The stated limits are these. A base from another module whose name does not end in `Serializer` is not followed. Classes are matched by name. A tuple target, an augmented assignment and `setattr` are not examined. The 11 modules the old test scanned, all measured at zero findings under both rules, are:
    - `apps/accounts/serializers.py`, `apps/channels/serializers.py`, `apps/connect/serializers.py`, `apps/epg/serializers.py`
@@ -76,13 +76,13 @@ If an open PR touching any of these appears before this one is opened, rebase on
    - `apps/proxy/relay_serializers.py`, `apps/proxy/serializers.py`, `apps/vod/serializers.py`
    - `core/serializers.py`
 7. **Routing.** `scripts/check_read_only_fields.py` → `[]`; `tests/test_read_only_fields_guard.py` → `["tests"]`; `.claude/hooks/…`, `.github/workflows/lint.yml`, `metrics/curated/defects.yml`, `CLAUDE.md` → `[]` (all measured). The PR as a whole selects `["tests"]`. **No `_PATH_ALIASES` entry**, for two reasons: the resolver cannot express "the root `tests` label" (finding 5), and the lint job runs the unit test on every PR anyway. `tests/test_ci_test_routing.py` pins four behaviours (`:30`, `:51`, `:76`, `:85`), none of which this PR touches.
-8. **Metrics.** Yes, one field. Row `read-only-fields-misplaced` (`defects.yml:24`) changes `test:` to `tests/test_read_only_fields_guard.py`. Its `status` (`fixed`), `fixed_in` (436) and `status_changed` do not change: the defect's status did not move. No new row. Validate with `python3 -m metrics.build --validate-only`. On the scratch copy, the only errors after the edit were the milestone first-parent checks, which fail there because that copy has no git history. There was no defect error. In a real worktree those checks pass. The plan deliberately does not update CLAUDE.md's "2083 tests" figure: it dates from #332 (only `b6ae174b` carries it, per `git log -S"2083 tests"`), and #436, #455 and #488 have since added tests without moving it, so it is already stale and a bump belongs to a re-measurement, not to this PR.
+8. **Metrics.** Yes, one field. Row `read-only-fields-misplaced` (`defects.yml:24`) changes `test:` to `tests/test_read_only_fields_guard.py`. Its `status` (`fixed`), `fixed_in` (436) and `status_changed` do not change: the defect's status did not move. No new row. Validate with `python3 -m metrics.build --validate-only`. On the scratch copy, the only errors after the edit were the milestone first-parent checks, which fail there because that copy has no git history. There was no defect error. In a real worktree those checks pass. The plan does not touch CLAUDE.md's backend baseline figure. It reads 2544 tests on `main` (#501 re-measured it at `36e4ce10`), a per-label figure that every test-adding PR moves; CLAUDE.md itself says to quote a fresh run rather than the number, so a bump belongs to a re-measurement, not to this PR.
 
 ---
 
 ## PR: `fix/444-read-only-fields-lint`
 
-- **Closes** #444 (in the implementation PR body only; constraint 8).
+- **Resolves** #444. The closing keyword goes in the implementation PR body only, added when the PR is opened (constraint 8, Task 10).
 - **Files**
   - `scripts/check_read_only_fields.py` (new, mode 100755 like its sibling)
   - `tests/test_read_only_fields_guard.py` (new)
@@ -116,17 +116,22 @@ If an open PR touching any of these appears before this one is opened, rebase on
   ```bash
   cd <wt> && python3 -m unittest -v tests.test_read_only_fields_guard 2>&1 | tail -3
   ```
-  Expected: `Ran 17 tests` … `OK`.
-  **Break-check 1 (the three shapes are pinned, not tautological).** In `scripts/check_read_only_fields.py`, make three edits:
+  Expected: `Ran 18 tests` … `OK`.
+  **Break-check 1 (the three shapes and the fixed-point loop are pinned, not tautological).** First, the loop on its own. In `scripts/check_read_only_fields.py`, delete the line `                changed = True` (the one indented sixteen spaces, inside `if (...):`; the one at four spaces before `while changed:` stays), which makes the script a single pass. Re-run. Expected (measured): `FAILED (failures=1)`, the failure being `test_a_base_visited_after_its_subclass_is_found_by_the_fixed_point`, printing:
+  ```
+  AssertionError: 0 != 1 : the fixed-point loop re-judges a class whose base was found later: class Child was not reported (stdout='', stderr='')
+  ```
+  `test_a_subclass_of_a_local_serializer_is_followed_transitively` stays green under this edit, because its fixture lists the classes in the order `ast.walk` visits them; that is why the second fixture exists. Then, keeping that deletion, make three more edits:
   - delete the line `                or any(name in serializers for name in names)`;
   - delete the two lines `    while isinstance(base, ast.Subscript):` / `        base = base.value`;
   - replace `return aliases.get(base.id, base.id)` with `return base.id`.
 
-  Re-run. Expected (measured): `FAILED (failures=4)`, with the failures being exactly:
-  - `test_a_base_imported_under_an_alias_is_resolved`
-  - `test_a_subclass_of_a_local_serializer_is_followed_transitively`
-  - `test_a_subscripted_base_is_unwrapped`
-  - `test_several_files_report_together_and_fail_once`
+  Re-run. Expected (measured): `FAILED (failures=5)`, with the failures being exactly these, each assertion message naming the mechanism:
+  - `test_a_base_imported_under_an_alias_is_resolved`: `a from-import alias is resolved to its name: class Z was not reported`
+  - `test_a_base_visited_after_its_subclass_is_found_by_the_fixed_point`: `the fixed-point loop re-judges a class whose base was found later: class Child was not reported`
+  - `test_a_subclass_of_a_local_serializer_is_followed_transitively`: `a same-module serializer base is followed: class Y was not reported`
+  - `test_a_subscripted_base_is_unwrapped`: `a subscripted base is unwrapped: class W was not reported`
+  - `test_several_files_report_together_and_fail_once`: `1 != 2 : several files: expected one finding from each of bad.py and aliased.py (the alias must resolve)`
 
   Restore with `git -C <wt> checkout -- scripts/check_read_only_fields.py` only if the script is already committed; otherwise re-copy Appendix A. Re-run and confirm `OK`.
 
@@ -185,12 +190,12 @@ If an open PR touching any of these appears before this one is opened, rebase on
 - [ ] **Task 9 — CLAUDE.md, then the whole-PR checks.** In `CLAUDE.md` line `:57`, replace the literal ``any `*.py` (`scripts/check_credential_logging.py`)`` with ``any `*.py` (`scripts/check_credential_logging.py`, `scripts/check_read_only_fields.py`)``. There is exactly one occurrence (Appendix F.2). Then:
   1. `cd <wt> && set -o pipefail && git diff --name-only --diff-filter=ACMR origin/main -- '*.py' | xargs python3 scripts/check_credential_logging.py; echo $?`, expecting `0`. `--diff-filter=ACMR` leaves out the deleted file, as `lint.yml:134` does.
   2. `cd <wt> && git diff --name-only origin/main | python3 scripts/ci_backend_test_labels.py`, expecting `["tests"]`.
-  3. In the container (constraint 6): `docker exec … manage.py test tests --keepdb -v1` (the hook's own `dexec` environment, `run-affected-tests.sh:117-124`). Expected: `OK`. Record the test count: the label loses 1 test and gains 17, so it should be 16 higher than the same label at the seed. Measure the seed count once in the same container before Task 3 if you want the delta exact.
+  3. In the container (constraint 6): `docker exec … manage.py test tests --keepdb -v1` (the hook's own `dexec` environment, `run-affected-tests.sh:117-124`). Expected: `OK`. Record the test count: the label loses 1 test and gains 18, so it should be 17 higher than the same label at the seed. Measure the seed count once in the same container before Task 3 if you want the delta exact.
   4. `bash <wt>/.claude/hooks/tests/test_hooks.sh | tail -1`, expecting `22 passed, 0 failed`.
 
-- [ ] **Task 10 — commit, push, PR.** One commit, subject `ci(lint): run the read_only_fields-in-Meta rule on the edit that breaks it (#444)`. Stage and commit in separate calls (constraint 7); the gate runs `tests` and the metrics validator. Push and open a **draft** PR with the body below. Once CI runs, confirm the `Lint` workflow's new `read_only_fields in Meta` job is green **by reading it**: it is not a required check (finding 6), so a red run would not block the merge.
+- [ ] **Task 10 — commit, push, PR.** One commit, subject `ci(lint): run the read_only_fields-in-Meta rule on the edit that breaks it (#444)`. Stage and commit in separate calls (constraint 7); the gate runs `tests` and the metrics validator. Push and open a **draft** PR with the body below. When opening it, replace the draft's `#444 (planned in …)` line with `Closes #444.` (constraint 8): this is the PR that fixes the issue, and the plan's own draft deliberately carries no closing keyword. Once CI runs, confirm the `Lint` workflow's new `read_only_fields in Meta` job is green **by reading it**: it is not a required check (finding 6), so a red run would not block the merge.
 
-**Tests added:** `tests/test_read_only_fields_guard.py` (17 cases), and three cases in `.claude/hooks/tests/test_hooks.sh`. **Tests removed:** `tests/test_no_class_body_read_only_fields.py` (1 case), superseded as Decision 4 says.
+**Tests added:** `tests/test_read_only_fields_guard.py` (18 cases), and three cases in `.claude/hooks/tests/test_hooks.sh`. **Tests removed:** `tests/test_no_class_body_read_only_fields.py` (1 case), superseded as Decision 4 says.
 
 ### PR description draft (implementation PR)
 
@@ -202,14 +207,14 @@ If an open PR touching any of these appears before this one is opened, rebase on
 >
 > The same job runs the script's own unit tests with a bare `python3 -m unittest`, because `scripts/` routes to no backend label.
 >
-> The class filter now also catches the three shapes from #444's comments: a subclass of a same-module serializer with no `Meta` of its own (followed transitively), a base imported under an alias, and a subscripted base. It also reads serializers defined outside `*serializers.py` (`apps/proxy/authorize_views.py`, `apps/timeshift/api_views.py`), which the old test's glob skipped. `tests/test_no_class_body_read_only_fields.py` is deleted, and the defect ledger's `read-only-fields-misplaced` row points at the new test.
+> The class filter now also catches the three shapes from #444's comments: a subclass of a same-module serializer with no `Meta` of its own (followed transitively, whatever order the classes are visited in), a base imported under an alias, and a subscripted base. It also reads serializers defined outside `*serializers.py` (`apps/proxy/authorize_views.py`, `apps/timeshift/api_views.py`), which the old test's glob skipped. `tests/test_no_class_body_read_only_fields.py` is deleted, and the defect ledger's `read-only-fields-misplaced` row points at the new test.
 >
-> Closes #444.
+> #444 (planned in docs/superpowers/plans/2026-09-25-read-only-fields-lint.md)
 >
 > Evidence:
 > - Whole tree: <paste Task 1>.
 > - The old filter vs the new one on the three shapes: <paste Task 2>.
-> - Unit tests: <paste Task 3>. Break-check 1: <paste the 4 failures>.
+> - Unit tests: <paste Task 3>. Break-check 1: <paste the single-pass failure and the 5 failures>.
 > - Hook harness: <paste 22/22>. Break-check 2 against the seed hook: <paste 20 passed, 2 failed>.
 > - Break-check 3 (EPGSourceSerializer's list moved into the class body, caught by the worktree's hook): <paste>.
 > - zizmor / actionlint on `lint.yml`: <paste>.
@@ -227,7 +232,7 @@ If an open PR touching any of these appears before this one is opened, rebase on
 
 ## Not verified by the planner
 
-- The new module was run under bare `python3 -m unittest` (17/17 OK, Python 3.13.2), not under Django's runner in the test container: the shared container was not re-pointed at the planner's worktree (constraint 6). Task 9.3 is the first run under `manage.py test tests`.
+- The new module was run under bare `python3 -m unittest` (18/18 OK under Python 3.13.2 and under /usr/bin/python3 3.9.6), not under Django's runner in the test container: the shared container was not re-pointed at the planner's worktree (constraint 6). Task 9.3 is the first run under `manage.py test tests`.
 - zizmor ran online (`GH_TOKEN` from `gh auth token`) at version 1.30.1; the hook's pinned version is checked against `actions-lint.yml` by the hook itself.
 - The metrics validator was run on a `git archive` copy with no git history. The defect checks passed there; the milestone first-parent checks can only pass in a real worktree (Task 4).
 
@@ -526,6 +531,26 @@ class Y(Middle):
     read_only_fields = ["id"]
 '''
 
+# The same shape where the subclass is visited BEFORE its base. ast.walk is
+# breadth-first, so a base nested one block deeper (inside the `if`) than its
+# subclass comes after it; a single pass over the classes judges Child before
+# it knows Base is a serializer. Only the fixed-point loop catches this one.
+LOCAL_BASE_VISITED_AFTER_SUBCLASS = '''
+from rest_framework import serializers
+
+
+def build(flag):
+    if flag:
+        class Base(serializers.ModelSerializer):
+            class Meta:
+                fields = ["id"]
+
+    class Child(Base):
+        read_only_fields = ["id"]
+
+    return Child
+'''
+
 # #444 comment, shape 2.
 ALIASED_BASE = '''
 from rest_framework.serializers import ModelSerializer as MS
@@ -579,63 +604,112 @@ class ReadOnlyFieldsGuardTests(unittest.TestCase):
             check=False,
         )
 
-    def assert_one_finding(self, source, lineno, class_name):
+    def assert_one_finding(self, source, lineno, class_name, mechanism):
+        # `mechanism` names the rule the fixture exercises, so a failure says
+        # which part of the class filter stopped working, not just "0 != 1".
         path = self.write("serializers.py", source)
         result = self.run_guard(path)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(
+            result.returncode,
+            1,
+            f"{mechanism}: class {class_name} was not reported "
+            f"(stdout={result.stdout!r}, stderr={result.stderr!r})",
+        )
         self.assertEqual(
             result.stdout,
             f"{path}:{lineno}: read_only_fields assigned in the body of "
             f"serializer class {class_name}, where DRF never reads it -- "
             f"move it into {class_name}.Meta\n",
+            f"{mechanism}: wrong finding for class {class_name}",
         )
 
-    def assert_clean(self, source):
+    def assert_clean(self, source, mechanism):
         path = self.write("serializers.py", source)
         result = self.run_guard(path)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(result.stdout, "")
+        self.assertEqual(
+            result.returncode,
+            0,
+            f"{mechanism}: expected no finding "
+            f"(stdout={result.stdout!r}, stderr={result.stderr!r})",
+        )
+        self.assertEqual(result.stdout, "", f"{mechanism}: expected no output")
 
     def test_guard_script_exists(self):
         self.assertTrue(GUARD.is_file(), f"{GUARD} is missing")
 
     def test_class_body_read_only_fields_is_reported(self):
-        self.assert_one_finding(CLASS_BODY, 5, "StreamSerializer")
+        self.assert_one_finding(
+            CLASS_BODY, 5, "StreamSerializer", "a class-body assignment"
+        )
 
     def test_read_only_fields_in_meta_is_clean(self):
-        self.assert_clean(IN_META)
+        self.assert_clean(IN_META, "an assignment inside Meta is never judged")
 
     def test_annotated_assignment_is_reported(self):
-        self.assert_one_finding(ANNOTATED, 5, "StreamSerializer")
+        self.assert_one_finding(
+            ANNOTATED, 5, "StreamSerializer", "an annotated assignment"
+        )
 
     def test_a_nested_meta_alone_makes_a_class_a_serializer(self):
-        self.assert_one_finding(NESTED_META_ONLY, 2, "Thing")
+        self.assert_one_finding(
+            NESTED_META_ONLY, 2, "Thing", "a nested Meta makes a serializer"
+        )
 
     def test_a_class_with_neither_trait_is_clean(self):
-        self.assert_clean(HELPER_BASE_META)
+        self.assert_clean(
+            HELPER_BASE_META, "neither a Meta nor a serializer base is not a serializer"
+        )
 
     def test_a_subclass_of_a_local_serializer_is_followed_transitively(self):
-        self.assert_one_finding(LOCAL_BASE_TRANSITIVE, 14, "Y")
+        self.assert_one_finding(
+            LOCAL_BASE_TRANSITIVE, 14, "Y", "a same-module serializer base is followed"
+        )
+
+    def test_a_base_visited_after_its_subclass_is_found_by_the_fixed_point(self):
+        self.assert_one_finding(
+            LOCAL_BASE_VISITED_AFTER_SUBCLASS,
+            11,
+            "Child",
+            "the fixed-point loop re-judges a class whose base was found later",
+        )
 
     def test_a_base_imported_under_an_alias_is_resolved(self):
-        self.assert_one_finding(ALIASED_BASE, 5, "Z")
+        self.assert_one_finding(
+            ALIASED_BASE, 5, "Z", "a from-import alias is resolved to its name"
+        )
 
     def test_a_subscripted_base_is_unwrapped(self):
-        self.assert_one_finding(SUBSCRIPTED_BASE, 5, "W")
+        self.assert_one_finding(
+            SUBSCRIPTED_BASE, 5, "W", "a subscripted base is unwrapped"
+        )
 
     def test_a_class_nested_in_a_function_is_examined(self):
-        self.assert_one_finding(NESTED_CLASS, 6, "Inner")
+        self.assert_one_finding(
+            NESTED_CLASS, 6, "Inner", "a class nested in a function is examined"
+        )
 
     def test_several_files_report_together_and_fail_once(self):
         bad = self.write("bad.py", CLASS_BODY)
         aliased = self.write("aliased.py", ALIASED_BASE)
         clean = self.write("clean.py", IN_META)
         result = self.run_guard(clean, bad, aliased)
-        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
-        self.assertEqual(len(result.stdout.splitlines()), 2, result.stdout)
-        self.assertIn(f"{bad}:5:", result.stdout)
-        self.assertIn(f"{aliased}:5:", result.stdout)
-        self.assertNotIn(str(clean), result.stdout)
+        self.assertEqual(
+            result.returncode,
+            1,
+            f"several files: expected exit 1 "
+            f"(stdout={result.stdout!r}, stderr={result.stderr!r})",
+        )
+        self.assertEqual(
+            len(result.stdout.splitlines()),
+            2,
+            f"several files: expected one finding from each of bad.py and "
+            f"aliased.py (the alias must resolve), got {result.stdout!r}",
+        )
+        self.assertIn(f"{bad}:5:", result.stdout, "several files: class-body finding")
+        self.assertIn(
+            f"{aliased}:5:", result.stdout, "several files: aliased-base finding"
+        )
+        self.assertNotIn(str(clean), result.stdout, "several files: clean file")
 
     def test_non_python_arguments_are_skipped(self):
         path = self.tmpdir / "notes.txt"
@@ -850,7 +924,9 @@ On a fresh `git archive 36e4ce10` tree in the planner's scratch directory:
 - `git apply --check --whitespace=error` accepted C, D and E together, and they were then applied.
 - A and B were copied in, the old test was removed and F.1 was made.
 - `bash .claude/hooks/tests/test_hooks.sh` gave `22 passed, 0 failed`.
-- `python3 -m unittest tests.test_read_only_fields_guard` gave 17 tests, `OK`.
+- `python3 -m unittest tests.test_read_only_fields_guard` gave 18 tests, `OK`.
+- The single-pass mutant (the sixteen-space `changed = True` deleted) exits 0 with no output on `LOCAL_BASE_VISITED_AFTER_SUBCLASS`, where the real script reports `Child` at line 11 and exits 1.
+- Re-generating C, D and E with `git diff 36e4ce10` on that tree gave the same lines; the only difference is the optional function-context text git appends to `@@` headers, which `git apply` ignores. Each hunk passes `git apply --check --whitespace=error` on its own on a fresh detached checkout at `36e4ce10`.
 - Both check scripts run on A and B gave exit 0.
 - zizmor 1.30.1 (online) and actionlint ran on the edited `lint.yml` with zero findings.
 - The prototype script over all 614 tracked `*.py` of the seed worktree gave exit 0 with no output.
