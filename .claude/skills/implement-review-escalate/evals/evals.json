@@ -1,0 +1,19 @@
+{
+  "skill_name": "implement-review-escalate",
+  "evals": [
+    {
+      "id": 0,
+      "name": "code-fix-with-pinned-tests",
+      "prompt": "Fix #491 on D10Scot/Dispatcharr: catch-up passes a provider's `Content-Length: -1` (or 0) straight through on a streaming 200 (`_extract_representation_length` in apps/timeshift/views.py). The issue's fix direction is to treat a non-positive or non-digit Content-Length as absent, and the current behaviour is pinned by I-4's property tests from #488 as the current contract, so those pins will need to move. Land it as a draft PR against main from /Users/dion/git/Dispatcharr and report. Don't merge.",
+      "expected_output": "A sonnet implementer in its own worktree, an opus review pinned to the head SHA, a fix round if findings, and a draft PR. The report lists the pinned test that flipped with its before/after assertion and shows it red before the fix and green after, a break-check with the observed message, the labels run once without keepdb, and one `Closes #491.` line verified via closingIssuesReferences. The orchestrating agent does not write the code itself.",
+      "files": []
+    },
+    {
+      "id": 1,
+      "name": "measured-docs-fix",
+      "prompt": "Take care of #476 in /Users/dion/git/Dispatcharr: CLAUDE.md's backend baseline figures (the '2083 tests, 19.08s' and '15/15' claims) are stale and its Hypothesis sentence wrongly says nothing is written under .hypothesis/. Get the numbers right and open a draft PR. I want the new figures to come from an actual run, not an estimate.",
+      "expected_output": "An implementer measures the fifteen labels in its own container and quotes the observed counts; the Hypothesis sentence is corrected from an observed listing of .hypothesis/; an independent review pinned to a SHA checks the figures against evidence; a draft PR with `Closes #476.`. A baseline agent typically edits CLAUDE.md directly with numbers from the issue text and no review.",
+      "files": []
+    }
+  ]
+}
