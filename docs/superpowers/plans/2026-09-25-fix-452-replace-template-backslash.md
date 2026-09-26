@@ -5,10 +5,11 @@
 **Goal.** Remove the defect #452 reports: a backslash in an M3U `replace_pattern` (and in an auto-sync rename's
 `name_replace_pattern`) still reaches Python's replacement-template parser, so `\0` puts a NUL byte
 into a live stream URL, a VOD URL, an XC credential or a channel name. #440 (#171) closed the same
-symptom for `$0`/`$01`. This plan asks for a grammar ruling, recommends one, and plans it in full.
+symptom for `$0`/`$01`. The grammar ruling is decided, option (a), and this plan implements it in full.
 
-**Issue.** #452 (planned here). No user ruling exists; § Ruling recommends a default and § If the user
-rules for the alternative bounds the other one.
+**Issue.** #452 (planned here). **Ruling: (a), final.** A backslash in a replace template is literal
+text on all five paths (orchestrator ruling, confirmed by the independent plan reviewer with new
+evidence, 2026-09-26; § Ruling). § Option (b), not chosen records what the alternative would have cost.
 
 **Seed SHA: `36e4ce10`** (`main`, 2026-09-25). Every `file:line` below was opened there. Every hunk in
 the appendices was applied to an export of that SHA and run there, in a private test container
@@ -27,7 +28,7 @@ global `RegExp`, the engine the SPA preview runs. Pure-Python measurements used 
 
 **Inputs.** The #452 issue body; PR #440 (merge `cbae804d`); the #171 analysis and PR C-4 section of
 `docs/superpowers/plans/2026-09-23-fixplan-C-input-crashes.md`; the merged property module
-`apps/m3u/tests/test_property_backreferences.py`, which waits on this ruling.
+`apps/m3u/tests/test_property_backreferences.py`, which waited on this ruling.
 
 **Planner's worktree.** `.worktrees/plan-452`, branch `docs/plan-452-replace-template-backslash`.
 Only this file is committed.
@@ -112,11 +113,18 @@ The five paths through the helper, at seed:
 
 | # | path | call site | `$<name>` rewritten? | what catches a template error |
 |---|---|---|---|---|
-| 1 | live tune `transform_url`, and the WebSocket `m3u_profile_test` preview (`dispatcharr/consumers.py:163`) | `apps/proxy/next_source.py:289-290` (import `:31`) | yes, `:289`, **before** the helper | `except Exception` `:308` → original URL |
+| 1 | `transform_url`, consumed by the live tune for a non-XC stream or one with no `stream_id` (`apps/proxy/next_source.py:70`), the WebSocket `m3u_profile_test` preview (`dispatcharr/consumers.py:163`) and the credential-pool fingerprint's stream-URL fallback (`apps/m3u/connection_pool.py:83`) | `apps/proxy/next_source.py:289-290` (import `:31`) | yes, `:289`, **before** the helper | `except Exception` `:308` → original URL |
 | 2 | VOD `_transform_url` | `apps/proxy/vod_proxy/views.py:634-635` (import `:626`) | yes, `:634`, before the helper | `except Exception` `:644` → original URL |
-| 3 | XC `get_transformed_credentials` | `apps/m3u/tasks.py:3119-3120` (import `:34`) | yes, `:3119`, before the helper | `except Exception` `:3185` → base credentials |
+| 3 | XC `get_transformed_credentials`, consumed by the XC live tune (`apps/proxy/next_source.py:60`), the credential-pool fingerprint (`apps/m3u/connection_pool.py:109`), catch-up (`apps/timeshift/views.py:1705`, `:2647` at seed; `:1754`, `:2696` at `aa6f376c3d`) and the XC account-info refresh (`apps/m3u/tasks.py:3249`, `:3324`) | `apps/m3u/tasks.py:3119-3120` (import `:34`) | yes, `:3119`, before the helper | `except Exception` `:3185` → base credentials |
+| 3, simple mode | an XC profile saved in the SPA's "simple" mode, the default: `applyXcSimplePatterns` (`frontend/src/utils/forms/M3uProfileUtils.js:147`) writes the typed credentials into the template **raw**, `` `${newUsername.trim()}/${newPassword.trim()}` `` | path 3's call site (and path 1's, for a stream URL carrying the credentials) | yes, as path 3 | a new password with `\s` raises `bad escape`, one with `\1` raises `invalid group reference`; both reach `:3185` and the profile **silently** uses the base credentials (logged only at ERROR). `\0` raises nothing: it is a NUL byte in the password |
 | 4 | auto-sync rename | `apps/m3u/tasks.py:2631` | **no** | `except (regex.error, TimeoutError)` `:2638`; anything else reaches the per-stream `except Exception` `:2790` (stream counted failed) or, for a NUL that survives to `bulk_create`, the whole sync's `except Exception` `:3058` |
 | 5 | auto-sync rename preview (`/api/channels/streams/regex-preview/`) | `apps/channels/api_views.py:404` (import `:33`) | **no** | `except (TimeoutError, re.error)` `:434` (`re` is `regex`, `:331`); anything else is a 500 |
+
+Every consumer named in rows 1 and 3 goes through the same function, so under (a) all of them see one
+grammar: catch-up and the account-info refresh receive a literal backslash exactly as the live tune
+does. A changed fingerprint cannot leak a pool counter: the release reads the key stored at reserve
+time (`_release_credential_slot_by_profile_id`, `apps/m3u/connection_pool.py:251-262`), never a
+recomputed one. Rows 1 and 3's line numbers hold at `aa6f376c3d` except the timeshift pair, as given.
 
 `translate_js_replacement` (`apps/channels/api_views.py:1552-1561`, the channel **bulk**-rename action)
 is a sixth, separate rewrite that does not call the helper. It is out of scope; § Follow-ups item 5
@@ -164,7 +172,7 @@ Two consequences the issue body does not state, both measured at seed through th
 
 ### What the operator sees
 
-This decides the ruling. The M3U-profile form renders exactly one "Result After Replace", and it is
+This is what decided the ruling. The M3U-profile form renders exactly one "Result After Replace", and it is
 computed **in JavaScript**: `getLocalReplaceResult` (`frontend/src/components/forms/M3UProfile.jsx:251-252`)
 calls `applyRegex` (`frontend/src/utils/forms/M3uProfileUtils.js:34-42`), which is
 `input.replace(new RegExp(pattern, 'g'), replacer)`. The server-side WebSocket preview is computed
@@ -192,7 +200,11 @@ specs it also hits (`2026-08-29-e2e-xc-provider-emulation-design.md:90`,
 `2026-09-01-e2e-coverage-completions-design.md:79,269,437`) are e2e design notes and state no grammar
 either.
 
-### Ruling — recommended default: (a), a backslash is literal text on all five paths
+### Ruling — decided: (a), a backslash is literal text on all five paths
+
+**Status: final.** Ruled (a) by the orchestrator and confirmed by the independent reviewer of this
+plan, who supplied evidence item 5. It is not a question for the user or the implementer; do not
+revisit it.
 
 **Rule.** Inside the shared helper, double every backslash **first**, then rewrite `$<name>` (URL paths
 only, as today) and then `$n` (as today). The backslash reaches the engine as `\\`, a literal
@@ -217,6 +229,22 @@ escaped.
    Measured over 300,000 random backslash-free templates (seeded, length 0-14, over `$`, `<`, `>`, `a`,
    `b`, `0`, `1`, `2`, `9`, `x`, `/`, `-`, `g`, `&`, `'` and the backtick): identical to the seed
    rewrite on both the URL and the rename shape.
+5. **The commonest way a template gets written makes no attempt at Python escaping.** The XC "simple"
+   profile mode is the SPA's default: `getDetectedMode` (`frontend/src/utils/forms/M3uProfileUtils.js:20-32`)
+   returns `'simple'` unless an advanced search pattern is stored. It writes the operator's new
+   credentials into the template raw (`applyXcSimplePatterns`, `:139-148`; the template at `:147`,
+   identical at `36e4ce10` and `aa6f376c3d`). Measured in the container, search `myuser/mypass`,
+   target `http://h/live/myuser/mypass/1234.ts`:
+
+   | new credentials typed | seed | after (a) |
+   |---|---|---|
+   | `newuser/p\ss` | `error: bad escape \s at position 11` → base credentials | `http://h/live/newuser/p\ss/1234.ts` |
+   | `newuser/pa\1ss` | `error: invalid group reference` → base credentials | `http://h/live/newuser/pa\1ss/1234.ts` |
+   | `newuser/p\0ss` | `http://h/live/newuser/p` NUL `ss/1234.ts` | `http://h/live/newuser/p\0ss/1234.ts` |
+
+   Under (a) a password containing a backslash works as typed. Under any reading that keeps Python's
+   escapes it cannot, unless the SPA escapes the credentials first. Pinned by
+   `test_get_transformed_credentials_simple_mode_backslash_password_is_used`.
 
 **What (a) breaks, for whom.** An operator whose stored template contains a backslash they meant
 Python's way — `\1`, `\g<1>`, `\\` for one backslash — gets the backslash literally after upgrade:
@@ -225,6 +253,18 @@ Python's way — `\1`, `\g<1>`, `\\` for one backslash — gets the backslash li
   provider with a URL it will not recognise. The form's preview already showed this result.
 - Auto-sync rename: on the next sync the channel names in that group become the literal template
   text (e.g. `\1`). The rename preview shows the new result before the next sync.
+- Catch-up and the XC account-info refresh read the credentials through the same function as the live
+  tune (path table, row 3), so they receive the literal backslash too.
+
+A second population changes in the other direction, and gains. An XC profile saved in the simple mode
+(§ Evidence item 5) whose new password contains a backslash stops falling back to the account's base
+credentials, a silent fallback at seed, and starts using the configured ones. For a `\0` in the
+password it stops sending a NUL byte and sends the two characters. That is the fix working, but it is
+a behaviour change on upgrade: the provider login changes on the next live tune, catch-up and
+account-info refresh, and the profile's credential-pool fingerprint changes with it
+(`apps/m3u/connection_pool.py:109`, falling back to `:83`), so the profile is counted against the
+credentials it now uses. No counter leaks across the change (path table note). The first query below
+finds these profiles too.
 
 Both are found with two queries (measured in the container against a migrated database):
 
@@ -263,8 +303,8 @@ survives contact with the tree:
   preview shows `\1` literally. Fixing that means teaching `applyRegex` Python's reading — a frontend
   change and a second grammar in the SPA.
 
-(b) is a legitimate ruling if keeping existing rename templates working outweighs one grammar; its
-cost is bounded in § If the user rules for the alternative.
+(b) would have been a legitimate ruling had keeping existing rename templates working outweighed one
+grammar. It was not chosen; § Option (b), not chosen records its cost.
 
 ### Sub-questions and their defaults
 
@@ -287,7 +327,11 @@ makes inseparable; everything else is a follow-up with a reason, so the implemen
     row of `NODE_BACKSLASH_OUTPUTS`, fourteen templates, expected values recorded from Node v22.14.0
     (a table of constants; the oracle never calls the helper).
   - `GetTransformedCredentialsBackslashTests` — `\0-X` yields the literal username `\0-X` (path 3), and
-    `$<u>2` still substitutes (the ordering guard for path 3; green at seed, red under BC-3).
+    `$<u>2` still substitutes (the ordering guard for path 3; green at seed, red under BC-3), and
+    `test_get_transformed_credentials_simple_mode_backslash_password_is_used`: a simple-mode template
+    (search `myuser/mypass`, replace `newuser/<password>`) yields the configured credentials for the
+    passwords `p\ss`, `pa\1ss` and `p\0ss`, one subTest each (red at seed: the base credentials for the
+    first two, a NUL for the third).
   - `RenameBackslashTests` — the real `sync_auto_channels` writes `[\0]Alpha Channel` (path 4; red at
     seed with the NUL abort above), and the real preview endpoint answers 200 with `\g<x> Channel` for
     `\g<x>` (path 5; red at seed with `IndexError`).
@@ -303,9 +347,10 @@ makes inseparable; everything else is a follow-up with a reason, so the implemen
   alphabet and the doubling deleted, the module is **green** (`Ran 3 tests … OK`); with the widened
   alphabet and the doubling deleted, both properties fail (Task 1's expected output).
 
-### If the user rules for the alternative (b)
+### Option (b), not chosen
 
-Only these parts change; everything not named stays as written.
+Kept for the record; the ruling is (a) and nothing here is to be implemented. Had (b) been chosen,
+only these parts would have changed.
 
 - **Appendix A, `apps/m3u/utils.py` hunk:** replace the doubling line in `_js_template_to_python`
   (`template = replacement.replace("\\", "\\\\")`) with an allowlist check that raises
@@ -337,6 +382,12 @@ Only these parts change; everything not named stays as written.
   a stored template carrying one falls back (URL unchanged, name unchanged) until edited.
 - **Not closed by (b):** the M3U-profile preview still shows `\1` literally while the stream
   substitutes group 1; list that as a frontend follow-up.
+- **Simple-mode passwords, a cost this section's first draft omitted.** The allowlist would reject at
+  save time a simple-mode password containing any backslash other than `\1`-`\99`, `\g<..>` or `\\`
+  (for example `p\ss`), so such an operator could not store their real password at all; and a
+  password containing `pa\1ss` would be read as a group reference and still fall back. (b) would have
+  needed a frontend follow-up making `applyXcSimplePatterns` escape the typed credentials, and the
+  simple-mode credentials test would expect the base login.
 
 ---
 
@@ -387,11 +438,17 @@ Only these parts change; everything not named stays as written.
       shows three `M` files and one `??` file.
 - [ ] Run, in one command:
       `apps.m3u.tests.test_replace_template_backslash apps.proxy.tests.test_next_source_edges.TransformUrlBackslashTests apps.proxy.vod_proxy.tests.test_transform_url_backreferences apps.m3u.tests.test_property_backreferences`.
-      Expected (measured at the seed): `Ran 15 tests`, `FAILED (failures=21, errors=5)`. The failures
+      Expected (measured at the seed): `Ran 16 tests`, `FAILED (failures=24, errors=5)`. The failures
       must name the mechanism; check for these lines verbatim (`grep -a`):
       - `AssertionError: '[\x00]' != '[\\0]'` (helper, NUL)
       - `AssertionError: '[a]' != '[\\1]'` (helper and `transform_url`, `\1` read as group 1)
       - `AssertionError: '\x00-X' != '\\0-X'` (credentials)
+      - `AssertionError: Tuples differ: ('myuser', 'mypass') != ('newuser', 'p\\ss')` and
+        `AssertionError: Tuples differ: ('myuser', 'mypass') != ('newuser', 'pa\\1ss')` (simple mode:
+        the silent fallback to the base credentials; the log carries the two swallowed errors,
+        `Error transforming URL for profile 452 simple-mode account 0 Default: bad escape \s at position 11`
+        and `... account 1 Default: invalid group reference`), and
+        `AssertionError: Tuples differ: ('newuser', 'p\x00ss') != ('newuser', 'p\\0ss')` (simple mode, NUL)
       - `'error': 'PostgreSQL text fields cannot contain NUL (0x00) bytes'` inside the
         `AssertionError: 'error' != 'ok'` message (rename sync)
       - `IndexError: unknown group` (rename preview and the `[\g<x>]` subTest)
@@ -407,13 +464,13 @@ Only these parts change; everything not named stays as written.
       (`test_vod_transform_named_group_still_substitutes`,
       `test_get_transformed_credentials_named_group_still_substitutes` and the first assertion of
       `test_transform_url_named_group_still_substitutes`) are **green** at seed by design: they pin
-      behaviour this PR must preserve, and BC-2/BC-3 prove they can fail.
+      behaviour this PR must preserve, and BC-2, BC-3 and BC-4 prove they can fail.
 
 **Task 2 — the fix.**
 
 - [ ] Extract Appendix A to `/tmp/452-A.diff`, check its SHA-256, and
       `cd /Users/dion/git/Dispatcharr/.worktrees/fix-452 && git apply /tmp/452-A.diff`.
-- [ ] Re-run Task 1's command: `Ran 15 tests`, `OK`.
+- [ ] Re-run Task 1's command: `Ran 16 tests`, `OK`.
 
 **Task 3 — commit.**
 
@@ -450,17 +507,27 @@ next one.
       `safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', profile.replace_pattern)` followed
       by `safe_replace_pattern = convert_js_numbered_backreferences(safe_replace_pattern)`.
       Run `apps.m3u.tests.test_replace_template_backslash apps.m3u.tests.test_js_backreference_conversion apps.m3u.tests.test_xc_live_url`.
-      Expected: `Ran 26 tests`, `FAILED (failures=1)`:
+      Expected: `Ran 27 tests`, `FAILED (failures=1)`:
       `test_get_transformed_credentials_named_group_still_substitutes` with
       `AssertionError: '\\g<u>2' != 'myuser2'`. `git checkout -- apps/m3u/tasks.py`.
-- [ ] `git status --short` is empty after the three reverts.
+- [ ] **BC-4 (the same, the live tune; `next_source.py` is a Gate 2 module).** In
+      `apps/proxy/next_source.py`, restore the seed import
+      `from apps.m3u.utils import convert_js_numbered_backreferences` and, in place of the one
+      `convert_js_replacement_template(replace_pattern)` line, the seed's
+      `safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)` followed by
+      `safe_replace_pattern = convert_js_numbered_backreferences(safe_replace_pattern)`.
+      Run `apps.proxy.tests.test_next_source_edges`. Expected: `Ran 34 tests`, `FAILED (failures=1)`:
+      `test_transform_url_named_group_still_substitutes` with
+      `AssertionError: 'http://\\g<host>2/p' != 'http://host2/p'`. `git checkout -- apps/proxy/next_source.py`.
+- [ ] `git status --short` is empty after the four reverts.
 
 **Task 5 — full labels and Gate 2.**
 
 - [ ] Flush Redis and run each of `apps.m3u.tests`, `apps.proxy.tests`, `apps.proxy.vod_proxy.tests`,
       `tests`, `apps.channels.tests` separately, fresh DB (Global constraint 6). Measured on the seed plus
-      this PR: 251, 401, 94, 168 and 365 tests, all `OK` (the seed's own counts are 245, 398, 92, 168,
-      365: this PR adds 6, 3 and 2). A later base may add tests; any failure is a STOP.
+      this PR: 252, 401, 94, 168 and 365 tests, all `OK` (the seed's own counts are 245, 398, 92, 168,
+      365: this PR adds 7, 3 and 2). A later base may add tests (`aa6f376c3d` has 402 in
+      `apps.proxy.tests`); any failure is a STOP.
 - [ ] Gate 2, with two private containers mounted at your worktree:
       ```bash
       for s in proxy channels; do DISPATCHARR_TEST_CONTAINER=fix-452-cov-$s DISPATCHARR_TEST_DB_VOLUME=fix-452-cov-$s-db CLAUDE_HOOK_REPO_ROOT=/Users/dion/git/Dispatcharr/.worktrees/fix-452 /Users/dion/git/Dispatcharr/.claude/hooks/start-test-container.sh; done
@@ -524,8 +591,11 @@ last commits are upstream's, up to `d9abece0` "Release v0.29.0"; `release.yml` p
 > M3U-profile form's own preview already showed. Use `$1`…`$99` for capture groups (and `$<name>` for
 > named groups in M3U profiles) instead of `\1` or `\g<1>`. Before this change `\0` inserted a NUL
 > byte into the stream URL or channel name (and a NUL in a rename aborted the whole account's
-> auto-sync), and `\1` was group 1. Templates without a backslash behave exactly as before. To find
-> affected rows: [the two queries from § Ruling].
+> auto-sync), and `\1` was group 1. Templates without a backslash behave exactly as before. An XC
+> profile made in the form's simple mode whose new password contains a backslash used to fall back
+> silently to the account's own login (or, for `\0`, sent a NUL byte); it now logs in with the
+> password as configured, so that profile's provider login and its connection-pool accounting change
+> on upgrade. To find affected rows: [the two queries from § Ruling].
 
 The SPA help text (`M3UProfile.jsx:309`, `:369`: "Use $1, $2, etc.") is already correct under (a) and is
 not changed (Global constraint 11).
@@ -539,21 +609,23 @@ not changed (Global constraint 11).
 > replacement-template parser: `\0` put a NUL byte into live and VOD stream URLs, XC credentials and
 > channel names (and a NUL in a rename aborted the whole account's auto-sync with "PostgreSQL text
 > fields cannot contain NUL (0x00) bytes"), `\x01`/`\n`/`\a` put control bytes there, `\1` was
-> group 1, and `\g<x>` 500'd the rename preview. The helper now doubles every backslash **before** it
+> group 1, and `\g<x>` 500'd the rename preview. An XC simple-mode profile whose password held a
+> backslash silently used the account's base login instead. The helper now doubles every backslash **before** it
 > rewrites `$<name>` and `$n`, so a backslash is literal on all five paths — which is what the only
 > rendered M3U-profile preview (`applyRegex`, JavaScript) already showed. The three URL sites call one
 > new function, `convert_js_replacement_template`, instead of rewriting `$<name>` themselves first,
 > because that order would now escape the `\g<name>` they produce. A template without a backslash is
 > rewritten byte-for-byte as before.
 >
-> Grammar ruling: <paste the user's ruling on #452, or "planner's default (a); no user ruling">.
+> Grammar ruling: (a), final. A backslash is literal text on all five paths (orchestrator ruling,
+> confirmed by the plan's independent reviewer).
 >
 > <migration note, verbatim>
 >
 > Not touched: `$$`, `$&` (#371), `` $` ``/`$'`, JavaScript's `$10`-on-two-groups fallback, the
 > bulk-rename rule `translate_js_replacement` (#372), the SPA.
 >
-> Gate 2: <paste `floor missing=… this run missing=…`>. Break-checks: <paste BC-1..BC-3 lines>.
+> Gate 2: <paste `floor missing=… this run missing=…`>. Break-checks: <paste BC-1..BC-4 lines>.
 > Tests run (fresh DB, own container): <paste the five label counts>. Existing test changed: the
 > property module's template alphabets widen to the backslash, as its docstring anticipated; no
 > assertion changed.
@@ -605,13 +677,15 @@ done
 shasum -a 256 /tmp/452-A.diff /tmp/452-B.diff
 ```
 
-Expected: `bf14fbe3c0b587081229bc235e79909532f710947e351db9177df227c9039434` for A and `7f8ddd9101fcd8b4df6226c3400da2ec8e6f48fb502291e26875a9a043edb097` for B. Both were checked with
-`git apply --check` against `36e4ce10`.
+Expected: `bf14fbe3c0b587081229bc235e79909532f710947e351db9177df227c9039434` for A and `2cc1f7d2db074f219840e7abbcbd86268915511ec2ff275389809bc0e31ce863` for B. Every file hunk of both, each
+alone and A+B together, was checked with `git apply --check --whitespace=error` on fresh detached
+checkouts of `36e4ce10` and `aa6f376c3d` (all exit 0).
 
 ## Appendix A — production hunks against `36e4ce10`
 
 Verified: applied with Appendix B to a `git archive 36e4ce10` export, run in private container
-`plan-452` (image `ghcr.io/d10scot/dispatcharr:latest`, fresh DB): `apps.m3u.tests` 251 OK,
+`plan-452` (image `ghcr.io/d10scot/dispatcharr:latest`, fresh DB): `apps.m3u.tests` 252 OK
+(re-measured in private container `fix-499` after the simple-mode test was added; 251 before it),
 `apps.proxy.tests` 401 OK, `apps.proxy.vod_proxy.tests` 94 OK, `tests` 168 OK, `apps.channels.tests`
 365 OK; Gate 2 `missing=33`.
 
@@ -766,9 +840,10 @@ index 32e3bc6..782bc63 100644
 
 ## Appendix B — test hunks against `36e4ce10`
 
-Verified: applied alone to the same export, red as Task 1 states (`Ran 15 tests`,
-`FAILED (failures=21, errors=5)`); with Appendix A, green as Appendix A states; break-checks BC-1..BC-3
-red as Task 4 states.
+Verified: applied alone to a detached checkout of `36e4ce10`, red as Task 1 states (`Ran 16 tests`,
+`FAILED (failures=24, errors=5)`); with Appendix A, green as Appendix A states (Task 1's command
+`Ran 16 tests`, `OK`; the four touched modules in full `Ran 47 tests`, `OK`); break-checks BC-1..BC-4
+red as Task 4 states (BC-3 and BC-4 re-run after the simple-mode test was added).
 
 <!-- BEGIN APPENDIX B -->
 ```diff
@@ -842,10 +917,10 @@ index 248baf6..0f1ec33 100644
              pieces = data.draw(js_templates(group_count))
 diff --git a/apps/m3u/tests/test_replace_template_backslash.py b/apps/m3u/tests/test_replace_template_backslash.py
 new file mode 100644
-index 0000000..ee94fe3
+index 0000000..47dcea9
 --- /dev/null
 +++ b/apps/m3u/tests/test_replace_template_backslash.py
-@@ -0,0 +1,170 @@
+@@ -0,0 +1,191 @@
 +r"""#452: a backslash in an M3U replace template is literal text, as in JavaScript.
 +
 +Replace templates are authored in JavaScript's replacement syntax, and the
@@ -913,9 +988,9 @@ index 0000000..ee94fe3
 +
 +
 +class GetTransformedCredentialsBackslashTests(TestCase):
-+    def _account(self, search, replace):
++    def _account(self, search, replace, name="452 backslash account"):
 +        account = M3UAccount.objects.create(
-+            name="452 backslash account",
++            name=name,
 +            server_url="http://host.example:8080",
 +            username="myuser",
 +            password="mypass",
@@ -940,6 +1015,27 @@ index 0000000..ee94fe3
 +        _, username, _ = get_transformed_credentials(account)
 +
 +        self.assertEqual(username, "myuser2")
++
++    def test_get_transformed_credentials_simple_mode_backslash_password_is_used(self):
++        # The SPA's XC "simple" profile mode, the default, writes the new
++        # credentials into the template raw: applyXcSimplePatterns
++        # (frontend/src/utils/forms/M3uProfileUtils.js) builds
++        # `${newUsername}/${newPassword}` with no escaping. Before #452 a
++        # backslash in that password was a template escape: "\s" raised "bad
++        # escape" and "\1" "invalid group reference", both swallowed so the
++        # profile silently used the base credentials, and "\0" put a NUL byte
++        # into the password.
++        for i, new_password in enumerate((r"p\ss", r"pa\1ss", r"p\0ss")):
++            with self.subTest(new_password=new_password):
++                account = self._account(
++                    "myuser/mypass",
++                    "newuser/" + new_password,
++                    name=f"452 simple-mode account {i}",
++                )
++
++                _, username, password = get_transformed_credentials(account)
++
++                self.assertEqual((username, password), ("newuser", new_password))
 +
 +
 +class RenameBackslashTests(TestCase):
