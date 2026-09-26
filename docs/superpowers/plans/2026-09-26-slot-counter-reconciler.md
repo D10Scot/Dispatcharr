@@ -4,13 +4,15 @@
 
 **Goal.** `profile_connections:{id}` and `server_group_connections:{group}:{fp}` stop drifting in either direction. Every write to them moves through one Lua script that bumps a per-counter version, and a beat task recomputes each counter from who actually holds a provider connection. It writes only where the version has not moved since its previous run, and it never lowers a counter below a holder that is merely paused, in flight, or missing from a single run.
 
-**Seed.** `b2d0ff5e2e7ce0fb9e8dfd9a1c30bca2e6f623f3` (`b2d0ff5e`, main on 2026-09-26). Every `file:line` below is at the seed unless it says otherwise. Main has since moved to `1b3097e8` through two docs-only commits (#504, and #516 for ADR 0007). All three appendices apply cleanly there too.
+**Seed.** `b2d0ff5e2e7ce0fb9e8dfd9a1c30bca2e6f623f3` (`b2d0ff5e`, main on 2026-09-26). Every `file:line` below is at the seed unless it says otherwise. Main has since moved to `02a5fe5c` through two docs-only commits (#504, and #516 for ADR 0007) and #517 (D2, #514). All three appendices apply cleanly there too, and the four labels they share with #517 are green on it (§ What was measured).
 
 **Authority.** In order of precedence:
 
 1. Issue #513. Its seven constraints are binding rulings, and this plan's Decisions section answers each one by number.
 2. The review-passed Phase 3 reassessment (the user's `~/git/phase3-reassessment-2026-09-26.md`, § 5 Option D and § 6.1). Its five review rounds are in the companion `-review.md`, and this plan reopens none of their findings.
 3. CLAUDE.md, ADR 0005 (slots stay in Django), ADR 0006 (the Go relay keeps its state in memory) and ADR 0007 (Phase 3 is closed; #513 is fix work, not a phase).
+4. `CONTEXT.md` is not contradicted: its glossary keeps the provider-slot counters in Redis and in Django (main `:167`, `:193-198`), which is exactly where D1 leaves them.
+5. `docs/relay-parity-matrix.md` is not affected: no row covers provider slots, because the Go relay never touches a counter (it asks `next-source` and posts `release`), and D1 changes no externally observable live-path behaviour.
 
 **Issues.** #513 (planned in PR D1-3), #470 (planned in PR D1-1), #471 (planned in PR D1-1). #356 is related and is not fixed here (§ What this plan does not do).
 
@@ -19,7 +21,7 @@
 Every PR carries these. A reviewer checks each one against the PR's diff.
 
 1. **Every write to either counter family is inside `apps/m3u/connection_pool.py`'s `_SLOT_SCRIPT`.** No `INCR`, `DECR`, `SET` or pipeline on a `profile_connections:*` or `server_group_connections:*` key exists anywhere else. The grep in D1-1 Task 3 must print nothing on every PR's head.
-2. **No new ORM read on the tune path.** `apps/proxy/tests/test_tune_path_query_ledger.py` passes unchanged at every stage (measured). Its `LEDGER` is not edited.
+2. **No new ORM read on the query ledger's drives.** `apps/proxy/tests/test_tune_path_query_ledger.py` passes unchanged at every stage (measured), and its `LEDGER` is not edited. One read is added outside those drives: a reserve refused `profile_full` on a pooled STD profile now resolves the credential fingerprint first (one `Stream` read; see the table in Constraint 1).
 3. **`test_vod_lock_contention.py`'s guarantee is kept byte for byte.** `active_streams` is mutated only by the four existing VOD Lua scripts, outside the session metadata lock. D1's refresher writes only `EXPIRE` and the `worker_id` field on a VOD hash, and the reconciler only reads it. That module is not edited and passes at every stage.
 4. **No Gate 2 module is edited.** The nine files in `scripts/coverage_live_path.coveragerc`'s `[report] include` stay untouched, so neither `modules=` nor `rcfile=` moves. `apps/proxy/slot_reconciler.py` is new and sits outside that list. `apps/proxy/control_plane.py`'s timeout constants are imported, not edited.
 5. **No new cross-app import edge.** The reconciler lives in `apps/proxy`, which already imports `apps.m3u` (`next_source.py`), `apps.timeshift` (`authorize.py`, `utils.py`, `stats_views.py`) and `apps.channels`. `apps/timeshift/views.py` importing `apps.proxy.vod_proxy.held_records` stays inside the existing `timeshift → proxy` edge. Placing the reconciler in `apps/m3u` instead would have added `m3u → timeshift` and a second import cycle.
@@ -37,13 +39,13 @@ Everything below was run on 2026-09-26 in a detached clone at the seed, `scratch
 
 | Label | Seed | + D1-1 | + D1-2 | + D1-3 |
 |---|---|---|---|---|
-| apps.m3u.tests | 245 | 258 | 258 | 258 |
+| apps.m3u.tests | 245 | 259 | 259 | 259 |
 | apps.channels.tests | 365 | 365 | 365 | 365 |
-| apps.proxy.tests | 399 | 399 | 399 | 415 |
+| apps.proxy.tests | 399 | 399 | 399 | 420 |
 | apps.proxy.vod_proxy.tests | 92 | 92 | 104 | 104 |
 | apps.timeshift.tests | 451 | 451 | 454 | 454 |
-| core.tests | 138 | 138 | 138 | 138 |
-| tests | 168 | 169 | 169 | 169 |
+| core.tests | 138 | 138 | 138 | 139 |
+| tests | 168 | 169 | 170 | 170 |
 
 The other eight labels (`apps.accounts`, `backups`, `connect`, `dashboard`, `epg`, `output`, `plugins`, `vod`) are unchanged and green at every stage. Every stage selects the full suite through `_SHARED_PATH_PREFIXES`, because each one edits a file under `dispatcharr/`. The full suite was run at each of the three final scratch SHAs.
 
@@ -74,7 +76,7 @@ switch ok                        True         p1 0 v2, p2 1 v1, cred a 0, cred b
 
 **Every break-check was run.** Each wrong edit was applied alone, and each reddens its named test with the message quoted in the PR sections.
 
-**The appendices were verified.** Each diff was produced with `git diff` between the scratch commits. All three passed `git apply --check --whitespace=error` and then applied in order on a fresh clone at the seed, and the result is byte-identical to the scratch tree (`diff -rq`, excluding `.git`, `__pycache__` and `media`). They also apply in order on main `1b3097e8` and on D2's PR #517 head `cfcfcbb8`.
+**The appendices were verified.** Each diff was produced with `git diff` between the scratch commits. All three passed `git apply --check --whitespace=error` and then applied in order on a fresh clone at the seed, and the result is byte-identical to the scratch tree (`diff -rq`, excluding `.git`, `__pycache__` and `media`). They also apply in order on main `1b3097e8` and on `02a5fe5c`, the merge of D2's PR #517. On `02a5fe5c` plus all three, in a second private container, `apps.m3u.tests` 259, `apps.proxy.tests` 420, `apps.proxy.vod_proxy.tests` 104 and `apps.timeshift.tests` 458 (D2's four tests added) all pass. The appendices extracted from this document's committed copy rebuild the prototype tree byte for byte.
 
 ## Decisions
 
@@ -168,7 +170,7 @@ W_catch_up = POOL_LOCK_WAIT_SECONDS + ConfigHelper.connection_timeout() + Config
 
 ### Constraint 3: an unreachable relay skips the run
 
-`SlotReconciler._run` calls `relay_client.list_channels()` after reading versions and before any write. On `RelayUnavailable`, on `RelayRefused` or on `ImproperlyConfigured`, it logs one WARNING and returns `RunResult("skipped", …)`. It writes no counter and leaves the snapshot untouched. That is the shape of `fetch_channel_stats` (`core/tasks.py:430-445`). Any other exception propagates, so a bug fails the task loudly rather than reading as zero holders. `relay_client.live_connections`'s fail-open (`relay_client.py:242-245`) is never used here. A relay that answers with an empty list, a freshly restarted one, is covered by the two-run rule under constraint 7.
+`SlotReconciler._run` calls `relay_client.list_channels()` after reading versions and before any write. On `RelayUnavailable`, on `RelayRefused`, on `ImproperlyConfigured`, or on a 2xx answer that is not an object carrying a `channels` list, it logs one WARNING and returns `RunResult("skipped", …)`. It writes no counter and leaves the snapshot untouched. That is the shape of `fetch_channel_stats` (`core/tasks.py:430-445`). Any other exception propagates, so a bug fails the task loudly rather than reading as zero holders. `relay_client.live_connections`'s fail-open (`relay_client.py:242-245`) is never used here. A relay that answers with an empty list, a freshly restarted one, is covered by the two-run rule under constraint 7.
 
 ### Constraints 4 and 5: a positive worker signal, a shared registry, and `worker_id` on catch-up
 
@@ -243,7 +245,7 @@ A relay channel in state `stopped` or `error` is not a holder, because its `run(
 2. **The clock.** `taken_at = TIME`. If the previous snapshot is younger than `S`, return `skipped`.
 3. **Versions.** One `MGET` of every counter's version. This is read *before* any ground truth, because the next run's safety argument measures the spacing from here.
 4. **The relay.** `list_channels()`, or skip the run (constraint 3).
-5. **Ground truth.** Live holders from the relay's list. VOD and catch-up holders from one `SCAN` each, `vod_persistent_connection:*` (one segment after the prefix) and `timeshift:pool:*` (exactly two colons, which excludes `:lock` and `:superseded`), each followed by an `HMGET`. Then one `MGET` of the workers' liveness keys. Holders are attributed to profiles, and a credential counter's set is the union over its profiles.
+5. **Ground truth.** Live holders from the relay's list; a 2xx answer whose `channels` is missing or not a list skips the run (Constraint 3), because it is not an empty live set. VOD and catch-up holders from one `SCAN … TYPE hash` each over `vod_persistent_connection:*` and `timeshift:pool:*`, each key followed by an `HMGET`. **Records are selected by type, never by the key's shape**: both session ids reach the key verbatim from the client (VOD's `<str:session_id>` path segment, `vod_proxy/urls.py:9-10`; catch-up's `?session_id=`, `timeshift/views.py:372,431`), so a `:` in one must not hide a live holder, and the pool's `:lock` and `:superseded` keys are strings and fall out of a hash-typed scan. Then one `MGET` of the workers' liveness keys. Holders are attributed to profiles. A profile counter's set is its own profile's holders. **A credential counter's set is the holders of every profile whose release pointer names it** (`profile_credential_release:{id}`, one `MGET`; what that profile's last reserve or switch actually counted against), **or, where a profile has no pointer, whose configuration names it today.** Attributing by today's configuration alone would lower the shared counter under streams still open when an admin makes a pooled profile unlimited, moves it out of its group, changes its login or deletes it mid-stream.
 6. **Writes.** For each counter present in the previous snapshot whose version still equals the one that snapshot recorded, call `reconcile_counter(key, expected, floor, ceiling)`. The script re-checks the version at write time, atomically with the write.
 7. **The snapshot.** Save `{taken_at, counters: {key: [version from step 3, sorted identities]}}` to `slot_reconciler:snapshot` as JSON, with a TTL of `max(10 × S, 600)` s. A reconciler stopped for longer starts again with a fresh baseline.
 
@@ -257,11 +259,13 @@ A relay channel in state `stopped` or `error` is not a holder, because its `run(
 - DEBUG on nothing else.
 - The task returns `{"status", "reason", "changes"}`.
 
-**The beat entry, and where it runs.** The entry is `"reconcile-provider-slots": {"task": "core.tasks.reconcile_provider_slots", "schedule": 30.0}` in `dispatcharr/settings.py`'s `CELERY_BEAT_SCHEDULE` (`:439-462`). It goes there and not in a seeding migration because `DatabaseScheduler` re-asserts every static entry on each beat start. django-celery-beat 2.9.0's `ModelEntry.from_entry` runs `update_or_create(name=…, defaults=…)` from `setup_schedule`/`update_from_dict` (`schedulers.py:191-196,257,472`). Its defaults do not include `enabled`, so an operator who disables the row keeps it disabled. A migration would add the kind of scheduler migration whose reverse CLAUDE.md records as broken twice (`epg/migrations/0007`, `m3u/migrations/0006`). The 30 s is a tick, not the interval: a run inside `S` is skipped, so the effective interval at defaults is 90 s, the first tick past 80 s. An operator who edits the tick shorter only adds no-op runs; one who edits it longer only slows convergence.
+**The beat entry, and where it runs.** The entry is `"reconcile-provider-slots": {"task": "core.tasks.reconcile_provider_slots", "schedule": 30.0}` in `dispatcharr/settings.py`'s `CELERY_BEAT_SCHEDULE` (`:439-459`). It goes there and not in a seeding migration because `DatabaseScheduler` re-asserts every static entry on each beat start. django-celery-beat 2.9.0's `ModelEntry.from_entry` runs `update_or_create(name=…, defaults=…)` from `setup_schedule`/`update_from_dict` (`schedulers.py:191-196,257,472`). Its defaults do not include `enabled`, so an operator who disables the row keeps it disabled. A migration would add the kind of scheduler migration whose reverse CLAUDE.md records as broken twice (`epg/migrations/0007`, `m3u/migrations/0006`). The 30 s is a tick, not the interval: a run inside `S` is skipped, so the effective interval at defaults is 90 s, the first tick past 80 s. An operator who edits the tick shorter only adds no-op runs; one who edits it longer only slows convergence.
 
 The task itself is `core/tasks.py:reconcile_provider_slots`, next to `fetch_channel_stats` and with the same function-local import. It runs on the worker role, where beat and the default queue live, and that role already reaches the relay over the network (`apps/m3u/tasks.py:71`'s `relay_client.stop_channels`).
 
-**Convergence at defaults.** A leak is released two runs after its holder was last seen: 90 to 180 s. An under-count is raised two runs after its holder is first seen. The first run after a deploy only snapshots.
+**Convergence at defaults, and its condition.** A leak is released two runs after its holder was last seen, 90 to 180 s at defaults, **provided the counter has one quiet run interval in that time**: no reserve, release or switch on it between two consecutive runs. An under-count is raised on the same condition. On a counter with sustained churn, one write per interval or more (a busy profile, or a shared-login counter several profiles feed), the correction waits until the churn stops, which is when the slot matters least but may be much later than 180 s. The first run after a deploy only snapshots.
+
+**Why the version rule is not relaxed for churn.** The tempting relaxation is to write even when the version moved, if the holder set was the same at both runs. It reopens R3-1 exactly: a release plus a tune whose holder is still in flight leaves the holder set and the counter's value both unchanged while the counter now carries a different, invisible reservation, and the write would drop it. Every variant that looks at values or holder sets instead of the version has that shape, so the rule stays as #513 constraint 1 rules it and the convergence condition is stated instead of hidden.
 
 ## PR split
 
@@ -285,7 +289,7 @@ The `sed '1d;$d'` strips the fence lines.
 - `apps/channels/models.py:760-792`. `update_stream_profile()`'s credential move and pipeline become one `switch_profile_slot` call.
 - `apps/proxy/vod_proxy/multi_worker_connection_manager.py:1556-1666`. The three uncalled methods are deleted.
 - `apps/m3u/tests/slot_script_fake.py`. New: `SlotScriptFakeMixin`, the in-memory fakes' `register_script`.
-- `apps/m3u/tests/test_slot_script.py`. New: 13 real-Redis tests.
+- `apps/m3u/tests/test_slot_script.py`. New: 14 real-Redis tests, one of them a Hypothesis property.
 - `apps/m3u/tests/test_connection_pool.py:7,23,26,621-638`. The fake gains the mixin, and `_safe_decr`'s import and test are retargeted (§ Tests).
 - `apps/m3u/tests/test_property_connection_pool.py:27-29,50,95-103`. The same.
 - `apps/proxy/tests/test_next_source_api.py:16,21`, `apps/proxy/tests/test_next_source_resolution.py:15,19`, `apps/proxy/vod_proxy/tests/test_profile_connections.py:10,13`. Each fake gains the mixin; nothing else changes.
@@ -300,14 +304,17 @@ The `sed '1d;$d'` strips the fence lines.
 3. **The writer grep.** Run the third grep from Constraint 1 against the working tree. It must print nothing, with exit 1 under `pipefail`.
 4. **Labels.** `python3 scripts/ci_backend_test_labels.py` on the changed paths selects all fifteen labels (`dispatcharr/` is a shared prefix). Run them on fresh databases. Expect the "+ D1-1" column above.
 5. **Break-checks** (each applied alone, then reverted):
-   - **Restore the seed's Python reserve and release.** Append `git show "${SEED}:apps/m3u/connection_pool.py"`'s lines from `def _safe_decr` to the end of the file, so the seed's definitions win. Seven tests redden, including:
+   - **Restore the seed's Python reserve and release.** Append `git show "${SEED}:apps/m3u/connection_pool.py"`'s lines from `def _safe_decr` to the end of the file, so the seed's definitions win. Eight tests fail, and the three parity tests error with `AttributeError: '_DictRedis' object has no attribute 'incr'` because the seed's code calls `incr`, which the minimal fake lacks (a side effect of the edit, not the mechanism). The eight include:
      - `test_470_reserve_side_race_admits_one_stream_from_minus_one_with_a_cap_of_one`: `AssertionError: 2 != 1 : 2 streams admitted against a cap of one (#470)`
      - `test_470_release_side_race_leaves_the_counter_equal_to_the_streams_held`: `AssertionError: 0 != 2 : a release lost two live streams from the count (#470)`
      - `test_a_negative_profile_counter_does_not_lift_max_streams`: `Lists differ: [True, True, True] != [True, False, False]` … `a negative profile counter lifted the cap (#471)`
      - `test_a_release_repairs_a_negative_profile_counter`: `-2 != 0`
      - `test_each_write_bumps_the_version_of_the_counter_it_writes`: `(0, 0) != (1, 1)`
      - `test_a_refused_reserve_writes_nothing_and_bumps_nothing`: `a refused reserve wrote a counter or moved a version` (the seed's INCR-then-DECR leaves a `0` where the script leaves no key)
+     - `test_a_switch_bumps_both_profile_versions_in_one_step`: `(1, 1) != (2, 1)`; `test_a_moved_version_blocks_the_write`: `(1, 1, 0) != (-1, 1, 1)`
    - **Drift the fake.** In `slot_script_fake.py`'s `_give_back`, delete the `elif current < 0` branch. `SlotScriptFakeParityTests.test_reserve_release_refusal_and_repair_sequences_agree` fails with `'-4' != '0' : profile_connections:<id>`.
+   - **Drift the fake's `credential_full` branch to write the profile counter before refusing** (the seed's shape; the reviewer's probe that the fixed sequences missed). `SlotScriptFakeParityProperties.test_the_fake_matches_the_lua_after_every_step` errors with Hypothesis's grouped failure, whose members read `'1' != None : step 0 ('reserve', 'a'): profile_connections:<id> differs between the fake and the Lua`.
+   - **Delete the production Lua's negative repair** (`elseif c < 0 then write(k, 0)` in `give_back`). The property fails with `'0' != '-1' : step 0 ('release', 'a'): profile_connections:<id> differs between the fake and the Lua`, as do `test_reserve_release_refusal_and_repair_sequences_agree` and `test_a_release_repairs_a_negative_profile_counter`. The fake-backed `test_property_connection_pool.py` and `test_connection_pool.py` stay green under this edit, because they run the fake: see § Existing tests changed.
    - **Drop the alias.** Delete the new `apps/m3u/connection_pool` alias. `test_slot_script_change_runs_every_label_that_reserves_a_slot` fails with `Items in the second set but not the first: 'apps.proxy.vod_proxy.tests' 'apps.timeshift.tests' 'apps.channels.tests'`.
 6. **Lint.** Run `python3 scripts/check_credential_logging.py` on every touched `.py`. It exits 0.
 
@@ -318,7 +325,8 @@ The `sed '1d;$d'` strips the fence lines.
 | `SlotScriptVersionTests` | `test_each_write_bumps_the_version_of_the_counter_it_writes`, `test_a_refused_reserve_writes_nothing_and_bumps_nothing`, `test_a_switch_bumps_both_profile_versions_in_one_step`, `test_a_switch_refused_by_the_new_login_writes_nothing` | constraint 1: every writer bumps, nothing else does |
 | `SlotScriptRepairTests` | `test_a_negative_profile_counter_does_not_lift_max_streams`, `test_a_release_repairs_a_negative_profile_counter` (#471); `test_470_reserve_side_race_…`, `test_470_release_side_race_…` (#470's two interleavings, forced deterministically) | atomic repair. The interleavings wrap the real client and pause the first thread after its `incr`/`get` on the credential key until the second finishes. Under the seed's Python that is the race; under the script no such call exists and the two serialise. |
 | `ReconcileOpTests` | `test_a_moved_version_blocks_the_write` (1→0→1), `test_an_unmoved_version_clamps_and_does_not_bump`, `test_an_absent_counter_clamped_to_zero_is_not_created` | the `reconcile` op D1-3 writes through |
-| `SlotScriptFakeParityTests` | `test_reserve_release_refusal_and_repair_sequences_agree`, `test_switch_and_reconcile_sequences_agree` | the Python fake answers exactly as the Lua: same returns, same final value for every key, from the same starting values |
+| `SlotScriptFakeParityTests` | `test_reserve_release_refusal_and_repair_sequences_agree`, `test_switch_and_reconcile_sequences_agree` | the Python fake answers exactly as the Lua for two fixed sequences: same returns, same final value for every key |
+| `SlotScriptFakeParityProperties` | `test_the_fake_matches_the_lua_after_every_step` (Hypothesis, the shared `dispatcharr-ci` profile: 200 derandomized examples) | random reserve/release/switch sequences of up to 15 steps over five profiles, three of which share one login (so `credential_full` is reached on reserve and on switch) plus an unlimited and an ungrouped one, from drifted starting counters (absent, −3…3); the return and every key are compared after every step |
 
 `tests.test_ci_test_routing.ChangedPathRoutingTests.test_slot_script_change_runs_every_label_that_reserves_a_slot` is also added.
 
@@ -336,7 +344,7 @@ The `sed '1d;$d'` strips the fence lines.
 >
 > Tests changed (the in-memory fakes cannot run Lua): five fakes gain `SlotScriptFakeMixin`, whose Python answer is held to the Lua by `SlotScriptFakeParityTests` on a live Redis. The two tests that called the deleted `_safe_decr` now call `release_profile_slot`, with the same inputs and the same expected values. Before and after are in the plan, `docs/superpowers/plans/2026-09-26-slot-counter-reconciler.md` § Tests.
 >
-> Measured: all fifteen labels green on fresh databases (m3u 245 → 258, tests 168 → 169). Reserve is 3 round trips → 1 and release 6 → 1; the loopback median for the pair is 454 µs → 122 µs. The tune-path query ledger is unchanged.
+> Measured: all fifteen labels green on fresh databases (m3u 245 → 259, tests 168 → 169). Reserve is 3 round trips → 1 and release 6 → 1; the loopback median for the pair is 454 µs → 122 µs. The tune-path query ledger is unchanged.
 >
 > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -346,7 +354,9 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
 
 **Files:**
 
-- `apps/proxy/vod_proxy/held_records.py`. New, 198 lines: the registry, the refresher and its Lua.
+- `apps/proxy/vod_proxy/held_records.py`. New, 203 lines: the registry, the refresher and its Lua. `held_entries()` exposes each held `(key, ttl, busy_field)` for the tests.
+- `dispatcharr/test_discovery.py`. A third `_PATH_ALIASES` entry: `apps/proxy/vod_proxy/held_records` routes to `apps.proxy.vod_proxy`, `apps.proxy` and `apps.timeshift`, whose tests hold or read its records.
+- `tests/test_ci_test_routing.py`. `test_held_records_change_runs_every_label_that_holds_or_reads_a_record` is added.
 - `apps/proxy/vod_proxy/multi_worker_connection_manager.py`:
   - `:16` imports `held_records`.
   - `:95` adds `SESSION_TTL_SECONDS = 3600`, and `:341,345` use it.
@@ -372,6 +382,9 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
    - **Drop `worker_id` from `_create_pool_session`'s mapping.** `test_a_created_entry_records_this_process`: `None != '<host>-<pid>'`.
    - **Drop it from `_acquire_idle_pool_session`.** `test_an_idle_entry_taken_back_records_the_process_taking_it`: `'host-that-died-1' != '<host>-<pid>'`.
    - **Remove `_run`'s own `try`/`except`.** `test_the_loop_keeps_going_after_an_iteration_raises` errors with `RuntimeError: an iteration blew up`: the exception escaped the loop.
+   - **Drop `busy_field="busy"` from the catch-up wrap.** `test_the_pool_entry_is_held_from_the_first_chunk_until_close`: `('timeshift:pool:pool-s1', 600, 'busy') not found in [('timeshift:pool:pool-s1', 600, '')] : a streaming catch-up response held its pool entry without the busy guard or the busy TTL`.
+   - **Give the VOD wrap the catch-up TTL (`ttl=600`).** `test_the_session_is_held_from_the_first_chunk_until_the_stream_ends`: `('vod_persistent_connection:vod_1_1', 3600, '') not found in [('vod_persistent_connection:vod_1_1', 600, '')] : a streaming VOD response held its session with the wrong TTL or a busy guard`.
+   - **Drop the `held_records` alias.** `test_held_records_change_runs_every_label_that_holds_or_reads_a_record` fails with `Items in the second set but not the first:`.
 4. `test_vod_lock_contention.py` passes unchanged. That is Global constraint 3's pin.
 
 **Tests added:**
@@ -380,8 +393,9 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
 |---|---|---|
 | `test_held_records.py` (real Redis) | `test_refresh_sets_the_worker_liveness_key_with_a_short_ttl`, `test_a_held_vod_session_outlives_its_own_ttl_while_held`, `test_a_catch_up_entry_is_refreshed_only_while_busy`, `test_a_record_already_gone_is_not_recreated`, `test_holding_registers_from_the_first_item_until_the_end_or_close` | the positive signal and the re-EXPIRE (constraint 4) |
 | same (no Redis) | `test_refresh_once_swallows_a_redis_failure_and_logs_once`, `test_the_loop_keeps_going_after_an_iteration_raises`, `test_the_first_hold_starts_one_refresher_thread`, `test_no_refresher_thread_in_tests`, `test_this_process_is_one_registry_shared_by_every_caller`, `test_the_vod_manager_and_catch_up_record_the_same_worker_id` | wrapping, start-once, one registry per process |
-| same | `VodStreamHoldsItsSessionTests.test_the_session_is_held_from_the_first_chunk_until_the_stream_ends` | the VOD wrap, driven through `stream_content_with_session` with `VodRangeResponseTests`' harness |
-| `test_pool_worker_id.py` | `test_a_created_entry_records_this_process`, `test_an_idle_entry_taken_back_records_the_process_taking_it`, `test_the_pool_entry_is_held_from_the_first_chunk_until_close` | constraint 5 |
+| same | `VodStreamHoldsItsSessionTests.test_the_session_is_held_from_the_first_chunk_until_the_stream_ends` | the VOD wrap, driven through `stream_content_with_session` with `VodRangeResponseTests`' harness, including the registered `(key, 3600, "")` |
+| `test_pool_worker_id.py` | `test_a_created_entry_records_this_process`, `test_an_idle_entry_taken_back_records_the_process_taking_it`, `test_the_pool_entry_is_held_from_the_first_chunk_until_close` | constraint 5, including the catch-up wrap's registered `(key, 600, "busy")` |
+| `tests/test_ci_test_routing.py` | `test_held_records_change_runs_every_label_that_holds_or_reads_a_record` | the routing alias |
 
 **PR description draft:**
 
@@ -393,7 +407,7 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
 >
 > Nothing reads the new keys until D1-3. `test_vod_lock_contention.py` is untouched and green: the refresher writes only `EXPIRE` and `worker_id`, never `active_streams`.
 >
-> Measured: all fifteen labels green on fresh databases (vod_proxy 92 → 104, timeshift 451 → 454).
+> Measured: all fifteen labels green on fresh databases (vod_proxy 92 → 104, timeshift 451 → 454, tests 169 → 170).
 >
 > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -401,12 +415,13 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
 
 **Files:**
 
-- `apps/proxy/slot_reconciler.py`. New, 366 lines.
-- `apps/proxy/tests/test_slot_reconciler.py`. New, 396 lines: 16 tests, real Redis plus the test database.
+- `apps/proxy/slot_reconciler.py`. New, 404 lines.
+- `apps/proxy/tests/test_slot_reconciler.py`. New, 503 lines: 21 tests, real Redis plus the test database.
+- `core/tests/test_reconcile_provider_slots.py`. New, 20 lines: the beat-entry test, in `core.tests` because it pins `dispatcharr/settings.py` and `core/tasks.py`, whose edits select that label.
 - `apps/proxy/vod_proxy/multi_worker_connection_manager.py`. After `SESSION_TTL_SECONDS` it adds `UPSTREAM_TIMEOUT = (10, 10)` and `UPSTREAM_ATTEMPTS = 2`; `:499,518` use `UPSTREAM_TIMEOUT`.
 - `apps/timeshift/views.py:2133-2137`. `POOL_LOCK_WAIT_SECONDS = 5`, defined immediately above `_pool_lock` and used as its `blocking_timeout`. It is deliberately not beside `_POOL_WAIT_SECONDS` at `:747`, because D2's PR #517 inserts lines at `:743-746` and a hunk there would stop applying.
 - `core/tasks.py:461`. `reconcile_provider_slots`, inserted before `rehash_streams`.
-- `dispatcharr/settings.py:455-462`. The beat entry.
+- `dispatcharr/settings.py:458`. The beat entry, appended after `check-account-expirations` (`:454-458`).
 - `docs/adr/0005-the-relay-is-chosen-by-name-once-per-tune.md:176`. One dated consequence bullet.
 - `CLAUDE.md`. D1-1's bullet gains its reconciler sentence.
 
@@ -415,7 +430,7 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
 1. Apply Appendix C on top of D1-2.
 2. Run the labels (all fifteen). Expect the "+ D1-3" column.
 3. Run the break-checks in § Tests below, each alone.
-4. **Deploy note for the PR body.** The first run after deploy only snapshots; a leak is released within two runs of its holder being last seen (90 to 180 s at defaults).
+4. **Deploy note for the PR body.** The first run after deploy only snapshots. A leak is released two runs after its holder was last seen (90 to 180 s at defaults) once its counter has had one quiet run interval; on a counter with continuous churn it waits for the churn to stop.
 
 **PR description draft:**
 
@@ -431,15 +446,17 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
 >
 > It writes only when the counter's version (from D1-1) has not moved since its previous run, checked atomically with the write. It never lowers a counter below the holders seen at either of its last two runs, or raises it above those seen at both. Runs are spaced at twice the longest in-flight window, 80 s at defaults, read at run time from the relay's tune budget, the VOD upstream timeout and the operator's catch-up timeouts. A run that cannot reach the relay does nothing.
 >
-> Tests: the eleven interleavings #513 names, each against real Redis with a named break-check, plus the spacing and the beat entry. ADR 0005 gains a consequence note.
+> Records are selected by Redis type, never by key shape, because both session ids are client-chosen and may contain `:`. A shared-login counter's holders are attributed through each profile's release pointer, so an admin editing or deleting a pooled profile mid-stream does not lower it under streams still open. A relay answer with no channel list skips the run. Convergence needs one quiet run interval on the counter; under sustained churn the correction waits (the version rule is #513's constraint 1 and relaxing it reopens the release-then-tune race).
 >
-> Measured: all fifteen labels green on fresh databases (proxy 399 → 415).
+> Tests: the eleven interleavings #513 names and five from the plan's review (colon session ids on both surfaces, attribution through an edit and a delete, an unusable relay answer), each against real Redis with a named break-check, plus the spacing and the beat entry. ADR 0005 gains a consequence note.
+>
+> Measured: all fifteen labels green on fresh databases (proxy 399 → 420, core 138 → 139).
 >
 > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
 ## Tests
 
-### The eleven tests #513 names
+### The eleven tests #513 names, and five from review round 1
 
 These live in `apps/proxy/tests/test_slot_reconciler.py`, in the `apps.proxy.tests` label. Every label's CI job starts a real Redis (`scripts/ci_bootstrap_backend.sh:65-71`). At the seed the one label with live-Redis tests is `apps.proxy.vod_proxy.tests` (`TestVodActiveStreamsRealRedis`); D1-1 adds `apps.m3u.tests`. The reconciler's tests sit with the module they test, and Global constraint 8's fail-under-CI rule keeps them from going hollow where Redis is missing.
 
@@ -458,25 +475,32 @@ Each test drives `SlotReconciler(redis, clock=…, list_channels=…)`. The fake
 | 9 | `WorkerLivenessTests.test_a_paused_viewer_is_counted_while_its_worker_lives_and_dropped_two_runs_after_it_dies` | constraint 4, both halves: a VOD hash and a busy pool entry, two hours stale, still count while their worker key lives; after it lapses they count one more run, then drop | "recency": count a VOD hash while `now − last_activity < 600` → `(0, 1) != (1, 1) : a paused viewer with a live worker lost its slot`; and test 1's edit → `(0, 0) != (1, 1) : a dead worker's records dropped after one run` |
 | 10 | `SeededHashTests.test_a_seeded_never_started_hash_is_not_counted_past_its_window`, with `…_inside_its_window_is_counted` | constraint 6 | drop the `created_at` bound → `1 != 0 : a seeded hash was counted past the VOD window` |
 | 11 | `ConcurrentIncrTests.test_a_concurrent_incr_is_not_clobbered` | the version check happens inside the script, atomically with the write: a reserve landing between the reconciler's reads and its write wins | delete `if v ~= tonumber(ARGV[2]) then return {-1, c, c} end` from the script's `reconcile` op → `0 != 2 : a concurrent INCR was clobbered` |
+| 12 | `ColonSessionIdTests.test_a_vod_holder_with_a_colon_in_its_session_id_keeps_its_slot` | review finding 1: a client-chosen VOD session id containing `:` (`vod_proxy/urls.py:9-10`'s `<str:session_id>`) does not hide a live holder | select records by colon count again (`if key.count(":") != pattern.count(":"): continue`) → `0 != 1 : a live VOD holder with ':' in its session id lost its slot` |
+| 13 | `ColonSessionIdTests.test_a_catch_up_holder_with_a_colon_in_its_session_id_keeps_its_slot` | the same for catch-up's `?session_id=`, with a `:lock` and a `:superseded` string beside it that must neither count nor break the scan | the colon-count edit → `0 != 1 : a live catch-up holder with ':' in its session id lost its slot`; and a scan without `_type="hash"` → `redis.exceptions.ResponseError: WRONGTYPE Operation against a key holding the wrong kind of value` (ERROR) |
+| 14 | `CredentialAttributionTests.test_making_a_pooled_profile_unlimited_mid_stream_keeps_its_holders_counted` | review finding 3: holders count against the credential counter their profile's release pointer names | attribute by today's configuration only (`key = config_credential.get(profile_id)`) → `1 != 2 : the shared-login counter dropped under two live streams` |
+| 15 | `CredentialAttributionTests.test_deleting_a_pooled_profile_mid_stream_keeps_its_holders_counted` | the same for a profile deleted mid-stream | the same edit → the same message |
+| 16 | `RelayAnswerTests.test_a_relay_answer_without_a_channel_list_skips_the_run` | review nit 8: a 2xx body with `channels` missing, `None`, a string, or a non-object body is not an empty live set | read a missing list as `[]` → `'reconciled' != 'skipped' : a relay answer with no channel list was read as an empty live set`, in each of the four subtests |
 
 **Also in the module.**
 
-- `SpacingTests.test_the_spacing_follows_the_widest_window_including_operator_settings`. A fixed 60 s spacing reddens it with `60.0 != 80.0`, and a patched `connection_timeout` of 60 moves it to 190 s.
+- `SpacingTests.test_the_spacing_follows_the_widest_window_including_operator_settings` asserts the windows from the imported constants (`control_plane.ATTEMPTS`, `CONNECT_TIMEOUT`, `READ_TIMEOUT`, `RETRY_DELAY`; `UPSTREAM_ATTEMPTS`, `UPSTREAM_TIMEOUT`; `POOL_LOCK_WAIT_SECONDS`), so a legitimate edit to one of them moves the expectation with it; a patched `connection_timeout` of 60 moves the spacing to 190 s. `test_the_default_spacing_is_80_seconds` is the one literal pin. A fixed 60 s spacing reddens both with `60.0 != 80.0`.
 - `test_a_run_inside_the_spacing_writes_nothing`.
-- `test_the_beat_entry_names_the_task_on_a_tick_shorter_than_the_spacing_floor`.
+- `core.tests.test_reconcile_provider_slots.ReconcileProviderSlotsBeatEntryTests.test_the_beat_entry_names_the_task_on_a_tick_shorter_than_the_spacing_floor`, moved to `core.tests` because an edit to `dispatcharr/settings.py` or `core/tasks.py` selects that label.
 
 ### Existing tests changed
 
 Each change listed here is either the thing being changed, or a fake gaining the ability to run the script the code under test now calls. No assertion is removed or loosened.
 
+**What these tests now exercise.** After D1-1 every counter test that runs on an in-memory fake (the five Hypothesis properties in `test_property_connection_pool.py`, the reserve/release tests in `test_connection_pool.py`, the two retargeted tests below, and the proxy and VOD tests whose fakes gain the mixin) executes `slot_script_fake.py`'s Python, **not the production Lua**. They still pin the callers' behaviour against a faithful script, but deleting a repair from the production Lua leaves them green (measured). The production Lua is pinned by `apps/m3u/tests/test_slot_script.py` on a live Redis: its version, repair, race and reconcile tests, and `SlotScriptFakeParityProperties`, which ties the fake to the Lua over random sequences so the fake-backed tests cannot drift from what they stand in for.
+
 | Test file | Before (seed) | After | Why |
 |---|---|---|---|
 | `apps/m3u/tests/test_connection_pool.py:26` | `class FakeRedis:` | `class FakeRedis(SlotScriptFakeMixin):`, plus the import | the code now calls `register_script`; the mixin answers it in Python, held to the Lua by the parity tests |
 | `…:7` | imports `_safe_decr` | import removed | `_safe_decr` is folded into the script's `give_back` |
-| `…:621-638` `CredentialCounterRepairTests.test_safe_decr_repairs_a_counter_already_below_zero` | `_safe_decr(redis, "negative_one")` → 0; `_safe_decr(redis, "negative_three")` → 0 | `test_release_repairs_a_credential_counter_already_below_zero`: sets `profile_credential_release_key(1)` to `"negative_one"`, calls `release_profile_slot(1, redis)`, expects 0; the same for −3 through profile 2 | same inputs, same expected values, through the public entry point that now owns the repair. Docstring updated to say so. |
+| `…:621-638` `CredentialCounterRepairTests.test_safe_decr_repairs_a_counter_already_below_zero` | `_safe_decr(redis, "negative_one")` → 0; `_safe_decr(redis, "negative_three")` → 0 | `test_release_repairs_a_credential_counter_already_below_zero`: sets `profile_credential_release_key(1)` to `"negative_one"`, calls `release_profile_slot(1, redis)`, expects 0; the same for −3 through profile 2 | same inputs, same expected values, through the public entry point, which now runs the fake's copy of the repair; the Lua's copy is pinned by `test_a_release_repairs_a_negative_profile_counter` and the parity property. Docstring updated to say so. |
 | `apps/m3u/tests/test_property_connection_pool.py:50` | `class FakeRedis:` | `class FakeRedis(SlotScriptFakeMixin):`, plus the import | as above |
 | `…:29` | imports `_safe_decr` | removed | as above |
-| `…:95-103` `SafeDecrProperties.test_safe_decr_lands_on_one_less_but_never_below_zero` | `FakeRedis({"k": start})`; `_safe_decr(redis, "k")`; expects `max((start or 0) - 1, 0)` | `test_a_release_lands_one_less_but_never_below_zero`: `FakeRedis({profile_connections_key(1): start})`; `release_profile_slot(1, redis)`; same expectation, same `@given` and both `@example`s | as above. With no credential pointer, a release gives back exactly the profile counter. |
+| `…:95-103` `SafeDecrProperties.test_safe_decr_lands_on_one_less_but_never_below_zero` | `FakeRedis({"k": start})`; `_safe_decr(redis, "k")`; expects `max((start or 0) - 1, 0)` | `test_a_release_lands_one_less_but_never_below_zero`: `FakeRedis({profile_connections_key(1): start})`; `release_profile_slot(1, redis)`; same expectation, same `@given` and both `@example`s | as above, and likewise now exercising the fake. With no credential pointer, a release gives back exactly the profile counter. |
 | `apps/proxy/tests/test_next_source_api.py:21` | `class FakeRelayApiRedis:` | `(SlotScriptFakeMixin)`, plus the import | the fake runs the script; no assertion changes |
 | `apps/proxy/tests/test_next_source_resolution.py:19` | `class FakeControlPlaneRedis:` | `(SlotScriptFakeMixin)`, plus the import | the same |
 | `apps/proxy/vod_proxy/tests/test_profile_connections.py:13` | `class FakeRedis:` | `(SlotScriptFakeMixin)`, plus the import | the same |
@@ -489,7 +513,7 @@ Measured before the fakes were changed, D1-1's code alone fails 2 modules in `ap
 
 | Item | State at planning | Files shared with D1 | Resolution |
 |---|---|---|---|
-| **#514 (D2), PR #517**, head `cfcfcbb8` | open | `apps/timeshift/views.py` (D2's hunks at seed `:743-746`, `:2314-2344`, `:2557`, `:3528-3561`); `apps/timeshift/tests/test_views.py` (D2 appends tests at `:4554`) | D1-2's hunks are at `:41`, `:2170-2174`, `:2236-2239` and `:3640-3646`; D1-3's at `:2133-2137`. The nearest is D1-2's `:3643` wrap, 80 lines after D2's last hunk. D1-3's constant was moved beside `_pool_lock` so as not to sit three lines from D2's `:743` insertion. **Verified:** all three appendices apply on #517's head, so the merge order is free. `test_pool_worker_id.py` imports only `_FakeRedis`, `_fake_upstream` and `_seed_pool_session` from `test_views.py` (and one fixture class, function-locally), none of which D2 touches. |
+| **#514 (D2), PR #517** | merged as `02a5fe5c` | `apps/timeshift/views.py` (D2's hunks at seed `:743-746`, `:2314-2344`, `:2557`, `:3528-3561`); `apps/timeshift/tests/test_views.py` (D2 appends tests at `:4554`) | D1-2's hunks are at `:41`, `:2170-2174`, `:2236-2239` and `:3640-3646`; D1-3's at `:2133-2137`. The nearest is D1-2's `:3643` wrap, 80 lines after D2's last hunk. D1-3's constant was moved beside `_pool_lock` so as not to sit three lines from D2's `:743` insertion. **Verified:** all three appendices apply on `02a5fe5c`, and m3u, proxy, vod_proxy and timeshift (458) are green there with them applied. `test_pool_worker_id.py` imports only `_FakeRedis`, `_fake_upstream` and `_seed_pool_session` from `test_views.py` (and one fixture class, function-locally), none of which D2 touches. |
 | **#470** | open, `needs-triage` | `connection_pool.py` | fixed by D1-1 |
 | **#471** | open, `needs-triage` | `connection_pool.py` | fixed by D1-1 |
 | **#356** (shared credential release key) | open, no plan | `connection_pool.py`'s pointer semantics | not fixed here. D1 bounds its symptom: the credential slot a second release fails to return is dropped two runs after that stream ends. #356's own fix (a per-stream token or a count under the pointer) must be made **inside `_SLOT_SCRIPT`'s `reserve`, `release` and `switch` ops**, keep bumping versions, and update `slot_script_fake.py` and its parity tests in the same PR. |
@@ -509,17 +533,19 @@ Measured before the fakes were changed, D1-1's code alone fails 2 modules in `ap
 
 ## Residual risks
 
-- **R1: reuse after a drop.** Once the reconciler drops an orphan's slot, the orphan's `stream_profile` key is still there. A later tune of that same channel takes `_stream_assignment_is_reusable`'s `present=False` branch (`models.py:496-497`) and reuses the assignment without an `INCR`. That channel then runs uncounted until it has been visible at two runs, about 90 to 180 s, so the cap is lifted by one for that long. It needs a prior leak plus a re-tune of the same channel. At the seed, the same path reused the leaked reservation, which was right for that channel but left a permanent over-count. A follow-up could make that branch reserve; it is not in #513's scope.
+- **R1: reuse after a drop.** Once the reconciler drops an orphan's slot, the orphan's `stream_profile` key is still there. A later tune of that same channel takes `_stream_assignment_is_reusable`'s `present=False` branch (`models.py:496-497`) and reuses the assignment without an `INCR`. That channel then runs uncounted until it has been visible at two runs with a quiet interval between (about 90 to 180 s on a quiet counter, longer under churn; see Convergence), so the cap is lifted by one for that long. It needs a prior leak plus a re-tune of the same channel. At the seed, the same path reused the leaked reservation, which was right for that channel but left a permanent over-count. A follow-up could make that branch reserve; it is not in #513's scope.
 - **R2: a reservation slower than twice its window.** A holder still invisible a full `S` after its reserve can be dropped, then raised again once it has been visible at two runs.
 - **R3: clock skew across hosts.** It moves constraint 6's `created_at` bound by the skew; see Constraint 6.
 - **R4: a hub stall longer than about 140 s.** It drops a live worker's records until it recovers plus two runs.
+- **R6: sustained churn delays convergence.** See Convergence: a counter written between every pair of runs is never corrected until the writes stop. The version rule is constraint 1's ruling and relaxing it reopens R3-1, so this is a stated bound rather than a fix.
+- **R7: a stale release pointer.** A profile's pointer survives only when the stream that set it leaked its release. If that profile is later made unlimited and streams again, its new holders reserved nothing on the shared login but are attributed to it through the stale pointer until they end. That is an over-count (the cap tightened), the safe direction, bounded by those streams' lifetime.
 - **R5: a degraded failover.** The relay moves to an unreserved alternate when Django is unreachable. The reconciler then attributes the channel to the alternate's profile, which is correct for the provider. The eventual release, which carries the original assignment, gives back the old profile's slot: an under-count of one on the old profile, corrected two runs later.
 
 <!-- The three appendices below are `git diff` output between scratch commits built on the seed, spliced verbatim. Verified per § What was measured. -->
 
 ## Appendix A: PR D1-1, against the seed `b2d0ff5e2e`
 
-Produced by `git diff b2d0ff5e2e a43eedae` in the scratch clone (13 files, 1,308 lines of diff).
+Produced by `git diff b2d0ff5e2e 63c1871d` in the scratch clone (13 files, 1,389 lines of diff).
 
 <!-- appendix-A-begin -->
 ```diff
@@ -1202,10 +1228,10 @@ index 5a23836c..bd8e157b 100644
  class ReserveProfileSlotProperties(SimpleTestCase):
 diff --git a/apps/m3u/tests/test_slot_script.py b/apps/m3u/tests/test_slot_script.py
 new file mode 100644
-index 00000000..43c11fbc
+index 00000000..3b7689e4
 --- /dev/null
 +++ b/apps/m3u/tests/test_slot_script.py
-@@ -0,0 +1,392 @@
+@@ -0,0 +1,473 @@
 +"""The provider-slot Lua script, against a live Redis (#513 constraint 1; #470; #471).
 +
 +Every write to profile_connections:{id} and server_group_connections:{g}:{fp}
@@ -1229,6 +1255,7 @@ index 00000000..43c11fbc
 +from unittest import mock
 +
 +from django.test import SimpleTestCase
++from hypothesis import given, settings as hyp_settings, strategies as st
 +
 +from apps.m3u import connection_pool
 +from apps.m3u.connection_pool import (
@@ -1242,6 +1269,12 @@ index 00000000..43c11fbc
 +    switch_profile_slot,
 +)
 +from apps.m3u.tests.slot_script_fake import SlotScriptFakeMixin
++
++# CI-deterministic profile, byte-identical to tests/test_redaction.py's.
++hyp_settings.register_profile(
++    "dispatcharr-ci", max_examples=200, derandomize=True, deadline=None
++)
++hyp_settings.load_profile("dispatcharr-ci")
 +
 +
 +def live_redis():
@@ -1598,6 +1631,80 @@ index 00000000..43c11fbc
 +             ("switch", "a", "c"), ("reconcile", "a", 3, 0, 0), ("reconcile", "c", 1, 0, 0),
 +             ("reconcile", "c", 0, 2, 2)],
 +        )
++
++
++# Five profiles: a, b and c share login "x" (so a full shared login refuses a
++# reserve and a switch with credential_full), d has login "y", e is in no
++# group; c is unlimited, so nothing but a release's repair moves its counter.
++_PROFILES = {"a": (1, 2, "x"), "b": (2, 1, "x"), "c": (3, 0, "x"), "d": (4, 1, "y"), "e": (5, 2, None)}
++_NAMES = sorted(_PROFILES)
++_START = st.none() | st.integers(min_value=-3, max_value=3)
++_OPS = st.lists(
++    st.one_of(
++        st.tuples(st.just("reserve"), st.sampled_from(_NAMES)),
++        st.tuples(st.just("release"), st.sampled_from(_NAMES)),
++        st.tuples(st.just("switch"), st.sampled_from(_NAMES), st.sampled_from(_NAMES)),
++    ),
++    max_size=15,
++)
++
++
++class SlotScriptFakeParityProperties(LiveRedisTestCase):
++    """The fake answers as the Lua does for any sequence, checked after every step.
++
++    Every counter test that runs on an in-memory fake exercises
++    slot_script_fake.py, not the Lua. This property is what ties the two
++    together: random reserve/release/switch sequences over a shared login and
++    drifted (negative, absent or full) starting counters, run on the real
++    script and on the fake, with the return and every key compared after
++    each operation.
++    """
++
++    @given(
++        profile_starts=st.fixed_dictionaries({n: _START for n in _NAMES}),
++        cred_starts=st.fixed_dictionaries({"x": _START, "y": _START}),
++        ops=_OPS,
++    )
++    def test_the_fake_matches_the_lua_after_every_step(self, profile_starts, cred_starts, ops):
++        self.base += 100  # a fresh namespace per example; tearDown's patterns still cover it
++        profiles = {
++            n: self.profile(off, cap, login=login) for n, (off, cap, login) in _PROFILES.items()
++        }
++        keys = []
++        for p in profiles.values():
++            keys += [profile_connections_key(p.id), profile_credential_release_key(p.id)]
++        keys += [self.cred_key("x"), self.cred_key("y"), f"stream_profile:{self.base}9"]
++        keys += [slot_version_key(k) for k in list(keys)]
++        fake = _DictRedis()
++        try:
++            for n, value in profile_starts.items():
++                if value is not None:
++                    self.redis.set(profile_connections_key(profiles[n].id), value)
++                    fake.set(profile_connections_key(profiles[n].id), value)
++            for login, value in cred_starts.items():
++                if value is not None:
++                    self.redis.set(self.cred_key(login), value)
++                    fake.set(self.cred_key(login), value)
++            with self.patched_logins():
++                for step, op in enumerate(ops):
++                    results = []
++                    for client in (self.redis, fake):
++                        if op[0] == "reserve":
++                            results.append(reserve_profile_slot(profiles[op[1]], client))
++                        elif op[0] == "release":
++                            results.append(release_profile_slot(profiles[op[1]].id, client))
++                        else:
++                            results.append(switch_profile_slot(
++                                profiles[op[1]], profiles[op[2]], f"stream_profile:{self.base}9", client
++                            ))
++                    self.assertEqual(results[1], results[0], f"step {step} {op}: the fake answered differently")
++                    for key in keys:
++                        self.assertEqual(
++                            fake.get(key), self.redis.get(key),
++                            f"step {step} {op}: {key} differs between the fake and the Lua",
++                        )
++        finally:
++            self.redis.delete(*keys)
 diff --git a/apps/proxy/tests/test_next_source_api.py b/apps/proxy/tests/test_next_source_api.py
 index 73b4852b..d9ebd948 100644
 --- a/apps/proxy/tests/test_next_source_api.py
@@ -1836,16 +1943,16 @@ index 41f02907..37cbd589 100644
 
 ## Appendix B: PR D1-2, against Appendix A applied to the seed
 
-Produced by `git diff a43eedae f42b0bd7` (7 files, 670 lines). Apply after Appendix A.
+Produced by `git diff 63c1871d c9eab9f9` (9 files, 726 lines). Apply after Appendix A.
 
 <!-- appendix-B-begin -->
 ```diff
 diff --git a/apps/proxy/vod_proxy/held_records.py b/apps/proxy/vod_proxy/held_records.py
 new file mode 100644
-index 00000000..eb684b1f
+index 00000000..fdf3a9e9
 --- /dev/null
 +++ b/apps/proxy/vod_proxy/held_records.py
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,203 @@
 +"""Which provider-slot records this process holds, and a positive signal that it is alive (#513).
 +
 +A VOD session hash (vod_persistent_connection:<session>) and a catch-up pool
@@ -1971,6 +2078,11 @@ index 00000000..eb684b1f
 +    def held_keys(self):
 +        with self._lock:
 +            return sorted({key for key, _ttl, _busy in self._held.values()})
++
++    def held_entries(self):
++        """Every (key, ttl, busy_field) held, as the refresher will refresh it."""
++        with self._lock:
++            return sorted(set(self._held.values()))
 +
 +    def holding(self, key: str, iterable, *, ttl: int, busy_field: str = ""):
 +        """Yield from `iterable`, holding `key` from the first item until it ends or closes.
@@ -2124,10 +2236,10 @@ index f9f0a648..f9eed6db 100644
  
 diff --git a/apps/proxy/vod_proxy/tests/test_held_records.py b/apps/proxy/vod_proxy/tests/test_held_records.py
 new file mode 100644
-index 00000000..ad1baec3
+index 00000000..f7f313d5
 --- /dev/null
 +++ b/apps/proxy/vod_proxy/tests/test_held_records.py
-@@ -0,0 +1,222 @@
+@@ -0,0 +1,226 @@
 +"""The slot-holder registry and refresher (#513 constraints 4 and 5).
 +
 +A VOD session hash or a busy catch-up pool entry counts toward the provider
@@ -2346,16 +2458,20 @@ index 00000000..ad1baec3
 +            chunks = iter(response.streaming_content)
 +            next(chunks)
 +            self.assertIn(key, registry.held_keys(), "a streaming VOD response did not hold its session")
++            self.assertIn(
++                (key, 3600, ""), registry.held_entries(),
++                "a streaming VOD response held its session with the wrong TTL or a busy guard",
++            )
 +            list(chunks)
 +            self.assertNotIn(key, registry.held_keys())
 +        finally:
 +            case.doCleanups()
 diff --git a/apps/timeshift/tests/test_pool_worker_id.py b/apps/timeshift/tests/test_pool_worker_id.py
 new file mode 100644
-index 00000000..7613a50d
+index 00000000..35f3185a
 --- /dev/null
 +++ b/apps/timeshift/tests/test_pool_worker_id.py
-@@ -0,0 +1,70 @@
+@@ -0,0 +1,74 @@
 +"""A busy catch-up pool entry names the process holding it (#513 constraint 5).
 +
 +The provider-slot reconciler counts a busy entry only while its worker's
@@ -2424,6 +2540,10 @@ index 00000000..7613a50d
 +            chunks = iter(response.streaming_content)
 +            next(chunks)
 +            self.assertIn(key, registry.held_keys(), "a streaming catch-up response did not hold its pool entry")
++            self.assertIn(
++                (key, 600, "busy"), registry.held_entries(),
++                "a streaming catch-up response held its pool entry without the busy guard or the busy TTL",
++            )
 +            response.close()
 +        self.assertNotIn(key, registry.held_keys())
 diff --git a/apps/timeshift/views.py b/apps/timeshift/views.py
@@ -2510,17 +2630,60 @@ index e2d346f8..e7d05b32 100644
  _use_sqlite = os.environ.get("TEST_USE_SQLITE", "").lower() in ("1", "true", "yes")
  
  if _use_sqlite:
+diff --git a/dispatcharr/test_discovery.py b/dispatcharr/test_discovery.py
+index 4e70bc06..f0f41288 100644
+--- a/dispatcharr/test_discovery.py
++++ b/dispatcharr/test_discovery.py
+@@ -63,6 +63,12 @@ _PATH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
+         "apps/m3u/tests/slot_script_fake",
+         ("apps.m3u", "apps.proxy", "apps.proxy.vod_proxy"),
+     ),
++    # The slot-holder registry (#513) is imported by VOD, by catch-up and by
++    # the provider-slot reconciler's tests.
++    (
++        "apps/proxy/vod_proxy/held_records",
++        ("apps.proxy.vod_proxy", "apps.proxy", "apps.timeshift"),
++    ),
+ )
+ 
+ 
+diff --git a/tests/test_ci_test_routing.py b/tests/test_ci_test_routing.py
+index 37cbd589..ad43c21e 100644
+--- a/tests/test_ci_test_routing.py
++++ b/tests/test_ci_test_routing.py
+@@ -98,6 +98,21 @@ class ChangedPathRoutingTests(SimpleTestCase):
+         # The alias is by path prefix, so the rest of apps/m3u stays narrow.
+         self.assertEqual(self._labels("apps/m3u/tasks.py"), {"apps.m3u.tests"})
+ 
++    def test_held_records_change_runs_every_label_that_holds_or_reads_a_record(self):
++        """Pins: apps/proxy/vod_proxy/held_records.py selected apps.proxy.vod_proxy.tests alone.
++
++        Catch-up (apps.timeshift.tests) holds its pool entries through it, and
++        the provider-slot reconciler's tests (apps.proxy.tests) read its
++        liveness keys, so an edit to it can break either label (#513).
++        """
++        expected = {"apps.proxy.vod_proxy.tests", "apps.proxy.tests", "apps.timeshift.tests"}
++        self.assertLessEqual(expected, self.available)
++        self.assertEqual(self._labels("apps/proxy/vod_proxy/held_records.py"), expected)
++        # The rest of vod_proxy stays narrow.
++        self.assertEqual(
++            self._labels("apps/proxy/vod_proxy/views.py"), {"apps.proxy.vod_proxy.tests"}
++        )
++
+     def test_unaliased_app_change_selects_only_its_own_tests(self):
+         """Control: no alias means exactly one label, so the fixes stay narrow.
+ 
 ```
 <!-- appendix-B-end -->
 
 ## Appendix C: PR D1-3, against Appendices A and B applied to the seed
 
-Produced by `git diff f42b0bd7 84263cc1` (8 files, 915 lines). Apply after Appendices A and B.
+Produced by `git diff c9eab9f9 c85ec38a` (9 files, 1,086 lines). Apply after Appendices A and B.
 
 <!-- appendix-C-begin -->
 ```diff
 diff --git a/CLAUDE.md b/CLAUDE.md
-index 69e27db9..eba5f5b9 100644
+index 69e27db9..256617d3 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
 @@ -128,7 +128,7 @@ Correctness:
@@ -2528,16 +2691,16 @@ index 69e27db9..eba5f5b9 100644
  - **An fMP4 viewer is no longer dropped 40s into a stall a TS viewer survives** ([#222](https://github.com/D10Scot/Dispatcharr/issues/222), fixed in #400, row 12): `serveFMP4Client` now leaves by the TS loop's exit, never on a healthy channel and after `MAX_KEEPALIVE_DURATION` on an unhealthy one, with no keepalive bytes written.
  - **`channel_stream:*`/`stream_profile:*` had two independent owners before Phase 1 PR 6**: both keys were read *and written* by `apps/channels/models.py` and independently by `apps/proxy/live_proxy/`, with neither key in `RedisKeys`. As of PR 6 they are `RedisKeys.channel_stream` / `RedisKeys.stream_profile`, and Django is the only writer — `apps/channels/models.py` (`get_stream`/`release_stream`/`update_stream_profile`/`_release_stale_stream_assignment`) plus the channel-deleted fallback in `apps/proxy/next_source.py`'s `release_source()`, which runs in the API process, never in the relay — the relay reaches them only through `POST /api/relay/channels/<identifier>/next-source` and `/release`. The Python relay read them directly (`live_proxy/views.py`) on purpose — they are Django-owned keys, not relay state, so PR 7's "no control-plane code reads relay keys" never covered them — and stage 2d-4 deleted that reader. **Django is now the only process that touches either key at all**, which is the shape PR 6 was aiming at and did not reach: the Go relay learns the stream and profile from the `next-source` answer and never opens Redis.
 -- **Every write to a provider-slot counter goes through one Lua script** (#513). `apps/m3u/connection_pool.py`'s `_SLOT_SCRIPT` reserves, releases, switches and reconciles `profile_connections:{id}` and `server_group_connections:{group}:{fp}`, and every write bumps `slot_version:<counter key>` in the same step. A direct `INCR`/`DECR`/`SET` on either family anywhere else moves a counter without moving its version, which is the one change the provider-slot reconciler cannot see; `Channel.update_stream_profile()`'s own pipeline was such a writer until #513. The script also makes both negative-counter repairs atomic (#470 on the credential counter, #471 on the profile counter) and checks both caps before writing either, so a refused reserve writes nothing where it used to `INCR` then `DECR`. In-memory test fakes run it through `apps/m3u/tests/slot_script_fake.py`, which `apps/m3u/tests/test_slot_script.py`'s `SlotScriptFakeParityTests` holds to the Lua on a live Redis.
-+- **Every write to a provider-slot counter goes through one Lua script** (#513). `apps/m3u/connection_pool.py`'s `_SLOT_SCRIPT` reserves, releases, switches and reconciles `profile_connections:{id}` and `server_group_connections:{group}:{fp}`, and every write bumps `slot_version:<counter key>` in the same step. A direct `INCR`/`DECR`/`SET` on either family anywhere else moves a counter without moving its version, which is the one change the provider-slot reconciler cannot see; `Channel.update_stream_profile()`'s own pipeline was such a writer until #513. The script also makes both negative-counter repairs atomic (#470 on the credential counter, #471 on the profile counter) and checks both caps before writing either, so a refused reserve writes nothing where it used to `INCR` then `DECR`. In-memory test fakes run it through `apps/m3u/tests/slot_script_fake.py`, which `apps/m3u/tests/test_slot_script.py`'s `SlotScriptFakeParityTests` holds to the Lua on a live Redis. The counters are also reconciled: a beat task on the worker role (`apps/proxy/slot_reconciler.py`, ticking every 30 s against a derived minimum spacing of about 80 s) recomputes both families from the relay's channel list and the VOD and catch-up records whose worker is alive (`vod:worker:<worker_id>`, kept alive by `apps/proxy/vod_proxy/held_records.py`'s refresher), writes only where a counter's version has not moved since its previous run, and skips the run when the relay cannot answer. A leaked slot is released two runs after its holder was last seen.
++- **Every write to a provider-slot counter goes through one Lua script** (#513). `apps/m3u/connection_pool.py`'s `_SLOT_SCRIPT` reserves, releases, switches and reconciles `profile_connections:{id}` and `server_group_connections:{group}:{fp}`, and every write bumps `slot_version:<counter key>` in the same step. A direct `INCR`/`DECR`/`SET` on either family anywhere else moves a counter without moving its version, which is the one change the provider-slot reconciler cannot see; `Channel.update_stream_profile()`'s own pipeline was such a writer until #513. The script also makes both negative-counter repairs atomic (#470 on the credential counter, #471 on the profile counter) and checks both caps before writing either, so a refused reserve writes nothing where it used to `INCR` then `DECR`. In-memory test fakes run it through `apps/m3u/tests/slot_script_fake.py`, which `apps/m3u/tests/test_slot_script.py`'s `SlotScriptFakeParityTests` holds to the Lua on a live Redis. The counters are also reconciled: a beat task on the worker role (`apps/proxy/slot_reconciler.py`, ticking every 30 s against a derived minimum spacing of about 80 s) recomputes both families from the relay's channel list and the VOD and catch-up records whose worker is alive (`vod:worker:<worker_id>`, kept alive by `apps/proxy/vod_proxy/held_records.py`'s refresher), writes only where a counter's version has not moved since its previous run, and skips the run when the relay cannot answer. A leaked slot is released two runs after its holder was last seen, but only on a counter that has also had one quiet run interval (about 90 s at defaults) with no reserve, release or switch: under sustained churn the correction waits for the churn to stop, because the version rule refuses to write across any writer.
  - **#190 is closed by deletion.** Stage 2d-4 removed all five of its ranges from `apps/channels/models.py` — three reads and two `hdel`s against `live:channel:<uuid>:metadata`, a key the Go relay never writes, so every read had returned `None` and every `hdel` had been a no-op since the 2d-3 cutover. What it described, for the record: **a control-plane write to the relay metadata hash on every successful `Channel.release_stream()`, plus THREE fallback-path reads** — `release_stream()`'s recovery branch, a second fallback read in the same method that CLAUDE.md never recorded, and `_release_stale_stream_assignment()`, which `get_stream()` calls and `release_stream()` does not ([#190](https://github.com/D10Scot/Dispatcharr/issues/190)). The `hdel` ran on **every** successful release, not only in a rare recovery branch, clearing `ChannelMetadataField.STREAM_ID`/`M3U_PROFILE` so a duplicate release could not `DECR` the provider counter twice — which is why the writes were never as easy as the reads and why this waited for the deletion rather than being fixed in place. Everything else — the reuse check, the DVR client scans, `fetch_channel_stats`, the recording metadata capture and the live branch of `get_user_active_connections` — goes through `apps/proxy/relay_client.py`.
  - **`get_user_active_connections` has five callers** — four more than the bullet said for most of its life, the fifth being `check_user_stream_limits` at `apps/proxy/utils.py:354`, which takes the `include_live=True` default and is the other live one. **One of them used to trigger a relay side effect on every call.** Three timeshift helpers (`_session_has_active_timeshift_stream`, `_preempt_playback_streams`, `_terminate_previous_timeshift_sessions`) pass `include_live=False` (`apps/proxy/utils.py`), added by a whole-branch-review fix after one of them — reached from `_serve_catchup`, a relay-served view — was making the relay call itself over HTTP per catch-up tune for a live client list it always discarded. The fourth caller, `apps/output/views.py`'s `xc_get_info` (the Xtream `player_api.php` handshake, every XC session), is deliberately left asking for the live count — `active_cons` needs it — so that call still reaches `GET /proxy/relay/channels?clients=all` on every handshake, and `get_basic_channel_info` there runs `ClientManager.remove_ghost_clients`, an `SREM` write across every running channel that the old direct Redis scan never performed. **That side effect is gone**, not fixed: the Go relay's client registry is a map in process memory (Phase 2 stage 2c-3), where a client entry cannot outlive the goroutine that made it, so `GET /proxy/relay/channels?clients=all` performs no write at all. `xc_get_info` still makes the call and still gets its `active_cons`; only the `SREM` across every running channel disappeared, at stage 2d-3's flip.
  - **The UDP user-agent filter no longer leaves dangling flags** ([#296](https://github.com/D10Scot/Dispatcharr/issues/296), fixed in #396): a dropped value takes the flag before it and a dropped flag the value after it, which also repairs the shipped Streamlink profile on a UDP upstream.
 diff --git a/apps/proxy/slot_reconciler.py b/apps/proxy/slot_reconciler.py
 new file mode 100644
-index 00000000..76fcc0ff
+index 00000000..eb11a42d
 --- /dev/null
 +++ b/apps/proxy/slot_reconciler.py
-@@ -0,0 +1,366 @@
+@@ -0,0 +1,404 @@
 +"""Recompute the provider-slot counters from ground truth (#513).
 +
 +`profile_connections:{id}` and `server_group_connections:{group}:{fp}` carry
@@ -2561,6 +2724,16 @@ index 00000000..76fcc0ff
 +  in-flight window (#513 constraint 6);
 +- catch-up: every `timeshift:pool:*` entry with `busy == "1"` whose worker's
 +  liveness key exists.
++
++Records are selected by Redis type (a hash), never by the shape of the key:
++both session ids reach the key verbatim from the client (VOD's
++`<str:session_id>` path segment, catch-up's `?session_id=`), so a `:` in one
++must not hide a live holder. A credential counter's holders are the holders
++of every profile whose release pointer (`profile_credential_release:{id}`,
++what that profile's last reserve or switch actually counted against) names
++it, or, where no pointer exists, whose configuration names it today -- so an
++admin making a pooled profile unlimited, moving it or deleting it mid-stream
++does not lower the shared counter under the streams still open.
 +
 +A VOD or catch-up record's worker is alive while `vod:worker:<worker_id>`
 +exists (apps/proxy/vod_proxy/held_records.py). Recency is never the signal.
@@ -2608,6 +2781,7 @@ index 00000000..76fcc0ff
 +from apps.m3u.connection_pool import (
 +    credential_reservation,
 +    profile_connections_key,
++    profile_credential_release_key,
 +    read_slot_versions,
 +    reconcile_counter,
 +)
@@ -2707,43 +2881,64 @@ index 00000000..76fcc0ff
 +    # -- counters -----------------------------------------------------------
 +
 +    def _counters(self):
-+        """Every counter a reserve maintains: {counter key: {profile ids}}.
++        """The counters an admission check reads, from today's configuration.
 +
-+        A profile counter exists only for max_streams > 0 (a reserve does not
++        Returns (every counter key, {profile id: its profile counter},
++        {profile id: the credential counter its configuration names}). A
++        profile counter exists only for max_streams > 0 (a reserve does not
 +        count an unlimited profile); a credential counter for each pooled,
 +        limited profile with a fingerprint, shared by every profile whose
 +        login maps to it.
 +        """
 +        from apps.m3u.models import M3UAccountProfile
 +
-+        counters = {}
++        profile_counter, config_credential = {}, {}
 +        profiles = M3UAccountProfile.objects.filter(max_streams__gt=0).select_related(
 +            "m3u_account__server_group"
 +        )
 +        for profile in profiles:
-+            counters.setdefault(profile_connections_key(profile.id), set()).add(profile.id)
++            profile_counter[profile.id] = profile_connections_key(profile.id)
 +            cred_key, _cap = credential_reservation(profile)
 +            if cred_key:
-+                counters.setdefault(cred_key, set()).add(profile.id)
-+        return counters
++                config_credential[profile.id] = cred_key
++        keys = set(profile_counter.values()) | set(config_credential.values())
++        return keys, profile_counter, config_credential
++
++    def _credential_attribution(self, profile_ids, config_credential):
++        """{profile id: the credential counter its holders count against}.
++
++        The counter the profile's release pointer names, which is what its
++        last reserve or switch counted against whatever its configuration says
++        now; else the one its configuration names today.
++        """
++        profile_ids = sorted(profile_ids)
++        if not profile_ids:
++            return {}
++        pointers = self.redis.mget([profile_credential_release_key(p) for p in profile_ids])
++        attribution = {}
++        for profile_id, pointer in zip(profile_ids, pointers):
++            key = _text(pointer) or config_credential.get(profile_id)
++            if key:
++                attribution[profile_id] = key
++        return attribution
 +
 +    # -- ground truth ---------------------------------------------------------
 +
-+    def _live_holders(self, answer):
++    def _live_holders(self, channels):
 +        holders = {}
-+        for channel in (answer or {}).get("channels") or []:
++        for channel in channels:
 +            profile_id = channel.get("m3u_profile_id")
 +            if not profile_id or channel.get("state") in _ENDED_RELAY_STATES:
 +                continue
 +            holders[f"live:{channel.get('channel_id')}"] = int(profile_id)
 +        return holders
 +
-+    def _scan_hashes(self, pattern, fields, *, segments):
++    def _scan_hashes(self, pattern, fields):
++        # By type, never by key shape: a client-chosen session id may contain
++        # ':'. timeshift:pool:<s>:lock and :superseded are strings, not hashes.
 +        records = {}
-+        for key in self.redis.scan_iter(match=pattern, count=1000):
++        for key in self.redis.scan_iter(match=pattern, count=1000, _type="hash"):
 +            key = _text(key)
-+            if key.count(":") != segments:
-+                continue  # timeshift:pool:<s>:lock and :superseded share the prefix
 +            values = self.redis.hmget(key, fields)
 +            records[key] = dict(zip(fields, (_text(v) for v in values)))
 +        return records
@@ -2763,12 +2958,10 @@ index 00000000..76fcc0ff
 +        vod = self._scan_hashes(
 +            VOD_KEY_PATTERN,
 +            ["m3u_profile_id", "active_streams", "worker_id", "created_at"],
-+            segments=1,
 +        )
 +        pool = self._scan_hashes(
 +            TimeshiftRedisKeys.pool_scan_pattern(),
 +            ["profile_id", "busy", "worker_id"],
-+            segments=2,
 +        )
 +        alive = self._alive(
 +            [r["worker_id"] for r in vod.values()] + [r["worker_id"] for r in pool.values()]
@@ -2834,14 +3027,15 @@ index 00000000..76fcc0ff
 +        windows = in_flight_windows()
 +        spacing = run_spacing_seconds(windows)
 +        previous = self._load_snapshot()
-+        counters = self._counters()  # ORM first: no Redis read is older than it needs to be
++        # ORM first: no Redis read is older than it needs to be.
++        counter_keys, profile_counter, config_credential = self._counters()
 +
 +        # The version read and its timestamp come BEFORE any ground truth is
 +        # read: the next run's safety argument measures the spacing from here.
 +        taken_at = self._clock()
 +        if previous is not None and taken_at - previous[0] < spacing:
 +            return RunResult("skipped", f"less than {spacing:.0f}s since the last snapshot")
-+        versions = read_slot_versions(counters, self.redis)
++        versions = read_slot_versions(counter_keys, self.redis)
 +
 +        try:
 +            answer = self._list_channels()
@@ -2858,16 +3052,23 @@ index 00000000..76fcc0ff
 +                logger.warning("Slot reconciler skipped: the relay could not answer: %s", exc)
 +                return RunResult("skipped", "relay unavailable")
 +            raise
++        channels = answer.get("channels") if isinstance(answer, dict) else None
++        if not isinstance(channels, list):
++            # A 2xx body with no channel list is not an empty live set.
++            logger.warning("Slot reconciler skipped: the relay's answer carried no channel list")
++            return RunResult("skipped", "relay answer unusable")
 +
 +        by_profile = {}
-+        for identity, profile_id in self._live_holders(answer).items():
++        for identity, profile_id in self._live_holders(channels).items():
 +            by_profile.setdefault(profile_id, set()).add(identity)
 +        for identity, profile_id in self._record_holders(taken_at, windows["vod"]).items():
 +            by_profile.setdefault(profile_id, set()).add(identity)
-+        identities = {
-+            key: set().union(*(by_profile.get(pid, set()) for pid in pids))
-+            for key, pids in counters.items()
-+        }
++        identities = {key: set() for key in counter_keys}
++        for profile_id, key in profile_counter.items():
++            identities[key] |= by_profile.get(profile_id, set())
++        for profile_id, key in self._credential_attribution(by_profile, config_credential).items():
++            if key in identities:
++                identities[key] |= by_profile[profile_id]
 +
 +        changes = []
 +        if previous is not None:
@@ -2906,10 +3107,10 @@ index 00000000..76fcc0ff
 +    return SlotReconciler().run().as_dict()
 diff --git a/apps/proxy/tests/test_slot_reconciler.py b/apps/proxy/tests/test_slot_reconciler.py
 new file mode 100644
-index 00000000..c9e775e4
+index 00000000..9eb83475
 --- /dev/null
 +++ b/apps/proxy/tests/test_slot_reconciler.py
-@@ -0,0 +1,396 @@
+@@ -0,0 +1,503 @@
 +"""The provider-slot reconciler, against a live Redis and the test database (#513).
 +
 +The eleven tests #513 names, each an interleaving the reconciler must survive
@@ -2926,7 +3127,6 @@ index 00000000..c9e775e4
 +import uuid
 +from unittest import mock
 +
-+from django.conf import settings
 +from django.core.exceptions import ImproperlyConfigured
 +from django.test import TestCase
 +
@@ -2979,6 +3179,7 @@ index 00000000..c9e775e4
 +        self.now = 1_000_000.0
 +        self.channels = []
 +        self.relay_error = None
++        self.relay_answer = None  # when set, returned verbatim instead of the channel list
 +        self.cleanup = [SNAPSHOT_KEY, LOCK_KEY]
 +        self.redis.delete(SNAPSHOT_KEY, LOCK_KEY)
 +        self.addCleanup(self._clean)
@@ -3010,6 +3211,8 @@ index 00000000..c9e775e4
 +    def list_channels(self):
 +        if self.relay_error is not None:
 +            raise self.relay_error
++        if self.relay_answer is not None:
++            return self.relay_answer
 +        return {"channels": list(self.channels), "count": len(self.channels)}
 +
 +    def run_once(self):
@@ -3037,6 +3240,10 @@ index 00000000..c9e775e4
 +            "last_activity": self.now if last_activity is None else last_activity,
 +        })
 +        return key
++
++    def cred_count(self, profile):
++        cred, _cap = credential_reservation(profile)
++        return int(self.redis.get(cred) or 0)
 +
 +    def pool_entry(self, name, profile, *, worker, busy="1"):
 +        key = f"timeshift:pool:{self.tag}-{name}"
@@ -3211,6 +3418,92 @@ index 00000000..c9e775e4
 +                self.assertEqual(self.redis.get(SNAPSHOT_KEY), snapshot)
 +
 +
++class RelayAnswerTests(ReconcilerTestCase):
++    def test_a_relay_answer_without_a_channel_list_skips_the_run(self):
++        # A 2xx body with no list must not read as "no live channels".
++        for answer in ({}, {"channels": None}, {"channels": "garbled"}, ["not", "an", "object"]):
++            with self.subTest(answer=answer):
++                self.redis.delete(SNAPSHOT_KEY)
++                self.redis.set(profile_connections_key(self.p1.id), 3)
++                self.relay_answer = None
++                self.run_once()
++                snapshot = self.redis.get(SNAPSHOT_KEY)
++                self.relay_answer = answer
++                for _ in range(3):
++                    self.tick()
++                    self.assertEqual(
++                        self.run_once().status, "skipped",
++                        "a relay answer with no channel list was read as an empty live set",
++                    )
++                self.assertEqual(self.count(self.p1), 3)
++                self.assertEqual(self.redis.get(SNAPSHOT_KEY), snapshot)
++
++
++class ColonSessionIdTests(ReconcilerTestCase):
++    """A client chooses both session ids (VOD's path segment, catch-up's
++    ?session_id=), and either may contain ':'. Such a holder is still a holder."""
++
++    def _assert_kept(self, surface, make_holder):
++        worker = self.live_worker(surface)
++        reserve_profile_slot(self.p1, self.redis)
++        make_holder(worker)
++        for _ in range(3):
++            self.run_once()
++            self.tick()
++        self.assertEqual(
++            self.count(self.p1), 1,
++            f"a live {surface} holder with ':' in its session id lost its slot",
++        )
++
++    def test_a_vod_holder_with_a_colon_in_its_session_id_keeps_its_slot(self):
++        self._assert_kept("VOD", lambda w: self.vod_hash("a:b", self.p1, active=1, worker=w))
++
++    def test_a_catch_up_holder_with_a_colon_in_its_session_id_keeps_its_slot(self):
++        def holder(worker):
++            self.pool_entry("a:b", self.p1, worker=worker)
++            # The pool's lock and superseded marker share the key prefix and
++            # are strings, not hashes; they must neither count nor break the scan.
++            for suffix in ("lock", "superseded"):
++                key = f"timeshift:pool:{self.tag}-other:{suffix}"
++                self.cleanup.append(key)
++                self.redis.set(key, "1")
++
++        self._assert_kept("catch-up", holder)
++
++
++class CredentialAttributionTests(ReconcilerTestCase):
++    """A shared-login counter counts what was reserved against it, not what
++    the configuration would reserve against it today."""
++
++    def _two_live_streams_on_one_login(self):
++        self.assertEqual(credential_reservation(self.p1)[0], credential_reservation(self.p2)[0])
++        reserve_profile_slot(self.p1, self.redis)
++        reserve_profile_slot(self.p2, self.redis)
++        self.channels = [self.live(self.p1, "a"), self.live(self.p2, "b")]
++        self.assertEqual(self.cred_count(self.p2), 2)
++        self.run_once()
++
++    def _assert_still_two(self):
++        for _ in range(3):
++            self.tick()
++            self.run_once()
++        self.assertEqual(
++            self.cred_count(self.p2), 2, "the shared-login counter dropped under two live streams"
++        )
++
++    def test_making_a_pooled_profile_unlimited_mid_stream_keeps_its_holders_counted(self):
++        self._two_live_streams_on_one_login()
++        self.p1.max_streams = 0
++        self.p1.save()
++        self._assert_still_two()
++
++    def test_deleting_a_pooled_profile_mid_stream_keeps_its_holders_counted(self):
++        self._two_live_streams_on_one_login()
++        self.cleanup.append(f"profile_credential_release:{self.p1.id}")
++        self.p1.delete()
++        self._assert_still_two()
++
++
 +class WorkerLivenessTests(ReconcilerTestCase):
 +    def test_a_paused_viewer_is_counted_while_its_worker_lives_and_dropped_two_runs_after_it_dies(self):
 +        vod_worker = self.live_worker("vod")
@@ -3282,13 +3575,35 @@ index 00000000..c9e775e4
 +
 +class SpacingTests(ReconcilerTestCase):
 +    def test_the_spacing_follows_the_widest_window_including_operator_settings(self):
++        from apps.proxy import control_plane
++        from apps.proxy.vod_proxy.multi_worker_connection_manager import (
++            UPSTREAM_ATTEMPTS,
++            UPSTREAM_TIMEOUT,
++        )
++        from apps.timeshift.views import POOL_LOCK_WAIT_SECONDS
++
 +        windows = in_flight_windows()
-+        self.assertAlmostEqual(windows["live"], 2 * (2 + 5) + 0.1)  # the relay's tuneBudget
-+        self.assertEqual(windows["vod"], 2 * (10 + 10))
-+        self.assertEqual(run_spacing_seconds(windows), 2 * max(windows.values()))
++        # The relay's tuneBudget, from the constants it is built from.
++        self.assertAlmostEqual(
++            windows["live"],
++            control_plane.ATTEMPTS * (control_plane.CONNECT_TIMEOUT + control_plane.READ_TIMEOUT)
++            + control_plane.RETRY_DELAY,
++        )
++        self.assertEqual(windows["vod"], UPSTREAM_ATTEMPTS * sum(UPSTREAM_TIMEOUT))
++        self.assertEqual(
++            run_spacing_seconds(windows),
++            max(slot_reconciler.MIN_SPACING_SECONDS, slot_reconciler.SPACING_FACTOR * max(windows.values())),
++        )
 +        with mock.patch("apps.proxy.config_helper.ConfigHelper.connection_timeout", return_value=60), \
 +                mock.patch("apps.proxy.config_helper.ConfigHelper.chunk_timeout", return_value=30):
-+            self.assertEqual(run_spacing_seconds(), 2 * (5 + 60 + 30))
++            self.assertEqual(
++                run_spacing_seconds(),
++                slot_reconciler.SPACING_FACTOR * (POOL_LOCK_WAIT_SECONDS + 60 + 30),
++            )
++
++    def test_the_default_spacing_is_80_seconds(self):
++        # One literal pin: at the shipped defaults the VOD window (40 s) wins.
++        self.assertEqual(run_spacing_seconds(), 80.0)
 +
 +    def test_a_run_inside_the_spacing_writes_nothing(self):
 +        self.redis.set(profile_connections_key(self.p1.id), 2)  # leaked twice, never held
@@ -3299,13 +3614,6 @@ index 00000000..c9e775e4
 +        self.now += 2
 +        self.run_once()  # absent at both runs, a full spacing apart
 +        self.assertEqual(self.count(self.p1), 0)
-+
-+    def test_the_beat_entry_names_the_task_on_a_tick_shorter_than_the_spacing_floor(self):
-+        from core.tasks import reconcile_provider_slots
-+
-+        entry = settings.CELERY_BEAT_SCHEDULE["reconcile-provider-slots"]
-+        self.assertEqual(entry["task"], reconcile_provider_slots.name)
-+        self.assertLess(entry["schedule"], slot_reconciler.MIN_SPACING_SECONDS)
 diff --git a/apps/proxy/vod_proxy/multi_worker_connection_manager.py b/apps/proxy/vod_proxy/multi_worker_connection_manager.py
 index f9eed6db..8707f523 100644
 --- a/apps/proxy/vod_proxy/multi_worker_connection_manager.py
@@ -3367,7 +3675,7 @@ index 024e8f9c..962e3b0d 100644
  
  
 diff --git a/core/tasks.py b/core/tasks.py
-index 81889a27..9e15454c 100644
+index 81889a27..cbcb139f 100644
 --- a/core/tasks.py
 +++ b/core/tasks.py
 @@ -458,6 +458,21 @@ def fetch_channel_stats():
@@ -3378,7 +3686,7 @@ index 81889a27..9e15454c 100644
 +def reconcile_provider_slots():
 +    """Recompute the provider-slot counters from ground truth (#513).
 +
-+    Scheduled every few seconds by dispatcharr/settings.py's beat entry; the
++    Scheduled every 30 s by dispatcharr/settings.py's beat entry; the
 +    reconciler itself refuses to run closer together than its derived
 +    spacing, so the tick is only an upper bound on how late a run starts.
 +    """
@@ -3392,6 +3700,32 @@ index 81889a27..9e15454c 100644
  @shared_task
  def rehash_streams(keys):
      """
+diff --git a/core/tests/test_reconcile_provider_slots.py b/core/tests/test_reconcile_provider_slots.py
+new file mode 100644
+index 00000000..e6e987d5
+--- /dev/null
++++ b/core/tests/test_reconcile_provider_slots.py
+@@ -0,0 +1,20 @@
++"""The provider-slot reconciler's beat entry (#513).
++
++Here rather than beside the reconciler's own tests because it pins
++dispatcharr/settings.py and core/tasks.py, whose edits select core.tests.
++"""
++
++from django.conf import settings
++from django.test import SimpleTestCase
++
++from apps.proxy import slot_reconciler
++from core.tasks import reconcile_provider_slots
++
++
++class ReconcileProviderSlotsBeatEntryTests(SimpleTestCase):
++    def test_the_beat_entry_names_the_task_on_a_tick_shorter_than_the_spacing_floor(self):
++        entry = settings.CELERY_BEAT_SCHEDULE["reconcile-provider-slots"]
++        self.assertEqual(entry["task"], reconcile_provider_slots.name)
++        # The tick bounds how late a run starts; the reconciler enforces the
++        # spacing itself, so the tick must be shorter than the spacing's floor.
++        self.assertLess(entry["schedule"], slot_reconciler.MIN_SPACING_SECONDS)
 diff --git a/dispatcharr/settings.py b/dispatcharr/settings.py
 index 5f833556..f73f1c8f 100644
 --- a/dispatcharr/settings.py
