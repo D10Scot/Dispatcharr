@@ -24,12 +24,18 @@ One label has no counterpart in the skills' vocabulary and is not a triage role:
 
 | Label in our tracker | Meaning                                                                 |
 | -------------------- | ----------------------------------------------------------------------- |
-| `re-triage`          | The 2026-09-23 issue sweep judged this issue stale or superseded by the post-Phase-2 tree (the live relay is Go; `live_proxy/` is deleted). A human re-decides before any agent picks it up. |
+| `re-triage`          | The 2026-09-23 issue sweep, assessing against main a54b09a9, judged this issue invalid: already fixed, a false positive, a wrong premise, or its subject deleted (most often: the live relay is now Go and `live_proxy/` is deleted). No agent should pick it up until a human re-decides. |
 
 `re-triage` was created by the sweep, not during setup, and it sits alongside whatever
 triage label the issue already carried rather than replacing it, so an issue can carry
 both `re-triage` and `ready-for-agent`. Nothing in the gh-aw pipeline knows the label
 yet: `issue-remediation` excludes only `wontfix` and `needs-info`, so an issue carrying
-`re-triage`, `ready-for-agent` and a priority label is still eligible for it. Treat `re-triage` as overriding whatever else the issue says — an agent choosing
-work skips it until a human has removed the label (the issue is still valid as written),
-re-labelled it (it needs a fresh triage) or closed it (the sweep's verdict stands).
+`re-triage`, `ready-for-agent` and a priority label is still eligible for it. `issue-triage`
+does not see it either: it selects any open `needs-triage` issue regardless of what else
+it carries, can add `ready-for-agent` to it, and has no permission to remove `re-triage`
+from its own label allowlist, so a `re-triage` issue that still carries `needs-triage`
+can be routed straight to remediation without a human re-deciding. As of 2026-09-26, 24
+open issues carry both `re-triage` and `needs-triage`. Treat `re-triage` as overriding
+whatever else the issue says, so an agent choosing work skips it until a human has removed
+the label (the issue is still valid as written), re-labelled it (it needs a fresh triage),
+or closed it (the sweep's verdict stands).
