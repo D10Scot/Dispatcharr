@@ -145,6 +145,19 @@ class HeldRecordsLoopTests(SimpleTestCase):
             self.assertEqual(records.refresh_once(), -1)
         self.assertEqual(len(logs.records), 1, "a failure streak should log once, not every beat")
 
+    def test_recovery_after_a_failure_streak_logs_once(self):
+        client = mock.MagicMock()
+        script = mock.MagicMock()
+        script.side_effect = [ConnectionError("redis went away"), 0]
+        client.register_script.return_value = script
+        records = HeldRecords(client, "w1")
+        with self.assertLogs(held_records.logger, "WARNING"):
+            self.assertEqual(records.refresh_once(), -1)
+        with self.assertLogs(held_records.logger, "INFO") as logs:
+            self.assertEqual(records.refresh_once(), 0)
+        self.assertEqual(len(logs.records), 1, "a recovery should log once, not every beat")
+        self.assertIn("recovered", logs.records[0].getMessage())
+
     def test_the_loop_keeps_going_after_an_iteration_raises(self):
         records = HeldRecords(mock.MagicMock(), "w1")
         calls = []
@@ -207,6 +220,7 @@ class VodStreamHoldsItsSessionTests(SimpleTestCase):
 
         case = VodRangeResponseTests("test_a_provider_416_on_a_first_request_was_a_500")
         case.setUp()
+        response = None
         try:
             response = case._get(None)
             self.assertEqual(response.status_code, 200)
@@ -223,4 +237,13 @@ class VodStreamHoldsItsSessionTests(SimpleTestCase):
             list(chunks)
             self.assertNotIn(key, registry.held_keys())
         finally:
+            # On a failing assertion above, the generator is otherwise never
+            # consumed or closed here: it only finalises on garbage
+            # collection, after doCleanups() has already undone the
+            # harness's Redis/upstream patches, and that late finalisation
+            # logs a stray "Unknown VOD script" ERROR (round 1 nit 2).
+            # Closing it explicitly, before doCleanups(), keeps the failure
+            # path from leaking either the log line or the held key.
+            if response is not None:
+                response.close()
             case.doCleanups()
