@@ -13,6 +13,8 @@ They encode how work is done here, and they chain: a change starts in `worktree-
 
 Every PR from the plan and implement skills opens as a **draft** and stays one until its internal review passes; `pr-merge-gate` marks it ready. The reason is the review bot's once-per-PR behaviour, stated in the plan, implement and merge-gate skills' `references/project.md`.
 
+When a skill and CLAUDE.md disagree, the skill rules and CLAUDE.md is corrected to match it (the user's ruling, 2026-09-26).
+
 ## Porting a skill to another repository
 
 Each process skill is written in two layers so it travels:
