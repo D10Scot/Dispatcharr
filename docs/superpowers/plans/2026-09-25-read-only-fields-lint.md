@@ -42,7 +42,7 @@ Numbered so a step can cite one. A conflict between a constraint and a step is a
 
 ## Overlap with sibling work
 
-Checked at `36e4ce10` with `gh pr list --repo D10Scot/Dispatcharr --state open --json number,title,headRefName,files --limit 100`: four open PRs (#493, #494, #495, #496). None touches any file below. Re-checked on 2026-09-26: draft PR #512 (head `4d768f0123`) touches `CLAUDE.md`, and no other open PR touches any file below.
+Checked at `36e4ce10` with `gh pr list --repo D10Scot/Dispatcharr --state open --json number,title,headRefName,files --limit 100`: four open PRs (#493, #494, #495, #496). None touches any file below. Re-checked on 2026-09-26: PR #512 touches `CLAUDE.md`, and no other open PR touches any file below.
 
 | file this PR touches | open PR or plan also touching it | resolution |
 |---|---|---|
@@ -52,7 +52,7 @@ Checked at `36e4ce10` with `gh pr list --repo D10Scot/Dispatcharr --state open -
 | `scripts/check_credential_logging.py` | none | **not edited**; it is the precedent only |
 | `tests/test_no_class_body_read_only_fields.py` | none open (E-6, #436, merged it) | deleted |
 | `metrics/curated/defects.yml` | many fix branches edit other rows; none open as a PR | one field on row `:24` only; rebase if a sibling lands first |
-| `CLAUDE.md` | draft PR #512 (head `4d768f0123`) rewrites line `:57` wholesale | one phrase at `:57`. #512 keeps F.2's old literal exactly once (`git show "4d768f0123:CLAUDE.md" \| grep -n -F` finds it on line 57), so F.2 still applies whichever lands first. The two will conflict textually on that line: if #512 merges first, rebase, re-apply F.2 to #512's line 57 and re-run Task 9; if this PR merges first, #512 must carry `scripts/check_read_only_fields.py` into its rewrite. |
+| `CLAUDE.md` | PR #512 rewrites line `:57` wholesale and is expected to merge first | one phrase at `:57`. #512, at its final head at merge time, keeps F.2's old literal exactly once, on line 57: verified at `5d2f3477e4` with `git show "5d2f3477e4:CLAUDE.md" \| grep -n -F` (one match, line 57). So F.2's replacement applies after #512 merges: rebase onto `main`, apply F.2 to that line and re-run Task 9. |
 
 If an open PR touching any of these appears before this one is opened, rebase onto `main` after it merges and re-run Task 9.
 
@@ -82,7 +82,7 @@ If an open PR touching any of these appears before this one is opened, rebase on
 
 ## PR: `fix/444-read-only-fields-lint`
 
-- **Resolves** #444. The closing keyword goes in the implementation PR body only, added when the PR is opened (constraint 8, Task 10).
+- **Issue:** #444 (this PR is its fix; the closing keyword goes in the implementation PR body only, per constraint 8 and Task 10).
 - **Files**
   - `scripts/check_read_only_fields.py` (new, mode 100755 like its sibling)
   - `tests/test_read_only_fields_guard.py` (new)
