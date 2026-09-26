@@ -25,8 +25,8 @@ from django.test import SimpleTestCase
 from hypothesis import example, given, settings as hyp_settings, strategies as st
 
 from apps.m3u import connection_pool
+from apps.m3u.tests.slot_script_fake import SlotScriptFakeMixin
 from apps.m3u.connection_pool import (
-    _safe_decr,
     profile_connections_key,
     release_profile_slot,
     reserve_profile_slot,
@@ -47,7 +47,7 @@ GROUP_ID = 7
 CRED_KEY = server_group_connections_key(GROUP_ID, FINGERPRINT)
 
 
-class FakeRedis:
+class FakeRedis(SlotScriptFakeMixin):
     """In-memory stand-in for the five commands connection_pool uses."""
 
     def __init__(self, data=None):
@@ -96,10 +96,13 @@ class SafeDecrProperties(SimpleTestCase):
     @given(start=st.none() | st.integers(min_value=-10, max_value=20))
     @example(start=-1)  # #146: shrunk counterexample, left at -1.
     @example(start=-3)  # #146: the issue's drifted credential counter.
-    def test_safe_decr_lands_on_one_less_but_never_below_zero(self, start):
-        redis = FakeRedis({} if start is None else {"k": start})
-        _safe_decr(redis, "k")
-        self.assertEqual(redis.count("k"), max((start or 0) - 1, 0))
+    def test_a_release_lands_one_less_but_never_below_zero(self, start):
+        # _safe_decr went into connection_pool's slot script (#513); a release
+        # with no credential pointer gives back exactly the profile counter.
+        key = profile_connections_key(1)
+        redis = FakeRedis({} if start is None else {key: start})
+        release_profile_slot(1, redis)
+        self.assertEqual(redis.count(key), max((start or 0) - 1, 0))
 
 
 class ReserveProfileSlotProperties(SimpleTestCase):

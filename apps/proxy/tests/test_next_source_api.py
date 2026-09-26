@@ -14,11 +14,12 @@ from django.test import TestCase
 from apps.accounts.models import User
 from apps.channels.models import Channel, ChannelStream, Stream
 from apps.m3u.models import M3UAccount, M3UAccountProfile
+from apps.m3u.tests.slot_script_fake import SlotScriptFakeMixin
 from apps.proxy.internal_auth import build_internal_request_header, internal_principal_token
 from core.models import StreamProfile, SystemEvent
 
 
-class FakeRelayApiRedis:
+class FakeRelayApiRedis(SlotScriptFakeMixin):
     """Covers channel_stream, stream_profile and profile_connections --
     the same surface FakeControlPlaneRedis covers in
     test_next_source_resolution.py, reused here at the view layer."""

@@ -4,7 +4,6 @@ from django.test import TestCase
 from unittest.mock import patch
 
 from apps.m3u.connection_pool import (
-    _safe_decr,
     compute_credential_fingerprint,
     extract_credentials_from_stream_url,
     get_credential_connection_count,
@@ -21,9 +20,10 @@ from apps.m3u.connection_pool import (
     server_group_connections_key,
 )
 from apps.m3u.models import M3UAccount, M3UAccountProfile, ServerGroup
+from apps.m3u.tests.slot_script_fake import SlotScriptFakeMixin
 
 
-class FakeRedis:
+class FakeRedis(SlotScriptFakeMixin):
     """Minimal in-memory Redis stand-in for counter tests."""
 
     def __init__(self):
@@ -620,21 +620,23 @@ class CredentialFingerprintCasefoldTests(TestCase):
 
 class CredentialCounterRepairTests(TestCase):
     """#146: a credential counter that has drifted below zero (no TTL) must
-    be repaired on sight, both on release (_safe_decr) and on reserve (the
-    INCR-first path in _reserve_server_group_slot_for_profile), or the
-    ServerGroup cap stays lifted until the counter climbs back past zero on
-    its own."""
+    be repaired on sight, both on release and on reserve, or the ServerGroup
+    cap stays lifted until the counter climbs back past zero on its own.
+    Both repairs are inside connection_pool's slot script since #513 (the
+    _safe_decr helper this class once called directly went into it)."""
 
-    def test_safe_decr_repairs_a_counter_already_below_zero(self):
+    def test_release_repairs_a_credential_counter_already_below_zero(self):
         redis = FakeRedis()
 
         redis.set("negative_one", -1)
-        _safe_decr(redis, "negative_one")
+        redis.set(profile_credential_release_key(1), "negative_one")
+        release_profile_slot(1, redis)
         self.assertEqual(int(redis.get("negative_one")), 0)
 
         # The issue's own counterexample.
         redis.set("negative_three", -3)
-        _safe_decr(redis, "negative_three")
+        redis.set(profile_credential_release_key(2), "negative_three")
+        release_profile_slot(2, redis)
         self.assertEqual(int(redis.get("negative_three")), 0)
 
     def test_negative_credential_counter_does_not_lift_the_cap(self):
