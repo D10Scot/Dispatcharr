@@ -98,6 +98,21 @@ class ChangedPathRoutingTests(SimpleTestCase):
         # The alias is by path prefix, so the rest of apps/m3u stays narrow.
         self.assertEqual(self._labels("apps/m3u/tasks.py"), {"apps.m3u.tests"})
 
+    def test_held_records_change_runs_every_label_that_holds_or_reads_a_record(self):
+        """Pins: apps/proxy/vod_proxy/held_records.py selected apps.proxy.vod_proxy.tests alone.
+
+        Catch-up (apps.timeshift.tests) holds its pool entries through it, and
+        the provider-slot reconciler's tests (apps.proxy.tests) read its
+        liveness keys, so an edit to it can break either label (#513).
+        """
+        expected = {"apps.proxy.vod_proxy.tests", "apps.proxy.tests", "apps.timeshift.tests"}
+        self.assertLessEqual(expected, self.available)
+        self.assertEqual(self._labels("apps/proxy/vod_proxy/held_records.py"), expected)
+        # The rest of vod_proxy stays narrow.
+        self.assertEqual(
+            self._labels("apps/proxy/vod_proxy/views.py"), {"apps.proxy.vod_proxy.tests"}
+        )
+
     def test_unaliased_app_change_selects_only_its_own_tests(self):
         """Control: no alias means exactly one label, so the fixes stay narrow.
 

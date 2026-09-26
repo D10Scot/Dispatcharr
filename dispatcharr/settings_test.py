@@ -32,6 +32,10 @@ PASSWORD_HASHERS = ["django.contrib.auth.hashers.MD5PasswordHasher"]
 CELERY_TASK_ALWAYS_EAGER = False
 CELERY_TASK_EAGER_PROPAGATES = False
 
+# No background slot-holder refresher thread in tests: its tests call
+# HeldRecords.refresh_once() directly (apps/proxy/vod_proxy/held_records.py).
+SLOT_HOLDER_REFRESHER_ENABLED = False
+
 _use_sqlite = os.environ.get("TEST_USE_SQLITE", "").lower() in ("1", "true", "yes")
 
 if _use_sqlite:

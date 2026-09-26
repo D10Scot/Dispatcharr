@@ -63,6 +63,12 @@ _PATH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "apps/m3u/tests/slot_script_fake",
         ("apps.m3u", "apps.proxy", "apps.proxy.vod_proxy"),
     ),
+    # The slot-holder registry (#513) is imported by VOD, by catch-up and by
+    # the provider-slot reconciler's tests.
+    (
+        "apps/proxy/vod_proxy/held_records",
+        ("apps.proxy.vod_proxy", "apps.proxy", "apps.timeshift"),
+    ),
 )
 
 
