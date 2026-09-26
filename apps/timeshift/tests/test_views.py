@@ -1,6 +1,7 @@
 """Tests for the timeshift proxy view, focused on upstream status mapping."""
 
 import fnmatch
+import inspect
 import time
 from unittest.mock import MagicMock, patch
 
@@ -4694,6 +4695,106 @@ class TimeshiftStopPollCadenceTests(TestCase):
         # guard must instead treat a backward step as "poll now".
         self.assertTrue(
             views._should_poll_stop_key({"last": 1000.0}, 1000.0 - 3600.0),
+            "a backward clock step must not suppress the stop-key poll: "
+            "elapsed (now - last) is negative here, and the guard's job is "
+            "to treat a negative elapsed time as due for a poll, not as "
+            "still within the cadence window",
+        )
+
+    def test_post_yield_site_alone_still_catches_a_stop(self):
+        """Nothing else pins that stream_generator's own post-yield poll is
+        a real, independently-firing gate rather than dead code the shared
+        poll_state happens to make redundant: the pre-read site inside
+        _iter_upstream_with_stop fires first in every iteration, so with a
+        frozen or slowly-advancing clock it always wins the shared cadence
+        slot and the post-yield check never gets to prove anything on its
+        own.
+
+        Isolate it by patching _should_poll_stop_key so the pre-read site
+        (identified by its caller frame) always reports "spent" — it never
+        polls and never updates poll_state — while the post-yield site
+        keeps the real gate. Only the post-yield site can then catch a stop
+        set mid-stream. A fast-advancing clock (2s/call, well over the 1s
+        cadence) makes the post-yield site's *own* gate poll on every check
+        it actually makes, so this isolates "does the site fire at all",
+        not the cadence rate itself (pinned elsewhere).
+        """
+        redis = _FakeRedis()
+        stop_key = views.TimeshiftRedisKeys.client_stop(
+            self.kwargs["virtual_channel_id"], self.kwargs["client_id"],
+        )
+        num_chunks = 20
+        stop_after_chunk = 5  # 0-indexed
+
+        peek = _make_ts_payload(1024)
+        chunks = [_make_ts_payload(1024) for _ in range(num_chunks)]
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"Content-Type": "video/mp2t"}
+        resp.url = "http://cdn.example.test/timeshift.ts"
+        resp.close = MagicMock()
+        resp.raw = MagicMock()
+
+        read_calls = {"n": 0}
+
+        def fake_read(_size):
+            read_calls["n"] += 1
+            n = read_calls["n"]
+            if n == 1:
+                return peek
+            idx = n - 2
+            if idx == stop_after_chunk:
+                redis.setex(stop_key, 60, "1")
+            if idx >= num_chunks:
+                return b""
+            return chunks[idx]
+
+        resp.raw.read = MagicMock(side_effect=fake_read)
+
+        real_should_poll = views._should_poll_stop_key
+
+        def fake_should_poll(poll_state, now):
+            # The pre-read site's own call frame is _iter_upstream_with_stop;
+            # make its slot permanently "spent" without touching poll_state,
+            # so only the post-yield site (stream_generator's frame) can
+            # ever record a poll or catch a stop. Search the whole stack,
+            # not a fixed index: a mock's side_effect dispatch inserts its
+            # own frames (_execute_mock_call, _mock_call, __call__) between
+            # this function and its real caller, at a depth that varies by
+            # mock/Python version.
+            if any(
+                frame.function == "_iter_upstream_with_stop"
+                for frame in inspect.stack()
+            ):
+                return False
+            return real_should_poll(poll_state, now)
+
+        increment = 2.0  # >> _STOP_KEY_POLL_INTERVAL_SECONDS (1.0s)
+        time_state = {"t": -increment}
+
+        def fake_time():
+            time_state["t"] += increment
+            return time_state["t"]
+
+        with patch.object(views, "_should_poll_stop_key", side_effect=fake_should_poll), \
+             patch.object(views, "_open_upstream", return_value=resp), \
+             patch.object(views.time, "time", side_effect=fake_time):
+            response = views._stream_from_provider(**self.kwargs, redis_client=redis)
+            out = list(response.streaming_content)
+
+        # peek + chunks 0..stop_after_chunk: the 2s/call clock always exceeds
+        # the 1s cadence, so the real post-yield gate polls on its very
+        # first chance after the stop is set and catches it immediately,
+        # not merely "eventually" — an exact count, not a loose upper bound
+        # (round 1 review: a loose bound can pass without the mechanism
+        # actually firing at all).
+        self.assertEqual(
+            len(out), stop_after_chunk + 2,
+            f"the post-yield site in stream_generator did not catch a stop "
+            f"set after chunk {stop_after_chunk}, with the pre-read site's "
+            f"poll disabled; expected peek + {stop_after_chunk + 1} chunks "
+            f"({stop_after_chunk + 2} total), got {len(out)} (all "
+            f"{num_chunks + 1} would mean the post-yield gate never fired)",
         )
 
 
