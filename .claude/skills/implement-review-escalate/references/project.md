@@ -28,4 +28,4 @@ The orchestrator keeps a ledger in its scratchpad (`impl/ledger.md`): one row pe
 
 ## Models available
 
-`sonnet` (implementers only), `opus` (planning, stuck implementers, and reviews when fable is rationed), `fable` (the default reviewer per CLAUDE.md § Delegation). **Current cadence, set by the user for the 2026-09 fix programme to conserve fable credits:** `opus` reviews rounds one and two, `fable` reviews from the third round on, and a security-adjacent change gets `fable` from round one. The D-1 and G-9 reviews on 2026-09-25 each found blockers two opus rounds had missed, which is why the escalation is a rule rather than an option. When fable credits are not rationed, CLAUDE.md's default (fable from round one) applies.
+`sonnet` (implementers only), `opus` (planning, stuck implementers, review rounds one and two), `fable` (review from round three). **Reviewer cadence:** `opus` reviews rounds one and two, `fable` reviews from the third round on, and a security-adjacent change gets `fable` from round one. The D-1 and G-9 reviews on 2026-09-25 each found blockers two opus rounds had missed, which is why the escalation is a rule rather than an option.
