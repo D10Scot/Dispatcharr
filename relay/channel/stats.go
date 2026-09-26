@@ -7,9 +7,17 @@ import (
 // Stats is the stream information a transcode process has told this
 // channel: the in-memory equivalent of the metadata hash's stream-info
 // fields (ChannelMetadataField.VIDEO_CODEC ... STREAM_TYPE, written by
-// channel_service.py:844-880) and its ffmpeg-performance fields
-// (FFMPEG_SPEED ... FFMPEG_OUTPUT_BITRATE, written by
-// input/manager.py:1250-1275).
+// channel_service.py:844-880 -- these survive as ChannelMetadataField names
+// because apps/timeshift/stats.py and apps/channels/tasks.py's recording
+// capture still read them) and its ffmpeg-performance fields -- the deleted
+// Python relay's "ffmpeg_speed", "ffmpeg_fps", "actual_fps",
+// "ffmpeg_output_bitrate" and "ffmpeg_stats_updated" metadata-hash keys,
+// five in all, written together by input/manager.py:1250-1275. #461
+// deleted those five, plus "ffmpeg_bitrate" (a sixth ffmpeg-performance
+// name, not written by that range), from ChannelMetadataField since
+// nothing reads any of them any more; only the first four exist as this
+// struct's fields below -- "ffmpeg_stats_updated" and "ffmpeg_bitrate"
+// were never struct fields at all.
 //
 // A nil pointer is a field the hash never had, which the status endpoints
 // render by OMITTING the key (channel_status.py:605-627 assigns each only

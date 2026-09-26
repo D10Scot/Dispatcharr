@@ -119,8 +119,10 @@ type Channel struct {
 	mu      sync.RWMutex
 	state   State
 	lastErr error
-	// stateChangedAt is ChannelMetadataField.STATE_CHANGED_AT, set by
-	// setState on every transition.
+	// stateChangedAt is the deleted Python relay's "state_changed_at"
+	// metadata-hash key (historically channel_status.py:124-127), set by
+	// setState on every transition. #461 deleted that name from
+	// ChannelMetadataField -- nothing reads it by that name any more.
 	stateChangedAt time.Time
 	// source is what the channel is playing NOW. Guarded by mu since 2c-5,
 	// because a failover rewrites it (input/manager.py:2160-2171's hset).
@@ -362,9 +364,11 @@ func (c *Channel) setState(state State, err error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if state != c.state {
-		// state_changed_at (ChannelMetadataField.STATE_CHANGED_AT), written
-		// beside every state hset and read by the detail endpoint
-		// (channel_status.py:124-127). On a CHANGE only: Python writes the
+		// state_changed_at, the deleted Python relay's metadata-hash key,
+		// historically written beside every state hset and read by the
+		// detail endpoint (channel_status.py:124-127; #461 deleted the
+		// ChannelMetadataField name since nothing reads it by that name any
+		// more). On a CHANGE only: Python writes the
 		// pair together, so a re-assertion of the same state moves it there
 		// too -- but every Python writer asserts a state it is entering,
 		// never one it is already in, so the two agree on every reachable
