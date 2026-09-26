@@ -461,6 +461,15 @@ CELERY_BEAT_SCHEDULE = {
         "task": "apps.m3u.tasks.check_account_expirations",
         "schedule": 86400.0,  # Once every 24 hours
     },
+    # Recompute the provider-slot counters from ground truth (#513). The tick
+    # is not the run interval: apps/proxy/slot_reconciler.py skips any run
+    # closer than its derived spacing (about 80s at default settings) to the
+    # last one. Here rather than in a seeding migration so beat re-asserts the
+    # schedule on every start; an operator can still disable the row.
+    "reconcile-provider-slots": {
+        "task": "core.tasks.reconcile_provider_slots",
+        "schedule": 30.0,
+    },
 }
 
 MEDIA_ROOT = BASE_DIR / "media"

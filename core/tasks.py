@@ -459,6 +459,21 @@ def fetch_channel_stats():
     )
 
 @shared_task
+def reconcile_provider_slots():
+    """Recompute the provider-slot counters from ground truth (#513).
+
+    Scheduled every 30 s by dispatcharr/settings.py's beat entry; the
+    reconciler itself refuses to run closer together than its derived
+    spacing, so the tick is only an upper bound on how late a run starts.
+    """
+    # Function-local, as fetch_channel_stats above: a Celery child should not
+    # import the relay client and the VOD and catch-up modules to start.
+    from apps.proxy.slot_reconciler import reconcile_provider_slots as run
+
+    return run()
+
+
+@shared_task
 def rehash_streams(keys):
     """
     Regenerate stream hashes for all streams based on current hash key configuration.

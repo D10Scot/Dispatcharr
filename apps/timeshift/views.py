@@ -2138,11 +2138,17 @@ def _resolve_session_archive_scrub(descriptor, requested_timestamp):
     }
 
 
+# How long _pool_lock waits for the pool lock. A reserve precedes the busy
+# pool entry by up to this long, so the provider-slot reconciler adds it to
+# the catch-up in-flight window (apps/proxy/slot_reconciler.py, #513).
+POOL_LOCK_WAIT_SECONDS = 5
+
+
 def _pool_lock(redis_client, session_id):
     return redis_client.lock(
         TimeshiftRedisKeys.pool_lock(session_id),
         timeout=10,
-        blocking_timeout=5,
+        blocking_timeout=POOL_LOCK_WAIT_SECONDS,
     )
 
 

@@ -69,6 +69,9 @@ _PATH_ALIASES: tuple[tuple[str, tuple[str, ...]], ...] = (
         "apps/proxy/vod_proxy/held_records",
         ("apps.proxy.vod_proxy", "apps.proxy", "apps.timeshift"),
     ),
+    # The provider-slot reconciler's beat-entry test (core.tests) asserts
+    # against its MIN_SPACING_SECONDS.
+    ("apps/proxy/slot_reconciler", ("apps.proxy", "core")),
 )
 
 
