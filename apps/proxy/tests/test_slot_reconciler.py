@@ -227,17 +227,21 @@ class ReleaseThenTuneTests(ReconcilerTestCase):
 
 
 class FailoverTests(ReconcilerTestCase):
-    def test_a_profile_changing_failover_between_runs_is_not_clobbered(self):
+    def _tuned_channel(self, number=900):
         stream = Stream.objects.create(
             name=f"s-{self.tag}", url="http://xc.example.com/live/user/pass/1.ts",
             m3u_account=self.account,
         )
-        channel = Channel.objects.create(channel_number=900, name=f"c-{self.tag}")
+        channel = Channel.objects.create(channel_number=number, name=f"c-{self.tag}-{number}")
         ChannelStream.objects.create(channel=channel, stream=stream, order=0)
         self.cleanup += [f"channel_stream:{channel.id}", f"stream_profile:{stream.id}"]
         with mock.patch.object(relay_client, "channel_snapshot"):
-            stream_id, profile_id, _err, reserved = channel.get_stream()
+            _stream_id, profile_id, _err, reserved = channel.get_stream()
         self.assertEqual((profile_id, reserved), (self.p1.id, True))
+        return channel
+
+    def test_a_profile_changing_failover_between_runs_is_not_clobbered(self):
+        channel = self._tuned_channel(900)
         self.channels = [self.live(self.p1, "c")]
         self.run_once()
         # Failover: next-source's _commit moves the slot to p2. The relay's
@@ -247,6 +251,53 @@ class FailoverTests(ReconcilerTestCase):
         self.run_once()
         self.assertEqual(self.count(self.p2), 1, "a failover's reservation on the new profile was dropped")
         self.assertEqual(self.count(self.p1), 0)
+
+    def test_a_same_login_failover_onto_an_unlimited_profile_keeps_the_shared_counter(self):
+        # review round 1, finding 1: switch_profile_slot moves the credential
+        # counter only when the fingerprint changes (connection_pool.py's
+        # switch op, ARGV[3]). On a same-login failover the old counter keeps
+        # the stream's slot, its version does not move, and the new profile's
+        # pointer is not set. If the new profile is unlimited, it has no
+        # credential counter at all, so a naive re-derivation attributes the
+        # holder to nothing and the old counter drops under a live stream
+        # two runs later.
+        shared = credential_reservation(self.p1)[0]
+        self.p2.max_streams = 0
+        self.p2.save()
+        channel = self._tuned_channel(901)
+        self.assertEqual(int(self.redis.get(shared)), 1)
+        self.channels = [self.live(self.p1, "c")]
+        self.run_once()
+        self.tick()
+        self.run_once()
+        self.assertTrue(channel.update_stream_profile(self.p2.id))
+        self.assertEqual(int(self.redis.get(shared)), 1, "switch kept the shared slot (same login)")
+        self.channels = [self.live(self.p2, "c")]  # the relay takes up the new answer
+        for _ in range(3):
+            self.tick()
+            self.run_once()
+        self.assertEqual(
+            int(self.redis.get(shared) or 0), 1,
+            "the shared counter dropped under a live stream after a same-login failover",
+        )
+
+    def test_a_same_login_failover_onto_a_limited_profile_without_a_pointer_keeps_the_shared_counter(self):
+        # Control for the test above: p2 is limited (not unlimited), so its
+        # configuration names the shared counter even with no pointer of its
+        # own. This already passed before the fix; kept as a control so a
+        # future edit cannot silently narrow the fix to the unlimited case.
+        shared = credential_reservation(self.p1)[0]
+        channel = self._tuned_channel(902)
+        self.channels = [self.live(self.p1, "c")]
+        self.run_once()
+        self.tick()
+        self.run_once()
+        self.assertTrue(channel.update_stream_profile(self.p2.id))
+        self.channels = [self.live(self.p2, "c")]
+        for _ in range(3):
+            self.tick()
+            self.run_once()
+        self.assertEqual(int(self.redis.get(shared) or 0), 1)
 
 
 class RefusedReserveTests(ReconcilerTestCase):
@@ -557,6 +608,32 @@ class WorkerLivenessTests(ReconcilerTestCase):
         self.assertEqual((self.count(self.p1), self.count(self.p2)), (0, 0),
                          "a dead worker's records were still counted two runs after it died")
 
+    def test_a_young_catch_up_entry_without_a_worker_key_yet_keeps_its_slot(self):
+        # #513 constraint 4/5: a busy pool entry is stamped with worker_id
+        # before its process's first hold(), so its vod:worker:<id> key may
+        # not exist yet. The reserve already moved the counter's version, so
+        # the reconciler makes no write that interval rather than dropping
+        # the entry; the next run, after its first refresh, counts it.
+        reserve_profile_slot(self.p1, self.redis)  # steady live holder
+        self.channels = [self.live(self.p1, "steady")]
+        self.run_once()
+        self.tick()
+        self.run_once()
+        worker = f"host-{self.tag}-young"
+        self.cleanup.append(worker_key(worker))
+        reserve_profile_slot(self.p1, self.redis)
+        self.pool_entry("young", self.p1, worker=worker)  # stamped, no hold() yet: no worker key
+        self.tick()
+        self.run_once()  # N: entry busy, no worker key; version moved: no write
+        HeldRecords(self.redis, worker).refresh_once()  # first chunk, inside the window
+        self.tick()
+        self.run_once()  # N+1: quiet interval, entry now counted
+        self.assertEqual(self.count(self.p1), 2, "a young catch-up entry lost its slot")
+        for _ in range(3):
+            self.tick()
+            self.run_once()
+        self.assertEqual(self.count(self.p1), 2)
+
 
 class SeededHashTests(ReconcilerTestCase):
     def test_a_seeded_never_started_hash_is_not_counted_past_its_window(self):
@@ -602,7 +679,7 @@ class ConcurrentIncrTests(ReconcilerTestCase):
 
 
 class SpacingTests(ReconcilerTestCase):
-    def test_the_spacing_follows_the_widest_window_including_operator_settings(self):
+    def test_the_spacing_follows_the_widest_window_including_the_catch_up_timeouts(self):
         from apps.proxy import control_plane
         from apps.proxy.vod_proxy.multi_worker_connection_manager import (
             UPSTREAM_ATTEMPTS,

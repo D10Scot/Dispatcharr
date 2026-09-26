@@ -120,8 +120,8 @@ def in_flight_windows() -> dict:
               the same constants apps/proxy/control_plane.py exports).
     vod:      the upstream connect-plus-first-byte timeout, per attempt, times
               the attempts (the reserve precedes the provider GET).
-    catch_up: the pool lock's wait plus the operator-editable connect and
-              chunk timeouts _open_upstream passes to requests.
+    catch_up: the pool lock's wait plus the catch-up connect and chunk
+              timeouts _open_upstream uses.
     """
     from apps.proxy import control_plane
     from apps.proxy.config_helper import ConfigHelper
@@ -235,10 +235,17 @@ class SlotReconciler:
         for identity, profile_id in holders.items():
             now_key = current.get(profile_id)
             prior = carried.get(identity)
-            if prior is None or prior[0] != profile_id:
-                # First seen, or moved profile (a failover): the pointer, else
-                # the configuration.
+            if prior is None:
+                # First seen: the pointer, else the configuration.
                 attribution[identity] = {now_key} if now_key else set()
+                continue
+            if prior[0] != profile_id:
+                # A failover: the switch moves the credential slot only on a
+                # fingerprint change, so a same-login failover may have kept
+                # the old login's slot. Keep the carried counters and gain
+                # the new profile's derived one (R10: an over-count on the
+                # old login until the holder ends, never an under-count).
+                attribution[identity] = set(prior[1]) | ({now_key} if now_key else set())
                 continue
             keys = set(prior[1])
             if now_key and now_key not in keys:
