@@ -33,7 +33,9 @@ Playwright/TypeScript for two existing e2e specs (one assertion tightened, comme
 § Testing, § Conventions, § Known defects), `docs/adr/0002-e2e-test-taxonomy.md` (both touched e2e
 tests keep their `@contract` tag), `docs/adr/0003` (no settings group is written, so no blast radius),
 `docs/agents/metrics.md` (§ Metrics dashboard below), `docs/agents/issue-tracker.md` (`--repo` on
-every `gh` call).
+every `gh` call), `CONTEXT.md` (§ Category: `VODCategory` is unique on `(name, category_type)`
+**globally**, not per account — the fact this plan's helper and every existing writer rely on when
+they `get_or_create` a shared `Uncategorized` row rather than one per account).
 
 **Planner's worktree.** `/Users/dion/git/Dispatcharr/.worktrees/plan-490`, branch
 `docs/plan-490-vod-category-pure-read`. Only this file is committed.
@@ -120,7 +122,8 @@ Anchors are at seed `93d1e424`.
 Read, not changed (each is cited below): `apps/accounts/permissions.py:42-49`,
 `apps/vod/tasks.py:52-127` (`refresh_vod_content`), `:129-181` (`refresh_categories`), `:183-236`
 (`refresh_movies`), `:238-291` (`refresh_series`), `:293-419` (`batch_create_categories`),
-`:455-465` and `:827-837` (the `__uncategorized__` routing), `apps/vod/models.py:315-333`
+`:455-465` and `:827-837` (the `__uncategorized__` routing; `:827-837` is `:841-851` on `main`
+`aa6f376c3d` after #506's 14 lines), `apps/vod/models.py:315-333`
 (`M3UVODCategoryRelation`, `unique_together = [('m3u_account', 'category')]` at `:333`),
 `apps/m3u/signals.py:12-20`, `apps/m3u/tasks.py:4009-4014`, `apps/m3u/serializers.py:270-299` and
 `:354-370`, `frontend/src/components/forms/M3UGroupFilter.jsx:54-64`,
@@ -130,14 +133,17 @@ Read, not changed (each is cited below): `apps/accounts/permissions.py:42-49`,
 
 ## Overlap with sibling plans
 
-- **Open PRs.** `gh pr list --repo D10Scot/Dispatcharr --state open` on 2026-09-25 listed #496, #498,
-  #499, #501, #502, #504, #505, none of which touches any file in the table above (checked with
-  `--json files`), and, opened after that listing, **#506** (`fix/468-vod-actors-non-string`). #506 is
-  a **same-file, non-conflicting overlap**: it edits `apps/vod/tasks.py` (hunks at `:495` in
-  `process_movie_batch` and `:2321` in `refresh_movie_advanced_data`) and adds
-  `apps/vod/tests/test_movie_actors_non_string.py`. Appendix A's only hunk sits at `:27`, and #506's
-  diff (`gh pr diff 506`) `git apply --check`s cleanly on top of Appendix A at seed. If #506 merges
-  first, Task 0 Step 3's `git apply --check` of every appendix against current `main` is the re-check.
+- **Open PRs, and one overlap since merged.** `gh pr list --repo D10Scot/Dispatcharr --state open` on
+  2026-09-25 listed #496, #498, #499, #501, #502, #504, #505, none of which touches any file in the
+  table above (checked with `--json files`). **#506** (`fix/468-vod-actors-non-string`), opened after
+  that listing, was a **same-file, non-conflicting overlap**: it edited `apps/vod/tasks.py` (hunks at
+  `:495` in `process_movie_batch` and `:2321` in `refresh_movie_advanced_data`) and added
+  `apps/vod/tests/test_movie_actors_non_string.py`. It has since **merged** as `51d0d390`, and `main`
+  is now at `aa6f376c3d` (the only effect on this plan's anchors is `apps/vod/tasks.py:827-837` moving
+  to `:841-851`, noted above). Appendix A's only hunk sits at `:27`, clear of both of #506's. The
+  appendices still apply: this plan's own review, pinned to `aa6f376c3d`, confirmed all nine pass
+  `git apply --check` there, so Task 0 Step 3's own check is the re-verification this plan needs, not
+  a fresh one now.
 - **Merged work already in the seed.** D-4 (#453) edited `apps/vod/api_views.py:624` (the
   `m3u_account` filter) and `vod-ingest-fidelity.spec.ts`; it is the PR that found #490. C-6 (#430)
   edited `apps/vod/tasks.py`. Both are in `93d1e424`.
@@ -286,7 +292,8 @@ The discrimination lives in the backend pin (Appendix D), which fails on the see
   filter was ever opened already has both relations for every active account that had VOD on at the
   time, because the list ran. (b) The relation's only functional consumer is the refresh, which creates it
   before use: `refresh_movies` puts it into `relations` before any movie is processed, and movies are
-  routed to `Uncategorized` only inside a refresh (`apps/vod/tasks.py:455-465`, `:827-837`). (c) Any
+  routed to `Uncategorized` only inside a refresh (`apps/vod/tasks.py:455-465`, `:827-837` —
+  `:841-851` on `main aa6f376c3d` after #506). (c) Any
   account still missing one gets it from its next VOD refresh, which every scheduled M3U refresh
   queues for a VOD-enabled XC account (`apps/m3u/tasks.py:4009-4014`). The only visible gap is the
   `Uncategorized` row missing from that account's group-filter modal until then. A `RunPython` over
@@ -334,7 +341,7 @@ an update only when a PR closes a ledger issue or adds a pin for one. No milesto
 
 ## PR: `fix/490-vod-category-list-pure-read`
 
-- **Issue** #490 (planned here). The implementation PR's description carries its closing line.
+- **Issue** #490 (planned in #507). The implementation PR's description carries its closing line.
 - **Files** the nine in § Files this plan touches.
 - **Backend labels**: `python3 scripts/ci_backend_test_labels.py <each changed path>` prints
   `["apps.m3u.tests", "apps.output.tests", "apps.vod.tests"]` at seed (`apps/vod/` is aliased to both
