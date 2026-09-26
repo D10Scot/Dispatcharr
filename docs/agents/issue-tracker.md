@@ -32,23 +32,45 @@ forks) and were enabled as part of this setup.
 
 ## Closing keywords close issues whatever the PR changes
 
-GitHub honours `close`/`closes`/`closed`, `fix`/`fixes`/`fixed` and `resolve`/`resolves`/`resolved`
-followed by `#N` anywhere in a PR body or in the squash-commit message, and closes issue N when
-the PR merges to `main`. It does not look at what the PR changes. On 2026-09-24 ten docs-only PRs
-(#343-#354) carried fix plans that quoted each future fix's draft PR description, and merging
-them closed thirteen issues as completed with nothing fixed; every one had to be reopened by hand.
+GitHub links an issue to a PR wherever a keyword — `close`/`closes`/`closed`,
+`fix`/`fixes`/`fixed`, `resolve`/`resolves`/`resolved`, case-insensitive and optionally followed
+by a colon — is immediately followed by `#N`, `owner/repo#N`, or a full issue URL, anywhere in the
+PR body or in a commit message that lands on the branch. It **closes** the linked issue only once
+the PR merges into the repository's default branch (`main` here — a merge into any other branch
+links but never closes). Each issue needs its own keyword: a single `Closes #A, #B and #C` links
+only #A. Full reference:
+https://docs.github.com/en/issues/tracking-your-work-with-issues/using-issues/linking-a-pull-request-to-an-issue
 
-- In a plan, spec, memo or any other docs-only PR, name an issue as `#N (planned in PR X)`.
-  Never write the keyword next to the number, even inside a quoted draft or a code block: the
-  match is textual.
-- Only the PR that lands the fix carries `Closes #N`, and only for the issues it actually fixes.
-- Before marking a docs PR ready, check its body:
-  `gh pr view <number> --repo D10Scot/Dispatcharr --json body --jq .body | grep -iE '(close|fix|resolve)\w* +#[0-9]'`.
-  The squash-commit message is composed from the PR title and body by default, so a clean body is
-  a clean commit message.
-- After merging any docs PR, list what just closed (`gh issue list --repo D10Scot/Dispatcharr
-  --state closed --json number,title,closedAt`) and reopen anything the merge closed, with a comment
-  saying which PR did it.
+This repository's squash-merge setting builds the merge commit message from the **branch's own
+commit messages**, not the PR body — confirmed via
+`gh api repos/D10Scot/Dispatcharr --jq '{squash_merge_commit_title, squash_merge_commit_message}'`
+(`COMMIT_OR_PR_TITLE` / `COMMIT_MESSAGES`). A keyword sitting only in a commit message closes the
+issue exactly as one in the PR body does, so check both before marking a PR ready.
+
+On 2026-09-24 ten docs-only PRs (#343-#354) carried fix plans that quoted each future fix's draft
+PR description, and merging them closed thirteen issues as completed with nothing fixed; every
+one had to be reopened by hand. **The dividing line is "describes a future fix" versus "is the
+fix," not "docs-only" versus "code."** A plan, spec or memo describing work not yet done carries
+no keyword — name the issue as `#N (planned in PR X)` instead — but a docs change that itself
+fixes a docs-drift issue is a fix and carries one `Closes #N.` per issue it fixes (PR #501's docs
+fix for issue 476 is the precedent).
+
+- Check what GitHub will actually link, not a hand-rolled body grep — it reads every form the
+  platform honours:
+  `gh pr view <number> --repo D10Scot/Dispatcharr --json closingIssuesReferences --jq
+  '.closingIssuesReferences | length'` — must print `0` before marking ready a PR that only
+  describes a future fix. That field doesn't preview a keyword sitting only in a commit message,
+  so also check those directly (misses the full-URL form, which a commit message rarely uses):
+  `git log --format=%B main..HEAD | grep -inE '\b(close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved)\b:? *([[:alnum:]_.-]+/[[:alnum:]_.-]+)?#[0-9]+'`
+- After merging a PR meant to close nothing, list what actually closed around that time —
+  `--state closed` with no time filter orders by creation and misses older issues a merge can
+  still close:
+  `gh issue list --repo D10Scot/Dispatcharr --state closed --search "closed:>=<merge time, ISO 8601>" --json number,closedAt,title`.
+  Reopen anything the merge closed, with a comment saying which PR did it.
+
+See `.claude/skills/plan-review-fix/SKILL.md`, `.claude/skills/implement-review-escalate/SKILL.md`
+and `.claude/skills/pr-merge-gate/SKILL.md` (and each one's `references/project.md`) for how this
+rule fits into the plan → implement → merge cadence.
 
 ## Pull requests as a triage surface
 
