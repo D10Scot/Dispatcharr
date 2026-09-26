@@ -4,7 +4,7 @@
 
 **Goal.** `profile_connections:{id}` and `server_group_connections:{group}:{fp}` stop drifting in either direction. Every write to them moves through one Lua script that bumps a per-counter version, and a beat task recomputes each counter from who actually holds a provider connection. It writes only where the version has not moved since its previous run, and it never lowers a counter below a holder that is merely paused, in flight, or missing from a single run.
 
-**Seed.** `b2d0ff5e2e7ce0fb9e8dfd9a1c30bca2e6f623f3` (`b2d0ff5e`, main on 2026-09-26). Every `file:line` below is at the seed unless it says otherwise. Main has since moved to `02a5fe5c` through two docs-only commits (#504, and #516 for ADR 0007) and #517 (D2, #514). All three appendices apply cleanly there too, and the four labels they share with #517 are green on it (§ What was measured).
+**Seed.** `b2d0ff5e2e7ce0fb9e8dfd9a1c30bca2e6f623f3` (`b2d0ff5e`, main on 2026-09-26). Every `file:line` below is at the seed unless it says otherwise. Main has since moved to `63c1fdeceb`, through two docs-only commits (#504, and #516 for ADR 0007), #517 (D2, #514, merged as `02a5fe5c`) and #519 (e2e-only, no file D1 touches). All three appendices apply cleanly there too, and the labels they share with #517 are green on it (§ What was measured).
 
 **Authority.** In order of precedence:
 
@@ -41,7 +41,7 @@ Everything below was run on 2026-09-26 in a detached clone at the seed, `scratch
 |---|---|---|---|---|
 | apps.m3u.tests | 245 | 259 | 259 | 259 |
 | apps.channels.tests | 365 | 365 | 365 | 365 |
-| apps.proxy.tests | 399 | 399 | 399 | 426 |
+| apps.proxy.tests | 399 | 399 | 399 | 427 |
 | apps.proxy.vod_proxy.tests | 92 | 92 | 104 | 104 |
 | apps.timeshift.tests | 451 | 451 | 454 | 454 |
 | core.tests | 138 | 138 | 138 | 139 |
@@ -79,6 +79,8 @@ switch ok                        True         p1 0 v2, p2 1 v1, cred a 0, cred b
 **The appendices were verified.** Each diff was produced with `git diff` between the scratch commits. All three passed `git apply --check --whitespace=error` and then applied in order on a fresh clone at the seed, and the result is byte-identical to the scratch tree (`diff -rq`, excluding `.git`, `__pycache__` and `media`). They also apply in order on main `1b3097e8` and on `02a5fe5c`, the merge of D2's PR #517. On `02a5fe5c` plus all three, in a second private container, `apps.m3u.tests` 259, `apps.proxy.tests` 420, `apps.proxy.vod_proxy.tests` 104 and `apps.timeshift.tests` 458 (D2's four tests added) all pass. The appendices extracted from this document's committed copy rebuild the prototype tree byte for byte.
 
 **Review round 2 re-measured.** The fix round rebuilt the scratch commits as `5f154304` (D1-1, one CLAUDE.md sentence changed), `656009ec` (D1-2, byte-identical to round 1's Appendix B) and `36b442a1` (D1-3). It ran them in two new private containers from the same image: `d1-plan-b-runner` on the seed clone, and `d1-plan-b-main` on a clone of main `02a5fe5c6e` with all three appendices applied. Every label ran on a fresh database with Redis flushed and `CI=1`. At seed plus all three, all fifteen labels pass with the table's last column. The other eight are accounts 30, backups 73, connect 5, dashboard 0 (no tests, exit 0), epg 365, output 121, plugins 16 and vod 91. On main plus all three, m3u 259, channels 365, proxy 426, vod_proxy 104, timeshift 458, core 139 and tests 171 all pass. D1-1's and D1-2's code did not change, so their columns were not re-run. Every D1-3 break-check was re-run at `36b442a1`, and each reddens with the message quoted in § Tests.
+
+**Review round 3 re-measured.** Only D1-3 changed, rebuilt as scratch `33ce2e10` on `656009ec`; Appendices A and B are byte-identical to round 2's. The same two containers ran it, the second on a clone of main `63c1fdeceb`. At seed plus all three, all fifteen labels pass (proxy 427, the eight others unchanged). On `63c1fdeceb` plus all three, m3u 259, channels 365, proxy 427, vod_proxy 104, timeshift 458, core 139 and tests 171 all pass. All twenty D1-3 break-checks were re-run at `33ce2e10`, and each reddens with the message quoted in § Tests.
 
 ## Decisions
 
@@ -248,12 +250,12 @@ A relay channel in state `stopped` or `error` is not a holder, because its `run(
 3. **The clock and the versions.** `taken_at = TIME`, then one `MGET` of every counter's version. Both are read *before* any ground truth, because the next run's safety argument measures the spacing from here. Step 1's check used an earlier clock read, which only makes it stricter.
 4. **The relay.** `list_channels()`, or skip the run (constraint 3).
 5. **Ground truth.** Live holders from the relay's list; a 2xx answer whose `channels` is missing or not a list skips the run (Constraint 3), because it is not an empty live set. VOD and catch-up holders from one `SCAN … TYPE hash` each over `vod_persistent_connection:*` and `timeshift:pool:*`, each key followed by an `HMGET`. **Records are selected by type, never by the key's shape**: both session ids reach the key verbatim from the client (VOD's `<str:session_id>` path segment, `vod_proxy/urls.py:9-10`; catch-up's `?session_id=`, `timeshift/views.py:372,431`), so a `:` in one must not hide a live holder, and the pool's `:lock` and `:superseded` keys are strings and fall out of a hash-typed scan. Then one `MGET` of the workers' liveness keys. Holders are attributed to profiles. A profile counter's set is its own profile's holders. **A credential counter's set is the holders attributed to it, and attribution is per holder and carried in the snapshot** (review round 2):
-   - **A holder seen for the first time**, or on a different profile than at the previous run (a failover), is attributed to the counter its profile's release pointer names (`profile_credential_release:{id}`, one `MGET`; what that profile's last reserve or switch counted against), or, where the profile has no pointer, to the one its configuration names today. Attributing by today's configuration alone would lower the shared counter under streams still open when an admin makes a pooled profile unlimited, moves it out of its group, changes its login or deletes it mid-stream.
-   - **A holder seen at the previous run on the same profile keeps the counters it was attributed to then.** It does not re-read the pointer, because the pointer is one key per profile and the first release on a profile deletes it while that profile's other streams are still open (#356). Two streams on a pooled profile, one ends, and an admin then making the profile unlimited, changing its login or deleting it would otherwise lower the shared counter under the survivor.
+   - **A holder seen for the first time**, or on a different profile than when last seen (a failover), is attributed to the counter its profile's release pointer names (`profile_credential_release:{id}`, one `MGET`; what that profile's last reserve or switch counted against), or, where the profile has no pointer, to the one its configuration names today. Attributing by today's configuration alone would lower the shared counter under streams still open when an admin makes a pooled profile unlimited, moves it out of its group, changes its login or deletes it mid-stream.
+   - **A holder seen at either of the last two runs, on the same profile, keeps the counters it was attributed to then.** The carry spans the same window as the write rule's union: a holder missing from one run keeps its slot, so it keeps its attribution too, and on return it is not re-derived as if first seen (review round 3). It does not re-read the pointer, because the pointer is one key per profile and the first release on a profile deletes it while that profile's other streams are still open (#356). Two streams on a pooled profile, one ends, and an admin then making the profile unlimited, changing its login or deleting it would otherwise lower the shared counter under the survivor.
    - **Such a holder also gains the counter its profile's pointer, else its configuration, names now**, when that differs from what it carries and its version moved since the previous run. The holder may have reserved again there, because a VOD session re-reserves on reuse under the same identity (`multi_worker_connection_manager.py:1044-1063`). An unmoved version proves it did not, because every reserve against a credential counter writes it (`_SLOT_SCRIPT`'s `reserve`).
    - Every ambiguity is resolved toward counting a holder on one counter too many, never one too few. R8 and R9 are what that costs.
 6. **Writes.** For each counter present in the previous snapshot whose version still equals the one that snapshot recorded, call `reconcile_counter(key, expected, floor, ceiling)`. The script re-checks the version at write time, atomically with the write.
-7. **The snapshot.** Save `{taken_at, counters: {key: [version from step 3, sorted identities]}, attribution: {identity: [profile id, sorted credential counters]}}` to `slot_reconciler:snapshot` as JSON, with a TTL of `max(10 × S, 600)` s. A reconciler stopped for longer starts again with a fresh baseline.
+7. **The snapshot.** Save `{taken_at, counters: {key: [version from step 3, sorted identities]}, attribution: {identity: [profile id, sorted credential counters]}, present: [identities seen this run]}` to `slot_reconciler:snapshot` as JSON. `attribution` covers every identity present this run, plus every identity present at the previous run and absent now, carried unchanged for this one run. It is saved with a TTL of `max(10 × S, 600)` s. A reconciler stopped for longer starts again with a fresh baseline.
 
 **Why a write is safe.** Suppose the version is unchanged between run N's step 3 and run N+1's write. Then every reserve, release and switch the counter reflects happened before run N's step 3. Run N+1's ground truth is read at least `S` later, which is at least twice any in-flight window. So every live reservation the counter holds is visible at N+1 (the range's upper bound keeps it), unless its holder leaked, in which case dropping it is the point.
 
@@ -421,8 +423,8 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
 
 **Files:**
 
-- `apps/proxy/slot_reconciler.py`. New, 441 lines.
-- `apps/proxy/tests/test_slot_reconciler.py`. New, 627 lines: 27 tests, real Redis plus the test database.
+- `apps/proxy/slot_reconciler.py`. New, 463 lines.
+- `apps/proxy/tests/test_slot_reconciler.py`. New, 651 lines: 28 tests, real Redis plus the test database.
 - `core/tests/test_reconcile_provider_slots.py`. New, 20 lines: the beat-entry test, in `core.tests` because it pins `dispatcharr/settings.py` and `core/tasks.py`, whose edits select that label.
 - `apps/proxy/vod_proxy/multi_worker_connection_manager.py`. After `SESSION_TTL_SECONDS` it adds `UPSTREAM_TIMEOUT = (10, 10)` and `UPSTREAM_ATTEMPTS = 2`; `:499,518` use `UPSTREAM_TIMEOUT`.
 - `apps/timeshift/views.py:2133-2137`. `POOL_LOCK_WAIT_SECONDS = 5`, defined immediately above `_pool_lock` and used as its `blocking_timeout`. It is deliberately not beside `_POOL_WAIT_SECONDS` at `:747`, because D2's PR #517 inserts lines at `:743-746` and a hunk there would stop applying.
@@ -454,17 +456,17 @@ In the implementation PR, each "(planned in PR D1-1)" line becomes that issue's 
 >
 > It writes only when the counter's version (from D1-1) has not moved since its previous run, checked atomically with the write. It never lowers a counter below the holders seen at either of its last two runs, or raises it above those seen at both. Runs are spaced at twice the longest in-flight window, 80 s at defaults, read at run time from the relay's tune budget, the VOD upstream timeout and the operator's catch-up timeouts. A run that cannot reach the relay does nothing.
 >
-> Records are selected by Redis type, never by key shape, because both session ids are client-chosen and may contain `:`. A shared-login counter's holders are attributed per holder and remembered between runs: through the profile's release pointer when first seen, and kept after that. So an admin making a pooled profile unlimited, changing its login or deleting it mid-stream does not lower the counter under streams still open, even after one of that profile's streams has ended and taken the pointer with it (#356). Where the reconciler cannot tell which login a holder last reserved against, it counts the holder on both. A relay answer with no channel list skips the run. Convergence needs one quiet run interval on the counter; under sustained churn the correction waits (the version rule is #513's constraint 1 and relaxing it reopens the release-then-tune race).
+> Records are selected by Redis type, never by key shape, because both session ids are client-chosen and may contain `:`. A shared-login counter's holders are attributed per holder and remembered between runs: through the profile's release pointer when first seen, and kept after that. So an admin making a pooled profile unlimited, changing its login or deleting it mid-stream does not lower the counter under a stream the reconciler has already seen, even after one of that profile's streams has ended and taken the pointer with it (#356), and even if the stream is missing from one run. A stream first seen after both happened is the stated residual. Where the reconciler cannot tell which login a holder last reserved against, it counts the holder on both. A relay answer with no channel list skips the run. Convergence needs one quiet run interval on the counter; under sustained churn the correction waits (the version rule is #513's constraint 1 and relaxing it reopens the release-then-tune race).
 >
-> Tests: the eleven interleavings #513 names and ten from the plan's two review rounds, each against real Redis with a named break-check. The ten are colon session ids on both surfaces; attribution through an edit and a delete, and both again after a sibling stream ended; a login change with and without a new stream; a reserve repeated on a changed login; and an unusable relay answer. The spacing, a skipped tick reading no row, and the beat entry are pinned too. ADR 0005 gains a consequence note.
+> Tests: the eleven interleavings #513 names and eleven from the plan's three review rounds, each against real Redis with a named break-check. The eleven are colon session ids on both surfaces; attribution through an edit and a delete, and both again after a sibling stream ended; a login change with and without a new stream; a reserve repeated on a changed login; a holder missing from one run across an edit; and an unusable relay answer. The spacing, a skipped tick reading no row, and the beat entry are pinned too. ADR 0005 gains a consequence note.
 >
-> Measured: all fifteen labels green on fresh databases (proxy 399 → 426, core 138 → 139, tests 170 → 171).
+> Measured: all fifteen labels green on fresh databases (proxy 399 → 427, core 138 → 139, tests 170 → 171).
 >
 > 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
 ## Tests
 
-### The eleven tests #513 names, five from review round 1 and five from round 2
+### The eleven tests #513 names, five from review round 1, five from round 2 and one from round 3
 
 These live in `apps/proxy/tests/test_slot_reconciler.py`, in the `apps.proxy.tests` label. Every label's CI job starts a real Redis (`scripts/ci_bootstrap_backend.sh:65-71`). At the seed the one label with live-Redis tests is `apps.proxy.vod_proxy.tests` (`TestVodActiveStreamsRealRedis`); D1-1 adds `apps.m3u.tests`. The reconciler's tests sit with the module they test, and Global constraint 8's fail-under-CI rule keeps them from going hollow where Redis is missing.
 
@@ -479,7 +481,7 @@ Each test drives `SlotReconciler(redis, clock=…, list_channels=…)`. The fake
 | 5 | `ReleaseThenTuneTests.test_a_release_then_a_tune_between_runs_is_not_clobbered` | R3-1: the counter reads 1 at both runs but counts a different reservation; the value is stable and the version is not | "compare values, not versions": snapshot the counter's value instead of its version, compare it, and pass the fresh version → `0 != 1 : a release then a tune between runs lost the tune's slot`. This is the only test that edit reddens, which is the point of it. |
 | 6 | `FailoverTests.test_a_profile_changing_failover_between_runs_is_not_clobbered` | R4-1: `update_stream_profile()` bumps the new profile's version | restore the seed's DECR/SET/INCR pipeline in `update_stream_profile()` → `0 != 1 : a failover's reservation on the new profile was dropped` |
 | 7 | `RefusedReserveTests.test_a_refused_reserve_does_not_trigger_a_write`, with `…_does_not_block_a_due_correction` | a refusal writes nothing, so it neither makes the reconciler write nor holds back a due correction | make the script's `profile_full` branch write `pc + 1` then `pc`, as the seed did → `a refused reserve moved the counter's version` and `2 != 1 : a refused reserve blocked the leak's correction` |
-| 8 | `RelayUnreachableTests.test_an_unreachable_relay_leaves_every_counter_untouched` | constraint 3, one subtest each for `RelayUnavailable`, `RelayRefused` and `ImproperlyConfigured`: status `skipped`, counter and snapshot byte-identical | fail open (treat the three as `{"channels": []}`) → `'reconciled' != 'skipped' : an unreachable relay did not skip the run`, in all three subtests |
+| 8 | `RelayUnreachableTests.test_an_unreachable_relay_leaves_every_counter_untouched` | constraint 3, one subtest each for `RelayUnavailable`, `RelayRefused` and `ImproperlyConfigured`: status `skipped`, counter and snapshot byte-identical | fail open. The exact edit, in `_run`: replace the `ImproperlyConfigured` handler's body (the warning and its `return`) with `answer = {"channels": []}`, and replace the other handler's body with `if not isinstance(exc, (relay_client.RelayUnavailable, relay_client.RelayRefused)): raise` followed by `answer = {"channels": []}`, keeping its function-local `relay_client` import. → `'reconciled' != 'skipped' : an unreachable relay did not skip the run`, as a FAIL in all three subtests. An edit that leaves the handler's trailing `raise` in place makes the `RelayUnavailable` and `RelayRefused` subtests ERROR instead (review round 3) |
 | 9 | `WorkerLivenessTests.test_a_paused_viewer_is_counted_while_its_worker_lives_and_dropped_two_runs_after_it_dies` | constraint 4, both halves: a VOD hash and a busy pool entry, two hours stale, still count while their worker key lives; after it lapses they count one more run, then drop | "recency": count a VOD hash while `now − last_activity < 600` → `(0, 1) != (1, 1) : a paused viewer with a live worker lost its slot`; and test 1's edit → `(0, 0) != (1, 1) : a dead worker's records dropped after one run` |
 | 10 | `SeededHashTests.test_a_seeded_never_started_hash_is_not_counted_past_its_window`, with `…_inside_its_window_is_counted` | constraint 6 | drop the `created_at` bound → `1 != 0 : a seeded hash was counted past the VOD window` |
 | 11 | `ConcurrentIncrTests.test_a_concurrent_incr_is_not_clobbered` | the version check happens inside the script, atomically with the write: a reserve landing between the reconciler's reads and its write wins | delete `if v ~= tonumber(ARGV[2]) then return {-1, c, c} end` from the script's `reconcile` op → `0 != 2 : a concurrent INCR was clobbered` |
@@ -493,6 +495,7 @@ Each test drives `SlotReconciler(redis, clock=…, list_channels=…)`. The fake
 | 19 | `…test_a_login_change_then_a_new_stream_keeps_the_old_streams_on_the_old_login` | the reviewer's reasoned second trigger, now probed. p1 holds two streams on login x; its login changes to y; a third stream reserves on y and moves p1's pointer. The old two stay counted on x. They are also counted on y (R8), which the test pins as `3` | re-derive every run → `0 != 2 : the old login's counter dropped under the streams still reserved against it`, also the probe's result on round 1's code; never add the moved counter → `1 != 3 : the new login's counter is not the union R8 states` |
 | 20 | `…test_a_holder_that_reserved_again_on_its_profiles_new_login_is_counted_there` | a carried holder gains its profile's current counter when that counter's version moved: a VOD session on p1 releases and re-reserves under the same identity after p1's login changed | never add the moved counter (delete `keys.add(now_key)`) → `0 != 1 : a holder that reserved again on its profile's new login lost its slot there` |
 | 21 | `…test_a_login_change_with_no_reserve_on_the_new_login_moves_nothing` | exactness both ways: one of two streams ended, then p1's login changed with no reserve on the new login. The survivor stays on the old login and is not counted on the new one | re-derive every run → `0 != 1 : the old login's counter dropped under a live stream`; always add the current counter (drop the version test) → `1 != 0 : a stream was counted on a login it never reserved against` |
+| 22 | `…test_a_holder_absent_for_one_run_keeps_its_attribution_through_an_edit` | review round 3: after row 17's setup and edit, the survivor is missing from one successful relay list and then returns. Its attribution is carried across the absence, as its slot is | carry attribution only for identities present now (`kept` empty in `_save_snapshot`) → `0 != 1 : a single-run blip plus a config edit dropped the shared counter under a live stream`, which is also the result on round 2's code. Row 17's two edits and dropping the union redden its precondition: `0 != 1 : the shared counter dropped before the absent holder returned` |
 
 **Also in the module.**
 
@@ -528,7 +531,7 @@ Measured before the fakes were changed, D1-1's code alone fails 2 modules in `ap
 
 | Item | State at planning | Files shared with D1 | Resolution |
 |---|---|---|---|
-| **#514 (D2), PR #517** | merged as `02a5fe5c` | `apps/timeshift/views.py` (D2's hunks at seed `:743-746`, `:2314-2344`, `:2557`, `:3528-3561`); `apps/timeshift/tests/test_views.py` (D2 appends tests at `:4554`) | D1-2's hunks are at `:41`, `:2170-2174`, `:2236-2239` and `:3640-3646`; D1-3's at `:2133-2137`. The nearest is D1-2's `:3643` wrap, 80 lines after D2's last hunk. D1-3's constant was moved beside `_pool_lock` so as not to sit three lines from D2's `:743` insertion. **Verified:** all three appendices apply on `02a5fe5c`, and m3u, proxy, vod_proxy and timeshift (458) are green there with them applied. `test_pool_worker_id.py` imports only `_FakeRedis`, `_fake_upstream` and `_seed_pool_session` from `test_views.py` (and one fixture class, function-locally), none of which D2 touches. |
+| **#514 (D2), PR #517** | merged as `02a5fe5c`; main is now `63c1fdeceb` after #519, which is e2e-only and shares no file with D1 | `apps/timeshift/views.py` (D2's hunks at seed `:743-746`, `:2314-2344`, `:2557`, `:3528-3561`); `apps/timeshift/tests/test_views.py` (D2 appends tests at `:4554`) | D1-2's hunks are at `:41`, `:2170-2174`, `:2236-2239` and `:3640-3646`; D1-3's at `:2133-2137`. The nearest is D1-2's `:3643` wrap, 80 lines after D2's last hunk. D1-3's constant was moved beside `_pool_lock` so as not to sit three lines from D2's `:743` insertion. **Verified:** all three appendices apply on `02a5fe5c` and on `63c1fdeceb`, and m3u, proxy, vod_proxy and timeshift (458) are green on both with them applied. `test_pool_worker_id.py` imports only `_FakeRedis`, `_fake_upstream` and `_seed_pool_session` from `test_views.py` (and one fixture class, function-locally), none of which D2 touches. |
 | **#470** | open, `needs-triage` | `connection_pool.py` | fixed by D1-1 |
 | **#471** | open, `needs-triage` | `connection_pool.py` | fixed by D1-1 |
 | **#356** (shared credential release key) | open, no plan | `connection_pool.py`'s pointer semantics | not fixed here. D1 bounds its symptom: the credential slot a second release fails to return is dropped two runs after that stream ends. #356's own fix (a per-stream token or a count under the pointer) must be made **inside `_SLOT_SCRIPT`'s `reserve`, `release` and `switch` ops**, keep bumping versions, and update `slot_script_fake.py` and its parity tests in the same PR. The reconciler does not depend on a pointer outliving its profile's first release, because it carries each holder's attribution between runs (review round 2). R8 and R9 are what remains until #356 is fixed. |
@@ -556,7 +559,7 @@ Measured before the fakes were changed, D1-1's code alone fails 2 modules in `ap
 - **R6: sustained churn delays convergence.** See Convergence: a counter written between every pair of runs is never corrected until the writes stop. The version rule is constraint 1's ruling and relaxing it reopens R3-1, so this is a stated bound rather than a fix.
 - **R7: a stale release pointer.** A reserve that counts no credential leaves its profile's pointer as it was, so a pointer can name a counter the profile no longer reserves against: the stream that set it leaked its release, and the profile was later made unlimited and streamed again. A holder seen for the first time on that profile is attributed through the stale pointer until it ends. That is an over-count (the cap tightened), the safe direction, bounded by that holder's lifetime. A holder seen before keeps its carried attribution and is not affected.
 - **R8: a login change can over-count the new login.** A pooled profile's login changes while it holds streams, and another reserve lands on the new login's counter between two runs. The reconciler cannot tell whether a surviving holder reserved there too, because the version moved and nothing says which reserve moved it. It counts the survivor on both logins. The old login stays exact; the new one is over-counted by that profile's surviving holders until they end, the safe direction. Row 19 pins it. A per-reservation marker would make it exact, and #356's fix (a per-stream token under the pointer) is where one belongs.
-- **R9: a first sighting after a pointer was lost.** The carried attribution needs the holder to have been seen once. Suppose a sibling release deletes a profile's pointer (#356) and the profile is then made unlimited, given another login or deleted, all before the holder's first run. The holder is then attributed by the new configuration: an under-count of one on the old shared login, for that holder's lifetime. Both events must fall inside the holder's first run interval (about 90 s at defaults), or inside a reconciler outage longer than the snapshot's TTL (`max(10 × S, 600)` s, about 13 minutes at defaults), after which every holder is seen for the first time. #356's fix removes it.
+- **R9: a first sighting after a pointer was lost.** The carried attribution needs the holder to have been seen at one of the last two runs. Suppose a sibling release deletes a profile's pointer (#356) and the profile is then made unlimited, given another login or deleted, while the holder is unseen. The holder is then attributed by the new configuration: an under-count of one on the old shared login, for that holder's lifetime. "Unseen" means one of three things. The holder's first run interval (about 90 s at defaults). An absence of two or more consecutive runs, which rule 2 already treats as the holder being gone and drops its slot for (R2, R4). Or a reconciler outage longer than the snapshot's TTL (`max(10 × S, 600)` s, about 13 minutes at defaults), after which every holder is seen for the first time. An absence of one run is not a trigger, because the carry spans the union's window (row 22). #356's fix removes it.
 
 ## Review changelog
 
@@ -574,6 +577,14 @@ The verdict was FAIL, with one should-fix and three nits. All four are applied.
 - **Nit 1: skipped ticks paid for the ORM pass.** The spacing check now comes first (§ The run, step 1). `test_a_run_inside_the_spacing_reads_no_row` pins it, and the query ledger test is unaffected.
 - **Nit 2: a reverse routing gap.** `apps/proxy/slot_reconciler` now routes to `apps.proxy` and `core`, pinned in `tests/test_ci_test_routing.py`.
 - **Nits 3 and 4: text.** R5 gains the quiet-interval qualifier, and the residuals run R1 to R9 in order. The "drift the fake" break-check says the property reddens too, and break-check 1 names the `decr` error; both messages are quoted from the round-2 review's run. D1-1's CLAUDE.md bullet names `SlotScriptFakeParityProperties` as well as the fixed tests, and D1-1's PR body says the same. That bullet is Appendix A's one changed line. Appendix B is byte-identical to round 1's, and Appendix C is regenerated.
+
+### Round 3, reviewed at `7ec3ce00e1`
+
+The verdict was FAIL, with one should-fix and two nits. All three are applied.
+
+- **Should-fix: a one-run absence reset the carried attribution.** The snapshot saved attribution only for holders present that run, so a holder missing from one run came back as first seen and was re-derived from the edited configuration. The two-run union keeps its slot across that absence. Attribution is now carried for every identity the union still keeps: present now, or present at the previous run (§ The run, step 7). Row 22 pins it. On round 2's code it fails with `0 != 1 : a single-run blip plus a config edit dropped the shared counter under a live stream`, the reviewer's probe message. R9 now names its three triggers, and the PR body's sentence is scoped to streams the reconciler has seen.
+- **Nit: main moved.** Main is `63c1fdeceb` after #519, which is e2e-only. All three appendices apply there, and the shared labels pass.
+- **Nit: the fail-open edit form.** Row 8 now states the exact edit, and what a cruder edit produces instead.
 
 <!-- The three appendices below are `git diff` output between scratch commits built on the seed, spliced verbatim. Verified per § What was measured. -->
 
@@ -2712,7 +2723,7 @@ index 37cbd589..ad43c21e 100644
 
 ## Appendix C: PR D1-3, against Appendices A and B applied to the seed
 
-Produced by `git diff 656009ec 36b442a1` (11 files, 1,285 lines). Apply after Appendices A and B.
+Produced by `git diff 656009ec 33ce2e10` (11 files, 1,331 lines). Apply after Appendices A and B.
 
 <!-- appendix-C-begin -->
 ```diff
@@ -2731,10 +2742,10 @@ index 34d03e00..649d2f8f 100644
  - **The UDP user-agent filter no longer leaves dangling flags** ([#296](https://github.com/D10Scot/Dispatcharr/issues/296), fixed in #396): a dropped value takes the flag before it and a dropped flag the value after it, which also repairs the shipped Streamlink profile on a UDP upstream.
 diff --git a/apps/proxy/slot_reconciler.py b/apps/proxy/slot_reconciler.py
 new file mode 100644
-index 00000000..fc229ff7
+index 00000000..3ac5a33c
 --- /dev/null
 +++ b/apps/proxy/slot_reconciler.py
-@@ -0,0 +1,441 @@
+@@ -0,0 +1,463 @@
 +"""Recompute the provider-slot counters from ground truth (#513).
 +
 +`profile_connections:{id}` and `server_group_connections:{group}:{fp}` carry
@@ -2778,7 +2789,10 @@ index 00000000..fc229ff7
 +now, when that differs and its version moved since the previous run: the
 +holder may have reserved again there (a VOD session re-reserves on reuse),
 +and an unmoved version proves it did not. Every ambiguity is resolved toward
-+counting a holder on one counter too many, never one too few.
++counting a holder on one counter too many, never one too few. The carry
++spans the same window as the write rule below: a holder absent from one run
++keeps its slot (rule 2), so it keeps its attribution for that run too, and
++one that returns next run is not re-derived as if first seen.
 +
 +A VOD or catch-up record's worker is alive while `vod:worker:<worker_id>`
 +exists (apps/proxy/vod_proxy/held_records.py). Recency is never the signal.
@@ -3055,21 +3069,36 @@ index 00000000..fc229ff7
 +                float(data["taken_at"]),
 +                {k: (int(v[0]), set(v[1])) for k, v in data["counters"].items()},
 +                {k: (int(v[0]), set(v[1])) for k, v in data["attribution"].items()},
++                set(data["present"]),
 +            )
 +        except (ValueError, KeyError, TypeError):
 +            logger.warning("Slot reconciler: discarding an unreadable snapshot")
 +            return None
 +
-+    def _save_snapshot(self, taken_at, versions, identities, holders, attribution, spacing):
++    def _save_snapshot(
++        self, taken_at, versions, identities, holders, attribution, carried, was_present, spacing
++    ):
++        # Attribution for every identity the two-run union still keeps: those
++        # present now, plus those present at the previous run and absent now,
++        # carried forward unchanged for this one run.
++        kept = {
++            identity: [prior[0], sorted(prior[1])]
++            for identity, prior in carried.items()
++            if identity in was_present and identity not in holders
++        }
 +        payload = {
 +            "taken_at": taken_at,
 +            "counters": {
 +                k: [versions.get(k, 0), sorted(identities.get(k, ()))] for k in versions
 +            },
 +            "attribution": {
-+                identity: [profile_id, sorted(attribution.get(identity, ()))]
-+                for identity, profile_id in holders.items()
++                **kept,
++                **{
++                    identity: [profile_id, sorted(attribution.get(identity, ()))]
++                    for identity, profile_id in holders.items()
++                },
 +            },
++            "present": sorted(holders),
 +        }
 +        self.redis.set(
 +            SNAPSHOT_KEY, json.dumps(payload), ex=int(max(spacing * SNAPSHOT_TTL_RUNS, 600))
@@ -3129,7 +3158,9 @@ index 00000000..fc229ff7
 +
 +        holders = self._live_holders(channels)
 +        holders.update(self._record_holders(taken_at, windows["vod"]))
-+        _then, before, carried = previous if previous is not None else (None, {}, {})
++        _then, before, carried, was_present = (
++            previous if previous is not None else (None, {}, {}, set())
++        )
 +        attribution = self._credential_attribution(
 +            holders, config_credential, carried, versions, before
 +        )
@@ -3159,7 +3190,9 @@ index 00000000..fc229ff7
 +                        "Slot reconciler moved %s from %s to %s (holders: %s at both runs, %s at either)",
 +                        _loggable(key), was, became, floor, ceiling,
 +                    )
-+        self._save_snapshot(taken_at, versions, identities, holders, attribution, spacing)
++        self._save_snapshot(
++            taken_at, versions, identities, holders, attribution, carried, was_present, spacing
++        )
 +        if previous is None:
 +            logger.info("Slot reconciler took its first snapshot of %s counters", len(identities))
 +            return RunResult("snapshot")
@@ -3178,10 +3211,10 @@ index 00000000..fc229ff7
 +    return SlotReconciler().run().as_dict()
 diff --git a/apps/proxy/tests/test_slot_reconciler.py b/apps/proxy/tests/test_slot_reconciler.py
 new file mode 100644
-index 00000000..1586fe9e
+index 00000000..0bb16c9c
 --- /dev/null
 +++ b/apps/proxy/tests/test_slot_reconciler.py
-@@ -0,0 +1,627 @@
+@@ -0,0 +1,651 @@
 +"""The provider-slot reconciler, against a live Redis and the test database (#513).
 +
 +The eleven tests #513 names, each an interleaving the reconciler must survive
@@ -3630,6 +3663,30 @@ index 00000000..1586fe9e
 +        self.assertEqual(
 +            int(self.redis.get(self.shared) or 0), 1,
 +            "the shared-login counter dropped under a live stream",
++        )
++
++    def test_a_holder_absent_for_one_run_keeps_its_attribution_through_an_edit(self):
++        # The union keeps a holder's slot across one absent run; the carried
++        # attribution must span the same window, or the returning holder is
++        # re-derived from the edited configuration.
++        self._one_of_two_streams_ended()
++        self.p1.max_streams = 0
++        self.p1.save()
++        self.tick()
++        self.run_once()
++        survivor = self.channels
++        self.channels = []  # missing from one successful relay list
++        self.tick()
++        self.run_once()
++        self.assertEqual(
++            int(self.redis.get(self.shared) or 0), 1,
++            "the shared counter dropped before the absent holder returned",
++        )
++        self.channels = survivor
++        self._three_spaced_runs()
++        self.assertEqual(
++            int(self.redis.get(self.shared) or 0), 1,
++            "a single-run blip plus a config edit dropped the shared counter under a live stream",
 +        )
 +
 +    def test_a_login_change_with_no_reserve_on_the_new_login_moves_nothing(self):
