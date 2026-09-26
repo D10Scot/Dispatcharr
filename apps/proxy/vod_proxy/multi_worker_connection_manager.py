@@ -96,6 +96,14 @@ return 1
 # generator holds the session, by this process's slot-holder refresher (#513).
 SESSION_TTL_SECONDS = 3600
 
+# The provider GET's (connect, first-byte) timeout, and how many GETs one
+# request can make (a cached final_url that errors is retried once from the
+# original stream_url). The provider-slot reconciler sizes its run spacing
+# from these (apps/proxy/slot_reconciler.py, #513): a reservation precedes
+# the GET, so a slot can go unseen for up to their product.
+UPSTREAM_TIMEOUT = (10, 10)
+UPSTREAM_ATTEMPTS = 2
+
 # Cache register_script handles per redis client (EVALSHA thereafter).
 _vod_script_cache: Dict[int, Dict[str, Any]] = {}
 
@@ -500,7 +508,7 @@ class RedisBackedVODConnection:
                 target_url,
                 headers=headers,
                 stream=True,
-                timeout=(10, 10),
+                timeout=UPSTREAM_TIMEOUT,
                 allow_redirects=allow_redirects
             )
 
@@ -519,7 +527,7 @@ class RedisBackedVODConnection:
                     state.stream_url,
                     headers=headers,
                     stream=True,
-                    timeout=(10, 10),
+                    timeout=UPSTREAM_TIMEOUT,
                     allow_redirects=True
                 )
 

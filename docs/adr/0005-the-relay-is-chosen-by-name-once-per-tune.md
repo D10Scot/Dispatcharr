@@ -174,3 +174,17 @@ unreachable. The relay never enforces `max_streams`; it asks.
   because Django still owns `reserve_profile_slot`/`release_profile_slot`,
   adding a second relay (Phase 2) or a second live surface never requires
   teaching the relay about a counter it does not own.
+- *Added 2026-09-26 (#513).* Keeping the slots in Django dropped the
+  proposal's "reconciliation, not commands" property, and nothing replaced
+  it until #513: the counters had no TTL and no owner lease, so a holder
+  that died without releasing (a relay crash, a release lost while the API
+  restarted, a relay-uwsgi crash under VOD) leaked a slot for good, and a
+  Redis restart or a non-atomic repair wrote one down under a live holder.
+  Since #513 every counter write goes through one Lua script that bumps a
+  per-counter version, and a beat task on the worker role
+  (`apps/proxy/slot_reconciler.py`) recomputes each counter from the
+  relay's channel list and the VOD and catch-up records whose workers are
+  alive, writing only when the version has not moved since its previous
+  run. The decision above is unchanged: the relay still never enforces
+  `max_streams`, and a reconciler run that cannot reach the relay does
+  nothing. ADR 0007 records why this was fix work rather than a phase.

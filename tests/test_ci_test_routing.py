@@ -113,6 +113,19 @@ class ChangedPathRoutingTests(SimpleTestCase):
             self._labels("apps/proxy/vod_proxy/views.py"), {"apps.proxy.vod_proxy.tests"}
         )
 
+    def test_slot_reconciler_change_runs_the_beat_entry_test_too(self):
+        """Pins: apps/proxy/slot_reconciler.py selected apps.proxy.tests alone.
+
+        core.tests' beat-entry test asserts the tick is shorter than the
+        reconciler's MIN_SPACING_SECONDS, so an edit lowering that floor could
+        break a label the edit did not select (#513).
+        """
+        expected = {"apps.proxy.tests", "core.tests"}
+        self.assertLessEqual(expected, self.available)
+        self.assertEqual(self._labels("apps/proxy/slot_reconciler.py"), expected)
+        # The rest of apps/proxy stays narrow.
+        self.assertEqual(self._labels("apps/proxy/relay_client.py"), {"apps.proxy.tests"})
+
     def test_unaliased_app_change_selects_only_its_own_tests(self):
         """Control: no alias means exactly one label, so the fixes stay narrow.
 
