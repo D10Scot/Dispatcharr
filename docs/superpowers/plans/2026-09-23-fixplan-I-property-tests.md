@@ -98,10 +98,18 @@ report, never a judgement call.**
      own source (`hypothesis/core.py:719-720`), so every CI run of an unchanged test draws the same
      examples. A red CI run reproduces locally with the same command. Editing a test changes its
      example set, which is intended. At 6.165.10 `derandomize=True` also **implies `database=None`**
-     (`hypothesis/_settings.py:684-690`). Nothing is written to `.hypothesis/`, which matters because
-     the hook container mounts `/repo` read-only, and no state carries between runs or between CI
-     shards. Measured: no `.hypothesis/` directory appeared in any run. No `.gitignore` entry is
-     needed.
+     (`hypothesis/_settings.py:684-690`). (Corrected 2026-09-25 by #476, measured at `36e4ce10`:
+     no example database is written, but Hypothesis 6.165.10 still creates
+     `.hypothesis/constants/` and `.hypothesis/unicode_data/` on a writable tree (measured: 156
+     files, 664K, after the 34-test `tests.test_redaction` module alone; the count grows with the
+     modules a run loads, one `constants/` file per local module); the directory ships its own
+     `.gitignore` of `*`, so no repository `.gitignore` entry is needed; the plan's original "no
+     `.hypothesis/` directory appeared" measurement was taken on the read-only `/repo` mount,
+     where the writes fail silently.) No example state carries between runs or between CI shards
+     because there is no example database; each CI shard is also a fresh checkout. The hook
+     container's read-only `/repo` mount only means the cache writes fail there. (The quoted I-1
+     "After:" text below and the appendix module comments record what landed and are superseded
+     by this note.)
    - **`deadline=None`.** CI containers are loaded. A per-example deadline is a wall-clock assertion
      and would flake. It buys nothing here: none of these helpers has a latency contract.
    - **`max_examples=200`.** This matches the existing module. The whole plan adds 239 tests, 232 of

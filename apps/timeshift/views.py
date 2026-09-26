@@ -1167,6 +1167,27 @@ def _parse_content_range_header(content_range):
     return {"start": start, "end": end, "total": total}
 
 
+def _sanitized_content_length(value):
+    """Return a raw ``Content-Length`` as a non-negative int, or None (#491).
+
+    A provider or CDN ``Content-Length`` can be negative, non-ASCII-digit
+    text (WSGI decodes headers as Latin-1, so a look-alike such as "²"
+    reaches here and ``str.isdigit()`` accepts it while ``int()`` raises --
+    same reasoning as ``_ascii_digits``, which this reuses), leading/trailing
+    whitespace, or otherwise malformed. None of that may reach a downstream
+    client as-is. Accepts an int or the raw header string. A returned 0 is a
+    genuinely empty body; it is up to the caller whether *this* response may
+    advertise one -- see ``_build_downstream_length_headers``, which keeps a
+    0 only on its non-streaming path.
+    """
+    if value is None:
+        return None
+    text = str(value)
+    if not _ascii_digits(text):
+        return None
+    return int(text)
+
+
 def _extract_representation_length(upstream_response):
     """Return the full archived file size from upstream response headers."""
     if upstream_response is None:
@@ -1176,13 +1197,10 @@ def _extract_representation_length(upstream_response):
     )
     if parsed and parsed.get("total") is not None:
         return parsed["total"]
-    content_length = upstream_response.headers.get("Content-Length")
-    if content_length:
-        try:
-            return int(content_length)
-        except (TypeError, ValueError):
-            return None
-    return None
+    # #491: a non-positive Content-Length ("-1", "0") is not a representation
+    # length -- the archive's real size is unknown, not zero or negative.
+    length = _sanitized_content_length(upstream_response.headers.get("Content-Length"))
+    return length if length else None
 
 
 def _build_downstream_length_headers(
@@ -1204,6 +1222,22 @@ def _build_downstream_length_headers(
     if representation_length is None and parsed_upstream:
         representation_length = parsed_upstream.get("total")
 
+    # #491: representation_length can reach here as 0 or negative through
+    # three doors that bypass _extract_representation_length's own
+    # positivity guard -- a stale Redis pool `content_length` cache a
+    # pre-fix process could have written (~:3393), the scrub rewrite's
+    # clamped `remaining = max(rep - start, 0)` read back as
+    # `presentation_remaining` (~:2798, :3428), and `_pool_int_field`'s
+    # unsigned read of `presentation_length` (~:1447/:1466, :1535).
+    # Normalise here, once, rather than at each door: negative is always
+    # None; on a streaming response a 0 is also None (same rule R2 gives
+    # upstream_content_length); a non-streaming 0 stays, for a genuinely
+    # empty body.
+    if representation_length is not None and representation_length < 0:
+        representation_length = None
+    elif representation_length == 0 and streaming:
+        representation_length = None
+
     if status_code == 206:
         # Trust upstream partial headers only when they describe a real
         # range; an invalid one is treated as absent (#141). Peek bytes are
@@ -1222,8 +1256,14 @@ def _build_downstream_length_headers(
                     headers["Content-Range"] = (
                         f"bytes {start}-{end}/{representation_length}"
                     )
-        if upstream_content_length:
-            headers["Content-Length"] = str(upstream_content_length)
+        # #491: a non-positive/non-digit upstream Content-Length is absent, not
+        # forwarded; a sanitized 0 is also excluded here (falsy int) since a
+        # 206 partial response cannot genuinely be zero bytes long. A 0 or
+        # invalid value here falls through to the parsed_upstream span
+        # computation below rather than to no Content-Length at all.
+        sanitized_length = _sanitized_content_length(upstream_content_length)
+        if sanitized_length:
+            headers["Content-Length"] = str(sanitized_length)
         elif parsed_upstream:
             up_start = parsed_upstream["start"]
             up_end = parsed_upstream["end"]
@@ -1235,16 +1275,25 @@ def _build_downstream_length_headers(
     if streaming and status_code == 200 and not range_header:
         if representation_length is not None:
             headers["Content-Length"] = str(representation_length)
-        elif upstream_content_length:
-            headers["Content-Length"] = str(upstream_content_length)
+        else:
+            # #491: same hygiene as above -- a streaming 200 must not forward
+            # a raw "-1" or "0" Content-Length.
+            sanitized_length = _sanitized_content_length(upstream_content_length)
+            if sanitized_length:
+                headers["Content-Length"] = str(sanitized_length)
         return headers
 
     # Omit Content-Length on other streaming full-file responses (seeks may preempt).
     if not streaming:
         if representation_length is not None:
             headers["Content-Length"] = str(representation_length)
-        elif upstream_content_length:
-            headers["Content-Length"] = str(upstream_content_length)
+        else:
+            # #491: still reject a negative/non-digit value, but a genuine 0
+            # is kept here -- this is the one non-streaming, empty-body case
+            # the issue carves out.
+            sanitized_length = _sanitized_content_length(upstream_content_length)
+            if sanitized_length is not None:
+                headers["Content-Length"] = str(sanitized_length)
 
     return headers
 
