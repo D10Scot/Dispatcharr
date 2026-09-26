@@ -743,6 +743,12 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
 # is dropped on reconnect). Fingerprint-match when ?session_id= is absent.
 _POOL_ENTRY_TTL = 10 * 60  # Refreshed on playback GET and active-stream heartbeats.
 _STREAM_READ_INACTIVITY_SECONDS = CLIENT_TTL_SECONDS  # Shorter than pool TTL; data should flow.
+# Rate-limits the client-stop Redis GET shared by _iter_upstream_with_stop's
+# pre-read poll and stream_generator's post-yield poll (see _should_poll_stop_key).
+# 1s keeps a stop's worst-case latency in the same ballpark as a client's own
+# TCP-close detection while cutting the GET rate from ~1/chunk (~8/s at
+# 8 Mbit/s with the 262144-byte floor below) to at most 1/s per viewer.
+_STOP_KEY_POLL_INTERVAL_SECONDS = 1.0
 _POOL_IDLE_TTL = CLIENT_TTL_SECONDS  # Must match CLIENT_TTL_SECONDS (stats + fingerprint agree).
 _POOL_WAIT_SECONDS = 1.0
 # Brief wait after scrub preempt before failover.
@@ -2314,8 +2320,19 @@ def _iter_upstream_with_stop(
     peek_data=None,
     *,
     inactivity_timeout=_STREAM_READ_INACTIVITY_SECONDS,
+    poll_state=None,
 ):
-    """Yield upstream bytes, polling the stop key before each blocking read."""
+    """Yield upstream bytes, polling the stop key before each blocking read.
+
+    The poll is rate-limited to _STOP_KEY_POLL_INTERVAL_SECONDS via
+    *poll_state* (see _should_poll_stop_key). Pass the same *poll_state* dict
+    the caller uses for its own stop-key poll (e.g. stream_generator's
+    post-yield check) so the two sites share one cadence instead of each
+    polling independently. A fresh dict (the default) always polls on this
+    call's first check.
+    """
+    if poll_state is None:
+        poll_state = {"last": None}
     last_data_at = time.time()
     if peek_data:
         should_stop, _ = _stream_stop_requested(
@@ -2331,9 +2348,10 @@ def _iter_upstream_with_stop(
         yield peek_data
     raw = upstream.raw
     while True:
+        now = time.time()
         if (
             inactivity_timeout is not None
-            and time.time() - last_data_at >= inactivity_timeout
+            and now - last_data_at >= inactivity_timeout
         ):
             logger.info(
                 "Timeshift upstream inactive for %ss, closing stream",
@@ -2344,15 +2362,16 @@ def _iter_upstream_with_stop(
             except Exception:
                 pass
             break
-        should_stop, _ = _stream_stop_requested(
-            redis_client, stop_key, stream_generation,
-        )
-        if should_stop:
-            try:
-                upstream.close()
-            except Exception:
-                pass
-            break
+        if _should_poll_stop_key(poll_state, now):
+            should_stop, _ = _stream_stop_requested(
+                redis_client, stop_key, stream_generation,
+            )
+            if should_stop:
+                try:
+                    upstream.close()
+                except Exception:
+                    pass
+                break
         try:
             chunk = raw.read(chunk_size)
         except requests.exceptions.ReadTimeout:
@@ -2555,6 +2574,23 @@ def _set_client_stop(redis_client, virtual_channel_id, client_id, reason):
         redis_client.setex(stop_key, 60, str(cancel_through))
     else:
         redis_client.setex(stop_key, 60, reason)
+
+
+def _should_poll_stop_key(poll_state, now):
+    """Rate-limit a stop-key Redis GET to _STOP_KEY_POLL_INTERVAL_SECONDS.
+
+    *poll_state* is a ``{"last": <timestamp-or-None>}`` dict the caller owns
+    and shares across every call site that polls the same stop key for the
+    same stream, so a pre-read check and a post-yield check on the same
+    chunk count as one poll rather than two. ``None`` means "never polled
+    yet" and always returns True so the first check in a fresh stream is
+    never skipped.
+    """
+    last = poll_state.get("last")
+    if last is not None and now - last < _STOP_KEY_POLL_INTERVAL_SECONDS:
+        return False
+    poll_state["last"] = now
+    return True
 
 
 def _stream_stop_requested(redis_client, stop_key, stream_generation):
@@ -3528,10 +3564,15 @@ def _stream_from_provider(
         )
         stream_started_logged = False
         stopped_for_reuse = False
+        # Shared with _iter_upstream_with_stop's own pre-read poll so the two
+        # sites rate-limit to one Redis GET per _STOP_KEY_POLL_INTERVAL_SECONDS
+        # between them, not one each.
+        stop_poll_state = {"last": None}
         try:
             for data in _iter_upstream_with_stop(
                 upstream, chunk_size, redis_client, stop_key,
                 stream_generation, peek_data=peek_data,
+                poll_state=stop_poll_state,
             ):
                 if not data:
                     continue
@@ -3547,15 +3588,16 @@ def _stream_from_provider(
                 total_yielded += len(data)
 
                 now = time.time()
-                should_stop, is_reuse = _stream_stop_requested(
-                    redis_client, stop_key, stream_generation,
-                )
-                if should_stop:
-                    logger.info("Timeshift client %s received stop signal", client_id)
-                    stopped_for_reuse = is_reuse
-                    if not is_reuse:
-                        redis_client.delete(stop_key)
-                    break
+                if _should_poll_stop_key(stop_poll_state, now):
+                    should_stop, is_reuse = _stream_stop_requested(
+                        redis_client, stop_key, stream_generation,
+                    )
+                    if should_stop:
+                        logger.info("Timeshift client %s received stop signal", client_id)
+                        stopped_for_reuse = is_reuse
+                        if not is_reuse:
+                            redis_client.delete(stop_key)
+                        break
                 # Refresh stats every 5 seconds.
                 if now - last_heartbeat >= 5:
                     if debug and total_yielded > 0:

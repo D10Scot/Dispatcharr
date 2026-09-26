@@ -4554,6 +4554,134 @@ class TimeshiftUpstreamStopTests(TestCase):
         self.assertEqual(chunks, [])
         upstream.close.assert_called()
 
+    def test_iter_upstream_with_stop_honors_mid_stream_stop_within_one_cadence(self):
+        """A stop set between polls is not caught on the very next chunk (the
+        rate limiter is real) but is caught within one
+        _STOP_KEY_POLL_INTERVAL_SECONDS window of simulated time — not
+        deferred indefinitely by the cadence gate."""
+        redis = _FakeRedis()
+        from apps.timeshift.redis_keys import TimeshiftRedisKeys as RedisKeys
+
+        stop_key = RedisKeys.client_stop("1_test_111", "client_1")
+        read_calls = {"n": 0}
+
+        def fake_read(_size):
+            read_calls["n"] += 1
+            if read_calls["n"] == 4:
+                # A stop lands mid-stream, between two polls.
+                redis.setex(stop_key, 60, "1")
+            if read_calls["n"] > 30:
+                return b""
+            return b"x"
+
+        upstream = MagicMock()
+        upstream.raw.read = MagicMock(side_effect=fake_read)
+
+        # Advances simulated time by 0.05s per views.time.time() call, so the
+        # cadence gate's 1.0s window elapses roughly every ~10 chunk reads
+        # (two time.time() calls per successful chunk).
+        increment = 0.05
+        time_state = {"t": -increment}
+
+        def fake_time():
+            time_state["t"] += increment
+            return time_state["t"]
+
+        with patch.object(views.time, "time", side_effect=fake_time):
+            chunks = list(
+                views._iter_upstream_with_stop(
+                    upstream, 1, redis, stop_key, stream_generation=1,
+                )
+            )
+
+        self.assertGreater(
+            len(chunks), 4,
+            "stop set at read #4 was caught immediately; the poll is not "
+            "rate-limited by _should_poll_stop_key",
+        )
+        self.assertLessEqual(
+            len(chunks), 12,
+            f"stop set mid-stream at read #4 was not honored within one "
+            f"_STOP_KEY_POLL_INTERVAL_SECONDS ({views._STOP_KEY_POLL_INTERVAL_SECONDS}s) "
+            f"cadence window of simulated time; got {len(chunks)} chunks after it was set",
+        )
+        upstream.close.assert_called_once()
+
+
+class TimeshiftStopPollCadenceTests(TestCase):
+    """Pins #514: both stop-key poll sites (the pre-read check inside
+    _iter_upstream_with_stop and stream_generator's post-yield check) must
+    rate-limit to _STOP_KEY_POLL_INTERVAL_SECONDS between them, sharing one
+    "last polled at" so together they cost at most O(1) GETs per cadence
+    window rather than one GET per chunk per site."""
+
+    def setUp(self):
+        self.kwargs = dict(
+            candidate_urls=["http://example.test/streaming/timeshift.php?stream=1"],
+            user_agent="test-agent",
+            client_user_agent="test-client-agent",
+            range_header=None,
+            virtual_channel_id="1_2026-05-12-17-00_1",
+            client_id="test123",
+            client_ip="127.0.0.1",
+            user=None,
+            channel_display_name="Test",
+            timestamp_utc="2026-05-12:17-00",
+            channel_logo_id=None,
+            m3u_profile_id=None,
+            channel_id=1,
+            channel_uuid="00000000-0000-0000-0000-000000000001",
+            debug=False,
+        )
+
+    def _run_pipeline(self, num_chunks):
+        """Drive the real _stream_from_provider -> stream_generator pipeline
+        with a frozen clock (so the cadence window never elapses) and count
+        Redis GETs of the stop key specifically, across BOTH poll sites."""
+        redis = _FakeRedis()
+        stop_key = views.TimeshiftRedisKeys.client_stop(
+            self.kwargs["virtual_channel_id"], self.kwargs["client_id"],
+        )
+        peek = _make_ts_payload(1024)
+        chunks = [_make_ts_payload(1024) for _ in range(num_chunks)]
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"Content-Type": "video/mp2t"}
+        resp.url = "http://cdn.example.test/timeshift.ts"
+        resp.close = MagicMock()
+        resp.raw = MagicMock()
+        resp.raw.read = MagicMock(side_effect=[peek] + chunks + [b""])
+
+        get_calls = {"stop": 0}
+        real_get = redis.get
+
+        def counting_get(key):
+            if key == stop_key:
+                get_calls["stop"] += 1
+            return real_get(key)
+
+        redis.get = counting_get
+
+        with patch.object(views, "_open_upstream", return_value=resp), \
+             patch.object(views.time, "time", return_value=100.0):
+            response = views._stream_from_provider(**self.kwargs, redis_client=redis)
+            out = list(response.streaming_content)
+        return out, get_calls["stop"]
+
+    def test_stop_key_polled_on_a_cadence_not_per_chunk(self):
+        # 20 chunks in a zero-elapsed-time window (frozen clock) must poll
+        # the stop key O(1) times across both sites combined, not once per
+        # chunk per site (which would be 40: one pre-read + one post-yield
+        # GET for each of 20 chunks).
+        out, stop_gets = self._run_pipeline(20)
+        self.assertEqual(len(out), 21)  # peek + 20 chunks
+        self.assertLessEqual(
+            stop_gets, 3,
+            f"expected the stop key polled at most once per cadence window "
+            f"(plus the one-time pre-loop peek check) for {len(out)} chunks "
+            f"in a zero-elapsed window, got {stop_gets} GETs",
+        )
+
 
 class TimeshiftScrubPreemptTests(TestCase):
     """Scrub/range requests must stop the in-flight stream and reuse the pooled
