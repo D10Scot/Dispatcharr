@@ -606,13 +606,34 @@ refuses the fourth in the window.
 
 If you write one: budget it at **one per run**, say so in a comment at the call
 site, and remember the cold path already spends the whole budget in bootstrap —
-a run that is cold *and* calls `asUser` will 429, and a worker cannot wait out
-a throttle window the way bootstrap can. `makeUserClient` logs a warning naming
-the cost whenever it actually logs in, and its 429 error message says the
-throttle is the harness budget rather than a product failure. The
-worker-scoped counter behind that warning is exported as
-`loginsSpentByThisWorker()`; `authorization.spec.ts` uses it to assert, as a
-delta, that driving a fixed principal spends nothing.
+a run that is cold *and* calls `asUser` will 429. By default a worker still
+cannot wait out a throttle window the way bootstrap can, and `asUser` throws on
+a bare 429. `makeUserClient` logs a warning naming the cost whenever it
+actually logs in, and its 429 error message says the throttle is the harness
+budget rather than a product failure. The worker-scoped counter behind that
+warning is exported as `loginsSpentByThisWorker()`; `authorization.spec.ts`
+uses it to assert, as a delta, that driving a fixed principal spends nothing.
+
+**The one exception: `asUser(username, password, { waitForThrottle: true })`.**
+Default `false`, so every ordinary call keeps throwing on a bare 429 unchanged.
+Passing `true` routes that one login through `loginWithThrottleBackoff`
+(`e2e/setup/login.ts`) instead: it waits out the server's stated `Retry-After`,
+bounded by `MAX_LOGIN_WAIT_MS` (one throttle window, ~61s), then retries once
+before giving up. That bound is longer than the suite's global 30s test
+timeout, so a call site that opts in must also widen its own test's timeout
+past it with `test.setTimeout(...)` — do not raise the project-wide timeout or
+the throttle rate to make room for it. Use it only where a test's login cannot
+otherwise be guaranteed to land clear of another phase's logins.
+`tests/seeded/token-refresh-deleted-user.spec.ts` is the one caller today: its
+`asUser` login is exactly the whole-budget-already-spent case above, since a
+cold run's bootstrap logins can land inside the same minute, so it opts in and
+widens its own timeout rather than depending on file-execution-order luck.
+
+Keep it to one such caller per run: `MAX_THROTTLE_WAITS` is one wait per call,
+not one per window, so two concurrent opt-in callers would both retry into the
+same freed slot and only one can win it — the other exhausts its own wait and
+hard-fails with a message blaming "something outside this run", which is
+exactly wrong when the something is a second caller of this same opt-in.
 
 Measuring it yourself: the container's nginx access log is the ground truth,
 and it records 429s that never reach a test.
