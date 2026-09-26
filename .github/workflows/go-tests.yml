@@ -147,15 +147,14 @@ jobs:
     # (relay/channel/source_transcode_real_test.go) must run against the
     # product's OWN ffmpeg (9.0, docker/DispatcharrBase), not merely
     # "any" ffmpeg. A stream-copy progress line's leading token differs by
-    # major version -- `frame=` from 7.x on, `size=` on 6.x -- and both
-    # relays' progress gate looks for `frame=` verbatim
-    # (input/manager.py:1017; ffmpeg/progress.go:40), so ffmpeg 6.x is
-    # blind to every progress line, not just quantitatively different, and
-    # row 4's detector can never arm against it: a plain `apt-get install
-    # ffmpeg` on ubuntu-latest resolved to 6.1.1 and reddened this row in
-    # CI while every local and 8.1.2 run stayed green. Filed as #299
-    # (2026-09-14 CI fix round; spec Amendment A4.7, Done log). Do not
-    # widen the parser or this test to accommodate 6.x -- #299 owns that.
+    # major version -- `frame=` from 7.x on, `size=` on 6.x -- and until
+    # #299 was fixed (#393) the relay's progress gate (`IsProgressLine`,
+    # relay/ffmpeg/progress.go) accepted only `frame=`, so a plain `apt-get
+    # install ffmpeg` on ubuntu-latest (6.1.1) reddened this row in CI
+    # while every local and 8.1.2 run stayed green (2026-09-14 CI fix
+    # round; spec Amendment A4.7). The gate now accepts both shapes, pinned
+    # by two real 6.1.1 captures; this job still runs on the base image so
+    # the pin measures the ffmpeg the product ships, not a distro package.
     container:
       image: ${{ needs.changes.outputs.base_image }} # zizmor: ignore[unpinned-images]
       credentials:

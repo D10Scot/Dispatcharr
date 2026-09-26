@@ -1,0 +1,12 @@
+{
+  "skill_name": "pr-merge-gate",
+  "evals": [
+    {
+      "id": 0,
+      "name": "draft-pr-to-merged",
+      "prompt": "PR #__PR__ on D10Scot/Dispatcharr is done and reviewed on my side; get it merged into main and tidy up after it. Repo checkout is /Users/dion/git/Dispatcharr (the branch has its own worktree under .worktrees/). Tell me the merge commit when it lands.",
+      "expected_output": "The agent checks mergeable/mergeStateStatus, updates the branch if behind BEFORE marking ready, marks the draft ready, confirms the pr-review bot run fires, waits in the foreground, reads the bot's Verdict line and actions/resolves any threads with evidence, requires every check green, merges with --squash --delete-branch --auto (no --admin), confirms the merge SHA and main's push runs, then removes the worktree and branch and pulls main. A baseline agent typically marks ready and merges as soon as checks pass, or tries --admin, and leaves the worktree behind.",
+      "files": []
+    }
+  ]
+}

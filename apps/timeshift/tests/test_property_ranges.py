@@ -143,15 +143,19 @@ class ContentRangeParserProperties(SimpleTestCase):
     @given(content_range=st.none() | content_range_text,
            content_length=st.none() | st.text(max_size=12)
            | st.integers(min_value=0, max_value=10**12).map(str))
-    # "0" and "-1" are truthy strings, so _extract_representation_length's
-    # ``if content_length:`` check does not treat them as absent: it returns
-    # int("0") == 0 and int("-1") == -1 respectively (views.py, near :1151).
-    # Pinned explicitly rather than left to the derandomized draw: "0" is a
-    # likely boundary value from the integers() branch, but "-1" is reachable
-    # only through the free-text branch and is not guaranteed to be drawn in
-    # 200 examples (review round 1).
+    # #491: a provider Content-Length of "0" or "-1" (or any non-positive or
+    # non-ASCII-digit value) is now treated as absent rather than forwarded
+    # verbatim -- a plain streaming 200 with "Content-Length: -1" is malformed.
+    # "0" and "-1" are kept as @examples because they now pin the FIX (they
+    # used to pin the defect: _extract_representation_length's old
+    # ``if content_length:`` check treated both as truthy and returned
+    # int("0") == 0 / int("-1") == -1, views.py near :1170). "²" is a Latin-1
+    # digit look-alike WSGI can hand back (str.isdigit() is True, int() raises)
+    # and leading whitespace is accepted by int() but not by _ascii_digits.
     @example(content_range=None, content_length="0")
     @example(content_range=None, content_length="-1")
+    @example(content_range=None, content_length="²")
+    @example(content_range=None, content_length=" 12")
     def test_representation_length_prefers_the_content_range_total(
         self, content_range, content_length,
     ):
@@ -165,12 +169,8 @@ class ContentRangeParserProperties(SimpleTestCase):
         parsed = ts_views._parse_content_range_header(content_range or "")
         if parsed and parsed["total"] is not None:
             self.assertEqual(result, parsed["total"])
-        elif content_length:
-            try:
-                expected = int(content_length)
-            except ValueError:
-                expected = None
-            self.assertEqual(result, expected)
+        elif content_length and ts_views._ascii_digits(content_length) and int(content_length) > 0:
+            self.assertEqual(result, int(content_length))
         else:
             self.assertIsNone(result)
         self.assertIsNone(ts_views._extract_representation_length(None))
@@ -180,9 +180,22 @@ class DownstreamHeaderProperties(SimpleTestCase):
     @given(
         range_header=st.none() | client_range_text,
         status_code=st.sampled_from([200, 206]),
-        representation_length=st.none() | st.integers(min_value=0, max_value=10**10),
+        # #491 round 2: representation_length can reach the builder as 0 or
+        # negative through doors other than _extract_representation_length
+        # (a stale pool cache, a clamped scrub remainder, an unsigned pool
+        # field read) -- widened from min_value=0 to also cover negative.
+        representation_length=st.none() | st.integers(min_value=-5, max_value=10**10),
         upstream_content_range=st.none() | content_range_text,
-        upstream_content_length=st.none() | st.integers(min_value=1, max_value=10**10),
+        # #491: callers pass the raw ``Content-Length`` header text, which can be
+        # negative, non-digit or an empty/whitespace string -- not just a clean
+        # positive int. st.integers(min_value=-5, ...) covers the negative/zero
+        # numeric case and st.text(max_size=12) covers non-digit and malformed
+        # text (the same alphabet a provider or CDN could actually send).
+        upstream_content_length=(
+            st.none()
+            | st.integers(min_value=-5, max_value=10**10)
+            | st.text(max_size=12)
+        ),
         streaming=st.booleans(),
     )
     # #141: an inverted client range, a start past EOF, and an inverted upstream range.
@@ -193,6 +206,23 @@ class DownstreamHeaderProperties(SimpleTestCase):
     @example(range_header="bytes=0-", status_code=206, representation_length=None,
              upstream_content_range="bytes 100-50/1000", upstream_content_length=None,
              streaming=True)
+    # #491: a provider Content-Length of "-1" or "0" on a plain streaming 200
+    # must not reach the client at all (it used to leak through the raw
+    # ``elif upstream_content_length:`` fallback once _extract_representation_length
+    # returned None). Same defect reachable through the 206 branch's own fallback.
+    @example(range_header=None, status_code=200, representation_length=None,
+             upstream_content_range=None, upstream_content_length="-1", streaming=True)
+    @example(range_header=None, status_code=200, representation_length=None,
+             upstream_content_range=None, upstream_content_length="0", streaming=True)
+    @example(range_header=None, status_code=206, representation_length=None,
+             upstream_content_range=None, upstream_content_length="-1", streaming=True)
+    # #491 round 2: representation_length itself (not just upstream_content_length)
+    # can be 0 or negative on a streaming response, through the three doors named
+    # above the strategy. The builder must normalise it the same way.
+    @example(range_header=None, status_code=200, representation_length=0,
+             upstream_content_range=None, upstream_content_length=None, streaming=True)
+    @example(range_header="bytes=0-", status_code=206, representation_length=-1,
+             upstream_content_range=None, upstream_content_length=None, streaming=True)
     def test_headers_never_carry_an_unsatisfiable_range_or_a_negative_length(
         self, range_header, status_code, representation_length,
         upstream_content_range, upstream_content_length, streaming,
@@ -207,7 +237,17 @@ class DownstreamHeaderProperties(SimpleTestCase):
         )
         self.assertEqual(headers["Accept-Ranges"], "bytes")
         if "Content-Length" in headers:
-            self.assertGreaterEqual(int(headers["Content-Length"]), 0, headers)
+            content_length = headers["Content-Length"]
+            # #491: never non-digit (a stray Latin-1 look-alike or garbage
+            # text) and never forwarded as 0 on a streaming response -- only
+            # a non-streaming response may advertise a genuinely empty body.
+            self.assertTrue(
+                content_length.isascii() and content_length.isdigit(), headers,
+            )
+            if streaming:
+                self.assertGreater(int(content_length), 0, headers)
+            else:
+                self.assertGreaterEqual(int(content_length), 0, headers)
         if "Content-Range" in headers:
             self.assertIsNotNone(
                 ts_views._parse_content_range_header(headers["Content-Range"]), headers
