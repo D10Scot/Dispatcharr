@@ -21,7 +21,6 @@ from apps.proxy.vod_proxy.byte_range import (
     slice_chunks,
 )
 from apps.vod.models import Movie, Episode
-from apps.m3u.models import M3UAccountProfile
 from dispatcharr.utils import redact_url
 
 logger = logging.getLogger("vod_proxy")

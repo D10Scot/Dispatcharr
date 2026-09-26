@@ -199,12 +199,16 @@ def profile_available_for_channel_switch(
 # The provider-slot script (#513 constraint 1; #470; #471).
 #
 # EVERY write to a provider-slot counter -- profile_connections:{id} and
-# server_group_connections:{group}:{fp} -- happens inside this one Lua script,
-# and every such write increments slot_version:<counter key> in the same
-# atomic step. The reconciler (apps/proxy/slot_reconciler.py) reads a
-# counter's version at one run and writes the counter at the next only if the
-# version has not moved, so "unchanged" means "nobody wrote it", never "it was
-# written and written back" (a release then a tune between runs).
+# server_group_connections:{group}:{fp} -- happens inside this one Lua script.
+# reserve, release and switch each increment slot_version:<counter key> in
+# the same atomic step as the counter write, because each is a holder's own
+# action. The reconciler's own write (the reconcile op below) is not a
+# holder's action and deliberately bumps no version: it reads a counter's
+# version at one run and writes the counter at the next only if the version
+# has not moved, so "unchanged" means "nobody wrote it", never "it was
+# written and written back" (a release then a tune between runs) -- and its
+# own clamp must not count as such a write, or the next run would see a
+# version it moved itself and refuse to check again.
 #
 # The script also makes both repairs atomic that were a GET then a SET in
 # Python: a counter found below zero is treated as zero by a reserve and set
