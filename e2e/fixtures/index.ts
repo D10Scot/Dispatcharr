@@ -130,14 +130,20 @@
  *   `channel_profiles` or existence. Need a user row to mutate or delete?
  *   That is `seed.user()`, which is unthrottled and free.
  *
- * `asUser: (username, password) => Promise<ApiClient>` — an `ApiClient` for an
- * arbitrary principal. Token pairs are cached per worker by
+ * `asUser: (username, password, options?) => Promise<ApiClient>` — an
+ * `ApiClient` for an arbitrary principal. Token pairs are cached per worker by
  * `username:password`, and the cache is pre-loaded with the fixed principals.
  *   **Costs one login on a miss**, out of three per minute for the whole run,
  *   and a `seed.user()` username is a guaranteed miss every time. It is for
  *   the user no fixed principal can express — one whose own properties the
  *   test is about. Budget at most one such test per run and say so at the call
  *   site; it logs a warning naming the cost when it fires.
+ *   `options.waitForThrottle` (default `false`) opts a single call into
+ *   waiting out one throttle window (`loginWithThrottleBackoff`, bounded by
+ *   `MAX_LOGIN_WAIT_MS`, ~61s) instead of throwing on a bare 429 — every other
+ *   call keeps the loud failure. The bound exceeds this suite's global 30s
+ *   test timeout, so a call site that opts in must widen its own test's
+ *   timeout first, with `test.setTimeout(...)`.
  *
  * `adminPage: Page` — a Playwright `Page` already authenticated as the
  * bootstrap admin. Use it, not `page`: it states which principal the test
@@ -469,6 +475,7 @@ import type { Page } from '@playwright/test';
 import { ApiClient } from './api';
 import { Seeder } from './seed';
 import { makePrincipalClient, makeUserClient } from './auth';
+import type { MakeUserClientOptions } from './auth';
 import type { PrincipalName } from '../setup/principals';
 import { Waiter } from './wait';
 import { WsListener } from './ws';
@@ -488,7 +495,11 @@ export type Fixtures = {
   api: ApiClient;
   seed: Seeder;
   asPrincipal: (name: PrincipalName) => Promise<ApiClient>;
-  asUser: (username: string, password: string) => Promise<ApiClient>;
+  asUser: (
+    username: string,
+    password: string,
+    options?: MakeUserClientOptions
+  ) => Promise<ApiClient>;
   adminPage: Page;
   pageErrors: PageErrorCollector;
   waitFor: Waiter;
@@ -509,8 +520,8 @@ export const test = base.extend<Fixtures>({
     await use((name: PrincipalName) => makePrincipalClient(request, name));
   },
   asUser: async ({ request }, use) => {
-    await use((username: string, password: string) =>
-      makeUserClient(request, username, password)
+    await use((username: string, password: string, options?: MakeUserClientOptions) =>
+      makeUserClient(request, username, password, options)
     );
   },
   // The seeded project already applies the admin storageState to `page`, so

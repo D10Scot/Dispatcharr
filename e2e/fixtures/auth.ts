@@ -7,7 +7,7 @@ import {
   PRINCIPAL_NAMES,
 } from '../setup/principals';
 import type { PrincipalName, PrincipalsFile } from '../setup/principals';
-import { tokenPairOf } from '../setup/login';
+import { loginWithThrottleBackoff, tokenPairOf } from '../setup/login';
 import type { TokenPair } from '../setup/login';
 
 /**
@@ -175,6 +175,49 @@ export async function makePrincipalClient(
   return makeUserClient(ctx, principal.username, principal.password);
 }
 
+/** Options for {@link makeUserClient}. */
+export type MakeUserClientOptions = {
+  /**
+   * Wait out one throttle window instead of throwing on a bare 429.
+   *
+   * Default `false`: every ordinary caller keeps the loud failure, because a
+   * worker generally cannot afford to block for the throttle window — see
+   * "The login throttle" in `e2e/README.md`. Passing `true` routes the login
+   * through `loginWithThrottleBackoff` (`../setup/login`), which honours the
+   * server's `Retry-After` and is bounded by `MAX_LOGIN_WAIT_MS` (one window,
+   * ~61s) — longer than this suite's global 30s test timeout, so a call site
+   * that opts in must also widen its own test's timeout past that bound with
+   * `test.setTimeout(...)` before calling it.
+   */
+  waitForThrottle?: boolean;
+};
+
+/**
+ * Like `login`, but waits out one throttle window via
+ * `loginWithThrottleBackoff` instead of throwing on a bare 429. Still spends
+ * from — and counts against — the shared budget: the warning and the
+ * `loginsSpent` bump happen up front, same as `login`, so
+ * `loginsSpentByThisWorker()` stays an honest count of logins attempted,
+ * whichever path made them.
+ */
+async function loginAndWaitOutThrottle(
+  ctx: APIRequestContext,
+  username: string,
+  password: string
+): Promise<TokenPair> {
+  loginsSpent += 1;
+
+  console.warn(
+    `[auth] spending a login for ${username} — the suite's budget is ` +
+      '3/minute across all workers and both back-to-back runs. Prefer ' +
+      'asPrincipal(); see "The login throttle" in e2e/README.md. This call ' +
+      'opted into { waitForThrottle: true }, so a 429 here waits out the ' +
+      'window instead of failing.'
+  );
+
+  return loginWithThrottleBackoff(ctx, { username, password });
+}
+
 /**
  * An `ApiClient` authenticated as an arbitrary user rather than the bootstrap
  * admin. Tokens are held in memory; nothing is written to the auth files.
@@ -183,7 +226,9 @@ export async function makePrincipalClient(
  * three per minute the entire run shares — and `seed.user()` generates a fresh
  * username on every call, so a seeded principal is a guaranteed cache miss
  * every time. Four such tests spread over four workers is four logins and a
- * 429 on the fourth, raised here as a hard failure.
+ * 429 on the fourth, raised here as a hard failure by default — pass
+ * `{ waitForThrottle: true }` (see {@link MakeUserClientOptions}) where the
+ * call site accepts the wait and has widened its own timeout for it.
  *
  * Reach for `asPrincipal('streamer' | 'standard')` instead. This function is
  * for the case no fixed principal can express: a user whose *properties* are
@@ -195,7 +240,8 @@ export async function makePrincipalClient(
 export async function makeUserClient(
   ctx: APIRequestContext,
   username: string,
-  password: string
+  password: string,
+  options: MakeUserClientOptions = {}
 ): Promise<ApiClient> {
   loadPrincipals();
 
@@ -206,7 +252,9 @@ export async function makeUserClient(
   const key = cacheKey(username, password);
   let tokens = tokenCache.get(key);
   if (!tokens) {
-    tokens = await login(ctx, username, password);
+    tokens = options.waitForThrottle
+      ? await loginAndWaitOutThrottle(ctx, username, password)
+      : await login(ctx, username, password);
     tokenCache.set(key, tokens);
   }
 

@@ -5,11 +5,14 @@
  * one host is one IP — so the budget is shared by every login the whole run
  * makes, including the admin's. `bootstrap` is the only phase that may spend
  * from it (see `principals.ts` for why), and it is also the only phase that
- * may *wait* for it: it is serial, nothing runs in parallel with it, and no
- * test is blocked on it. A worker can do neither, which is why the worker-side
- * login in `fixtures/auth.ts` deliberately has no backoff — a 30-second test
- * timeout cannot absorb a 60-second window, and three other workers would
- * stall behind it.
+ * may *wait* for it by default: it is serial, nothing runs in parallel with
+ * it, and no test is blocked on it. A worker generally can't do either, which
+ * is why the worker-side login in `fixtures/auth.ts` has no backoff by
+ * default — a 30-second test timeout cannot absorb a 60-second window, and
+ * three other workers would stall behind it. `asUser(..., { waitForThrottle:
+ * true })` is the one opt-in that routes a single worker-side login through
+ * `loginWithThrottleBackoff` below anyway; see "The login throttle" in
+ * `e2e/README.md` for when that opt-in is safe.
  *
  * Every login in `bootstrap` — the admin's included — goes through here. An
  * unprotected login is a 429 waiting to be reported as a product bug, and the
@@ -234,7 +237,7 @@ export async function loginWithThrottleBackoff(
           ? header + 1
           : DEFAULT_RETRY_AFTER_SECONDS;
       console.warn(
-        `[bootstrap] the login for ${username} was throttled — this is the ` +
+        `[login] the login for ${username} was throttled — this is the ` +
           "suite's own 3/minute budget, not a product failure. Waiting " +
           `${seconds}s for the window to clear, then retrying. See "The login ` +
           'throttle" in e2e/README.md.'
