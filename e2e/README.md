@@ -153,7 +153,7 @@ touch anything another test in the same project could observe.
 `workers: 1` instead, each for its own container-wide hazard:
 `failover-buffering.spec.ts` mutates the global `proxy_settings` row for the
 duration of its run, `output-profile-sharing.spec.ts` counts every `ffmpeg`
-process running in the container (`pgrep -x ffmpeg`) via `greyboxRedis()`,
+process running in the container (`pgrep -x ffmpeg`),
 and `streaming-split`'s tests stop and restart a supervisord program
 (`api-uwsgi` or `relay-uwsgi`) that the whole container shares. None of
 these hazards is scoped to its own channel, so a second worker running
@@ -164,23 +164,22 @@ mutates Redis directly, the way the deleted ownership-lease flagship did (see
 is why that project doesn't trust every future test to be independently safe
 at higher concurrency either.
 
-**The set of specs allowed to reach for grey-box Redis access is a checked
-allowlist, not a comment asking politely.** `e2e/fixtures/greybox/redis.ts`
-is the sanctioned way a test reaches Redis, and `e2e/tests/guards/allowlist.ts`
-exports the `GREYBOX_REDIS` capability naming every file allowed to import
-it. `e2e/tests/guards/capabilities.spec.ts` parses every spec under `e2e/`
-(AST, not a grep) and asserts the files that actually import `greybox/redis`
-match that list exactly — in either direction: a new grey-box import that
-isn't listed fails the check, and a stale allowlist entry for a file that no
-longer imports it fails the same way. That is what happened when G4's
-ownership-lease flagship (`ownership-lease.spec.ts`) was deleted as an
-unprovable gap (see `COVERAGE.md`'s Streaming/G4 rows) — its allowlist entry
-had to go with it, or `capabilities.spec.ts` would fail on a name that no
-longer exists. `capabilities.spec.ts` also polices three sibling
-capabilities the original `quarantine.spec.ts` did not — container
-lifecycle, subprocess execution and container introspection — for the same
-reason: a convention written down in this file would rot silently; a
-checked allowlist fails CI instead.
+**The set of specs allowed to use a grey-box escape hatch is a checked
+allowlist, not a comment asking politely.** `e2e/tests/guards/allowlist.ts`
+exports one capability per hatch (container lifecycle, subprocess execution,
+container introspection), each naming every file allowed to use it.
+`e2e/tests/guards/capabilities.spec.ts` parses every spec under `e2e/`
+(AST, not a grep) and asserts the files that actually use each hatch match
+its list exactly — in either direction: a new use that isn't listed fails
+the check, and a stale entry for a file that no longer uses it fails the
+same way. That is what happened when G4's ownership-lease flagship
+(`ownership-lease.spec.ts`) was deleted as an unprovable gap (see
+`COVERAGE.md`'s Streaming/G4 rows) — its entry had to go with it. A fourth
+capability, grey-box Redis, and its helper `e2e/fixtures/greybox/redis.ts`
+were retired by ADR 0007 when Phase 3 closed: the allowlist had been empty
+since the Phase 2 nginx flip, and no test reads Redis. The principle is the
+original `quarantine.spec.ts`'s: a convention written down in this file
+would rot silently; a checked allowlist fails CI instead.
 
 `pristine` deliberately has no `bootstrap` dependency — it needs the
 superuser *not* to exist yet, which is the entire point of that project, and
@@ -607,13 +606,34 @@ refuses the fourth in the window.
 
 If you write one: budget it at **one per run**, say so in a comment at the call
 site, and remember the cold path already spends the whole budget in bootstrap —
-a run that is cold *and* calls `asUser` will 429, and a worker cannot wait out
-a throttle window the way bootstrap can. `makeUserClient` logs a warning naming
-the cost whenever it actually logs in, and its 429 error message says the
-throttle is the harness budget rather than a product failure. The
-worker-scoped counter behind that warning is exported as
-`loginsSpentByThisWorker()`; `authorization.spec.ts` uses it to assert, as a
-delta, that driving a fixed principal spends nothing.
+a run that is cold *and* calls `asUser` will 429. By default a worker still
+cannot wait out a throttle window the way bootstrap can, and `asUser` throws on
+a bare 429. `makeUserClient` logs a warning naming the cost whenever it
+actually logs in, and its 429 error message says the throttle is the harness
+budget rather than a product failure. The worker-scoped counter behind that
+warning is exported as `loginsSpentByThisWorker()`; `authorization.spec.ts`
+uses it to assert, as a delta, that driving a fixed principal spends nothing.
+
+**The one exception: `asUser(username, password, { waitForThrottle: true })`.**
+Default `false`, so every ordinary call keeps throwing on a bare 429 unchanged.
+Passing `true` routes that one login through `loginWithThrottleBackoff`
+(`e2e/setup/login.ts`) instead: it waits out the server's stated `Retry-After`,
+bounded by `MAX_LOGIN_WAIT_MS` (one throttle window, ~61s), then retries once
+before giving up. That bound is longer than the suite's global 30s test
+timeout, so a call site that opts in must also widen its own test's timeout
+past it with `test.setTimeout(...)` — do not raise the project-wide timeout or
+the throttle rate to make room for it. Use it only where a test's login cannot
+otherwise be guaranteed to land clear of another phase's logins.
+`tests/seeded/token-refresh-deleted-user.spec.ts` is the one caller today: its
+`asUser` login is exactly the whole-budget-already-spent case above, since a
+cold run's bootstrap logins can land inside the same minute, so it opts in and
+widens its own timeout rather than depending on file-execution-order luck.
+
+Keep it to one such caller per run: `MAX_THROTTLE_WAITS` is one wait per call,
+not one per window, so two concurrent opt-in callers would both retry into the
+same freed slot and only one can win it — the other exhausts its own wait and
+hard-fails with a message blaming "something outside this run", which is
+exactly wrong when the something is a second caller of this same opt-in.
 
 Measuring it yourself: the container's nginx access log is the ground truth,
 and it records 429s that never reach a test.

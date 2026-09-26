@@ -4,9 +4,7 @@ import { test, expect } from '../../fixtures';
 
 const execFileAsync = promisify(execFile);
 
-// Mirrors the container-name resolution in output-profile-sharing.spec.ts
-// (and fixtures/greybox/redis.ts, which this file does not import — reading
-// nginx's own config isn't a Redis operation).
+// Mirrors the container-name resolution in output-profile-sharing.spec.ts.
 const CONTAINER_NAME = process.env.DISPATCHARR_E2E_CONTAINER || 'dispatcharr-e2e';
 
 /** One `location` block's header line, parsed into its target path. */

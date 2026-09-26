@@ -1,4 +1,5 @@
 import { test, expect, SEEDED_USER_PASSWORD } from '../../fixtures';
+import { MAX_LOGIN_WAIT_MS } from '../../setup/login';
 
 // The control for the test below ('refreshing a deleted user's token
 // returns 401, not 500'): it proves /api/accounts/token/refresh/ is a
@@ -39,35 +40,44 @@ test('a live user\'s refresh token is accepted by /api/accounts/token/refresh/',
 // **This test costs ONE login out of three per minute for the entire suite,
 // and it is the only login G5 spends.** seed.user() generates a fresh
 // username every call, so it is a guaranteed cache miss in asUser's per-worker
-// token cache. Budget it at one per run. A run that is cold — the first after
-// `--reset`, or with playwright/.auth/ deleted — has already spent the whole
-// budget in bootstrap, and a worker cannot wait out a throttle window the way
-// bootstrap can, so a 429 here on a cold run is a harness cost, not a
-// product failure — and that is not a rare local artifact: CI is always
-// cold. `.github/workflows/e2e-tests.yml`'s `test` job runs
-// `./scripts/e2e_up.sh` fresh inside every matrix job, on a runner with no
-// `playwright/.auth/` and no cache-restore step, and `setup/principals.ts`
-// documents the cold bootstrap cost as "3, which is exactly the per-minute
-// cap" — the whole budget spent before this test's own `asUser` login even
-// runs. So this test's login can 429 on any CI run, not just an occasional
-// local one. **Unlike before the #12 fix (#428), a 429 here now fails this
-// test outright** — `asUser` throws on any non-OK login response
-// (e2e/fixtures/auth.ts:115-124), where `test.fail()` used to absorb that
-// throw as the "expected failure" regardless of cause. In the run that
-// first exercised this test as a plain test() (36103684984, `seeded` job),
-// this login landed about 69s after bootstrap's logins, well clear of the
-// 3/minute window — but that margin comes from test/file execution order
-// within the run, not from anything that bounds it, so it is not
-// guaranteed to hold on every run. See "The login throttle" in
-// e2e/README.md.
+// token cache. Budget it at one per run.
+//
+// A run that is cold — the first after `--reset`, or with playwright/.auth/
+// deleted — has already spent the whole budget in bootstrap before this
+// test's own `asUser` login even runs (`setup/principals.ts` documents the
+// cold bootstrap cost as "3, which is exactly the per-minute cap"), and that
+// is not a rare local artifact: CI is always cold.
+// `.github/workflows/e2e-tests.yml`'s `test` job runs `./scripts/e2e_up.sh`
+// fresh inside every matrix job, on a runner with no `playwright/.auth/` and
+// no cache-restore step. So this login can land inside the throttle window on
+// any run, not just an occasional local one.
+//
+// #474: until this fix, that 429 failed the test outright — `asUser` throws
+// on any non-OK login response by default, and the only thing keeping the
+// test green was how far this file happened to run from bootstrap's logins (a
+// margin measured once at ~69s in run 36103684984, which comes from
+// test/file execution order and bounds nothing). This call now opts into
+// `{ waitForThrottle: true }` (e2e/fixtures/auth.ts), which waits out the
+// server's stated `Retry-After` instead of failing on a bare 429, bounded by
+// `MAX_LOGIN_WAIT_MS` (one throttle window, ~61s) — hence the widened test
+// timeout below, since the suite's global 30s budget cannot absorb that wait.
+// See "The login throttle" in e2e/README.md.
 test('refreshing a deleted user\'s token returns 401, not 500', { tag: '@contract' }, async ({
   seed,
   api,
   asUser,
   request,
 }) => {
+  // Wider than the global 30s: the login below can wait out one throttle
+  // window (MAX_LOGIN_WAIT_MS, ~61s) rather than failing on a bare 429. The
+  // +60s margin matches the pattern `playwright.config.ts`'s `bootstrap`
+  // project uses for the same wait, covering the requests around it.
+  test.setTimeout(MAX_LOGIN_WAIT_MS + 60_000);
+
   const user = await seed.user();
-  const client = await asUser(user.username, SEEDED_USER_PASSWORD);
+  const client = await asUser(user.username, SEEDED_USER_PASSWORD, {
+    waitForThrottle: true,
+  });
   const refresh = client.freshRefreshTokenForTest();
 
   expect((await api.delete(`/api/accounts/users/${user.id}/`)).status()).toBe(204);

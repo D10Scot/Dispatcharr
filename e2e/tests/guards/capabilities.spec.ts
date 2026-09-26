@@ -7,7 +7,8 @@
  * only its reach — `node:child_process` was already imported by a second spec
  * and would have been accepted silently in any new one.
  *
- * Four capabilities, four allowlists, in `./allowlist.ts`. Everything on those
+ * Three capabilities, three allowlists, in `./allowlist.ts` (a fourth,
+ * `GREYBOX_REDIS`, was retired with Phase 3 by ADR 0007). Everything on those
  * lists is normally `@characterization`: they are the calls that stop meaning
  * anything once the relay is its own process. Two exceptions document
  * themselves in-file — see `tests/streaming-greybox/nginx-stream-buffering.spec.ts`'s
@@ -36,7 +37,6 @@ import * as ts from 'typescript';
 import {
   CONTAINER_INTROSPECTION,
   CONTAINER_LIFECYCLE,
-  GREYBOX_REDIS,
   SUBPROCESS,
   type Capability,
 } from './allowlist';
@@ -141,12 +141,6 @@ test('the container-lifecycle fixture is confined to the lifecycle projects', { 
 test('direct subprocess execution is confined to its allowlist', { tag: '@characterization' }, async () => {
   await expectConfined(SUBPROCESS, (sf) =>
     importsModule(sf, (s) => s === 'node:child_process' || s === 'child_process'),
-  );
-});
-
-test('only allowlisted specs import the grey-box Redis helper', { tag: '@characterization' }, async () => {
-  await expectConfined(GREYBOX_REDIS, (sf) =>
-    importsModule(sf, (s) => s.endsWith('greybox/redis')),
   );
 });
 

@@ -59,9 +59,10 @@ import { lockedProfile, newStreamClient, withDeadline } from '../streaming/helpe
  * `playwright.config.ts`'s project comment is updated to say so.
  *
  * WHY @contract, on an instance-wide write. ADR 0003's "every file on a
- * capability allowlist is `@characterization`" covers the four capabilities
- * in `tests/guards/allowlist.ts` (`CONTAINER_LIFECYCLE`, `SUBPROCESS`,
- * `GREYBOX_REDIS`, `CONTAINER_INTROSPECTION`) — `GLOBAL_SETTINGS_WRITE` is
+ * capability allowlist is `@characterization`" covers the capabilities
+ * `capabilities.spec.ts` polices in `tests/guards/allowlist.ts`
+ * (`CONTAINER_LIFECYCLE`, `SUBPROCESS`, `CONTAINER_INTROSPECTION`; a fourth,
+ * `GREYBOX_REDIS`, was retired by ADR 0007) — `GLOBAL_SETTINGS_WRITE` is
  * not one of them, because a global settings write is not itself a fact
  * about this container's internals; it is ordinary product behaviour
  * (a settings PATCH) used to reach a state a client-facing contract needs.

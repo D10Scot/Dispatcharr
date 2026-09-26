@@ -5,9 +5,8 @@ import { lockedProfile, newStreamClient } from '../streaming/helpers';
 
 const execFileAsync = promisify(execFile);
 
-// Mirrors the container-name resolution in fixtures/greybox/redis.ts, which
-// this file does not import — a process count isn't a Redis operation, and
-// that module's quarantine is specifically about the Redis coupling.
+// Matches scripts/e2e_up.sh's own container-name default, so a stack brought
+// up under a non-default DISPATCHARR_E2E_CONTAINER is found here too.
 const CONTAINER_NAME = process.env.DISPATCHARR_E2E_CONTAINER || 'dispatcharr-e2e';
 
 /**
@@ -129,8 +128,8 @@ test('two clients on one output profile share a single transcode', { tag: '@char
     // moment nginx routed this location to it. Removed rather than rewritten:
     // there is no Go-side key to point it at, and the process count below
     // proves the row's literal claim on its own. It was the only
-    // Redis-reading assertion in the whole suite; `e2e/tests/guards/allowlist.ts`'s
-    // GREYBOX_REDIS allowlist is empty as a result.
+    // Redis-reading assertion in the whole suite, and ADR 0007 later
+    // retired the GREYBOX_REDIS capability and its helper outright.
     expect(await countFfmpegProcesses()).toBe(1);
   } finally {
     await Promise.all(clients.map((c) => c.close().catch(() => {})));
