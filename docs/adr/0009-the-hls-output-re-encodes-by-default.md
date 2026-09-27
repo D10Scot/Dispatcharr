@@ -50,9 +50,14 @@ HLS client, on Quick Sync, with the following output:
   keyframe interval, so every segment is the same short length whatever the
   provider sends.
 - **Audio:** a stereo AAC track, which Apple requires (rule 2.3). When the
-  source carries AC-3 or E-AC-3, including E-AC-3 with Atmos, that track is
-  passed through untouched as a second rendition. The Apple TV plays surround,
-  and the phone plays AAC.
+  source carries AC-3, that track is passed through untouched as a second
+  rendition.
+- **E-AC-3 sources:** when the source carries E-AC-3, including E-AC-3 with
+  Atmos, it is passed through untouched too. Apple requires AC-3 alongside
+  E-AC-3 (rule 2.6), so an AC-3 rendition is also encoded from it, which gives
+  three audio renditions.
+
+  The Apple TV plays surround, and the phone plays AAC.
 - **Container:** fMP4 (CMAF) segments, for every channel, so that one packaging
   path serves every codec AVPlayer accepts.
 

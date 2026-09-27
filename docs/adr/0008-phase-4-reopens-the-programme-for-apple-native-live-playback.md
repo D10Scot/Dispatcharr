@@ -112,6 +112,14 @@ not know exists, and none can adopt 4c.
   holds for everything the relay must know to serve a request, which stays in
   process memory. The segments on disk are a cache that a restart discards. It
   is not state a restart recovers.
+- **4a amends ADR 0006's client registry.** ADR 0006 says the registry has
+  no TTL, no heartbeat and no ghost sweep, because a client entry cannot
+  outlive the goroutine that made it. An HLS viewer is a session of short
+  requests. Its registry entry has no goroutine of its own, and it ends on
+  an explicit leave, on a stop, or after an idle timeout. A lingering rewind
+  window also keeps a channel running with no client at all. The Phase 4
+  spec (§ The ADR 0006 amendment) lists every consumer of a channel's client
+  count and what each does.
 - **The relay gains a per-channel transcode for Apple clients.**
   [ADR 0009](0009-the-hls-output-re-encodes-by-default.md) records why.
 - **Remote-access hardening stays off the critical path.** Wildcard hosts, open

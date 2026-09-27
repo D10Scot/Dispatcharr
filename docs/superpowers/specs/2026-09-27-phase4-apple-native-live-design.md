@@ -25,11 +25,11 @@ the owner's order (ruling R1):
 1. **4a-1, live-edge HLS.** The Go relay serves any live channel as HLS: a multivariant playlist,
    media playlists, fMP4/CMAF init and media segments, made by one shared re-encode per channel on
    Quick Sync (ADR 0009). An Xtream client that asks for `.m3u8` gets a real playlist (R9).
-2. **4a-2, the browser player on HLS.** `FloatingVideo.jsx` plays live channels over HLS through
-   hls.js, instead of MPEG-TS through mpegts.js (R17).
-3. **4a-3, the live rewind window.** The last hour of a watched channel is kept on disk, shared per
-   channel, lingers after its last viewer, gives its provider slot up to a new tune that needs it,
-   and is lost when the relay restarts (R10).
+2. **4a-2, the browser player on HLS.** `FloatingVideo.jsx` plays live **channels** over HLS
+   through hls.js, instead of MPEG-TS through mpegts.js (R17). Stream previews stay on TS (R18).
+3. **4a-3, the live rewind window.** The last hour of a channel watched over HLS is kept on disk
+   from its first HLS viewer (R19). It is shared per channel, lingers after its last viewer, gives
+   its provider slot up to a new tune that needs it, and is lost when the relay restarts (R10).
 
 **4b**, the Apple app, lives in its own repository. This spec defines only the server contract it
 builds against (§ 4b). **4c**, paired-device auth, is an investigation brief (§ 4c), to be taken up
@@ -164,30 +164,94 @@ group owning `/dev/dri/renderD128`. `relay-go.conf` drops privilege with
 exports `LIBVA_DRIVERS_PATH`. The compose files carry `/dev/dri` only as a commented example
 (`docker/docker-compose.yml:124-130`).
 
+
+**Facts the round-1 review surfaced, verified at `560c6d58`.**
+
+- **The client registry.** ADR 0006 (`docs/adr/0006-…:76-78`) and CLAUDE.md § State both say the
+  registry has "no TTL, no heartbeat and no ghost sweep, because with one process a client entry
+  cannot outlive the goroutine that made it". `relay/channel/channel.go:709-711` states "a channel
+  in this manager never exists without at least one attached client". An HLS session (D5) and a
+  lingering window (D15) each change one of these, so § The ADR 0006 amendment records it.
+- **Zero-client consumers.** `_stop_dvr_clients` (`apps/channels/api_views.py:3831-3841`) stops a
+  channel whose relay `client_count` is 0 after it has stopped the DVR's own clients.
+- **A channel UUID is the anonymous live capability.** `_PRINCIPAL_REQUIRED` excludes
+  `SURFACE_LIVE` (`apps/proxy/authorize.py:77-84`), and the stream limit is checked only when there
+  is a user (`:498-500`). Xtream surfaces never hand a UUID out: `get.php` uses `channel.id`
+  (`apps/output/views.py:318`), and only the non-XC M3U branch emits UUIDs (`:335-338`).
+- **An anonymous client's user id is the string `"0"`**, not an empty string
+  (`relay/httpapi/stream.go:423-427`).
+- **The stream limit on zap.** When a user is at their limit, `check_user_stream_limits` refuses
+  outright if `terminate_on_limit_exceeded` is off (`apps/proxy/utils.py:400-402`). Otherwise
+  (the default) it stops the chosen older connection and admits the new one.
+- **Every OutputProfile consumer:**
+  - `resolve_output_profile` (`apps/proxy/authorize.py:226-244`);
+  - `_resolve_hdhr_output_profile_id` (`apps/hdhr/api_views.py:104-118`);
+  - the `output_profiles` map built for next-source (`apps/proxy/next_source.py:892`);
+  - `OutputProfileViewSet` (`core/api_views.py:82`);
+  - the frontend selects in `User.jsx:352`, `StreamSettingsForm.jsx:208` (HDHR),
+    `UiSettingsForm.jsx:183` (web player) and `ChannelsTable.jsx:1288` and `:1421` (the M3U-link
+    builder);
+  - the display lookup in `StreamConnectionCard.jsx:419`.
+- **Browser play sites.** Channel playback (by channel UUID) builds its URL in:
+  - `ChannelsTable.jsx:665-666`;
+  - `StreamConnectionCard.jsx:516`;
+  - `RecordingCardUtils.js:62-68` (`getShowVideoUrl`, used by `Guide.jsx:778`, `DVR.jsx:213`,
+    `RecordingCard.jsx:124`, `RecordingDetailsModal.jsx:287` and `ProgramDetailModal.jsx:109`).
+
+  Stream previews (by stream hash) build it in `StreamsTable.jsx:954` and
+  `ChannelTableStreams.jsx:404`. All of them go through `buildLiveStreamUrl`.
+
 ## Decisions
 
 | # | Decision | Why |
 |---|---|---|
-| **D1** | **Six PRs in three stages, each stage a stopping point.** 4a-1a (the packager, inert), 4a-1b (sessions, routes, surfaces: live HLS works end to end), 4a-1c (the *automatic* HLS profile), 4a-2 (browser player), 4a-3a (the rewind window and linger), 4a-3b (a lingering window yields its slot). Branches are `migration/phase4-*`, so the full E2E and lifecycle matrix runs on every one (CLAUDE.md § Full E2E runs). | 4a-1 as one PR would be several thousand lines of Go across two concerns. The packager can land inert and be reviewed on its own evidence, as 2c-6's fMP4 remux was. 4a-1c is separable because the default (transcode) needs no schema. 4a-3b is separable because it is the only part of the window that touches Django's slot model. |
-| **D2** | **HLS is an output format, not a new authorised route.** `hls` joins the resolved formats. `_FORMAT_ALIASES` gains `"hls": "hls"` and `"m3u8": "hls"`. `xcForcedFormat` maps `.m3u8` to `hls`. Any live tune URL whose resolved format is `hls` (`/proxy/ts/stream/<id>?output_format=hls`, `/live/<u>/<p>/<id>.m3u8`, `/<u>/<p>/<id>.m3u8`) is answered **200 with the multivariant playlist**. `hls` is **not** offered as `default_output_format` or as a user's `output_format` in 4a. | The authorize hop, its nginx locations, the XC credential check, the stream limit and every channel check apply unchanged, with no new Django urlconf entry for `_surface_for` to learn. A deployment-wide default of `hls` would turn every byte-stream URL (HDHomeRun, Plex, TS apps) into a playlist, so the value is only ever asked for explicitly. |
-| **D3** | **Everything after the entry lives under a token-authorised root, `/hls/`, and runs no authorize hop.** URL layout: `/hls/<token>/<rendition>.m3u8` (media playlist), `/hls/<token>/<rendition>/init-<gen>.mp4`, and `/hls/<token>/<rendition>/<seq>.m4s`. nginx gets `location ^~ /hls/` with `include dispatcharr_api_params_proxy.conf`, `proxy_buffering off`, `proxy_http_version 1.1`, `proxy_connect_timeout 60s` and `proxy_pass http://relay_go`. There is no `auth_request` and no `internal;`. The multivariant references media playlists by **absolute path**, and media playlists reference init and media segments **relatively**. | R13: Django is not asked per segment. Absolute-path URIs need no `Host` or scheme reconstruction, so the six server-level `proxy_set_header` lines need not be re-declared, for the same reason `^~ /proxy/relay/` omits them. Buffering is off because a segment runs to megabytes, and buffering it would spool to disk, which is CLAUDE.md's incident in a new place. One cost, recorded: a bare three-segment XC request from a user literally named `hls` now reaches this location. That is the same class of collision the `live`, `movie`, `series` and `timeshift` prefixes already impose, and the `/live/…` form still works for that user. |
-| **D4** | **A media-session token, minted and verified only by the relay** (§ The media-session token). It is bound to the channel, the client id the hop minted (the session id), the user, the HLS profile and an absolute expiry of 24 h. The key is the deployment's `SECRET_KEY` under a new HMAC context, `media-session`. A token is honoured while its MAC and expiry verify, it is not revoked, and its session is live or departed less than **300 s** ago. It is **not** bound to an IP address. Rotating `SECRET_KEY` invalidates every session. | This is stateless where it can be: MAC and expiry. It is stateful only where state already exists: the presence registry. A second key would be a second secret to provision and leak. The relay already holds `SECRET_KEY` for three contexts, and Django shares it, so a future Django-minted session (4c) can issue the same token. No IP binding, because AirPlay hands a URL to an Apple TV that fetches from a different address, and phones roam between access points. The 300 s resume grace lets a briefly backgrounded app carry on without re-authorising. The 24 h cap bounds a URL copied out of a log. |
-| **D5** | **An HLS viewer is a client in the channel's registry for exactly as long as its session is live.** It **arrives** when the multivariant is served (the `Attach` call, a `client_connect` event). It is **active** on every request carrying its token. It **leaves** after **12 s** with no request, which emits `client_disconnect` with `duration` and `bytes_sent` and calls the release func. A later request inside the resume grace **re-attaches** it, with a new `client_connect`. `output_format` is `hls`, so `/proxy/relay/channels`, `/proxy/ts/status/` and the stats page show it without change. Admin stop, and stream-limit termination, remove the session **and revoke its token**. | M7 measured AVPlayer reloading every target duration (2 s) even while paused, so 12 s (six reloads) cannot mistake a paused viewer for a departed one. RFC 8216 § 6.3.4 requires every client to reload at about the target duration. The per-user stream limit needs no change, because it counts the relay's client list, which now includes HLS sessions. A channel with only HLS viewers stays up, because its clients are registered sessions and not connections. |
-| **D6** | **The relay owns packaging.** One ffmpeg per (channel, HLS profile) reads the channel's ring on stdin, joining `JoinBehind` behind live as every output does. It writes **one fragmented-MP4 stream per rendition on its own file descriptor**: video on fd 1, stereo AAC on fd 3, AC-3 on fd 4, E-AC-3 on fd 5, each `-movflags frag_keyframe+delay_moov+default_base_moof`. A new package, `relay/hls`, parses the boxes (stdlib `encoding/binary`), cuts segments on video fragment boundaries, stores them, and renders every playlist. **Rejected:** ffmpeg's own `-f hls` muxer, and one muxed audio-plus-video stream. | M4 shows the shape works, with 2.000 s segments on every rendition. `-f hls` writes files the relay would have to watch (no inotify in the stdlib) and playlists it would have to rewrite: for tokens, for the discontinuity rule D10 needs across processes, and for the window 4a-3 keeps on disk. A muxed stream cannot carry two alternative audio codecs as HLS renditions. `buffer.Fragments` is not reused. It is a cursor stream for one long response, and HLS needs random access by media sequence number across aligned renditions, which is a different type (`hls.Store`). The spawn helper gains `ExtraFiles` (stdlib `os/exec`), keeping `Setpgid` and `Pdeathsig`. |
-| **D7** | **Playlists** (§ Playlists, exact tags). There is one video rendition and one audio group per audio codec: `aac` always, `ac3` when the source carries AC-3 or E-AC-3, `eac3` when it carries E-AC-3. Each group gets its own `EXT-X-STREAM-INF` on the same video playlist. `CODECS` is read from each rendition's **init segment** (`avcC`, `hvcC`, `esds`, `dac3` and `dec3` boxes). `EXT-X-PROGRAM-DATE-TIME` is derived from the ring's **arrival time** of the generation's first chunk, plus media time. `TARGETDURATION` is 2 (transcode), with `INDEPENDENT-SEGMENTS`, `VERSION:7`, a media sequence that continues across generations, and `DISCONTINUITY-SEQUENCE`. The live-edge playlist lists 10 segments. A media playlist request **waits** for its rendition's first segment, bounded by 20 s, then answers 503 with `Retry-After: 1`. The multivariant waits for every first-generation init segment, bounded the same way. | Apple rules 2.3, 2.5-2.6, 7.4, 8.4, 8.11 and 9.11-9.12 (research list, Appendix A). Reading codec strings from the init segments keeps them true in every mode, copy included, without guessing from ffprobe's profile names. Arrival time rather than publish time keeps PDT honest while the encoder catches up the `JoinBehind` backlog at start. Holding a request until content exists is simpler for every player than an empty live playlist. |
-| **D8** | **The default re-encode** (§ Encoder argv). The source is decoded in software. It is deinterlaced with `bwdif=mode=send_field:deint=interlaced` when the probe says the source is interlaced, so 50i becomes 50p (Apple 1.14-1.15). The **output geometry and frame rate are fixed for the channel's run** at the first generation's probe: at most 1920×1080, never upscaled at the first generation, with `scale`/`pad`/`fps` enforcing them on every later generation. The video is H.264 High@L4.2 at constant frame rate, with a forced IDR every 2.000 s and a bitrate from a table by output height. It is encoded with `h264_qsv` behind `hwupload`, or with `libx264 -preset veryfast -tune zerolatency` (D11). Audio: stereo AAC 160 kb/s always. AC-3 is copied, or encoded at 640 kb/s 5.1 when the source has only E-AC-3. E-AC-3 is copied. | ADR 0009 fixes codec, field order and keyframe spacing as Mino's decisions. Software decode plus `bwdif`'s `deint=interlaced` handles mixed progressive and interlaced content without a hardware filter chain whose behaviour on progressive frames is unknown (Q1). Encoding is the expensive half, and it is the half that goes to Quick Sync. Fixed output parameters are what ADR 0009 promised across a switch, and what keeps the multivariant's `CODECS`, `RESOLUTION` and `FRAME-RATE` true after one. |
-| **D9** | **A probe precedes every generation.** `ffprobe -show_streams -of json` reads the ring from `JoinBehind` behind live, bounded to 5 MB or 8 s, and is decoded with stdlib `encoding/json`. It decides interlacing (`field_order`), frame rate, geometry and the audio layout, and, in *automatic* mode, the copy decisions (D12). A probe that finds no video stream fails the HLS attach with 502, while the channel's TS clients are unaffected. | Every later choice depends on these facts, and the relay is the only process that can see the bytes. |
-| **D10** | **The encoder restarts at every source boundary. It does not survive a switch.** A boundary is every new upstream connection: an `applySwitch`, or a reconnect of the same URL. The channel records the ring index of the boundary's first chunk. The running generation's writer stops **at** that index and closes stdin. Its flushed tail becomes the generation's last (possibly short) segments. A new generation is probed and started at the boundary. Its first segment is marked `EXT-X-DISCONTINUITY` with a new `EXT-X-MAP` (`init-<gen>.mp4`). The media sequence continues. | M3: a surviving encoder silently drops a source with different PIDs, so every failover to another provider would be a picture that stops with no error anywhere. M6: AVPlayer plays across a discontinuity. Restarting also makes a change of codec, resolution or audio layout between providers safe, and the fixed output parameters (D8) keep the declared variant true. The cost is the gap measured in M6, which is open question Q6 on real hardware. |
-| **D11** | **With no usable Quick Sync, the relay encodes in software and says so. It does not refuse.** At the first HLS attach in the process, the relay runs a one-frame QSV test encode (§ Encoder argv, detection) and caches the answer for the life of the process. If a QSV generation exits within its first 10 s having produced no segment, it is retried once in software, and the process marks QSV unusable. The channel payload gains `hls_encoder` (`"qsv"` or `"software"`), and the fallback is logged once at WARNING. | Refusing would reproduce the exact failure ADR 0009 exists to prevent: an Apple TV showing nothing, with no explanation, because `/dev/dri` was left out of a compose file. Fallback also makes the whole path testable in CI and on developer Macs, neither of which has an Intel GPU (M1: the arm64 image has no QSV at all). M2 shows detection is cheap and unambiguous. |
-| **D12** | ***Automatic* is an Output Profile mode, selected per channel.** `OutputProfile` gains `hls_mode` (blank; `transcode`; `automatic`). Two **locked** rows are seeded, "HLS (Re-encode)" and "HLS (Automatic)", and rows with a non-blank `hls_mode` are neither user-creatable nor editable. `Channel` gains `hls_output_profile`, a nullable FK (null means the built-in transcode). Next-source carries the channel's choice as `hls_profile: {id, mode} \| null`. HLS-mode rows are excluded from `output_profiles` and ignored by `resolve_output_profile`. On an `hls` tune, `X-Relay-Output` is ignored. | ADR 0009 says "reuses the existing Output Profile mechanism… and adds no new one". The per-channel FK is new because R7 says "opt-in per channel", and Output Profiles are selected per client today. A per-client HLS profile would break "one shared encode per channel". The policy is product-owned (ffmpeg argv the relay builds from a probe) rather than an operator-typed command line, which is why those rows are locked. |
-| **D13** | **A Redirect-profile channel is served over HLS through the relay, as Proxy.** It reserves and holds a provider slot like any Proxy tune. TS clients on the same channel keep their 302 unless the channel is already running, in which case they attach to it, as any client does. | HLS is by definition made by the relay from bytes it holds. A 302 to the provider's endless TS is exactly what AVPlayer cannot play (ADR 0008). `startTune` already takes this path for an internal principal (`relay/httpapi/stream.go:701-713`). |
-| **D14** | **The rewind window is the HLS output's own segments, kept on disk** (4a-3a, § The live rewind window). The path is `/data/cache/rewind/<boot-id>/<channel>/<gen>/<rendition>/<seq>.m4s`, created by `docker/init/03-init-dispatcharr.sh`. The depth defaults to 60 min. There is a global byte cap. The last 12 segments stay in memory. A disk error degrades the window and never the live output. The window is deleted on drain, and every boot directory is deleted at start-up. Playlists become a **sliding window with no `EXT-X-PLAYLIST-TYPE`**, listing every segment in the window. | ADR 0008: about 3.6 GB per channel-hour is too big for memory, and a restart discards it rather than recovering it. `EVENT` forbids removing segments from the head, so it cannot express a 60-minute window once the window is full. 60 min is well past Apple's 15-minute SHOULD (research, rule 8.11). |
-| **D15** | **The window lingers, and a lingering window holds its channel open** (4a-3a). When a channel's last HLS session leaves, its HLS pipeline keeps running for `rewind_linger_seconds` (default 300; 0 means stop at once). It keeps growing the window, and holds the channel, its upstream and its provider slot. Lingering is not a client and appears in no client list or stream-limit count. A lingering channel is **evictable** when it has zero clients of any format and its grace has passed. The grace is 0 if the last viewer left at live, and `rewind_behind_live_grace_seconds` (default 10) if it left **behind live**, meaning its last segment request was more than 5 target durations older than the newest segment. | R10 verbatim: zapping back keeps the rewind, and the window stays continuous to live, so the encoder must keep running. A channel with a TS viewer still attached is watched, and is never evicted. |
-| **D16** | **A lingering window yields its slot only when Django says a tune is blocked** (4a-3b, § Slot yield). When `get_stream()` finds every profile full, next-source answers `capacity: {blocked: true, profile_ids: […]}`. The ids are every M3U profile whose release would let this tune reserve: each `profile_full` profile, and each profile sharing a `credential_full` profile's credential counter. The relay picks, among its **evictable** channels whose current `m3u_profile_id` is in that list, the one that became evictable first. It evicts it atomically under the Manager lock, waits for its release POST, and retries next-source **once**. | ADR 0005: slots stay in Django, and the relay does not decide them. Django knows why a tune is blocked, and the relay knows which of its channels are idle. Answering with the blocking profiles keeps both facts where they are, and it needs no Django-to-relay call inside a next-source request. The #513 reconciler needs no change: a lingering channel is listed with its own `state` (never a new value), so it is counted as the holder it is, and an eviction's release is an ordinary release that bumps the version. |
-| **D17** | **Four settings, in the `proxy_settings` group** (4a-3a): `rewind_window_minutes` (60; 0 disables the window; at most 120), `rewind_linger_seconds` (300), `rewind_behind_live_grace_seconds` (10), `rewind_disk_cap_gb` (16). They are back-filled by `get_proxy_settings`' defaults, sent on every next-source answer (A1.4), and required by the relay. | `proxy_settings` is the group the relay already receives, so no new wire field is needed. The names are neutral (R15). A channel snapshots them at start, as it does every other threshold. The disk cap is process-wide and takes the value from the most recent answer. The 120-minute ceiling is Apple's tvOS scrub-back figure (research). |
-| **D18** | **The browser player plays live over hls.js** (4a-2). It uses hls.js wherever MSE or ManagedMediaSource exists, with `xhrSetup` sending the `Bearer` JWT, and falls back to native HLS with the JWT as `?token=` where only native exists. The mpegts.js live path, its dependency and the web-player Output Profile preference are removed. | R17. hls.js is already bundled and plays fMP4 with alternative audio groups. Relying on Chrome's native HLS would add one more player to reason about for no gain. The preference only ever applied to the live mpegts URL. The AAC rendition is always present, so it has no function under HLS. |
-| **D19** | **A Mino capability document:** `GET /api/mino/capabilities/` (4a-1b), `AllowAny`, gated by the `XC_API` network ACL (§ 4b). | R16: the app refuses a server without 4a, and it must be able to ask before sign-in. The route is Mino-named (R15). |
-| **D20** | **Gates** (§ Testing and gates). Every 4a PR that adds Go statements carries its own ≥12-round CI coverage census, and moves `scripts/coverage_relay_go.floor`'s `missing` with the census recorded. Its marginal coverage is ≥ 80%. New lines in Gate 2's nine Python modules are covered, so that floor's `missing` does not move. New parity-matrix rows land **pinned** in the PR that makes the behaviour. E2E runs the software encoder on CI. The AVPlayer check is a manual gate recorded in the PR body. | The Go floor file's own "HOW TO MOVE" section prescribes a census for a `missing` move. New code with any uncovered statement moves `missing`, so the census is the cost of each PR, stated up front rather than discovered in CI. There is no macOS or iOS 27 runner in this repository's CI (no workflow uses one), and the app repository is where an automated AVPlayer suite belongs. |
+| **D1** | **Seven PRs.** 4a-0 (e2e-upstream fixtures). 4a-1a (the packager, inert). 4a-1b (sessions, routes, surfaces: live HLS works end to end, with an explicit session leave). 4a-1c (slot reclaim: a blocked tune takes back a channel nobody is watching). 4a-1d (the *automatic* HLS profile). 4a-2 (browser player). 4a-3 (the rewind window, linger, and lingering windows in the reclaim set). Branches are `migration/phase4-*`, so the full E2E and lifecycle matrix runs on every one (CLAUDE.md § Full E2E runs). The stopping points are after 4a-1c, 4a-1d, 4a-2 and 4a-3. | 4a-0 has its own package, version and guard, and every later PR's E2E depends on it (finding 18). The packager can land inert and be reviewed on its own evidence. 4a-1c follows 4a-1b directly, because an HLS session that nobody ends explicitly would otherwise hold a provider slot for its idle timeout, which is a zap regression against TS (§ Presence). 4a-1d is separable because the default (transcode) needs no schema. The window's slot yield uses 4a-1c's mechanism, so it needs no PR of its own. |
+| **D2** | **HLS is an output format, not a new authorised route.** `hls` joins the resolved formats. `_FORMAT_ALIASES` gains `"hls": "hls"` and `"m3u8": "hls"`. `xcForcedFormat` maps `.m3u8` to `hls`. Any live tune URL whose resolved format is `hls` (`/proxy/ts/stream/<id>?output_format=hls`, `/live/<u>/<p>/<id>.m3u8`, `/<u>/<p>/<id>.m3u8`) is answered **200 with the multivariant playlist**. `hls` is **not** offered as `default_output_format` or as a user's `output_format` (accepted, R23). | The authorize hop, its nginx locations, the XC credential check, the stream limit and every channel check apply unchanged, with no new Django urlconf entry for `_surface_for` to learn. A deployment-wide default of `hls` would turn every byte-stream URL (HDHomeRun, Plex, TS apps) into a playlist. |
+| **D3** | **Everything after the entry lives under a token-authorised root, `/hls/`, and runs no authorize hop.** URL layout: `/hls/<token>/<rendition>.m3u8` (media playlist), `/hls/<token>/<rendition>/init-<gen>.mp4`, `/hls/<token>/<rendition>/<seq>.m4s`, and `DELETE /hls/<token>` (leave, D5). nginx gets `location ^~ /hls/` with `include dispatcharr_api_params_proxy.conf`, `proxy_buffering off`, `proxy_http_version 1.1`, `proxy_connect_timeout 60s` and `proxy_pass http://relay_go`. There is no `auth_request` and no `internal;`. The multivariant references media playlists by **absolute path**, and media playlists reference init and media segments **relatively**. | R13: Django is not asked per segment. Absolute-path URIs need no `Host` or scheme reconstruction, so the six server-level `proxy_set_header` lines need not be re-declared, for the same reason `^~ /proxy/relay/` omits them. Buffering is off because a segment runs to megabytes and buffering it would spool to disk. One cost, recorded: a bare three-segment XC request from a user literally named `hls` now reaches this location. That is the same class of collision the `live`, `movie`, `series` and `timeshift` prefixes already impose, and the `/live/…` form still works for that user. |
+| **D4** | **An opaque media-session token** (§ The media-session token; R22): `v1.<session id>.<MAC>`, where the session id is 128 random bits. The relay mints and verifies it. The channel, client id, user and HLS profile live in the relay's **session table**, never in the token. It is valid exactly while its session is: MAC verifies, **and** the session id is in the table, **and** the session has not ended. A session ends on an explicit leave, on an admin stop or stream-limit termination, on idle departure plus the resume window, or on relay restart. There is **no absolute expiry**, so a continuously watched session is never cut off. It is not bound to an IP address. | A channel UUID in the token would hand every Xtream user the anonymous live capability (finding 2; `authorize.py:77-84`), which Xtream surfaces never expose today. The relay needs the session table anyway, for presence (D5), so holding the claims there costs nothing, and every revocation is simply a table delete: no revoked set. The session id is distinct from the client id, because the client id appears in stats and events, and the token must not. The MAC rejects a forged id before any table lookup and keeps the check constant-time. There is no IP binding because AirPlay hands a URL to an Apple TV that fetches from a different address, and phones roam between access points. |
+| **D5** | **An HLS viewer is a client in the channel's registry for exactly as long as its session is live.** It **arrives** when the multivariant is served (the `Attach` call, a `client_connect` event). It is **active** on every request carrying its token. It **leaves** when it calls `DELETE /hls/<token>` (the Mino app on zap and after the R11 countdown; the browser player on close or switch), or after **12 s** with no request. Leaving emits `client_disconnect` with `duration` and `bytes_sent` and calls the release func. A departed (not left) session may **resume** within 300 s **if its channel is still running** (another viewer, or 4a-3's linger), with a new `client_connect`. `output_format` is `hls`, so `/proxy/relay/channels`, `/proxy/ts/status/` and the stats page show it without change. Admin stop, and stream-limit termination, end the session. | M7 measured AVPlayer reloading every target duration (2 s) even while paused, so 12 s (six reloads) cannot mistake a paused viewer for a departed one. The explicit leave is what makes a zap as fast as TS's connection close (finding 1). The idle timeout covers only clients that never call it: third-party apps, a killed app, a closed tab. The per-user stream limit needs no change, because it counts the relay's client list, which now includes HLS sessions (§ Presence says what a limit-1 user gets on zap). |
+| **D6** | **The relay owns packaging.** One ffmpeg per (channel, HLS profile) reads the channel's ring on stdin. It writes **one fragmented-MP4 stream per rendition on its own file descriptor**: video on fd 1, stereo AAC on fd 3, AC-3 on fd 4, E-AC-3 on fd 5, each `-movflags frag_keyframe+delay_moov+default_base_moof`. A new package, `relay/hls`, parses the boxes (stdlib `encoding/binary`), cuts segments, stores them, and renders every playlist. The segmenter accumulates video fragments until the 2 s grid is reached, and checks that each segment's first sample is a sync sample; it does not cut at every fragment. **Rejected:** ffmpeg's own `-f hls` muxer, and one muxed audio-plus-video stream. | M4 shows the shape works, with 2.000 s segments on every rendition. `-f hls` writes files the relay would have to watch (no inotify in the stdlib) and playlists it would have to rewrite: for tokens, for D10's discontinuities across processes, and for 4a-3's on-disk window. A muxed stream cannot carry two alternative audio codecs as HLS renditions. `buffer.Fragments` is not reused, because it is a cursor stream for one long response, and HLS needs random access by media sequence across aligned renditions (`hls.Store`). The spawn helper gains `ExtraFiles` (stdlib `os/exec`); `start()` (`relay/ffmpeg/spawn.go:113-197`) keeps `Setpgid` and `Pdeathsig`. Accumulating to the grid guards against stray non-IDR keyframes the encoder may emit (Q1). |
+| **D7** | **Playlists** (§ Playlists, exact tags). There is one video rendition and one audio group per audio codec: `aac` always; `ac3` when the source carries AC-3 or E-AC-3; `eac3` when it carries E-AC-3. Each group gets its own `EXT-X-STREAM-INF` on the same video playlist. `CODECS` is read from each rendition's **init segment** (`avcC`, `hvcC`, `esds`, `dac3` and `dec3` boxes). `EXT-X-PROGRAM-DATE-TIME` is written on **every** segment, derived from the ring's **arrival time** of the generation's first chunk plus media time (the known drift is § Risks). `TARGETDURATION` is 2 (transcode), with `INDEPENDENT-SEGMENTS`, `VERSION:7`, a media sequence that continues across generations, and `DISCONTINUITY-SEQUENCE`. The live-edge playlist lists 10 segments. A media playlist request **waits** for its rendition's first segment, bounded by 20 s, then answers 503 with `Retry-After: 1`. The multivariant waits for every first-generation init segment, bounded the same way. | Apple rules 2.3, 2.5-2.6, 7.4, 8.4, 8.11 and 9.11-9.12 (Appendix A). Codec strings read from init segments stay true in every mode, copy included. Arrival time rather than publish time keeps PDT honest while the encoder catches up the first generation's `JoinBehind` backlog. Holding a request until content exists is simpler for every player than an empty live playlist. |
+| **D8** | **The default re-encode** (§ Encoder argv). The source is decoded in software, and deinterlaced with `bwdif=mode=send_field:deint=interlaced` when the probe says it is interlaced (50i → 50p, Apple 1.14-1.15). **Output geometry and frame rate are fixed for the channel's run** at the first generation's probe: at most 1920×1080, never upscaled at the first generation, and `scale`/`pad`/`fps` enforce them on every later generation. Video is H.264 High@L4.2 at constant frame rate, with a forced IDR every 2.000 s and a bitrate from a table by output height. It is encoded with `h264_qsv` behind `hwupload`, or with `libx264 -preset veryfast -tune zerolatency` (D11). **Audio**, per R20 and Apple 2.3/2.6: stereo AAC 160 kb/s always. An AC-3 source track is copied. An E-AC-3 source track is copied **and** an AC-3 640 kb/s 5.1 rendition is encoded from it, giving three audio renditions. Only **qualifying** audio streams are mapped (§ Encoder argv). A source with none gets a silent AAC track. | ADR 0009 makes codec, field order and keyframe spacing Mino's decisions. Software decode plus `bwdif`'s `deint=interlaced` handles mixed progressive and interlaced content without a hardware filter chain whose behaviour on progressive frames is unknown (Q1). Encoding is the expensive half, and it is the half that goes to Quick Sync. Fixed output parameters are what ADR 0009 promised across a switch, and what keeps the multivariant true after one. A PMT-declared audio track with no packets would otherwise make ffmpeg fail every rendition (finding 7). A silent AAC track satisfies Apple 2.3 on a video-only source. |
+| **D9** | **A probe precedes every generation, and reads from where that generation will start** (D10): the first generation from `JoinBehind` behind live, every later one from its boundary index. The probe is `ffprobe -show_streams -of json`, bounded to 5 MB or 8 s, decoded with stdlib `encoding/json`. It decides interlacing (`field_order`), frame rate, geometry and the qualifying audio streams, and, in *automatic* mode, the copy decisions (D12). A probe that finds no video stream fails the HLS attach with 502, and the channel's TS clients are unaffected. | Every later choice depends on these facts, and the relay is the only process that can see the bytes. Probing across a boundary would describe the old source's streams, and M3 shows how silently a stream mismatch fails (finding 6). |
+| **D10** | **The encoder restarts at every source boundary. It does not survive a switch.** A boundary is every new upstream connection: an `applySwitch`, or a reconnect of the same URL. The channel records the ring index of the boundary's first chunk. The running generation's writer stops **at** that index and closes stdin, and its flushed tail becomes the generation's last, possibly short, segments. A new generation is probed and started at the boundary. Its first segment is marked `EXT-X-DISCONTINUITY` with a new `EXT-X-MAP` (`init-<gen>.mp4`), and the media sequence continues. | M3: a surviving encoder silently drops a source with different PIDs, so every failover to another provider would be a picture that stops with no error anywhere. M6: AVPlayer plays across a discontinuity. Restarting also makes a change of codec, resolution or audio layout between providers safe, and the fixed output parameters (D8) keep the declared variant true. The cost is the gap measured in M6 (Q6). |
+| **D11** | **With no usable Quick Sync, the relay encodes in software and says so. It never refuses** (accepted, R23). At the first HLS attach in the process, the relay runs a one-frame QSV test encode (§ Encoder argv, detection) and caches the answer. **A generation that exits before its first segment** is retried once with the same engine. If the retry also fails on QSV, the same input is retried in software. **QSV is marked unusable for the process only when that software retry succeeds**, which shows the failure was the device's, **or** when the detection encode, re-run, now fails. Any other early failure fails that channel's HLS output alone (§ Encoder argv, failure). The channel payload carries `hls_encoder` (`"qsv"` or `"software"`), and the fallback is logged once at WARNING. | Refusing would reproduce the failure ADR 0009 exists to prevent: an Apple TV showing nothing, because `/dev/dri` was left out of a compose file. Fallback also makes the path testable on CI and developer Macs. Distinguishing a device failure from a source failure (finding 5) stops one bad channel from pushing every channel in the process onto the CPU. |
+| **D12** | ***Automatic* is an Output Profile mode, selected per channel.** `OutputProfile` gains `hls_mode` (blank; `transcode`; `automatic`). Two **locked** rows are seeded, "HLS (Re-encode)" and "HLS (Automatic)", with `command="ffmpeg"` and `parameters="(built by the relay)"`. They are never executed, because every consumer that builds or offers an argv excludes them. Rows with a non-blank `hls_mode` cannot be created or edited through the API. `Channel` gains `hls_output_profile`, a nullable FK with `on_delete=SET_NULL` (null means the built-in transcode). Next-source carries the channel's choice as `hls_profile: {id, mode} \| null`. **Every OutputProfile consumer excludes `hls_mode != ''`:** `resolve_output_profile`, `_resolve_hdhr_output_profile_id`, the next-source `output_profiles` map, the viewset's writes, and the frontend selects (User, HDHR, web player, the M3U-link builder). The only select that offers them is the new channel-form "HLS output" select. On an `hls` tune, `X-Relay-Output` is ignored. | ADR 0009: "reuses the existing Output Profile mechanism… and adds no new one". The per-channel FK is new because R7 says "opt-in per channel", and Output Profiles are selected per client today. A per-client HLS profile would break "one shared encode per channel". The policy is product-owned (an argv the relay builds from a probe), which is why the rows are locked. Without the exclusions, an admin could pick "HLS (Automatic)" as the HDHR profile and get a silent no-op (finding 11). |
+| **D13** | **A Redirect-profile channel is served over HLS through the relay, as Proxy** (accepted, R23). It reserves and holds a provider slot like any Proxy tune. TS clients on the same channel keep their 302 unless the channel is already running, in which case they attach to it, as any client does. | HLS is made by the relay from bytes it holds. A 302 to the provider's endless TS is exactly what AVPlayer cannot play (ADR 0008). `startTune` already takes this path for an internal principal (`relay/httpapi/stream.go:701-713`). |
+| **D14** | **The rewind window is the HLS output's own segments, kept on disk** (4a-3, § The live rewind window). It **starts at the channel's first HLS viewer** (R19). A TS-only channel (DVR, TS apps) keeps no window and triggers no encode. The layout is `/data/cache/rewind/<boot-id>/<channel>/<gen>/<rendition>/<seq>.m4s`, and `docker/init/03-init-dispatcharr.sh` creates the root. The depth is a setting, with a global byte cap. The last 12 segments per rendition stay in memory. A disk error degrades the window and never the live output. The window is deleted on drain, and every boot directory is deleted at start-up. Playlists become a **sliding window with no `EXT-X-PLAYLIST-TYPE`**, listing every segment in the window. | ADR 0008: about 3.6 GB per channel-hour is too big for memory, and a restart discards it rather than recovering it. `EVENT` forbids removing segments from the head, so it cannot express a full window. 60 min (the default) is well past Apple's 15-minute SHOULD (8.11). |
+| **D15** | **The window lingers, and a lingering window holds its channel open** (4a-3). When the channel's last HLS session leaves, its HLS pipeline keeps running for `rewind_linger_seconds`, growing the window and holding the channel, its upstream and its provider slot. Lingering is not a client and appears in no client list or stream-limit count. A lingering channel is **reclaimable** (D16) when it has zero clients of any format and its grace has passed. The grace is 0 if the last viewer left at live. It is `rewind_behind_live_grace_seconds` if the viewer left **behind live**: its last segment request was more than 5 target durations older than the newest segment. | R10: zapping back keeps the rewind, and the window stays continuous to live, so the encoder must keep running. A channel with a TS viewer still attached is watched, and is never reclaimed. |
+| **D16** | **A blocked tune reclaims a channel nobody is watching** (4a-1c; 4a-3 adds lingering windows). When `get_stream()` finds every profile full, next-source answers `capacity: {blocked: true, profile_ids: […]}`: each `profile_full` profile, and each profile sharing a `credential_full` profile's credential counter. The relay reclaims one **reclaimable** channel whose current `m3u_profile_id` is in that list. A channel is reclaimable when it has **no TS or fMP4 client**, and **either** every HLS session on it has made no request for more than **2 × target duration** (4 s), **or** it is a lingering window past its grace (4a-3). Before reclaiming, the relay first waits (bounded by `tuneBudget`) for any channel on those profiles that is already stopping to finish its release. It then retries next-source **once**. At most one reclaim per tune. | ADR 0005: slots stay in Django, and the relay does not decide them. Django knows why a tune is blocked; the relay knows which channels are idle. Answering with the blocking profiles keeps both facts where they are, with no Django-to-relay call inside next-source. The 4 s silence rule reclaims a session its client abandoned without a leave, long before the 12 s idle timeout, while a paused AVPlayer (reloading every 2 s, M7) is never caught. Waiting for in-flight releases closes the race where a leave has stopped channel A but its release POST has not landed when B asks. The #513 reconciler needs no change: a reclaimable channel is listed with its own `state` and counted as the holder it is, and a reclaim's release is an ordinary release that bumps the version. |
+| **D17** | **Four settings, in the `proxy_settings` group** (4a-3):<br>- `rewind_window_minutes`: default 60; 0 disables the window; at most 120.<br>- `rewind_linger_seconds`: default 300; 0 means drop at once.<br>- `rewind_behind_live_grace_seconds`: default 10.<br>- `rewind_disk_cap_gb`: default 16.<br>They are back-filled by `get_proxy_settings`' defaults, sent on every next-source answer (A1.4), and required by the relay. | `proxy_settings` is the group the relay already receives. The names are neutral (R15). A channel snapshots them at start. The disk cap is process-wide and takes the most recent answer's value. The 120-minute ceiling is Apple's tvOS scrub-back figure. |
+| **D18** | **The browser player plays live *channels* over hls.js, and keeps stream previews on mpegts.js over TS** (4a-2; R18). Playback of a channel, by UUID, requests `output_format=hls`: it plays through hls.js where MSE or ManagedMediaSource exists (`xhrSetup` sends the `Bearer` JWT), and natively with `?token=` otherwise. When the player closes or switches, it calls the leave route (D5). Stream previews, by stream hash, keep `output_format=mpegts`, mpegts.js and the web-player Output Profile preference. | R17 for channels, and R18 for previews: an admin previewing a stream wants the stream as it is, with no encode and no slot held after close. mpegts.js and the preference therefore stay (the preference applies to the TS previews). |
+| **D19** | **A Mino capability document:** `GET /api/mino/capabilities/` (4a-1b), `AllowAny`, gated by the `XC_API` network ACL (§ 4b). It reports `server_version` **deliberately**: the app shows it, and on a LAN-only server (R3) it discloses nothing the web UI's login page does not. | R16: the app refuses a server without 4a, and must be able to ask before sign-in. The route is Mino-named (R15). |
+| **D20** | **Gates** (§ Testing and gates):<br>- **The Go ratchet, amended by R21.** A Go PR **may** raise `scripts/coverage_relay_go.floor`'s `missing`, but only by the uncovered statements of its own new or changed code. They are listed per file in the PR body, with **≥ 85%** statement coverage on the PR's additions, measured by the ≥12-round CI census. The reviewer checks the listing. A noise draw above the floor still gets a re-measurement PR of its own, never a bump.<br>- **Python Gate 2 is unchanged:** new lines in its nine modules are covered, and `missing` stays 33.<br>- **Parity rows** land pinned in the PR that makes the behaviour.<br>- **E2E** runs the software encoder on CI.<br>- **AVPlayer** is a manual gate recorded in the PR body. | R21 (owner). Since 2c-9 no Go PR has moved `missing` (`git log -- scripts/coverage_relay_go.floor` shows one commit), so this is a change of policy, and it is recorded as one: in CLAUDE.md, and in 4a-1a's edit to the floor file's "HOW TO MOVE" header. There is no macOS or iOS 27 runner in this repository's CI, and automated AVPlayer checks belong in the app repository (Q8). |
+
+## The ADR 0006 amendment
+
+ADR 0006 and CLAUDE.md § State say the Go relay's client registry has no TTL, no heartbeat and no
+ghost sweep. They say this because a client entry cannot outlive the goroutine that made it.
+`relay/channel/channel.go:709-711` says a channel never exists without an attached client. Phase 4a
+changes both, and ADR 0008's Consequences now record it:
+
+- **An HLS session is a registry entry with no goroutine of its own** (D5). It ends by an explicit
+  leave, by an admin stop, by stream-limit termination, or by a 12 s idle sweep. The sweep is a TTL
+  in all but name, and it is the one place in the relay where presence is inferred rather than
+  observed.
+- **A lingering window keeps a channel running with zero clients** (D15, 4a-3).
+
+Every consumer that acts on a channel's client count, and what each does to a lingering channel:
+
+| Consumer | Effect on a lingering channel (0 clients) | Decision |
+|---|---|---|
+| `_stop_dvr_clients` (`apps/channels/api_views.py:3831-3841`), on a recording's cancellation | stops it when `client_count == 0` | Accepted: stopping a channel whose only client was a cancelled recording is the intent. The window is lost, as on any stop. |
+| `Manager.release` / `stopIfStillIdle` (`relay/channel/manager.go:393-454`) | would stop it on the last client's release | Changed in 4a-3: the countdown starts only when the client count **and** the linger hold are both zero. |
+| `promoteOnFirstChunk`'s invariant (`relay/channel/channel.go:709-711`) | the comment's premise ("never exists without … a client") no longer holds | Changed in 4a-3: the comment is corrected, and promotion is unaffected, because a lingering channel is already `active`. |
+| The drain's client grace (`relay/drain/drain.go`) | serves no client, then stops it with every other channel | No change. The window is lost on drain (R10). |
+| `/readyz`'s client count; `/proxy/ts/status/` and the stats page | show a channel with 0 clients | The payload carries `lingering_since`, so the UI can say why. Rendering it is a 4a-3 frontend line, not a new page. |
+| `check_user_stream_limits`, `xc_get_info`'s `active_cons` | count no connection for it | Correct: nobody is watching. |
+| `apps/proxy/slot_reconciler.py`'s `_live_holders` | counts it as holding its profile's slot | Correct: it holds a provider connection. |
+
+4a-1b updates the CLAUDE.md § State sentence; 4a-3 updates it again for linger.
 
 ## Architecture
 
@@ -198,37 +262,37 @@ exports `LIBVA_DRIVERS_PATH`. The compose files carry `/dev/dri` only as a comme
  ───────────────────────────────────                                          ───────────────
  GET /live/<u>/<p>/<id>.m3u8 ───► nginx ^~ /live/ ──auth_request──► Django authorize_stream()
                                      │  (hop: ACL, principal, channel checks, stream limit,
-                                     │   X-Relay-Output-Format=mpegts|…, client id minted)
+                                     │   X-Relay-Output-Format, client id minted)
                                      └─proxy_pass──► XCHandler: .m3u8 ⇒ format hls
-                                                       │ Manager.Attach(channel, client=session)
+                                                       │ Manager.Attach(channel, client)
                                                        │   (first client ⇒ next-source, slot, ring)
                                                        │ Channel.AttachOutput("hls[:p<id>]")
                                                        │   ⇒ probe ⇒ ffmpeg gen 0 ⇒ relay/hls segmenter
-                                                       │ wait for first-gen init segments
-                                                       ◄─ 200 multivariant, URIs /hls/<token>/…
- GET /hls/<token>/video.m3u8 ───► nginx ^~ /hls/ (no hop) ─► token verify (MAC, exp, revoked,
- GET /hls/<token>/video/<n>.m4s                               live-or-resumable) ⇒ touch session
- GET /hls/<token>/aac.m3u8 …                                  ⇒ serve from hls.Store
-                                     session idle 12 s ⇒ leave: client_disconnect, release()
+                                                       │ session table: sid → {channel, client, user,
+                                                       │   profile}; wait for first-gen init segments
+                                                       ◄─ 200 multivariant, URIs /hls/<v1.sid.mac>/…
+ GET /hls/<token>/video.m3u8 ───► nginx ^~ /hls/ (no hop) ─► MAC ⇒ session lookup ⇒ touch
+ GET /hls/<token>/video/<n>.m4s                               ⇒ serve from hls.Store
+ DELETE /hls/<token>          ─────────────────────────────► leave: client_disconnect, release()
+                                     no request for 12 s ⇒ the same leave, by the sweep
 ```
 
-### State the relay adds, all in process memory (ADR 0006 unchanged)
+### State the relay adds, all in process memory
 
 - **`hls.Pipeline`**: one per (channel, HLS profile), refcounted by sessions through
   `AttachOutput`. It owns the current generation (an ffmpeg child, its probe, its fixed output
   parameters) and the `hls.Store`.
 - **`hls.Store`**: segments per rendition, keyed by media sequence, with each generation's init
-  segments and discontinuity markers. It is bounded by count (4a-1: 12 per rendition, about 26 MB
-  per HLS channel at the D8 table's top rate, computed rather than measured) and by bytes.
-- **The session table**: `client id → {channel, token claims, last activity, departed-at, bytes}`,
-  plus a revoked set whose entries expire with their token's `exp`. It is lost on restart, and so
-  every outstanding token becomes invalid (D4): players re-authorise, which is also what the lost
-  window (4a-3) requires.
-- **4a-3a** adds the on-disk window beside the store, and per-channel linger state.
+  segments and discontinuity markers. It is bounded by count and bytes: 4a-1 keeps 12 per rendition,
+  which is about 26 MB per HLS channel at D8's top rate (computed, not measured).
+- **The session table**: `session id → {channel, client id, user id, HLS profile, state, last
+  activity, departed-at, bytes}`. It is lost on restart, and with it every token (D4). Players
+  re-authorise, which is also what the lost window (4a-3) requires.
+- **4a-3** adds the on-disk window and per-channel linger state.
 
-Nothing is added to Redis or Postgres by the relay. `scripts/check_go_stdlib_only.sh` holds: every
-mechanism above is `os/exec`, `os`, `encoding/binary`, `encoding/json`, `encoding/base64`,
-`crypto/hmac` or `crypto/sha256`.
+Nothing is added to Redis or Postgres by the relay. `scripts/check_go_stdlib_only.sh` holds, because
+every mechanism above is `os/exec`, `os`, `crypto/rand`, `encoding/binary`, `encoding/json`,
+`encoding/base64`, `crypto/hmac` or `crypto/sha256`.
 
 ## The contract
 
@@ -238,47 +302,54 @@ mechanism above is `os/exec`, `os`, `encoding/binary`, `encoding/json`, `encodin
 |---|---|---|
 | `GET /proxy/ts/stream/<id>?output_format=hls` (or `?output=hls`, `m3u8`) | the hop's `resolve_output_format` with the new aliases | 200 `application/vnd.apple.mpegurl`, the multivariant |
 | `GET /live/<u>/<p>/<id>.m3u8`, `GET /<u>/<p>/<id>.m3u8` | `xcForcedFormat` (`.m3u8` ⇒ `hls`) | same |
-| any of the above on a channel whose probe finds no video | relay | 502 `{"error": "no video stream in the source"}`; TS clients unaffected |
-| first-generation init segments not ready within 20 s | relay | 503, `Retry-After: 1`; the session is dropped |
+| any of the above on a channel whose probe finds no video | relay | 502 `{"error": "no video stream in the source"}`. TS clients are unaffected. |
+| any of the above when the channel's HLS output has failed (§ Encoder argv, failure) | relay | 502 `{"error": "HLS output failed"}` |
+| first-generation init segments not ready within 20 s | relay | 503, `Retry-After: 1`. The session is dropped. |
 | draining relay | relay (`Lifecycle`) | 503, as for every tune |
 | every hop denial (401, 403, 404, 429) | unchanged | unchanged |
 
-`Cache-Control: no-store` on the multivariant, because it carries a fresh token every time.
+The multivariant is sent with `Cache-Control: no-store`, because it carries a fresh token every
+time.
 
 ### Session resources (4a-1b)
 
 | Request | Answer |
 |---|---|
-| `GET /hls/<token>/<rendition>.m3u8` | 200 media playlist, `Cache-Control: no-cache`, `Last-Modified` = the newest segment's publish time (Apple 8.24). Waits for the first segment (≤ 20 s, then 503 + `Retry-After: 1`). |
+| `GET /hls/<token>/<rendition>.m3u8` | 200 media playlist, `Cache-Control: no-cache`, and `Last-Modified` = the newest segment's publish time (Apple 8.24). It waits for the first segment, up to 20 s, then answers 503 + `Retry-After: 1`. |
 | `GET /hls/<token>/<rendition>/init-<gen>.mp4` | 200 `video/mp4` or `audio/mp4`, `Cache-Control: private, max-age=86400` |
-| `GET /hls/<token>/<rendition>/<seq>.m4s` | 200 the same types, `Cache-Control: private, max-age=86400`; **404** if the sequence is outside the store (or the window, 4a-3) |
-| a token whose MAC, version or format is wrong, or whose `exp` has passed, or that is revoked, or whose session departed more than 300 s ago | **403** `{"error": "invalid or expired media session"}`, with no detail on which condition failed |
-| a valid token whose channel is no longer running | **410** `{"error": "channel stopped"}` |
+| `GET /hls/<token>/<rendition>/<seq>.m4s` | 200 with the same types and caching. **404** if the sequence is outside the store (or, in 4a-3, the window). |
+| `DELETE /hls/<token>` | **204**. The session ends at once: `client_disconnect`, release, and the linger/grace from 4a-3. **Idempotent**: an already-ended session also gets 204, and a MAC failure gets 403. |
+| a token whose MAC or format is wrong, or whose session is unknown or ended | **403** `{"error": "invalid or expired media session"}`, with no detail on which condition failed |
+| a valid token whose channel is no longer running | **410** `{"error": "channel stopped"}`, and the session ends |
 | unknown rendition name | 404 |
 
 Rendition names are `video`, `aac`, `ac3` and `eac3`. The relay ignores every `X-Relay-*` and
 `X-Dispatcharr-Authorized` header on `/hls/`: authorisation there is the token and nothing else,
-so how the playlist was authorised cannot matter (R13).
+so how the playlist was authorised cannot matter (R13). The leave route is the only non-`GET`
+route, and nginx needs no change for it.
 
 ### The media-session token (4a-1b)
 
 ```
-payload = "v1" LF channel LF client_id LF user_id LF hls_profile_id LF iat LF exp      (ASCII)
-mac     = HMAC-SHA256(key = SECRET_KEY, msg = "media-session" LF payload)
-token   = base64url_nopad(payload) "." base64url_nopad(mac)                          (path-safe)
+sid   = base64url_nopad(16 bytes from crypto/rand)                         (22 characters)
+mac   = HMAC-SHA256(key = SECRET_KEY, msg = "media-session" LF "v1" LF sid)
+token = "v1" "." sid "." base64url_nopad(mac)                               (path-safe, 69 characters)
 ```
 
-- `channel` is the `X-Relay-Channel` value (a channel UUID, or a stream hash for a stream preview).
-  `client_id` is `X-Relay-Client`, the hop's `mint_client_id()` (`apps/proxy/authorize.py:145`).
-  `user_id` is `X-Relay-User` (empty when anonymous). `hls_profile_id` is empty for the built-in
-  transcode. `iat` and `exp` are Unix seconds, with `exp = iat + 86400`.
-- Verified with `hmac.Equal` after an ASCII check, mirroring `relay/control/token.go`'s `matches`.
-  The path's rendition must be one the channel's pipeline has. The token's `channel` is the only
-  channel it can read.
-- **Never logged.** It is a bearer credential. The `/hls/` handlers log the client id instead, and
-  a unit test asserts a rejected token's text does not appear in the log. `credlint` cannot see a
-  string, so this is held by the test. nginx's access log records request paths, and therefore the
-  token, as it already records XC credentials. That is recorded under § Risks.
+- The token carries **no claim**. The session table maps `sid` to the session: the channel (the
+  `X-Relay-Channel` value), the client id (`X-Relay-Client`), the user id (`X-Relay-User`, or the
+  string `"0"` for anonymous, as `identify()` records it, `relay/httpapi/stream.go:423-427`), and
+  the HLS profile id (empty for the built-in transcode).
+- **Verification:** split on `.`; check that the version is `v1`; ASCII-check; compare the MAC
+  with `hmac.Equal` (mirroring `relay/control/token.go`'s `matches`); look up `sid`; check that the
+  session is active or resumable. Every failure is the same 403.
+- **Lifetime** is the session's (D4). There is no expiry field to renew, and nothing interrupts a
+  continuously watched session.
+- **Never logged.** It is a bearer credential. The `/hls/` handlers log the client id, and a unit
+  test asserts that a rejected token's text does not appear in the log. `credlint` cannot see a
+  string, so the test holds the rule. nginx's default access log records request paths, and so the
+  token, as it already records XC credentials. That is recorded under § Risks. The token names no
+  channel.
 
 ### Playlists (4a-1a renders, 4a-1b serves)
 
@@ -296,11 +367,12 @@ Multivariant, for a source with AC-3 (sample; the values are illustrative):
 /hls/<token>/video.m3u8
 ```
 
+- An E-AC-3 source adds an `eac3` group (`CODECS` `ec-3`; Q3) and a third `EXT-X-STREAM-INF`.
 - `LANGUAGE` is emitted only when the probe reports a language tag.
 - `BANDWIDTH` is the video `maxrate` plus the audio bitrate in transcode mode. In a copied
   rendition it is 1.25× the ring's measured rate over the probe window.
-- The AAC group is listed first. Which group a given device picks is open question Q2 (M4: macOS
-  and iOS chose AAC).
+- The AAC group is listed first. Which group a given device picks is Q2 (M4: macOS and iOS chose
+  AAC).
 
 Media playlist (live edge; 4a-3 extends the list to the window):
 
@@ -323,54 +395,61 @@ video/<seq>.m4s
 video/<seq>.m4s
 ```
 
-- `EXT-X-PROGRAM-DATE-TIME` is written on the first listed segment, after every discontinuity, and
-  every 30th segment.
+- `EXT-X-PROGRAM-DATE-TIME` is written on every segment, at about 45 bytes each.
 - Audio playlists list the same sequence numbers with their own `EXTINF`. An audio segment holds
   the audio fragments whose start time falls within its video segment's span. With 200 ms audio
-  fragments (`-frag_duration 200000`) an audio segment is within 0.2 s of its video segment, which
-  is inside Apple 7.7's +0.5 s.
+  fragments (`-frag_duration 200000`), an audio segment is within 0.2 s of its video segment,
+  which is inside Apple 7.7's +0.5 s.
 - `EXT-X-ENDLIST` is never written.
 
 ### Next-source additions
 
-- **4a-1c** adds `hls_profile: {id: int, mode: "transcode"|"automatic"} | null`.
-- **4a-3a** adds the four `rewind_*` keys to `proxy_settings`.
-- **4a-3b** adds `capacity: {blocked: bool, profile_ids: [int]} | null`. It is non-null only when
+- **4a-1c** adds `capacity: {blocked: bool, profile_ids: [int]} | null`. It is non-null only when
   `source` is null *because* every profile was full.
+- **4a-1d** adds `hls_profile: {id: int, mode: "transcode"|"automatic"} | null`.
+- **4a-3** adds the four `rewind_*` keys to `proxy_settings`.
 
-Each is a serializer field in `apps/proxy/serializers.py`, and is therefore in the drf-spectacular
-schema, and each has a Go decoder in `relay/control/nextsource.go`. The relay requires `hls_profile`
-and the `rewind_*` keys, which is A1.4's rule. It treats an absent `capacity` as "not blocked",
+Each addition is a serializer field in `apps/proxy/serializers.py`, and so appears in the
+drf-spectacular schema. Each has a Go decoder in `relay/control/nextsource.go`. The relay requires
+`hls_profile` and the `rewind_*` keys (A1.4). It treats an absent `capacity` as "not blocked",
 because that field describes a failure rather than a setting.
 
 ### Relay channel payload additions
 
-These are all optional fields, preserved by `apps/proxy/relay_serializers.py`:
+All are optional fields, preserved by `apps/proxy/relay_serializers.py`:
 
-- `hls_encoder` (`"qsv"`/`"software"`, present while an HLS pipeline runs; 4a-1a/b).
-- `hls_generation` (int; 4a-1b).
-- `lingering_since` (float Unix time, present while lingering; 4a-3a).
-- `rewind_window_seconds` (float; 4a-3a).
-- `rewind_degraded` (bool, present when true; 4a-3a).
+- `hls_encoder` (4a-1b): `"qsv"` or `"software"`, present while an HLS pipeline runs.
+- `hls_generation` (4a-1b): an int.
+- `lingering_since` (4a-3): a float Unix time, present while lingering.
+- `rewind_window_seconds` (4a-3): a float.
+- `rewind_degraded` (4a-3): a bool, present when true.
 
-`state` gains **no** new value. The reconciler (`_ENDED_RELAY_STATES`) and the frontend's state
-handling are therefore untouched.
+`state` gains **no** new value, so the reconciler (`_ENDED_RELAY_STATES`) and the frontend's
+state handling are untouched.
 
 ## Encoder argv
 
-Built in Go by `relay/hls` from the probe and the mode. It is not sent by Django, because it depends
-on facts only the relay can observe: the source's codecs, field order and geometry. This is a
-deliberate exception to 2c-7's "Django builds the argv". That rule exists because an
-operator-authored parameter string must go through `shlex` in one place. This argv has no operator
-input, since `hls_mode` rows are locked (D12).
+`relay/hls` builds the argv in Go, from the probe and the mode. Django does not send it, because it
+depends on facts only the relay can observe. This is a deliberate exception to 2c-7's "Django
+builds the argv". That rule exists because an operator-authored parameter string must go through
+`shlex` in one place, and this argv has no operator input (D12).
 
-**Transcode generation, QSV** (the software variant replaces the three QSV-specific parts, noted
-inline):
+**Qualifying audio streams** (D8, finding 7). A probed stream qualifies when it has a known
+`codec_name`, `channels > 0` and `sample_rate > 0`. The AAC rendition encodes the **first**
+qualifying stream. The `ac3` rendition copies the first qualifying AC-3 stream, or is encoded from
+the first qualifying E-AC-3 stream when there is no AC-3. The `eac3` rendition copies the first
+qualifying E-AC-3 stream. With **no** qualifying audio, a second input `-f lavfi -i
+anullsrc=r=48000:cl=stereo` feeds a silent AAC rendition (Apple 2.3). When the probe finds more than
+one qualifying stream, the choice is logged; language-based selection is a non-goal.
+
+**Transcode generation, QSV.** The software variant replaces the QSV-specific parts, as noted
+inline:
 
 ```
 ffmpeg -hide_banner -loglevel warning -nostats
   -init_hw_device qsv=hw:/dev/dri/renderD128 -filter_hw_device hw          # software: omitted
   -fflags +genpts+discardcorrupt -f mpegts -i pipe:0
+  [-f lavfi -i anullsrc=r=48000:cl=stereo]                                  # only with no qualifying audio
   -map 0:v:0
   -vf "[bwdif=mode=send_field:deint=interlaced,]scale=W:H:force_original_aspect_ratio=decrease,
        pad=W:H:(ow-iw)/2:(oh-ih)/2,fps=R,format=nv12,hwupload=extra_hw_frames=64"
@@ -380,583 +459,737 @@ ffmpeg -hide_banner -loglevel warning -nostats
        -force_key_frames "expr:gte(t,n_forced*2)"                          #   -profile:v high -level:v 4.2
                                                                            #   -g G -keyint_min G -sc_threshold 0
   -f mp4 -movflags frag_keyframe+delay_moov+default_base_moof pipe:1
-  -map 0:a:<first> -c:a aac -ac 2 -b:a 160k
+  -map <first qualifying | 1:a:0> -c:a aac -ac 2 -b:a 160k
   -f mp4 -movflags frag_keyframe+delay_moov+default_base_moof -frag_duration 200000 pipe:3
-  [-map 0:a:<ac3 or eac3> -c:a copy | -c:a ac3 -b:a 640k   … -frag_duration 200000 pipe:4]
-  [-map 0:a:<eac3> -c:a copy                                … -frag_duration 200000 pipe:5]
+  [-map <ac3 stream> -c:a copy  |  -map <eac3 stream> -c:a ac3 -b:a 640k   … -frag_duration 200000 pipe:4]
+  [-map <eac3 stream> -c:a copy                                            … -frag_duration 200000 pipe:5]
 ```
 
 - `W`, `H` and `R` are fixed at the first generation. `R` is the field rate for an interlaced
-  source (1080i at 25 frames, 50 fields per second, becomes 50p) or the frame rate for a progressive one, capped at 60. `G` = 2 × R.
-- Bitrate `B`/`M`: height ≥ 1080 → 6 / 8 Mb/s; ≥ 720 → 4 / 5 Mb/s; otherwise 2.5 / 3 Mb/s.
+  source (1080i at 25 frames or 50 fields per second becomes 50p), or the frame rate for a
+  progressive one, capped at 60. `G` = 2 × R.
+- Bitrate `B` / `M`: height ≥ 1080 is 6 / 8 Mb/s; ≥ 720 is 4 / 5 Mb/s; otherwise 2.5 / 3 Mb/s.
 - The software variant is the shape M4 ran (Appendix B), with `-nostats` added and the audio maps
   generalised.
-- **The QSV argv has not been run on Quick Sync** (no hardware was available). M2 shows only that
-  the device option parses and fails cleanly without a device. Its first execution on the
-  household host is Q1, and 4a-1a's PR body records it.
-- The audio map chooses the first audio stream for AAC. Whenever the probe finds more than one
-  audio stream it logs the choice; language-based selection is a non-goal of 4a.
+- **The QSV argv has not been run on Quick Sync.** No hardware was available. M2 shows only that
+  the device option fails cleanly without a device. Its first run on the household host is Q1, and
+  4a-1a's PR body records it.
 
-**Detection (D11).** The test encode is:
+**Detection (D11).** The test encode, with a 10 s timeout:
 
 ```
 ffmpeg -init_hw_device qsv=hw:/dev/dri/renderD128 -filter_hw_device hw -f lavfi \
-  -i color=c=black:s=256x144:r=25 -frames:v 1 -vf format=nv12,hwupload -c:v h264_qsv -f null -
+  -i color=c=black:s=256x144:r=25 -frames:v 1 -vf format=nv12,hwupload -c:v <h264_qsv|hevc_qsv> -f null -
 ```
 
-It has a 10 s timeout. Exit 0 means QSV. A missing `/dev/dri/renderD128`, any non-zero exit or the
-timeout means software.
+Exit 0 means the encoder is usable. A missing `/dev/dri/renderD128`, any non-zero exit or the
+timeout means software. `hevc_qsv` is detected separately, the first time an HEVC encode is needed
+(4a-1d).
 
-**Automatic generation (4a-1c).** The rules are applied per rendition from the probe:
+**Failure (D11, finding 7).** A generation that exits before its first segment is retried once with
+the same engine. If that is QSV and it fails again, the same input is tried in software. QSV is
+marked unusable for the process only if that software attempt succeeds, or if a re-run of the
+detection encode fails.
+
+When every attempt fails, the channel's **HLS output** is marked failed for the rest of the
+channel's run, and the failure is logged at ERROR with the last stderr lines through `redact.Line`.
+No new event type is added: the Connect vocabulary is a fixed dict. From then on:
+
+- new HLS entries answer 502;
+- existing sessions get 410 on their next request;
+- the channel and its TS clients are unaffected.
+
+A generation that dies **after** its first segment is treated as a source boundary (D10) at the
+ring's current head.
+
+**Automatic generation (4a-1d).** The rules are applied per rendition, from the probe:
 
 | Source | Automatic does |
 |---|---|
-| video H.264 or HEVC, progressive, with ≥ 2 keyframes in the probe window, max keyframe interval K ≤ 6 s | copy (`-c:v copy`; HEVC tagged `hvc1`). `TARGETDURATION` = max(2, ⌈K⌉). Segments are cut at the first keyframe at or after 2 s. |
-| video interlaced, MPEG-2, anything else, or K > 6 s, or < 2 keyframes seen | the transcode chain above |
-| audio AAC | copy into the `aac` rendition |
-| audio MP2, MP3 or anything else | AAC 160 kb/s stereo |
-| audio AC-3 / E-AC-3 | as in transcode (copy) |
+| video H.264, or HEVC, progressive, with ≥ 2 keyframes in the probe window and a maximum keyframe interval K ≤ 6 s | copies it (`-c:v copy`, with HEVC tagged `hvc1`). `TARGETDURATION` = max(2, ⌈K⌉). The segmenter cuts at the first keyframe at or after 2 s. |
+| any other video: interlaced, MPEG-2, K > 6 s, or fewer than 2 keyframes seen | runs the transcode chain above (H.264) |
+| audio AAC | copies it into the `aac` rendition |
+| audio MP2, MP3 or anything else qualifying | encodes AAC 160 kb/s stereo |
+| audio AC-3 / E-AC-3 | handles it as in transcode |
 
-**Two run-level rules for automatic.**
+**Two run-level rules for automatic** (finding 8). Both are reasoning, not measured behaviour;
+4a-1d pins them with fixtures.
 
-- The multivariant's `CODECS` family is fixed by the first generation. A later generation (after a
-  source boundary) whose copy decision would change that family, or whose keyframe interval exceeds
-  the declared `TARGETDURATION` + 0.5 s, is transcoded into the declared family for the rest of the
-  channel's run.
-- The segmenter enforces the `TARGETDURATION` rule. When a copied segment exceeds
-  `TARGETDURATION` + 0.5 s, the generation is ended at the next boundary and the run switches to
-  transcode.
+- **The first generation fixes the multivariant's video `CODECS` family.** A later generation (after
+  a source boundary) that cannot copy is encoded **into the declared family**:
+  - an H.264-declared run uses the transcode chain above;
+  - an HEVC-declared run uses `hevc_qsv -profile:v main` with the same `-g`, `-idr_interval 0`,
+    `-forced_idr 1` and `force_key_frames`;
+  - without QSV, it uses `libx265 -preset ultrafast -x265-params keyint=G:min-keyint=G:scenecut=0`,
+    tagged `hvc1`. M1 shows `hevc_qsv` and `libx265` in the production image.
+- **The segmenter enforces the target duration.** A copied segment longer than `TARGETDURATION` +
+  0.5 s ends the generation at the next boundary, and the rest of the run is encoded into the
+  declared family.
 
-Both rules are reasoning, not measured behaviour. 4a-1c's tests pin them with fixtures (§ Testing).
-
-## Presence and lifecycle (4a-1b, extended by 4a-3a)
+## Presence and lifecycle (4a-1b, extended by 4a-3)
 
 ```
  multivariant served ──► ARRIVED (client registered; client_connect)
       │  any valid token request: touch(last_activity)
       ▼
-   ACTIVE ──idle ≥ 12 s──► DEPARTED (client_disconnect; release(); departed_at)
-      ▲                        │ valid request within 300 s ⇒ re-attach (client_connect)
-      └────────────────────────┘ 300 s elapse ⇒ FORGOTTEN (token now 403)
- admin stop / limit termination ⇒ REVOKED (release(); client_disconnect; token 403 until exp)
+   ACTIVE ── DELETE /hls/<token> ──────────────► ENDED (client_disconnect; release(); sid removed)
+      │ ── admin stop / limit termination ─────► ENDED
+      │ ── idle ≥ 12 s ──► DEPARTED (client_disconnect; release(); departed_at)
+      │                        │ valid request within 300 s AND channel still running
+      │                        │   ⇒ re-attach (client_connect) ⇒ ACTIVE
+      │                        └ 300 s elapse, or channel stopped ⇒ ENDED
+      └ (for D16 only) no request for > 2 × target duration ⇒ counts as silent for reclaim
 ```
 
-- The idle sweep runs every 2 s per HLS pipeline.
-- `bytes_sent` sums every body byte served to the session.
-- A session re-attaching after departure is **not** re-checked against the stream limit. That is
-  bounded by the 300 s grace, and it is recorded rather than engineered away. The app always
-  re-tunes through a fresh multivariant when the user changes channel.
-- The HLS pipeline's refcount is the number of ARRIVED/ACTIVE sessions. In 4a-1 the last
-  departure stops the pipeline at once. In 4a-3a it starts the linger (D15).
+- The idle sweep runs every 2 s per HLS pipeline. `bytes_sent` sums every body byte served to the
+  session.
+- **Resume** applies only while the channel is still running: another viewer is attached, or 4a-3's
+  linger holds it. In 4a-1 a lone viewer's departure stops the pipeline and, with
+  `channel_shutdown_delay` at its default of 0 (`core/models.py:726`), the channel. A resume then
+  gets 410, and the app re-tunes.
+- A resumed session is **not** re-checked against the stream limit. That is bounded by the 300 s
+  window, and recorded rather than engineered away.
+- **What a limit-1 user gets on zap.**
+  - **Mino app and browser player:** they call leave before tuning the next channel, so A's session
+    has ended and B's hop counts zero connections. There is no 429 and no wait.
+  - **A third-party app that never calls leave:** with `terminate_on_limit_exceeded` on (the
+    default), the hop stops A's session (`attempt_stream_termination`, `apps/proxy/utils.py:143-254`,
+    which ends it through `DELETE …/clients/<id>`) and admits B. With it off
+    (`apps/proxy/utils.py:400-402`), B gets 429 until A's session departs, at most 12 s plus one
+    sweep.
+- The HLS pipeline's refcount is the number of ARRIVED and ACTIVE sessions. In 4a-1 the last
+  departure stops the pipeline at once. In 4a-3 it starts the linger (D15).
 
 ## The live rewind window (4a-3)
 
-### Storage and bounds (4a-3a)
+### Storage and bounds
 
 - **Layout.** `/data/cache/rewind/<boot-id>/<channel>/<gen>/<rendition>/<seq>.m4s`, plus
   `init.mp4` per `<gen>/<rendition>`. `<boot-id>` is 16 random hex characters per relay start.
-  At start-up the relay removes every directory under `/data/cache/rewind/`. On drain it removes
-  its own boot directory after `StopAll`, best effort. Both are deliberate: the window is lost on
-  restart and on drain (R10), and there is one relay per deployment (ADR 0006, D2 of Phase 2).
-- **Writes.** Each segment is written once when it is published, to a temporary name, then
-  renamed. The newest 12 per rendition are also kept in memory, and live-edge reads never touch
-  the disk.
-- **Depth.** A channel's window keeps segments whose PDT is within `rewind_window_minutes` of the
-  newest. Older segments are unlinked by the pipeline's own sweep. The window starts when the
-  channel's HLS output starts. It never starts before a tune, and in 4a a channel watched only over
-  TS keeps no window. That is how R10's "starts at tune" and the glossary's format-agnostic
-  definition meet: the stored segments are what a future TS reader (`?behind=`, R10) would remux
+  - At start-up, the relay removes every directory under `/data/cache/rewind/`.
+  - On drain, it removes its own boot directory after `StopAll`, best effort.
+  - Both are deliberate: the window is lost on restart and on drain (R10), and there is one relay
+    per deployment (ADR 0006; Phase 2 D2).
+- **Writes.** Each segment is written once when it is published: to a temporary name, then
+  renamed. The newest 12 per rendition are also kept in memory, and live-edge reads never touch the
+  disk.
+- **Depth.** A channel's window keeps the segments whose PDT is within `rewind_window_minutes` of
+  the newest. The pipeline's own sweep unlinks older ones. The window starts at the channel's first
+  HLS viewer (R19). The stored segments are what a future TS reader (`?behind=`, R10) would remux
   from.
 - **Cap.** After each write, the process-wide total is checked against `rewind_disk_cap_gb`. While
-  it is over, the oldest segment overall is unlinked, taking lingering windows' segments first. The
-  12 in-memory live-edge segments of any window are never unlinked.
+  it is over, the oldest segment overall is unlinked, with lingering windows' segments taken first.
+  The 12 in-memory live-edge segments of any window are never unlinked.
 - **Disk errors.** On `ENOSPC` or any write error, the window stops persisting for the rest of the
-  channel's run. It keeps serving what it has plus the live edge from memory, sets
+  channel's run. It keeps serving what it has, plus the live edge from memory, sets
   `rewind_degraded`, and logs once at WARNING. The live output never fails because of the disk.
-- **Arithmetic** (computed, not measured). At the D8 table's top rate with AAC and one AC-3
-  rendition, a channel-hour is about 3.1-3.4 GB, so the 16 GB default holds about 4.7
-  channel-hours. A 60-minute media playlist is 1,800 entries of about 25 bytes, 45 KB per
-  playlist. That is about 45 KB/s per viewer across video and one audio playlist, reloading every
-  2 s. It is negligible on a LAN, so no compression is added.
+  Tests inject the writer.
+- **Arithmetic** (computed, not measured).
+  - At D8's top rate with AAC and one AC-3 rendition, a channel-hour is about 3.1-3.4 GB, so the
+    16 GB default holds about 4.7 channel-hours.
+  - A 60-minute media playlist has 1,800 entries of about 70 bytes each, with PDT on every segment:
+    about 126 KB per playlist.
+  - Reloading video and one audio playlist every 2 s is about 126 KB/s per viewer, about 1 Mb/s.
+  - That is small beside the 6-8 Mb/s video on a LAN. Compression is a follow-up if Q4 shows
+    reload time matters.
 
 ### Playlists and seeking
 
 - Media playlists list every segment in the window, with no `EXT-X-PLAYLIST-TYPE`, so a joining
-  client sees the whole shared window.
-- The multivariant is unchanged.
+  client sees the whole shared window. The multivariant is unchanged.
 - AVPlayer's `seekableTimeRanges` then spans the window. The app seeks by date
-  (`AVPlayerItem.seek(to: Date)`) using PDT. Programme markers and "restart programme" are EPG
-  start times mapped to dates, available when the start is inside the window.
+  (`AVPlayerItem.seek(to: Date)`) using PDT.
+- Programme markers and "restart programme" are EPG start times mapped to dates, available when
+  the start is inside the window.
 - Whether a 1,800-entry live playlist behaves well on Apple TV is Q4.
 
-### Linger, evictability and the grace (4a-3a)
+### Linger, reclaimability and the grace
 
-- **Linger.** At the pipeline's last session departure, if `rewind_linger_seconds` > 0 and the
-  window is enabled, the pipeline enters LINGERING. It keeps a hold on the channel, a
-  Manager-internal count that `Clients()` and every client list exclude. It stops, and releases
-  the channel, when the linger elapses, when it is evicted, or when a new session arrives (the
-  linger is cancelled and the pipeline is ACTIVE again).
+- **Linger.** At the pipeline's last session end, if `rewind_linger_seconds` > 0 and the window is
+  enabled, the pipeline enters LINGERING. It keeps a hold on the channel: a Manager-internal count
+  that `Clients()` and every client list exclude. It stops, releasing the hold, when the linger
+  elapses, when the channel is reclaimed (D16), or when a new session arrives, which cancels the
+  linger and makes the pipeline ACTIVE again.
 - **Channel shutdown.** `Manager.release`'s shutdown-delay countdown starts only when both the
-  client count and the linger hold are zero.
-- **Evictable** = LINGERING, the channel's clients of every format = 0, and now ≥
-  lingering-start + grace. The grace is `rewind_behind_live_grace_seconds` when the departing
-  session's last segment request was more than 5 target durations older than the newest segment,
-  and 0 otherwise.
+  client count and the linger hold are zero (§ The ADR 0006 amendment).
+- **Reclaimable** means: LINGERING, zero clients of every format, and now ≥ lingering-start +
+  grace.
+  - The grace is `rewind_behind_live_grace_seconds` when the departing session's last segment
+    request was more than 5 target durations older than the newest segment. Otherwise it is 0.
+  - An explicit leave counts as a departure for this rule, which is how R11's countdown and R10's
+    10 s grace meet.
 
-### Slot yield (4a-3b)
+### Slot yield
+
+4a-3 adds "a lingering window past its grace" to D16's reclaimable set. 4a-1c's mechanism is
+otherwise unchanged.
+
+## Slot reclaim (4a-1c)
 
 1. **Django.** `resolve_initial_source`'s maxed-out branch computes `profile_ids`. For each of the
-   channel's (or stream's) active profiles, it takes the profile when
-   `profile_has_capacity_for_selection` is false, and when `pool_has_capacity_for_profile` is
-   false it adds every active profile sharing that profile's credential counter
-   (`_credential_counter_key`, `apps/m3u/connection_pool.py:138`). It returns
-   `capacity: {blocked: true, profile_ids}`. This is **advisory and read-only**. The reservation
-   itself is still the slot script's atomic step on the retry.
-2. **Relay** (`startTune`, initial tunes only; failover never evicts). On `source: null` with
-   `capacity.blocked`, it calls `Manager.EvictFor(profileIDs)`. Under the Manager mutex, that
-   picks the evictable channel with the earliest evictable-at whose `SourceInfo.M3UProfileID` is
-   in the set, re-checks it is still evictable, and removes it from the map. The mutex is also
-   what `claim()` holds, so a viewer racing to re-attach either wins before the check or starts a
-   fresh channel after it. It then stops the channel and waits for a new `released` signal, closed
-   after `releaseSlot` returns, bounded by `tuneBudget`. It emits `channel_stop` as every stop
-   does.
+   channel's (or stream's) active profiles:
+   - when `profile_has_capacity_for_selection` is false, it takes that profile;
+   - when `pool_has_capacity_for_profile` is false, it adds every active profile sharing that
+     profile's credential counter (`_credential_counter_key`, `apps/m3u/connection_pool.py:138`).
+
+   It returns `capacity: {blocked: true, profile_ids}`. This is **advisory and read-only**: the
+   reservation itself is still the slot script's atomic step on the retry.
+2. **Relay** (`startTune`, initial tunes only; failover never reclaims).
+   - On `source: null` with `capacity.blocked`, it first waits, bounded by `tuneBudget`, for any
+     channel in the Manager's new **releasing** set whose profile is in `profile_ids`. That set
+     holds channels removed from the map whose `releaseSlot` has not returned, and a new `released`
+     signal is closed after `releaseSlot` (`relay/channel/channel.go:445`, `:697-702`).
+   - If none was releasing, it calls `Manager.ReclaimFor(profileIDs)`. Under the Manager mutex,
+     which `claim()` also holds, that picks the reclaimable channel (D16) that has been reclaimable
+     longest, re-checks that it is still reclaimable, and removes it from the map. A viewer racing
+     to re-attach therefore either wins before the check or starts a fresh channel after it.
+   - It then stops the channel and waits for `released`. Every session on it ends, and its next
+     request gets 410.
 3. **Relay** retries next-source once with the same request. A second blocked answer is 503
-   "no source available", as today.
+   "no source available", as today. There is at most one reclaim per tune.
 
-At most one eviction per tune.
+**The deterministic seam** (finding 17). `ReclaimFor` takes an optional test hook, called between
+the pick and the re-check. The race test uses it to attach a viewer at exactly that point, so the
+break-check reddens on every run, not one in several thousand (compare `manager.go:405-425`'s note
+on its sibling race).
 
-**Interplay with the reconciler.** A lingering channel is listed by `/proxy/relay/channels` with
-its real `state` and `m3u_profile_id`, so `_live_holders` counts it. That is correct, because it
-holds a provider connection. An eviction ends in `release_source()`, which bumps the counter's
-version like every release, so the reconciler's write rule sees an ordinary holder leaving.
+## Browser player (4a-2; R18)
 
-## Browser player (4a-2)
+- **Two URL builders.**
+  - `buildLiveStreamUrl` keeps its current behaviour (`output_format=mpegts`, plus the web-player
+    Output Profile preference) for **stream previews** by stream hash (`StreamsTable.jsx:954`,
+    `ChannelTableStreams.jsx:404`).
+  - A new `buildChannelHlsUrl` returns `<path>?output_format=hls`, with no `output_profile`, for
+    **channel** playback by UUID: `ChannelsTable.jsx:665-666`, `StreamConnectionCard.jsx:516` and
+    `RecordingCardUtils.js`'s `getShowVideoUrl` (every caller listed in § Verified facts).
+- **The player** chooses by URL. It uses hls.js when `output_format=hls`, and mpegts.js otherwise,
+  which is today's live path, unchanged.
+- **hls.js is configured with:**
+  - `xhrSetup` adding `Authorization: Bearer <fresh JWT>`, read at request time as the recordings
+    path does; on `/hls/` requests it is harmless;
+  - `liveSyncDurationCount: 3`;
+  - `backBufferLength: 120`, so a 60-minute window is not held in browser memory;
+  - recovery on `NETWORK_ERROR` and `MEDIA_ERROR`, as the recordings path already does.
 
-- **Entry URL.** `buildLiveStreamUrl` returns `<path>?output_format=hls`, with no `output_profile`.
-- **hls.js.** `FloatingVideo.jsx`'s live path becomes an hls.js instance whenever
-  `Hls.isSupported()`, configured with:
-  - `xhrSetup` adding `Authorization: Bearer <fresh JWT>` (read at request time, as the recordings
-    path does). It is sent to `/hls/` too, where it is harmless.
-  - `liveSyncDurationCount: 3`.
-  - `backBufferLength: 120`, so a 60-minute window is not held in browser memory.
-  - Recovery on `NETWORK_ERROR` and `MEDIA_ERROR` as the recordings path already does. On a 403
-    from `/hls/`, the player re-requests the entry URL once.
-- **Native fallback.** Otherwise, if `video.canPlayType('application/vnd.apple.mpegurl')`, it sets
-  `video.src` to the entry URL with the JWT as `?token=` (`QueryParamJWTAuthentication`, already in
-  the hop's union at `apps/proxy/authorize.py:93-97`).
-- **Removed.** `initializeLivePlayer`'s mpegts.js body, the `mpegts.js` dependency (its only
-  importer is `FloatingVideo.jsx`), and the web-player Output Profile preference
-  (`UiSettingsForm.jsx`, `FloatingVideoUtils.js`). The removal is listed in the PR, with the
-  vitest files that change and before/after for each changed assertion.
-- **Error text.** It no longer says "try Chrome or Edge". Firefox plays through hls.js.
+  On a 403 from `/hls/`, the player re-requests the entry URL once.
+- **Native fallback.** Otherwise, if `canPlayType('application/vnd.apple.mpegurl')`, `video.src` is
+  the entry URL with the JWT as `?token=` (`QueryParamJWTAuthentication`,
+  `apps/proxy/authorize.py:93-97`).
+- **Leave.** When the player closes, or switches to another URL, it calls `DELETE /hls/<token>`
+  through a new `api.js` function (components do not call fetch). The token comes from the media
+  playlist URL that hls.js loaded. On `pagehide` the same call is made with `keepalive: true`. On
+  the native path the token is not observable, and the idle timeout (and D16's 4 s rule) covers it.
+- **Kept:** mpegts.js, its dependency and the web-player Output Profile preference (R18).
+- **Error text** for HLS channels no longer says "try Chrome or Edge", because Firefox plays through
+  hls.js.
+- **The vitest files that change**, each assertion listed before and after in the PR:
+  - `FloatingVideoUtils.test.js` (the new builder);
+  - `RecordingCardUtils.test.js:150-167` (`getShowVideoUrl` now expects `?output_format=hls`, and
+    the `output_profile=5` case moves to a `buildLiveStreamUrl` test);
+  - `ChannelsTable.test.jsx`;
+  - the `StreamConnectionCard` tests;
+  - `Guide.test.jsx`, `DVR.test.jsx`, `RecordingCard.test.jsx`, `RecordingDetailsModal.test.jsx`
+    and `ProgramDetailModal.test.jsx` wherever they assert the URL;
+  - the `FloatingVideo` tests.
+
+  `StreamsTable.test.jsx` and `ChannelTableStreams.test.jsx` do not change.
 
 ## 4b — the server contract (only)
 
-The Apple app is built in its own repository (R4). What it may rely on from a server that answers
+The Apple app is built in its own repository (R4). What it may rely on, from a server that answers
 the capability document below:
 
 | Need | Server surface |
 |---|---|
-| Is this a Mino server with 4a? (R16, on "add server") | `GET /api/mino/capabilities/` → 200 JSON `{"product": "mino", "api_version": 1, "server_version": "<version.py>", "live_hls": {"available": true, "segment_seconds": 2, "rewind_window": {"available": <bool>, "depth_seconds": <int>}}}`. `rewind_window.available` is false until 4a-3a lands, and after it, false when `rewind_window_minutes` is 0. It is AllowAny, gated by the `XC_API` network ACL (403 otherwise), and served by Django under `^~ /api/`. The app refuses a server that 404s it or reports `api_version` < 1. |
-| Sign in (R13) | `player_api.php?username=&password=` (no action) → `user_info`/`server_info`. `user_info.allowed_output_formats` includes `"m3u8"` from 4a-1b. |
-| Channel list | `player_api.php?action=get_live_categories`, `…&action=get_live_streams[&category_id=]` (unchanged). |
-| Playback | `http://<host>:<port>/live/<username>/<password>/<stream_id>.m3u8` → multivariant (D2). The app never builds `/hls/` URLs itself: they come only from playlists. |
+| Is this a Mino server with 4a? (R16, on "add server") | `GET /api/mino/capabilities/` → 200 JSON. It is AllowAny, gated by the `XC_API` network ACL (403 otherwise), and served by Django under `^~ /api/`. The body is `{"product": "mino", "api_version": 1, "server_version": "<version.py>", "live_hls": {"available": true, "segment_seconds": 2, "session_leave": true, "rewind_window": {"available": <bool>, "depth_seconds": <int>}}}`. `rewind_window.available` is false until 4a-3 lands, and after it whenever `rewind_window_minutes` is 0. The app refuses a server that 404s this or reports `api_version` < 1. |
+| Sign in (R13) | `player_api.php?username=&password=` (no action), answering `user_info` and `server_info`. `user_info.allowed_output_formats` includes `"m3u8"` from 4a-1b. |
+| Channel list | `player_api.php?action=get_live_categories`, and `…&action=get_live_streams[&category_id=]` (unchanged). |
+| Playback | `http://<host>:<port>/live/<username>/<password>/<stream_id>.m3u8` → the multivariant (D2). The app never builds `/hls/` URLs itself: they come only from playlists. |
+| **Leaving a channel** | `DELETE` on the token path of any media playlist URL, `/hls/<token>`. The app calls it on zap, after R11's 10 s countdown ends, when playback is dismissed, and when the app is backgrounded without Picture in Picture. It answers 204 (§ Session resources). |
 | Now/next | `player_api.php?action=get_short_epg&stream_id=<id>[&limit=]` (unchanged). |
-| Programme markers inside the window | `player_api.php?action=get_simple_data_table&stream_id=<id>` (unchanged). Times are UTC per `server_info.timezone` (`apps/output/views.py`'s `_build_xc_server_info`). |
-| Rewind | seek within the playlist's range. The depth is the capability document's `depth_seconds`. |
-| Errors | 401/403 from the entry means credentials or ACL. 429 means the stream limit. 403 from `/hls/` means re-request the entry URL once, then show an error. 410 means the channel stopped: re-tune. 503 with `Retry-After` means retry. |
+| Programme markers inside the window | `player_api.php?action=get_simple_data_table&stream_id=<id>` (unchanged). Times follow `server_info` (`apps/output/views.py`'s `_build_xc_server_info`). |
+| Rewind | Seek within the playlist's range. The depth is the capability document's `depth_seconds`. |
+| Errors | 401/403 from the entry means credentials or ACL. 429 means the stream limit. 403 from `/hls/`: re-request the entry URL once, then show an error. 410: the channel stopped, so re-tune. 503 with `Retry-After`: retry. |
 
 **App-side, recorded here and owned by the app repository:**
 
-- **Demo mode.** App Review cannot reach a LAN server (R4), so the app needs self-contained content
-  it has the right to ship. That is the app repository's decision, and it needs nothing from this
-  server.
+- **Demo mode.** App Review cannot reach a LAN server (R4). The app needs self-contained content it
+  has the right to ship; that is the app repository's decision and needs nothing from this server.
 - **App Transport Security.** Plain HTTP to a LAN host needs an ATS exception
   (`NSAllowsLocalNetworking`, and possibly `NSAllowsArbitraryLoadsForMedia` for AVFoundation). The
-  app repository verifies which of these covers IP-literal hosts on iOS/tvOS 27; this spec does not
+  app repository verifies which one covers IP-literal hosts on iOS/tvOS 27; this spec does not
   claim it.
 - **Local Network permission.** `NSLocalNetworkUsageDescription`, for the first LAN connection.
-- **The R11 countdown.** The 10 s "leaving rewind" countdown pairs with D15's 10 s behind-live
-  grace. The app needs no server call for it.
-- **Everything else.** The app's design, its player UI, Top Shelf, channel up/down, the guide grid
+- **The R11 countdown.** The app's 10 s "leaving rewind" countdown pairs with D15's 10 s
+  behind-live grace. The leave call is made when the countdown completes, not when it starts.
+- **Out of scope here:** the app's design, player UI, Top Shelf, channel up/down, the guide grid,
   and Bonjour discovery (R6: later).
 
 ## 4c — investigation brief (only)
 
-Taken up after 4b's first playable build (R1, R14). The questions to answer before any design:
+Taken up after 4b's first playable build (R1, R14). Questions to answer before any design:
 
-1. **Pairing flow.** A code shown on the Apple TV, approved by an admin in the web UI, which issues
-   a per-device, revocable credential. Where it is stored (a new model), and what an admin sees and
-   revokes.
-2. **What the credential authorises.** Does it replace Xtream credentials entirely for the Mino
-   app (R14: "drops cross-IPTV-app support"), and which endpoints are Mino-only (`/api/mino/…`)?
+1. **Pairing flow.** A code on the Apple TV, approved by an admin in the web UI, which issues a
+   per-device, revocable credential. Where is it stored (a new model), and what does an admin see
+   and revoke?
+2. **What the credential authorises.** Does it replace Xtream credentials entirely for the Mino app
+   (R14: "drops cross-IPTV-app support")? Which endpoints are Mino-only (`/api/mino/…`)?
 3. **Playlist authorisation.** The new credential must reach `authorize_stream` as a principal. Is
    that a new authenticator class in `_AUTHENTICATOR_CLASSES`, or a new surface?
-4. **LAN TLS.** Is it worth it (certificate distribution to Apple devices, ATS), and does it change
-   the plain-HTTP decision in R6?
-5. **The channel list and EPG** over Mino-only endpoints, or continued use of `player_api.php`
-   actions with the new principal.
+4. **LAN TLS.** Is it worth it (certificate distribution to Apple devices, ATS)? Does it change the
+   plain-HTTP decision in R6?
+5. **Channel list and EPG.** Over Mino-only endpoints, or through `player_api.php` actions with the
+   new principal?
 
 **What 4a must keep agnostic, and does:**
 
-- Segment authorisation depends only on the media-session token (D4), never on how the playlist
-  request was authorised. A 4c principal that passes `authorize_stream` gets the same token.
-- The token binds a `user_id` string and a client id, not an Xtream username.
-- The capability document versions itself (`api_version`), so 4c can add
-  `"pairing": {…}` without breaking a 4b build.
+- Segment authorisation depends only on the opaque media-session token (D4), never on how the
+  playlist request was authorised. A 4c principal that passes `authorize_stream` gets the same
+  kind of session.
+- The session table holds a user id string and a client id, not an Xtream username.
+- The capability document versions itself (`api_version`), so 4c can add `"pairing": {…}` without
+  breaking a 4b build.
 
 ## Testing and gates
 
 **Go (every 4a PR that touches `relay/`).**
 
-- Standing checks: `go build`, `go vet` and `golangci-lint` (natively and under `GOOS=linux` and
-  `darwin`, as the hook does), `go test -race`, `scripts/check_go_stdlib_only.sh relay` and the
-  credlint ratchet.
-- Unit tests with the `relaytest` stand-in for process shape: pipes, exits, EOF mid-fragment, a
+- `go build`, `go vet` and `golangci-lint`, natively and under `GOOS=linux` and `darwin`, plus
+  `go test -race`, `scripts/check_go_stdlib_only.sh relay` and the credlint ratchet.
+- Unit tests use the `relaytest` stand-in for process shape: pipes, exits, EOF mid-fragment, and a
   generation that dies before its first segment.
-- **Real-ffmpeg tests** for the packager, gated as parity row 4's real-ffmpeg pin is. They run
-  against the base image's ffmpeg 9.0 in `go-tests.yml`'s `build` job (software encoder), and skip
+- Real-ffmpeg tests for the packager are gated as parity row 4's pin is. They run in
+  `go-tests.yml`'s `build` job against the base image's ffmpeg 9.0 (software encoder), and skip
   locally where ffmpeg is absent unless `CI` is set.
-- The box parser gets **fuzz tests** (`testing.F`, stdlib) over the moof, tfdt and init-box readers.
-- **Coverage (D20).** `relay/hls` joins the linked packages, which changes `packages=`, and new
-  statements change `missing`. The PR runs the floor file's five-step CI census (≥ 12 rounds, the
-  stopping rule) and states the new `missing` with its sequence, and the marginal coverage of its
-  own additions (≥ 80%). A draw above the new floor on a later PR is a finding, never a floor bump
-  (the file's own rule).
+- The box reader gets fuzz tests (`testing.F`, stdlib).
+- **Coverage (D20, R21).**
+  - The PR runs the floor file's ≥12-round CI census.
+  - Its body lists, per file, the uncovered statements of its own new or changed code, and states
+    the PR's coverage on its additions (≥ 85%).
+  - `missing` rises by exactly that listed count.
+  - 4a-1a, the first PR to use the rule, also edits `scripts/coverage_relay_go.floor`'s "HOW TO
+    MOVE" header to state it.
 
 **Python.**
 
 - New serializer fields, aliases and the capability view get tests in `apps.proxy.tests` and
   `apps.output.tests`.
-- `authorize.py` and `next_source.py` are Gate 2 modules
-  (`scripts/coverage_live_path.coveragerc`). A PR editing them runs
-  `scripts/coverage_live_path_isolated.sh` before push, and covers every new line, so the Python
+- `authorize.py`, `next_source.py` and `relay_serializers.py` are Gate 2 modules
+  (`scripts/coverage_live_path.coveragerc`). **4a-1b, 4a-1c and 4a-1d** each run
+  `scripts/coverage_live_path_isolated.sh` before push and cover every new line, so the Python
   floor (`missing=33`) does not move.
-- Migrations ship with reverses, and a test runs each migration forward and back.
+- Migrations ship with reverses, and a test runs each one forward and back.
 
-**Parity matrix.** New rows land **pinned**, in the PR that implements the behaviour. The owning PR
-raises `HIGHEST_ROW_ID` in `e2e/tests/guards/parity-matrix.ts` in the same diff, and appends to a
-new `<!-- block: phase 4 -->`. 4a-1b also widens the preamble's scope sentence ("the live TS/fMP4
-path") to include HLS. Ids are assigned at merge time as the next free id, never in this spec. The
-behaviours, by owning PR:
+**Parity matrix.**
 
-- **4a-1a.**
-  - A generation's segments are 2.000 s ± one frame, each starting with an IDR.
-  - A source boundary ends the generation, and the next segment carries `EXT-X-DISCONTINUITY` and
-    a new `EXT-X-MAP`.
-  - The software fallback is selected when QSV detection fails.
-- **4a-1b.**
-  - An `hls` tune answers a multivariant rather than bytes.
-  - `.m3u8` forces `hls`.
-  - A token is refused when forged, expired, revoked or for another channel.
-  - An HLS session registers, and leaves after its idle timeout with `client_disconnect`.
-  - An admin stop revokes an HLS session.
-  - A Redirect channel is served over HLS as Proxy.
-  - Media playlist conformance: ≥ 6 segments, PDT, `INDEPENDENT-SEGMENTS`, and a continuous media
+- New rows land **pinned** in the PR that implements the behaviour.
+- `HIGHEST_ROW_ID` in `e2e/tests/guards/parity-matrix.ts` is raised in the same diff.
+- Rows are appended to a new `<!-- block: phase 4 -->`. 4a-1a confirms the guard accepts the
+  marker, which is unverified today.
+- 4a-1b widens the preamble's scope sentence ("the live TS/fMP4 path") to include HLS.
+- Ids are assigned at merge time, as the next free id.
+
+The behaviours, by owning PR:
+
+- **4a-1a:**
+  - a generation's segments are 2.000 s ± one frame, each starting with a sync sample;
+  - a source boundary ends the generation, and the next segment carries `EXT-X-DISCONTINUITY` and
+    a new `EXT-X-MAP`;
+  - the second generation is probed at the boundary;
+  - the software fallback is selected when QSV detection fails;
+  - a non-qualifying audio stream is not mapped.
+- **4a-1b:**
+  - an `hls` tune answers a multivariant rather than bytes;
+  - `.m3u8` forces `hls`;
+  - a token is refused when forged, when its MAC is tampered, or after leave or revocation;
+  - an HLS session registers, and leaves on `DELETE` and after its idle timeout, with
+    `client_disconnect`;
+  - an admin stop ends an HLS session;
+  - a Redirect channel is served over HLS as Proxy;
+  - media playlists conform: ≥ 6 segments, PDT, `INDEPENDENT-SEGMENTS`, and a continuous media
     sequence.
-- **4a-1c.** The automatic copy and transcode decisions, per rendition.
-- **4a-3a.** Linger holds the channel. The behind-live grace applies. The playlist spans the
-  window depth. A disk error degrades the window and not the output.
-- **4a-3b.** An evictable lingering window yields to a blocked tune, and a watched one never does.
+- **4a-1c:**
+  - a blocked tune reclaims a channel whose HLS sessions have left or been silent more than 4 s;
+  - a watched channel (a TS client, or an HLS session reloading) is never reclaimed.
+- **4a-1d:** the automatic per-rendition decisions, and the declared-family rule.
+- **4a-3:**
+  - linger holds the channel;
+  - the behind-live grace delays reclaim;
+  - the playlist spans the window depth;
+  - a disk error degrades the window and not the output.
 
 **E2E.**
 
-- **`e2e-upstream` (4a-1b and 4a-1c).** It gains four loop assets, built at image build time by
-  `make-asset.sh` variants and kept small (≤ 20 s, SD) so software encoding keeps real time on CI:
+- **4a-0** adds four `e2e-upstream` loop assets, built at image build time by `make-asset.sh`
+  variants and kept small (≤ 20 s, SD) so software encoding keeps real time on CI:
   - MPEG-2 576i + MP2;
   - H.264 1080i + AAC + AC-3 5.1;
   - HEVC progressive + AAC;
-  - H.264 with a 10 s GOP.
+  - H.264 with a 10 s GOP;
+  - plus a fifth: H.264 + E-AC-3 only.
 
-  A scenario channel can name its asset. That is a contract change: `e2e-upstream/package.json`'s
-  version is bumped with `CONTRACT.md` (the pair `e2e/tests/guards/upstream-contract.spec.ts`
-  holds in step), and `e2e-upstream/test/` covers the new field.
-- **Specs, in the `streaming` project, which needs no new project or workflow matrix change:**
-  - Parse the multivariant and media playlists, and assert the tags and `CODECS` against each
-    asset.
-  - Fetch the init segment and two media segments, and assert the box structure and the durations
-    in TypeScript. Adding an ffprobe subprocess would need a guard allowlist entry.
-  - Tokens: another channel, tampered, revoked after `DELETE …/clients/<id>`.
-  - Presence: `/proxy/ts/status/<uuid>` shows an `hls` client, which disappears within the idle
-    timeout plus the sweep.
-  - Failover: an upstream fault switches to an alternate with a **different** asset, and the next
-    media playlist carries `EXT-X-DISCONTINUITY`. This is the E2E form of M3/M6.
-  - **4a-2's** hls.js playback runs in the `frontend` project (Chromium): the video element's
-    `currentTime` advances on a live channel.
-- **Timeouts** in these specs are generous and are not gates: CLAUDE.md's measure-where-enforced
-  rule forbids setting a latency or zap threshold from a local run. None is set in 4a.
-- **The nginx greybox spec** gains `TOKEN_BOUND_TARGETS = ['/hls/']` and a fifth test. It asserts
+  A scenario channel can name its asset. `e2e-upstream/package.json`'s version is bumped with
+  `CONTRACT.md`, as `e2e/tests/guards/upstream-contract.spec.ts` requires, and `e2e-upstream/test/`
+  covers the field.
+- **Specs in the `streaming` project** (no new project or workflow matrix change):
+  - parse the multivariant and media playlists, and assert the tags and `CODECS` per asset,
+    including three audio groups on the E-AC-3 asset;
+  - fetch an init segment and two media segments, and assert their box structure and durations in
+    TypeScript;
+  - tokens: tampered MAC, and use after `DELETE /hls/<token>` and after
+    `DELETE /proxy/relay/…/clients/<id>`;
+  - presence: `/proxy/ts/status/<uuid>` shows an `hls` client that disappears at once after
+    `DELETE /hls/<token>`;
+  - failover: an upstream fault switches to an alternate with a **different** asset, and the next
+    media playlist carries `EXT-X-DISCONTINUITY`;
+  - **4a-1c: no waiting out the idle timeout.** The upstream has `maxConnections: 1`.
+    - Tune A over HLS, `DELETE` its session, and **immediately** tune B: B plays.
+    - Tune A, stop requesting for 5 s (2 × target duration + margin, below the 12 s idle timeout),
+      tune B: B plays.
+    - Tune A with a session that keeps reloading: B gets 503.
+    - A limit-1 user tunes A, calls leave, tunes B: no 429.
+  - **4a-2's** hls.js playback runs in the `frontend` project (Chromium): `currentTime` advances
+    on a live channel, a `DELETE /hls/…` is observed when the player closes, and the playlist
+    reload cadence while paused is recorded (Q9).
+- **Timeouts** in these specs are generous and are not gates. CLAUDE.md's measure-where-enforced
+  rule forbids setting a latency or zap threshold from a local run, and none is set in 4a.
+- **The nginx greybox spec** gains `TOKEN_BOUND_TARGETS = ['/hls/']` and a fifth test:
   `proxy_pass http://relay_go`, `proxy_buffering off`, the blanking include, and **no**
-  `auth_request` and no `internal;`. `/hls/` joins neither `PROXY_BOUND_TARGETS` nor
-  `RELAY_BOUND_TARGETS`: the first test filters by its own list and the second requires the hop on
-  every member, so both stay exact. The file's header comment and CLAUDE.md's nginx buffering
-  paragraph are updated in the same PR.
+  `auth_request` and no `internal;`.
+  - `/hls/` joins neither `PROXY_BOUND_TARGETS` nor `RELAY_BOUND_TARGETS`. The first test filters
+    by its own list, and the second requires the hop on every member, so both stay exact.
+  - The file's header comment and CLAUDE.md's nginx buffering paragraph are updated in the same PR.
 
-**AVPlayer (manual gate, 4a-1b and 4a-3a).** The owner runs the M4/M7 probe shape against the
+**AVPlayer (manual gate, 4a-1b and 4a-3).** The owner runs the M4/M7 probe shape against the
 branch's image on the household host, on macOS, the iOS 27 Simulator and the Apple TV. The PR body
-records the probe output (ready time, frames, behind-PDT, the selected audio format, pause
-behaviour, and 4a-3a's seek into the window). Automated AVPlayer conformance belongs in the app
-repository's CI (§ Rejected alternatives).
+records the probe output: ready time, frames, behind-PDT, the selected audio format, pause
+behaviour, and (4a-3) a seek into the window.
 
 ## The PRs
 
-Each PR is `migration/phase4-<id>-<slug>`, opened as a draft, planned and implemented through
-`plan-review-fix`, `implement-review-escalate` and `pr-merge-gate`. 4a-1b and 4a-3b are
-security-adjacent (a new bearer token; slot accounting), so the skills' cadence would put their
-reviews on `fable` from round one. The owner's ruling of 2026-09-27 puts every review on `opus`
-while it stands. Every PR carries break-checks: a named wrong edit, the test that reddens with a
-message naming the mechanism, then the revert.
+Each PR:
+
+- is branch `migration/phase4-<id>-<slug>`, opened as a draft;
+- is planned and implemented through `plan-review-fix`, `implement-review-escalate` and
+  `pr-merge-gate`;
+- carries break-checks: a named wrong edit, the test that reddens with a message naming the
+  mechanism, then the revert.
+
+4a-1b and 4a-1c are security-adjacent (a bearer token; slot accounting). The owner's ruling of
+2026-09-27 puts every review on `opus` while it stands.
+
+### 4a-0 — e2e-upstream fixtures
+
+- **Scope.** The five assets and the scenario `asset` field (§ E2E), the `CONTRACT.md` and version
+  bump, and `e2e-upstream/test/`. No server change.
+- **Break-check.** Build an asset without its AC-3 track: the upstream's asset-shape test reddens,
+  naming the missing stream.
+- **Stopping point.** Inert for viewers.
+
+PR description draft:
+
+> **Phase 4a-0: e2e-upstream gains the codec fixtures Phase 4a's HLS tests need.** Five short loop
+> assets (MPEG-2 576i + MP2; H.264 1080i + AAC + AC-3; HEVC + AAC; H.264 with a 10 s GOP; H.264 +
+> E-AC-3) and a scenario field choosing a channel's asset. `CONTRACT.md` and the package version
+> move together. Spec: `docs/superpowers/specs/2026-09-27-phase4-apple-native-live-design.md`
+> § Testing.
 
 ### 4a-1a — the HLS packager (inert)
 
 - **Scope.**
-  - New package `relay/hls`: the probe (D9), the argv builder (D8, D11), the pipeline and its
-    generations (D10), the fMP4 box reader and segmenter (D6), `hls.Store`, and playlist rendering
-    (D7).
-  - `relay/ffmpeg` gains a spawn variant with extra output pipes.
-  - The channel records the ring index of each source boundary. `run()` gains a `released` signal
-    closed after `releaseSlot`, used by 4a-3b and harmless before it.
-  - No route, no Django change: nothing reaches the package.
+  - The new `relay/hls` package: the probe (D9), the argv builder with the qualifying-audio rules
+    and the failure policy (D8, D11), the pipeline and its generations (D10), the box reader and
+    segmenter (D6), `hls.Store`, and playlist rendering (D7).
+  - `relay/ffmpeg` gains an extra-output-pipes spawn.
+  - The channel records the ring index of each source boundary.
+  - The floor file's R21 header edit.
+  - No route and no Django change: nothing reaches the package.
 - **Tests.**
-  - Unit tests and fuzzing for the box reader.
-  - A stand-in for pipe shapes and early exits.
-  - A real-ffmpeg software test: 12 s of the 1080i fixture produces aligned 2 s segments on three
-    renditions, with correct `CODECS`.
-  - A real-ffmpeg boundary test: two fixtures with different PIDs produce two generations and a
-    discontinuity. It fails if the generation is not restarted, which is M3's silent drop.
-  - Detection with QSV unavailable selects software.
+  - Unit tests and fuzzing for the box reader, plus a stand-in for pipe shapes and early exits.
+  - Real ffmpeg, software:
+    - 12 s of the 1080i fixture gives aligned 2 s segments on three renditions, with correct
+      `CODECS`;
+    - the E-AC-3 fixture gives three audio renditions;
+    - a declared-but-empty audio PID is not mapped.
+  - Real ffmpeg, a boundary test: two fixtures with different PIDs give two generations and a
+    discontinuity, and the second generation's probe reports the second source.
+  - Detection with QSV unavailable gives software. A source-caused early failure does **not**
+    mark QSV unusable.
 - **Break-checks.**
-  - Remove the restart at a boundary: the boundary test reddens with "generation 1 produced no
-    segments after the boundary".
-  - Drop `delay_moov`: the AC-3 test reddens naming the moov error.
-  - Stamp PDT at publish time: the PDT test reddens on the `JoinBehind` backlog.
-- **Gates.** Go coverage census (D20). The PR body records Q1's first QSV run on the household
-  host if available. If it is not, that is the first item of 4a-1b's body.
-- **Stopping point.** Inert, and harmless to stop after, but delivers nothing to a viewer.
+  - Remove the restart at a boundary. The boundary test reddens: "generation 1 produced no segments
+    after the boundary".
+  - Probe generation 1 from `JoinBehind`. The second-probe assertion reddens, naming the old
+    source's codec.
+  - Drop `delay_moov`. The AC-3 test reddens, naming the moov error.
+  - Mark QSV unusable on any early failure. The source-failure test reddens.
+- **Gates.**
+  - The Go coverage census, with the R21 listing.
+  - The PR body records Q1's first QSV run on the household host if it is available. Otherwise
+    that becomes the first item of 4a-1b's body.
+- **Stopping point.** Inert.
 
 PR description draft:
 
 > **Phase 4a-1a: the HLS packager (inert).** Adds `relay/hls`, which turns a channel's ring into
-> fMP4/CMAF HLS renditions. A probe decides deinterlacing, geometry and audio layout. One ffmpeg
-> per generation writes video, stereo AAC and AC-3/E-AC-3 on separate pipes. A segmenter cuts
-> 2-second segments and renders the playlists. The encoder restarts at every source boundary,
-> because a surviving encoder silently drops a source with different PIDs (spec M3), and the
-> playlist marks the discontinuity. It uses Quick Sync when the one-frame detection succeeds and
-> libx264 otherwise. No route reaches it yet. Spec: `docs/superpowers/specs/2026-09-27-phase4-apple-native-live-design.md`
-> (D6-D11); ADR 0009. Coverage census: <rounds>. Break-checks: <three, with red output>. QSV on the
-> household host: <result, or "not yet run — first item of 4a-1b">.
+> fMP4/CMAF HLS renditions. A probe (at each generation's own start) decides deinterlacing,
+> geometry and which audio streams qualify. One ffmpeg per generation writes video, stereo AAC and
+> AC-3/E-AC-3 on separate pipes, and a segmenter cuts 2-second segments and renders playlists. The
+> encoder restarts at every source boundary, because a surviving encoder silently drops a source
+> with different PIDs (spec M3). Quick Sync when the one-frame detection succeeds, libx264
+> otherwise, and QSV is only written off for the process when the failure is shown to be the
+> device's. No route reaches it yet. Spec D6-D11; ADR 0009. Coverage: census <rounds>; uncovered
+> statements of this PR, per file: <list>; coverage on additions <n>% (R21). Break-checks: <four,
+> with red output>. QSV on the household host: <result, or "first item of 4a-1b">.
 
 ### 4a-1b — live HLS end to end
 
 - **Scope, relay.**
   - `identify()` accepts `hls`, and `xcForcedFormat` maps `.m3u8`.
-  - The HLS entry path in `StreamHandler`: `Attach`, then `AttachOutput`, then wait for init, then
-    the multivariant with a fresh token.
-  - The token (D4), in `relay/control`.
-  - The `/hls/` routes and the session table with presence (D5): events, idle sweep, resume and
-    revocation through `DELETE …/clients/<id>`.
-  - Redirect as Proxy on `hls` (D13).
-  - The payload fields `hls_encoder` and `hls_generation`.
+  - The HLS entry path in `StreamHandler`.
+  - The opaque token and session table (D4).
+  - The `/hls/` routes, including `DELETE /hls/<token>`.
+  - Presence (D5): events, the idle sweep, resume, and ending the session through
+    `DELETE …/clients/<id>`.
+  - Redirect as Proxy (D13).
+  - `hls_encoder` and `hls_generation` in the channel payload.
 - **Scope, Django.**
-  - `_FORMAT_ALIASES` gains `hls` and `m3u8`.
-  - `_xc_allowed_output_formats` adds `m3u8`.
-  - `get.php` with `output=m3u8|hls` emits `/live/u/p/<id>.m3u8` with no `output_format` query (R9).
+  - `_FORMAT_ALIASES`.
+  - `_xc_allowed_output_formats` gains `m3u8`.
+  - `get.php` with `output=m3u8|hls` emits `/live/u/p/<id>.m3u8` with no `output_format` query
+    (R9).
   - The capability view, its serializer and its URL.
-  - `relay_serializers.py` preserves the new optional fields.
-- **Scope, nginx and Docker.**
-  - `location ^~ /hls/` (D3).
-  - The compose files' relay-bearing services gain a commented `/dev/dri` note naming Quick Sync
-    for HLS.
+  - `relay_serializers.py` fields.
+- **Scope, nginx and Docker.** `location ^~ /hls/`, and a commented `/dev/dri` note on the
+  compose files' relay-bearing services naming Quick Sync for HLS.
 - **Scope, docs.**
-  - CLAUDE.md: the nginx paragraph, and the "no HLS output" line becomes history.
-  - `README.md:153` becomes true for live (follow-up F1 records the wording).
-  - Parity matrix preamble and rows.
+  - CLAUDE.md: the nginx paragraph; the § State registry sentence (the ADR 0006 amendment); "no
+    HLS output" becomes history.
+  - `README.md:153`, reworded to "live only" (F1).
+  - The parity matrix preamble and rows.
   - `e2e/COVERAGE.md`.
-- **Tests.** As § Testing lists for 4a-1b, plus `e2e-upstream`'s assets and scenario field.
+- **Tests.** As § Testing lists for 4a-1b.
 - **Break-checks.**
-  - Accept a token for any channel: the cross-channel spec reddens.
-  - Remove revocation from the client stop: the revoke spec reddens.
-  - Put `auth_request` on `^~ /hls/`: the greybox fifth test reddens.
-  - Set idle to 0: the presence spec reddens on a missing `hls` client.
-- **Manual gate.** The AVPlayer run (macOS, iOS 27 Simulator, Apple TV).
-- **Stopping point.** Yes: live TV plays in AVPlayer through any Xtream client.
+  - Look up the session without verifying the MAC. The tampered-MAC spec reddens: 200 where 403
+    is expected.
+  - Make `DELETE /hls/<token>` return 204 without ending the session. The post-leave spec reddens.
+  - Put `auth_request` on `^~ /hls/`. The greybox fifth test reddens.
+  - Remove the session end from the client stop. The revoke spec reddens.
+- **Gates.** The Python Gate 2 isolated run (`authorize.py`, `relay_serializers.py`), plus the Go
+  census with its R21 listing.
+- **Manual gate.** The AVPlayer run: macOS, the iOS 27 Simulator and the Apple TV.
+- **Stopping point.** Not on its own. On a slot-constrained provider a third-party app that never
+  calls leave holds its slot for the idle timeout, so 4a-1c follows directly.
 
 PR description draft:
 
-> **Phase 4a-1b: live HLS end to end.** A live tune whose format resolves to `hls` —
-> `?output_format=hls`, or an Xtream `.m3u8` URL — now answers a multivariant playlist instead of
-> bytes. Segments and media playlists live under `/hls/<token>/…`, authorised by a relay-minted
-> media-session token (HMAC of `SECRET_KEY`, context `media-session`), so Django is asked once per
-> playlist session, not per segment. An HLS viewer is a client in the relay's registry while its
-> session is live: stream limits, admin stop and stats need no special case. `player_api`
-> advertises `m3u8`, `get.php?output=m3u8` emits `.m3u8` URLs, and `/api/mino/capabilities/` tells
-> the Apple app this server has 4a. Spec D2-D5, D13, D19. nginx: new `^~ /hls/`, no hop, buffering
-> off; the greybox spec pins it. AVPlayer manual gate: <probe output>. Refs: ADR 0008, ADR 0009.
+> **Phase 4a-1b: live HLS end to end.** A live tune whose format resolves to `hls`
+> (`?output_format=hls`, or an Xtream `.m3u8` URL) now answers a multivariant playlist instead of
+> bytes. Segments and media playlists live under `/hls/<token>/…`, where the token is an opaque,
+> relay-minted session id with an HMAC of `SECRET_KEY` (context `media-session`). It names no
+> channel and lives exactly as long as its session: an explicit `DELETE /hls/<token>`, 12 s of
+> silence, an admin stop or a relay restart ends it. An HLS viewer is a client in the relay's
+> registry, so stream limits, admin stop and stats need no special case. `player_api` advertises
+> `m3u8`, `get.php?output=m3u8` emits `.m3u8` URLs, and `/api/mino/capabilities/` tells the Apple
+> app this server has 4a. Spec D2-D5, D13, D19. This amends ADR 0006's registry sentence (spec
+> § The ADR 0006 amendment). AVPlayer manual gate: <probe output>. Refs: ADR 0008, ADR 0009.
 
-### 4a-1c — the automatic HLS profile
-
-- **Scope.**
-  - The `core` migration: `OutputProfile.hls_mode`, and the two locked rows, with a reverse.
-  - The `channels` migration: `Channel.hls_output_profile`, with a reverse.
-  - The serializers. `hls_mode` is read-only, and HLS rows are excluded from the `output_profiles`
-    map and from `resolve_output_profile`.
-  - Next-source `hls_profile`.
-  - The channel form gets an "HLS output" select (bulk edit is not in scope).
-  - The relay's automatic rules (§ Encoder argv) and the two run-level rules.
-- **Tests.**
-  - Migrations forward and back.
-  - A per-rendition decision table test against the four new assets.
-  - A run-level test: a copied HEVC run whose next source is MPEG-2 is transcoded into
-    H.264/HEVC-declared form, as the rule says.
-  - E2E: an automatic channel on the H.264 asset serves copied video, with `CODECS` from the
-    source.
-- **Break-checks.**
-  - Copy interlaced video: the decision test reddens naming `field_order`.
-  - Let a copied segment exceed target + 0.5 s: the segmenter test reddens.
-- **Stopping point.** Yes.
-
-PR description draft:
-
-> **Phase 4a-1c: the *automatic* HLS profile.** ADR 0009's opt-in: a channel can be set to an HLS
-> Output Profile in *automatic* mode, which copies what AVPlayer accepts and transcodes only what it
-> does not (MP2 → AAC; interlaced, MPEG-2 or long-GOP video → H.264). Two locked profiles are
-> seeded; the choice is per channel (`Channel.hls_output_profile`), sent to the relay as
-> `hls_profile` on next-source. Spec D12. Migrations have reverses and a round-trip test.
-
-### 4a-2 — the browser player on HLS
-
-- **Scope.** § Browser player. It touches `FloatingVideo.jsx`, `FloatingVideoUtils.js`,
-  `UiSettingsForm.jsx`, `package.json` and `package-lock.json` (removing mpegts.js), and the vitest
-  files. It changes no server code.
-- **Tests.**
-  - Vitest for URL building and the player's choice between hls.js and native.
-  - An E2E `frontend` spec for playback.
-  - Every changed vitest assertion is listed before and after (the test-modification rule).
-- **Break-checks.** Keep `output_format=mpegts` in `buildLiveStreamUrl`: the URL test and the E2E
-  playback spec redden.
-- **Stopping point.** Yes.
-
-PR description draft:
-
-> **Phase 4a-2: the browser player plays live over HLS.** Live channels in the floating player now
-> play through hls.js against the HLS output (native HLS where only that exists), so Firefox plays
-> live too. mpegts.js, its live code path and the web-player Output Profile preference (which only
-> fed the mpegts URL) are removed. Spec D18. Changed tests, before → after: <list>.
-
-### 4a-3a — the live rewind window and linger
-
-- **Scope.**
-  - The disk store and its sweep, cap and degradation (D14).
-  - Window playlists.
-  - Linger, evictability and grace (D15).
-  - `Manager` holding a channel open for a linger.
-  - The four settings (D17), end to end: `get_proxy_settings` defaults, the relay settings
-    serializer, the Go `tuningFrom` keys, and the proxy-settings form fields.
-  - `03-init-dispatcharr.sh` creates `/data/cache/rewind`.
-  - The capability document reports the window.
-  - Payload fields.
-- **Tests.**
-  - Unit tests: depth trim, cap eviction order, `ENOSPC` degradation (an injectable writer), and
-    start-up cleanup.
-  - E2E: a playlist spanning more than the live-edge 10 segments after a short configured depth.
-  - E2E: the channel still running during linger with zero clients, and stopped after it.
-  - E2E: the behind-live grace.
-- **Break-checks.**
-  - Let a TS viewer's channel be evictable: the watched-never-evicted test reddens.
-  - Stop the encoder at the last session: the linger spec reddens on a stopped channel.
-- **Manual gate.** AVPlayer seek into the window on Apple TV. Q4's measurement is run here.
-- **Stopping point.** Yes. Without 4a-3b a lingering window holds its slot for the full linger,
-  which R10 says it must not do when a tune needs it. Stopping here is legitimate only with
-  `rewind_linger_seconds` set to 0 on a slot-constrained provider.
-
-PR description draft:
-
-> **Phase 4a-3a: the live rewind window.** Each HLS channel now keeps its last
-> `rewind_window_minutes` (60) on disk under `/data/cache/rewind`, shared by every viewer, served as
-> a sliding HLS window so AVPlayer can pause, rewind and scrub back to live. After the last viewer
-> leaves, the channel lingers for `rewind_linger_seconds` (300) so zapping back keeps the rewind.
-> The window is lost on restart and drain, capped by `rewind_disk_cap_gb`, and a disk error
-> degrades the window, never the live output. Spec D14, D15, D17. AVPlayer seek gate: <output>.
-
-### 4a-3b — a lingering window yields its slot
+### 4a-1c — slot reclaim
 
 - **Scope.**
   - Django: `capacity` on next-source (the serializer, and the computation in
     `resolve_initial_source`).
-  - Relay: `Manager.EvictFor`, and the one retry in `startTune`.
-  - A parity row.
+  - Relay: the releasing set, the `released` signal, `Manager.ReclaimFor` with its test hook, and
+    the single retry in `startTune`.
+  - The D16 reclaimable predicate for HLS-silent channels.
+  - Parity rows.
 - **Tests.**
-  - A Django unit test for `profile_ids` covering both `profile_full` and `credential_full`
-    siblings.
-  - A Go race test: an eviction concurrent with a re-attach, where the viewer and the eviction
-    never both win.
-  - E2E against an upstream with `maxConnections: 1`: tune A, leave, tune B. B plays, A's window is
-    gone, and the release reached Django (the counter is back to 1).
+  - Django: `profile_ids` with `profile_full` and `credential_full` siblings.
+  - Go: the predicate table (a TS client; a reloading session; sessions silent 5 s).
+  - Go: the hook-driven race, where a viewer re-attaches between pick and re-check, and exactly one
+    wins.
+  - Go: the releasing wait.
+  - E2E: the four no-wait scenarios (§ E2E).
 - **Break-checks.**
-  - Evict without the re-check under the lock: the race test reddens.
-  - Omit credential siblings: the credential test reddens.
-- **Gates.** The Python Gate 2 isolated run, because `next_source.py` is edited.
+  - Reclaim without the re-check under the lock. The hook-driven race test reddens on every run.
+  - Omit the credential siblings. The Django test reddens.
+  - Skip the releasing wait. The immediate-zap E2E reddens with a 503.
+  - Count a reloading session as silent. The "B gets 503" scenario reddens with a 200.
+- **Gates.** The Python Gate 2 isolated run (`next_source.py`), and the Go census with its R21
+  listing.
+- **Stopping point.** Yes. This closes 4a-1: live HLS on Apple devices, with zaps as fast as TS.
+
+PR description draft:
+
+> **Phase 4a-1c: a blocked tune reclaims a channel nobody is watching.** When every provider
+> profile is full, next-source now says which profiles blocked the tune. The relay waits for any
+> release already in flight on them, otherwise stops one channel on those profiles that has no
+> TS client and whose HLS sessions have all left or gone silent for more than two target
+> durations, and retries once. Slots stay Django's decision (ADR 0005): Django names the blocking
+> profiles, and the relay only chooses among channels it knows are unwatched. A paused AVPlayer
+> keeps reloading every 2 s and is never reclaimed. The #513 reconciler needs no change. Spec D16.
+
+### 4a-1d — the automatic HLS profile
+
+- **Scope.**
+  - A `core` migration: `OutputProfile.hls_mode`, and the two locked rows (`command="ffmpeg"`,
+    `parameters="(built by the relay)"`), with a reverse.
+  - A `channels` migration: `Channel.hls_output_profile`, `SET_NULL`, with a reverse.
+  - Serializers and viewset: `hls_mode` is read-only, and HLS rows cannot be created or edited.
+  - Every exclusion D12 lists, backend and frontend.
+  - Next-source `hls_profile`.
+  - The channel form's "HLS output" select. Bulk edit is not in scope.
+  - The relay's automatic rules, including the declared-family rule with `hevc_qsv` and `libx265`.
+- **Tests.**
+  - Migrations forward and back.
+  - A per-rendition decision table against the 4a-0 assets.
+  - Declared-family: a copied-HEVC run whose next source is MPEG-2 is encoded as HEVC, not H.264.
+  - Each exclusion: the HDHR resolver ignores an HLS row, and the HDHR select omits it.
+  - E2E: an automatic channel on the H.264 asset serves copied video with the source's `CODECS`.
+- **Break-checks.**
+  - Copy interlaced video. The decision test reddens, naming `field_order`.
+  - Encode the HEVC run's second generation as H.264. The declared-family test reddens.
+  - Let a copied segment exceed target + 0.5 s. The segmenter test reddens.
+- **Gates.** The Python Gate 2 isolated run (`next_source.py`, `authorize.py`), and the Go census
+  with its R21 listing.
+- **Stopping point.** Yes.
+
+PR description draft:
+
+> **Phase 4a-1d: the *automatic* HLS profile.** ADR 0009's opt-in: a channel can be set to an HLS
+> Output Profile in *automatic* mode, which copies what AVPlayer accepts and transcodes only what
+> it does not (MP2 → AAC; interlaced, MPEG-2 or long-GOP video → the run's declared codec). Two
+> locked profiles are seeded; the choice is per channel (`Channel.hls_output_profile`) and reaches
+> the relay as `hls_profile`. HLS profiles are excluded from every other Output Profile consumer,
+> so they cannot be picked for HDHR, users or the web player. Spec D12. Migrations have reverses
+> and a round-trip test.
+
+### 4a-2 — the browser player plays channels over HLS
+
+- **Scope.** § Browser player: `FloatingVideo.jsx`, `FloatingVideoUtils.js`, `RecordingCardUtils.js`,
+  the channel call sites, `api.js` (the leave call), and the vitest files listed there. There is no
+  server change, and mpegts.js stays.
+- **Tests.** Vitest for both builders and the player's choice, and the E2E `frontend` spec.
+- **Break-checks.**
+  - Point `getShowVideoUrl` at `buildLiveStreamUrl`. The `RecordingCardUtils` test and the E2E
+    playback spec redden.
+  - Skip the leave call on close. The E2E's `DELETE` observation reddens.
+  - Point stream previews at HLS. The `StreamsTable` test reddens.
+- **Stopping point.** Yes.
+
+PR description draft:
+
+> **Phase 4a-2: the browser player plays live channels over HLS.** Channel playback (channels
+> table, guide, DVR, recordings, stats card) now requests `output_format=hls` and plays through
+> hls.js (native HLS where only that exists), so Firefox plays live channels too; closing or
+> switching the player ends the HLS session at once. Stream previews by stream hash stay on
+> mpegts.js over TS with the web-player Output Profile preference, unchanged (owner ruling R18).
+> Spec D18. Changed tests, before → after: <list>.
+
+### 4a-3 — the live rewind window, linger and lingering reclaim
+
+- **Scope.**
+  - The disk store, sweep, cap and degradation (D14).
+  - Window playlists.
+  - Linger, the grace, and lingering reclaim (D15, D16).
+  - `Manager`'s linger hold, and the `channel.go:709-711` comment correction.
+  - The four settings end to end (D17): `get_proxy_settings` defaults, the relay settings
+    serializer, the Go `tuningFrom` keys, and the proxy-settings form fields.
+  - `03-init-dispatcharr.sh` creates `/data/cache/rewind`.
+  - The capability document reports the window.
+  - The payload fields, and the stats UI showing `lingering_since`.
+  - The CLAUDE.md § State update.
+- **Tests.**
+  - Unit: depth trim, cap eviction order, `ENOSPC` degradation (an injectable writer), start-up
+    cleanup.
+  - Unit: the reclaimable predicate with linger (a TS client attached means not reclaimable; the
+    grace delays it).
+  - E2E: a playlist spanning more than the 10 live-edge segments under a short configured depth.
+  - E2E: a channel still running during linger with zero clients, and stopped after it.
+  - E2E: a lingering window reclaimed by a blocked tune without waiting out the linger.
+- **Break-checks.**
+  - Let a channel with a TS client be reclaimable. The predicate test reddens.
+  - Stop the encoder at the last session. The linger spec reddens on a stopped channel.
+  - Ignore the grace. The behind-live test reddens.
+- **Manual gate.** AVPlayer seek into the window on Apple TV. Q4 is measured here.
 - **Stopping point.** This completes 4a.
 
 PR description draft:
 
-> **Phase 4a-3b: a lingering rewind window gives its provider slot to a blocked tune.** When every
-> provider profile is full, next-source now says which profiles blocked the tune; the relay evicts
-> one idle, lingering window on those profiles and retries once. Slots stay Django's decision (ADR
-> 0005): Django names the blocking profiles, the relay only chooses among channels it knows nobody
-> is watching. The #513 reconciler needs no change. Spec D16.
+> **Phase 4a-3: the live rewind window.** Each HLS channel now keeps its last
+> `rewind_window_minutes` (60) on disk under `/data/cache/rewind`, from its first HLS viewer,
+> shared by every viewer and served as a sliding HLS window so AVPlayer can pause, rewind and scrub
+> back to live. After the last viewer leaves, the channel lingers for `rewind_linger_seconds` (300)
+> so zapping back keeps the rewind; a lingering window gives its provider slot to a blocked tune
+> (after a 10 s grace if its viewer was behind live). The window is lost on restart and drain,
+> capped by `rewind_disk_cap_gb`, and a disk error degrades the window, never the live output.
+> Spec D14-D17. AVPlayer seek gate: <output>.
 
 ## Open questions that need a measurement
 
 | # | Question | Who, where | What decides |
 |---|---|---|---|
-| Q1 | Does the D8 QSV argv run on the household host (12th-gen, UHD 770): device init, `hwupload` + `h264_qsv`, `forced_idr` with `force_key_frames` giving IDRs every 2 s, `-level 42`? And what CPU and GPU does it cost for two concurrent 1080i50 channels? | Owner, on the host, with the 4a-1a image: `ffmpeg` on a captured provider TS, then two live channels via the relay. | If an option is refused, 4a-1a corrects the argv (no design change). If two channels exceed 60% of total CPU with software deinterlacing, D8's deinterlace moves to `vpp_qsv=deinterlace=2` behind a probe-driven switch (a 4a-1a or 4a-1b change). |
-| Q2 | Which audio group does Apple TV 4K pick, through a TV only and through a surround receiver? | Owner, Apple TV, the 4a-1b build, with the probe or the first app build. | If tvOS picks AAC with a receiver attached, the multivariant lists the AC-3 variant first (a one-line ordering change). |
-| Q3 | E-AC-3 JOC (Atmos) passthrough: does ffmpeg's `dec3` carry the JOC signalling, and does `CODECS="ec-3"` or `"ec+3"` make Apple TV output Atmos? | Owner, with an Atmos-carrying channel if the provider has one, an Apple TV and an Atmos receiver. | Declare `ec+3` when JOC is present, or drop the `eac3` rendition (AC-3 only) if passthrough loses JOC. Until measured, 4a ships `ec-3` with no Atmos claim. |
-| Q4 | A 1,800-entry sliding live playlist on Apple TV: memory, CPU, reload time, seek responsiveness. | Owner, Apple TV, 4a-3a, a channel watched for 60 min. | If it misbehaves, the default depth drops (setting) and a follow-up considers a smaller window in the playlist than on disk. |
-| Q5 | Zap time: channel tap to first frame, cold tune, on the host with QSV. | Owner or app. It is informational, not a gate. | Whether the encoder should start at the ring's head instead of `JoinBehind` (a one-constant change), traded against the first segments' readiness. |
-| Q6 | The failover gap on real hardware: from boundary to the next generation's first segment. | E2E (software, on CI) records it, and the owner (QSV). | Above 10 s, a follow-up considers pre-spawning the next generation at the boundary. |
-| Q7 | Does ffprobe report `field_order` reliably on the household's real channels (H.264 PAFF/MBAFF, MPEG-2)? | Owner: capture three channels' ring bytes and run the D9 probe. | If unreliable, `bwdif=deint=interlaced` is applied to every source (safe on progressive frames, which it passes), and `R` is taken from the stream's field rate. |
-| Q8 | Is an automated AVPlayer check feasible in GitHub's macOS runners, with a runtime at the iOS/tvOS 27 floor? | App repository, when its CI is set up. | Whether 4a's manual gate can be retired into the app repository's CI. |
+| Q1 | Does D8's QSV argv run on the household host (12th-gen, UHD 770)? That covers device init, `hwupload` + `h264_qsv`, `forced_idr` with `force_key_frames` giving IDRs every 2 s, and `-level 42`. What CPU and GPU do two concurrent 1080i50 channels cost? | Owner, on the host, with the 4a-1a image: `ffmpeg` on a captured provider TS, then two live channels via the relay. | A refused option is corrected in 4a-1a, with no design change. If two channels exceed 60% of total CPU with software deinterlacing, D8's deinterlace moves to `vpp_qsv=deinterlace=2` behind a probe-driven switch. |
+| Q2 | Which audio group does an Apple TV 4K pick, through a TV only and through a surround receiver? | Owner, Apple TV, the 4a-1b build. | If tvOS picks AAC with a receiver attached, the AC-3 variant is listed first (a one-line change). |
+| Q3 | E-AC-3 JOC (Atmos) passthrough: does ffmpeg's `dec3` carry the JOC signalling, and does `CODECS="ec-3"` or `"ec+3"` make an Apple TV output Atmos? | Owner, with an Atmos channel if the provider has one, an Apple TV and an Atmos receiver. | Declare `ec+3` when JOC is present. Until this is measured, 4a ships `ec-3` with no Atmos claim. |
+| Q4 | How does a 1,800-entry sliding live playlist behave on Apple TV: memory, CPU, reload time, seek responsiveness? | Owner, Apple TV, 4a-3, a channel watched for 60 min. | If it misbehaves, the default depth drops, and a follow-up considers compression or a shorter listed window. |
+| Q5 | Zap time on the host with QSV: channel tap to first frame, cold tune. It is informational. | Owner or the app. | Whether generation 0 starts at the ring's head rather than `JoinBehind` (one constant). |
+| Q6 | What is the failover gap on real hardware, from boundary to the new generation's first segment? | E2E records it (software, CI); the owner measures QSV. | Above 10 s, a follow-up considers pre-spawning the next generation. |
+| Q7 | Is ffprobe's `field_order` reliable on the household's real channels (H.264 PAFF/MBAFF, MPEG-2)? | Owner: capture three channels' ring bytes and run D9's probe. | If it is unreliable, `bwdif=deint=interlaced` is applied to every source, and `R` is taken from the field rate. |
+| Q8 | Are GitHub macOS runners available with an iOS/tvOS 27 runtime? | The app repository, when its CI is set up. | Whether the manual AVPlayer gate moves into the app repository's CI. |
+| Q9 | Does hls.js keep reloading a live playlist while paused, as AVPlayer does (M7)? | 4a-2's E2E records the cadence. | If it stops, the browser player calls leave on pause and re-tunes on play. |
 
 ## Rejected alternatives
 
-- **Remux by default.** Rejected in ADR 0009.
+- **Remux by default.** ADR 0009.
 - **ffmpeg's `-f hls` muxer.** D6.
 - **One encoder surviving failover.** D10, M3.
 - **Refusing HLS without Quick Sync.** D11.
-- **A per-client HLS profile** (the existing `?output_profile=` for HLS). It breaks "one shared
-  encode per channel" (D12).
-- **A separate HMAC key file for the token.** D4.
-- **Binding the token to the client IP.** It breaks AirPlay and roaming (D4).
-- **`EXT-X-PLAYLIST-TYPE:EVENT` for the window.** It cannot drop old segments (D14).
+- **Marking QSV unusable on any early generation failure.** D11: that confuses a source failure
+  with a device failure.
+- **A per-client HLS profile.** D12.
+- **A token that carries its claims (channel, user, expiry).** It exposes the channel UUID (D4,
+  finding 2).
+- **A fixed absolute expiry.** It cuts off a continuously watched session (R22).
+- **Binding the token to the client IP.** It breaks AirPlay and roaming.
+- **Relying on the idle timeout alone to end sessions.** It holds a slot for 12 s after every zap
+  (finding 1). D5 adds the leave call, and D16 reclaims silent sessions.
+- **`EXT-X-PLAYLIST-TYPE:EVENT` for the window.** D14.
 - **Keeping the window in memory.** ADR 0008.
-- **The relay deciding which channel's slot to take without Django naming the blocking profiles.**
-  It would move slot knowledge into the relay (ADR 0005).
-- **Django calling the relay to evict inside next-source.** It nests a cross-process call in a
-  request the relay is itself waiting on, and needs Django to know relay-private linger state.
-- **A macOS CI job running AVPlayer in 4a.** No runner image is known to carry the iOS/tvOS 27
-  floor. Simulator boots are slow and flaky, and the app repository is the natural owner. It is a
-  manual gate here (D20, Q8).
+- **Starting the window at the channel's first tune of any format.** A TS-only channel would need
+  an encode that nothing reads (R19).
+- **Moving stream previews to HLS.** R18.
+- **The relay choosing which slot to take without Django naming the blocking profiles.** ADR 0005.
+- **Django calling the relay to reclaim, inside next-source.** It nests a cross-process call in a
+  request the relay is itself waiting on.
+- **A macOS CI job running AVPlayer in 4a.** Q8.
 
 ## Risks
 
-- **The QSV argv is unexercised.** Q1 is the first run. The software fallback means a wrong argv
-  degrades to CPU encoding rather than to no picture, but a household host at 100% CPU is its own
-  failure. 4a-1a's PR must not merge claiming QSV works without Q1's output.
-- **Lingering holds scarce provider slots.** Each zap-away holds a slot for 5 minutes. On a
-  two-connection provider, zapping through three channels blocks the third until 4a-3b's eviction.
-  4a-3a alone is a regression for slot-constrained households (§ 4a-3a's stopping point).
-- **A token in the URL path is logged by nginx.** It is scoped to one channel, dies within 300 s of
-  the session going idle, and is revoked by a stop. The nginx access log already records XC
-  credentials in the same way. A remote-access future would revisit both together (ADR 0008 keeps
-  remote access off the critical path).
-- **Disk.** 3.1-3.4 GB per channel-hour of write traffic on whatever backs `/data`. On an SD card
-  or a slow NAS this is wear and latency. The cap bounds space, not wear.
-- **The failover gap** (M6: 8.9 s on the prototype host) is longer than a TS client sees today. The
-  discontinuity is correct, but a viewer notices it.
-- **Parity-matrix growth.** Rows must land pinned. A row landing `owed:` would need a `PRS`
-  vocabulary change, and this spec does not plan one.
+- **The QSV argv is unexercised.** Q1 is its first run. Fallback degrades a wrong argv to CPU
+  encoding, not to no picture, but a household host at 100% CPU is its own failure. 4a-1a must not
+  merge claiming QSV works without Q1's output.
+- **Lingering holds scarce provider slots.** Each zap-away holds a slot for up to 5 minutes, unless
+  a blocked tune reclaims it (D16). On a two-connection provider that is correct, but it means the
+  household's third channel always evicts a window.
+- **A third-party client that never calls leave** holds its slot for up to 4 s against a blocked
+  tune (D16), and its stream-limit count for up to 12 s plus one sweep (§ Presence).
+- **Advertising `m3u8`.** `allowed_output_formats` gaining `m3u8` may move third-party Xtream apps,
+  Android ones included, onto HLS, and so onto one encode per watched channel. That app behaviour
+  is unverified.
+- **A token in the URL path is logged by nginx's default access log.** It names no channel, and
+  dies with its session. The same log already holds XC credentials. A remote-access future would
+  revisit both together (ADR 0008).
+- **PDT drift.** Within a generation, PDT is the generation's arrival anchor plus media time. An
+  upstream stall without a reconnect advances the wall clock but not media time, so PDT drifts
+  behind real time by the stall's length until the next generation. That moves programme markers
+  (4a-3) by the same amount. A reconnect starts a new generation and re-anchors. Measuring the
+  drift on real channels is a 4a-3 E2E observation, not a gate.
+- **Disk.** 3.1-3.4 GB per channel-hour of writes on whatever backs `/data`. On an SD card or a slow
+  NAS that is wear and latency. The cap bounds space, not wear.
+- **The failover gap** (M6: 8.9 s on the prototype host) is longer than a TS client sees today.
+- **Parity-matrix growth.** Rows must land pinned. An `owed:` row would need a `PRS` vocabulary
+  change, which this spec does not plan.
+- **Resume bypasses the stream limit** for at most 300 s (§ Presence).
 
 ## Non-goals — deliberately out of scope
 
@@ -965,27 +1198,29 @@ PR description draft:
 - **Remote access** built into the app, and the remote-access hardening it would require (R3,
   ADR 0008).
 - **Low-Latency HLS** (R8). The fixed 2 s GOP keeps it reachable later.
-- **A TS reader for the rewind window** (`?behind=`, R10). It is recorded as a known extension.
+- **A TS reader for the rewind window** (`?behind=`, R10): a known extension. A window for
+  TS-only channels, likewise (R19).
+- **Stream previews over HLS** (R18).
 - **Plex design weight, and deleting the HDHomeRun, M3U or XMLTV outputs** (R12).
 - **Renaming** Dispatcharr to Mino, or renaming any existing identifier, route or header (R15). The
   existing `X-Dispatcharr-*` headers and `DISPATCHARR_*` variables are kept, and nothing new is
   named for Dispatcharr.
 - **Android** (ADR 0008).
 - **Adaptive bitrate ladders.** One video rendition per channel.
-- **Audio language selection, subtitles and closed captions.** The first audio stream feeds AAC.
+- **Audio language selection, subtitles and closed captions.**
 - **Bonjour discovery** (R6: later) and **multi-profile** households (R5).
-- **HLS as a deployment or user default output format** (D2).
+- **HLS as a deployment or user default** (D2, R23).
+- **Bulk-editing the HLS profile** across channels.
 - **Metrics endpoints** (Phase 2 D6's reasoning stands).
 
 ## Follow-ups noticed while writing this spec (not folded in)
 
 - **F1.** `README.md:153` advertises "📡 **HLS Output** — Serve streams as HLS alongside existing
-  container formats". It is false today, and 4a-1b makes it true for **live** only. 4a-1b rewrites
-  it to say so. Until then it stays, per the owner's instruction for this PR.
-- **F2.** `apps/proxy/authorize.py`'s `resolve_output_format` returns a user's
-  `custom_properties.output_format` **unvalidated** (`:277-281`): any string a user record holds
-  reaches the relay and is refused 501. That is pre-existing, and harmless until a value such as
-  `hls` is stored there on purpose. It is recorded rather than fixed.
+  container formats". That is false today. 4a-1b makes it true for **live** only, and rewrites it
+  to say so.
+- **F2.** `resolve_output_format` returns a user's `custom_properties.output_format` **unvalidated**
+  (`apps/proxy/authorize.py:277-281`). Any string stored there reaches the relay and is refused
+  with 501. This is pre-existing and recorded, not fixed.
 
 ## Done log
 
@@ -993,17 +1228,41 @@ Filled in as PRs merge.
 
 | Item | PR | Merged |
 |---|---|---|
-| Spec, ADR 0008, ADR 0009, glossary | this PR | |
+| Spec, ADR 0008, ADR 0009, glossary | #523 | |
+| 4a-0 e2e-upstream fixtures | | |
 | 4a-1a packager | | |
 | 4a-1b live HLS end to end | | |
-| 4a-1c automatic profile | | |
+| 4a-1c slot reclaim | | |
+| 4a-1d automatic profile | | |
 | 4a-2 browser player | | |
-| 4a-3a rewind window | | |
-| 4a-3b slot yield | | |
+| 4a-3 rewind window | | |
 
 ## Changelog
 
 - **2026-09-27, v1.** First draft, written against `560c6d58` with the prototypes M1-M7.
+- **2026-09-27, round 1, reviewed at `8bec4ca9`** (one blocking finding, eleven should-fix, eleven
+  nits; owner and orchestrator rulings R18-R24).
+  - **Leave call.** An explicit `DELETE /hls/<token>`, and D16 reclaims channels whose HLS
+    sessions are silent for more than 2 × target duration. Reclaim moves into 4a-1 as the new
+    4a-1c, and the E2E no longer waits out the idle timeout (finding 1, R24).
+  - **Token.** It is now opaque, holds no claims, has no absolute expiry, and an anonymous user is
+    `"0"` (finding 2, R22).
+  - **ADR 0006 amendment.** Recorded, with every zero-client consumer listed (finding 3).
+  - **Go ratchet.** Amended per R21 (finding 4).
+  - **D11.** QSV is marked unusable only on device evidence (finding 5).
+  - **Probe.** It starts at the generation's own start (finding 6).
+  - **Audio and failure.** The qualifying-audio rules, the silent AAC track, and the HLS output
+    failure policy (finding 7).
+  - **Automatic mode.** The declared-family rule now specifies HEVC (finding 8).
+  - **Break-checks.** Those that could not fail are replaced (findings 9, 10 and 17).
+  - **D12.** It lists every Output Profile consumer, the seeded rows' fields and `on_delete`
+    (finding 11).
+  - **D18.** Rewritten per R18: channels go over HLS, previews stay on TS, mpegts.js stays
+    (finding 12).
+  - **The window** starts at the first HLS viewer (R19).
+  - **E-AC-3** sources get three audio renditions (R20).
+  - **PR layout.** 4a-0 is split out (finding 18), and 4a-3a and 4a-3b are merged into 4a-3.
+  - **Nits 13-16 and 19-23** are applied.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
@@ -1064,6 +1323,31 @@ These override any default in this spec.
 - **R16.** The app refuses a server lacking 4a (a capability check on server add).
 - **R17.** The browser player switches to HLS for live (hls.js is already bundled; Chrome and Edge
   142+ have native HLS).
+- **R18** (owner, round 1). In the browser, live **channels** play over HLS. Admin **stream
+  previews** (by stream hash), and any preview-style playback, stay on mpegts.js over TS. mpegts.js
+  and the web-player Output Profile preference are kept.
+- **R19** (owner, round 1). The rewind window starts at the channel's **first HLS viewer**. A
+  TS-only channel keeps no window and triggers no encode.
+- **R20** (owner, round 1). E-AC-3-only sources get three audio renditions, per Apple rule 2.6:
+  AAC, encoded AC-3, and E-AC-3 passthrough.
+- **R21** (owner, round 1). A Go PR may raise the coverage floor's `missing`, but only by the
+  uncovered statements of its own new or changed code:
+  - they are listed per file in the PR;
+  - the PR has ≥ 85% coverage on its additions, measured by the 12-round CI census;
+  - the reviewer checks the listing.
+
+  Noise draws above the floor still get a re-measurement PR of their own. The Python Gate 2 floor
+  is unchanged.
+- **R22** (orchestrator, round 1). "Short-lived" (R13) is satisfied by an **opaque** session token
+  whose validity ends when its session ends: explicit leave, idle departure plus the resume window,
+  admin stop, or relay restart. There is no fixed wall that cuts off a continuously watched
+  session.
+- **R23** (orchestrator, round 1). D13 (Redirect as Proxy over HLS), D2 (`hls` never a default)
+  and D11 (software fallback, never refuse) are accepted as decided, with D11 subject to finding 5.
+- **R24** (orchestrator, round 1). An explicit session leave, from the app (on zap, and after the
+  R11 countdown) and from the browser player (on close or switch). D16 treats an HLS session silent
+  for more than 2 × target duration as departed for slot reclaim. The E2E must not wait out the
+  idle timeout.
 
 Apple rules cited above are from Apple's *HLS Authoring Specification for Apple Devices* (revised
 2025-04-30), as summarised in the research that preceded this spec:

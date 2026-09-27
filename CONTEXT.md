@@ -8,7 +8,7 @@ test names, issue titles and commit messages.
 The working name for the whole product, the server and the Apple app together. The fork has
 diverged far enough from upstream Dispatcharr that it will be renamed. Until that rename happens,
 existing code, images and identifiers keep saying "Dispatcharr". Every **new** externally visible
-identifier (a route, a header, a Bonjour service type, an app bundle identifier) is named neutrally
+identifier (a route, a header, a setting key, a Bonjour service type, an app bundle identifier) is named neutrally
 or for Mino, never for Dispatcharr, so that the rename does not have to break it.
 
 ## Profiles — three different things
@@ -129,12 +129,12 @@ already says "timeshift".
 ## Live rewind window
 
 The recent past of a **live** channel that Dispatcharr itself keeps while the channel is being
-watched, so a client can pause, rewind and fast-forward live TV back to live, up to a configured
-depth (an hour by default). It starts when the channel is tuned, never before: there is nothing to
-rewind to from before anyone was watching. There is one window per channel, shared by every
-client watching it. It outlives the last client by a short linger, so a viewer who zaps back
-keeps their rewind. It belongs to the channel, not to an output format: an MPEG-TS client and
-an HLS client read the same window.
+watched over HLS. A client can pause, rewind and fast-forward live TV back to live, up to a
+configured depth. It starts when the channel's first HLS viewer arrives, never before: there is
+nothing to rewind to from before anyone was watching. A channel watched only over MPEG-TS keeps no
+window. There is one window per channel, shared by every client watching it. It outlives the last
+client by a short linger, so a viewer who zaps back keeps their rewind. It is read over HLS. A
+reader for MPEG-TS clients is a known extension, not something that exists.
 
 **Not catch-up.** Catch-up replays the *provider's* archive; the live rewind window is Dispatcharr's
 own recording of what it relayed. Never call it "timeshift" (catch-up's other name) or "DVR"
