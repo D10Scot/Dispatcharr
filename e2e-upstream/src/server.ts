@@ -6,8 +6,8 @@ import type { Scenario } from './scenario.js';
 import { BadRequestError } from './errors.js';
 import { renderPlaylist, credentialQuery, PLAYLIST_CONTENT_TYPE } from './playlist.js';
 import { renderXmltv, XMLTV_CONTENT_TYPE } from './xmltv.js';
-import { loadAsset } from './asset.js';
-import type { LoadedAsset } from './asset.js';
+import { DEFAULT_ASSET, assetPath, loadAsset } from './asset.js';
+import type { AssetName, LoadedAsset } from './asset.js';
 import { ConnectionRegistry } from './connections.js';
 import type { LiveConnection } from './connections.js';
 import { streamLoop, STREAM_CONTENT_TYPE } from './stream.js';
@@ -37,18 +37,26 @@ export const faults = new FaultStore();
 export const scenarioLog = new ScenarioLog();
 
 /**
- * Loaded on first use, not at module scope. `readFileSync` on
- * `UPSTREAM_ASSET` (`/app/assets/loop.ts` by default) only succeeds inside
+ * Loaded on first use, not at module scope. `readFileSync` on an asset
+ * (`/app/assets/<name>.ts` by default, see `assetPath`) only succeeds inside
  * the Docker image, where `make-asset.sh` put it there at build time — it
  * does not exist in the environment this test suite runs in. Every test
  * that imports this module for the scenario/playlist/EPG routes would fail
  * at import time if this ran eagerly, long before any test ever exercises
  * the stream route itself.
+ *
+ * Cached by resolved path, for the reason `getVodAsset()` below gives: a
+ * test that points `UPSTREAM_ASSET` or `UPSTREAM_ASSET_DIR` somewhere new
+ * must get the new file, not whichever one an earlier test loaded. A failed
+ * load is not cached, so a missing file fails every request that names it.
  */
-let asset: LoadedAsset | undefined;
-function getAsset(): LoadedAsset {
+const assets = new Map<string, LoadedAsset>();
+function getAsset(name: AssetName): LoadedAsset {
+  const path = assetPath(name);
+  let asset = assets.get(path);
   if (!asset) {
-    asset = loadAsset(process.env.UPSTREAM_ASSET ?? '/app/assets/loop.ts');
+    asset = loadAsset(path);
+    assets.set(path, asset);
   }
   return asset;
 }
@@ -380,10 +388,16 @@ export async function serveChannelStream(
 
   // Resolved before tryAcquire, deliberately: admission doesn't depend on
   // the asset, and acquiring the slot first would leak it if getAsset()
-  // throws (missing or corrupt UPSTREAM_ASSET) — the slot would never be
+  // throws (a missing or corrupt asset file) — the slot would never be
   // released, and since a failed load isn't cached, every retry leaks
   // another one until maxConnections is permanently exhausted.
-  const asset = getAsset();
+  //
+  // The channel's own asset (4a-0), or the default for an id the scenario
+  // does not declare: the plain `/stream/<n>.ts` route serves any numeric
+  // id (see this function's doc comment), and that keeps working unchanged.
+  const assetName =
+    scenario.channels.find((channel) => channel.id === channelId)?.asset ?? DEFAULT_ASSET;
+  const asset = getAsset(assetName);
 
   // Admission is decided, and must be decided, before streamLoop writes
   // any header — a rejected client must never see a 200 first. The

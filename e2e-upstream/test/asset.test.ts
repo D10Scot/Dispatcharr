@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { measureLoop } from '../src/asset.js';
+import { ASSET_NAMES, DEFAULT_ASSET, assetPath, isAssetName, measureLoop } from '../src/asset.js';
 import { makeSyntheticTs } from './helpers/synthetic-ts.js';
 
 const STEP = 3600n; // 40 ms at 90 kHz
@@ -48,5 +48,31 @@ describe('measureLoop', () => {
       bytes[at + 3] = 0x10; // payload only, no adaptation field, no PES
     }
     expect(() => measureLoop(bytes)).toThrow(/no timestamps/i);
+  });
+});
+
+describe('asset names and paths (Phase 4a-0)', () => {
+  it('defaults to loop, which is one of the names', () => {
+    expect(DEFAULT_ASSET).toBe('loop');
+    expect(ASSET_NAMES).toContain(DEFAULT_ASSET);
+  });
+
+  it('recognises exactly the declared names', () => {
+    for (const name of ASSET_NAMES) expect(isAssetName(name)).toBe(true);
+    expect(isAssetName('LOOP')).toBe(false);
+    expect(isAssetName('loop.ts')).toBe(false);
+    expect(isAssetName(undefined)).toBe(false);
+    expect(isAssetName(1)).toBe(false);
+  });
+
+  it('keeps loop on UPSTREAM_ASSET and puts every other name under UPSTREAM_ASSET_DIR', () => {
+    const env = { UPSTREAM_ASSET: '/x/custom-loop.ts', UPSTREAM_ASSET_DIR: '/y' };
+    expect(assetPath('loop', env)).toBe('/x/custom-loop.ts');
+    expect(assetPath('h264-eac3', env)).toBe('/y/h264-eac3.ts');
+  });
+
+  it("falls back to the image's /app/assets for both", () => {
+    expect(assetPath('loop', {})).toBe('/app/assets/loop.ts');
+    expect(assetPath('mpeg2-576i-mp2', {})).toBe('/app/assets/mpeg2-576i-mp2.ts');
   });
 });

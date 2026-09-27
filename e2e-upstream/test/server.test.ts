@@ -1021,3 +1021,127 @@ describe('dead-air and slow-trickle applying to connections opened after they ar
     expect(outcome).toBe('stalled');
   });
 });
+
+describe('per-channel assets (Phase 4a-0)', () => {
+  // Two synthetic assets told apart by PID alone, which is all the route
+  // decides: which file a channel's stream reads. `loop` stays on
+  // UPSTREAM_ASSET; a named asset is `<name>.ts` under UPSTREAM_ASSET_DIR.
+  // `hevc-aac` is deliberately not written, for the missing-file test.
+  const LOOP_PID = 0x0100;
+  const EAC3_PID = 0x0600;
+
+  beforeAll(() => {
+    const dir = mkdtempSync(join(tmpdir(), 'e2e-upstream-named-assets-'));
+    writeFileSync(join(dir, 'loop.ts'), makeSyntheticTs({ packets: 40, pid: LOOP_PID, step: 3600n }));
+    writeFileSync(
+      join(dir, 'h264-eac3.ts'),
+      makeSyntheticTs({ packets: 40, pid: EAC3_PID, step: 3600n }),
+    );
+    process.env.UPSTREAM_ASSET = join(dir, 'loop.ts');
+    process.env.UPSTREAM_ASSET_DIR = dir;
+  });
+
+  const channel = (id: number, extra: Record<string, unknown> = {}) => ({
+    id,
+    name: `C${id}`,
+    tvgId: `c${id}.e2e`,
+    logo: null,
+    ...extra,
+  });
+
+  async function createScenario(body: Record<string, unknown>) {
+    const res = await fetch(`http://127.0.0.1:${server!.port}/scenarios`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(201);
+    return readJson(res);
+  }
+
+  /** The PID of the first packet a stream URL sends. */
+  async function firstPid(url: string): Promise<number> {
+    const res = await fetch(url);
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const { value } = await reader.read();
+    await reader.cancel().catch(() => {});
+    expect(value![0]).toBe(0x47);
+    return ((value![1] & 0x1f) << 8) | value![2];
+  }
+
+  it("echoes each channel's resolved asset, defaulting an omitted one to loop", async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({
+      channels: [channel(1, { asset: 'h264-eac3' }), channel(2)],
+    });
+    expect(scenario.channels.map((c: { asset: string }) => c.asset)).toEqual(['h264-eac3', 'loop']);
+  });
+
+  it("streams a channel's named asset, the default for the others and for an undeclared id", async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({
+      channels: [channel(1, { asset: 'h264-eac3' }), channel(2)],
+    });
+    const base = `http://127.0.0.1:${server.port}/s/${scenario.id}/stream`;
+
+    expect(
+      await firstPid(`${base}/1.ts`),
+      "channel 1 names h264-eac3 (PID 0x600); the channel's asset picks the file",
+    ).toBe(EAC3_PID);
+    expect(await firstPid(`${base}/2.ts`), 'channel 2 names no asset: loop (PID 0x100)').toBe(
+      LOOP_PID,
+    );
+    // The plain route serves any numeric id; one the scenario never declared
+    // has no asset of its own and gets the default, as before 4a-0.
+    expect(await firstPid(`${base}/9.ts`), 'undeclared channel 9: loop (PID 0x100)').toBe(
+      LOOP_PID,
+    );
+  });
+
+  it('streams the named asset on the XC /live/ route too', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({
+      xc: true,
+      username: 'user',
+      password: 'pass',
+      channels: [channel(1, { asset: 'h264-eac3' })],
+    });
+    expect(
+      await firstPid(`http://127.0.0.1:${server.port}/s/${scenario.id}/live/user/pass/1.ts`),
+      "/live/ channel 1 names h264-eac3 (PID 0x600); the channel's asset picks the file",
+    ).toBe(EAC3_PID);
+  });
+
+  it('streams the named asset on both catch-up layouts too', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({
+      xc: true,
+      username: 'user',
+      password: 'pass',
+      channels: [channel(1, { asset: 'h264-eac3' })],
+    });
+    const base = `http://127.0.0.1:${server.port}/s/${scenario.id}`;
+    const start = '2026-08-29:14-00';
+    expect(
+      await firstPid(`${base}/timeshift/user/pass/65/${start}/1.ts`),
+      "PATH catch-up channel 1 names h264-eac3 (PID 0x600); the channel's asset picks the file",
+    ).toBe(EAC3_PID);
+    const query = `username=user&password=pass&stream=1&start=${encodeURIComponent(start)}&duration=65`;
+    expect(
+      await firstPid(`${base}/streaming/timeshift.php?${query}`),
+      "QUERY catch-up channel 1 names h264-eac3 (PID 0x600); the channel's asset picks the file",
+    ).toBe(EAC3_PID);
+  });
+
+  it('answers 500 naming the file when a named asset is missing, and holds no slot', async () => {
+    server = await startServer(0);
+    const scenario = await createScenario({
+      maxConnections: 1,
+      channels: [channel(1, { asset: 'hevc-aac' })],
+    });
+    const res = await fetch(`http://127.0.0.1:${server.port}/s/${scenario.id}/stream/1.ts`);
+    expect(res.status, 'hevc-aac.ts was never written, so its load must fail').toBe(500);
+    expect((await readJson(res)).error).toMatch(/hevc-aac\.ts/);
+    expect(connections.count(scenario.id)).toBe(0);
+  });
+});

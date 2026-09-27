@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   TS_PACKET_SIZE,
   hasPayload,
@@ -7,6 +8,44 @@ import {
   readPcrBase,
   readTimestamp,
 } from './ts.js';
+
+/**
+ * Every looping TS asset a scenario channel may name (`ChannelSpec.asset`).
+ * `loop` is the 60 s H.264 + AAC loop every scenario served before Phase
+ * 4a-0, and stays the default. The other six are 4a-0's codec fixtures, each
+ * built and shape-checked by `scripts/make-asset.sh <out> <name>` at image
+ * build time; CONTRACT.md states each one's shape. `test/asset-names.test.ts`
+ * holds this list, make-asset.sh's variants and the Dockerfile's build loop
+ * to one set, so a name the door accepts is always a file the image has.
+ */
+export const ASSET_NAMES = [
+  'loop',
+  'mpeg2-576i-mp2',
+  'h264-1080i-aac-ac3',
+  'hevc-aac',
+  'h264-gop10-aac',
+  'h264-eac3',
+  'h264-noaudio',
+] as const;
+
+export type AssetName = (typeof ASSET_NAMES)[number];
+
+export const DEFAULT_ASSET: AssetName = 'loop';
+
+export function isAssetName(value: unknown): value is AssetName {
+  return typeof value === 'string' && (ASSET_NAMES as readonly string[]).includes(value);
+}
+
+/**
+ * Where `name` lives on disk. `loop` keeps its own variable,
+ * `UPSTREAM_ASSET`, which predates the others and which every existing test
+ * sets; the rest are `<name>.ts` under `UPSTREAM_ASSET_DIR`. Both default to
+ * the image's `/app/assets`, where the Dockerfile puts them.
+ */
+export function assetPath(name: AssetName, env: NodeJS.ProcessEnv = process.env): string {
+  if (name === DEFAULT_ASSET) return env.UPSTREAM_ASSET ?? '/app/assets/loop.ts';
+  return join(env.UPSTREAM_ASSET_DIR ?? '/app/assets', `${name}.ts`);
+}
 
 export interface LoadedAsset {
   bytes: Buffer;
