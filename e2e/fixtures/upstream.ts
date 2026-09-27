@@ -85,11 +85,34 @@ export interface FaultResult {
   appliedTo: number;
 }
 
+/**
+ * The looping TS assets a scenario channel may name (Phase 4a-0), mirroring
+ * the provider's `ASSET_NAMES` (`e2e-upstream/src/asset.ts`). `loop` is the
+ * default every scenario served before; the other six are the codec fixtures
+ * whose exact streams `e2e-upstream/CONTRACT.md` guarantees. A name missing
+ * here is a compile error at the call site; one the provider lacks is a 400
+ * naming it.
+ */
+export type UpstreamAsset =
+  | 'loop'
+  | 'mpeg2-576i-mp2'
+  | 'h264-1080i-aac-ac3'
+  | 'hevc-aac'
+  | 'h264-gop10-aac'
+  | 'h264-eac3'
+  | 'h264-noaudio';
+
 export interface UpstreamChannel {
   id: number;
   name: string;
   tvgId: string;
   logo: string | null;
+  /**
+   * Optional — the asset this channel's stream serves. The provider defaults
+   * it to `loop` and echoes the resolved name on every channel of the created
+   * `UpstreamScenario`.
+   */
+  asset?: UpstreamAsset;
   /**
    * Optional — mirrors the provider's `ChannelSpec.categoryId` (G8 task 1).
    * When omitted, the provider defaults it to the scenario's first declared
@@ -162,7 +185,8 @@ export interface UpstreamScenario {
   /** Origin Playwright resolves. Hand these to fetch/streamClient. */
   control: string;
   credentialQuery: string;
-  channels: UpstreamChannel[];
+  /** The provider always echoes each channel's resolved `asset` (4a-0). */
+  channels: (UpstreamChannel & { asset: UpstreamAsset })[];
   /**
    * Echoed by the provider and typed here because an XC account needs the two
    * values *separately*: `credentialQuery` is the pre-formatted query string,

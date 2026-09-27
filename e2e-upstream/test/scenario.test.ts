@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { ScenarioRegistry, parseScenarioRequest } from '../src/scenario.js';
 import { BadRequestError } from '../src/errors.js';
+import { ASSET_NAMES } from '../src/asset.js';
 
 describe('ScenarioRegistry', () => {
   it('generates the requested number of channels with distinct ids and tvg-ids', () => {
@@ -29,7 +30,7 @@ describe('ScenarioRegistry', () => {
     expect(registry.create({ maxConnections: 0 }).maxConnections).toBe(0);
   });
 
-  it('accepts explicit channel specs verbatim, defaulting a missing categoryId', () => {
+  it('accepts explicit channel specs verbatim, defaulting a missing categoryId and asset', () => {
     // create() is a bypass of parseScenarioRequest — this pins that it does
     // its own categoryId defaulting too, so Scenario.channels[].categoryId
     // is never undefined regardless of which path built the scenario.
@@ -39,7 +40,7 @@ describe('ScenarioRegistry', () => {
     });
 
     expect(scenario.channels).toEqual([
-      { id: 7, name: 'Explicit', tvgId: 'explicit.tv', logo: null, categoryId: 1 },
+      { id: 7, name: 'Explicit', tvgId: 'explicit.tv', logo: null, categoryId: 1, asset: 'loop' },
     ]);
   });
 
@@ -576,5 +577,60 @@ describe('XC scenario declaration', () => {
       parseScenarioRequest({ vodCategories: [], vod: [{ id: 1, name: 'm' }] })
     ).toThrow(/vodCategories/);
     expect(() => parseScenarioRequest({ seriesCategories: [] })).toThrow(/seriesCategories/);
+  });
+});
+
+describe('channel asset (Phase 4a-0)', () => {
+  const spec = (over = {}) => ({ id: 1, name: 'A', tvgId: 'a.e2e', logo: null, ...over });
+
+  it('keeps a named asset and defaults an omitted one to loop, through the parser and the registry', () => {
+    const request = parseScenarioRequest({
+      channels: [
+        spec({ id: 1, asset: 'h264-1080i-aac-ac3' }),
+        spec({ id: 2, name: 'B', tvgId: 'b.e2e' }),
+      ],
+    });
+    expect((request.channels as { asset: string }[]).map((c) => c.asset)).toEqual([
+      'h264-1080i-aac-ac3',
+      'loop',
+    ]);
+
+    const scenario = new ScenarioRegistry().create(request);
+    expect(scenario.channels.map((c) => c.asset)).toEqual(['h264-1080i-aac-ac3', 'loop']);
+  });
+
+  it('gives count-form channels the default asset', () => {
+    const scenario = new ScenarioRegistry().create(parseScenarioRequest({ channels: 2 }));
+    expect(scenario.channels.map((c) => c.asset)).toEqual(['loop', 'loop']);
+  });
+
+  it('accepts every name in ASSET_NAMES', () => {
+    const channels = ASSET_NAMES.map((asset, index) =>
+      spec({ id: index, name: `C${index}`, tvgId: `c${index}.e2e`, asset }),
+    );
+    const request = parseScenarioRequest({ channels });
+    expect((request.channels as { asset: string }[]).map((c) => c.asset)).toEqual([...ASSET_NAMES]);
+  });
+
+  it('rejects an unknown asset, naming the channel, the value and the names that exist', () => {
+    // Accepted, it would 500 on the first stream request instead — far from
+    // the scenario that caused it.
+    expect(
+      () => parseScenarioRequest({ channels: [spec({ id: 4, asset: 'h265-1080p' })] }),
+      'the door must refuse an asset name the provider has no file for',
+    ).toThrow(
+      /'channels\.asset' for channel 4 is "h265-1080p".*expected one of loop, mpeg2-576i-mp2, h264-1080i-aac-ac3, hevc-aac, h264-gop10-aac, h264-eac3, h264-noaudio/,
+    );
+  });
+
+  it('rejects a non-string asset, naming the field', () => {
+    expect(
+      () => parseScenarioRequest({ channels: [spec({ asset: 3 })] }),
+      'the door must refuse a non-string asset',
+    ).toThrow(/'channels\.asset' for channel 1 is 3/);
+    expect(
+      () => parseScenarioRequest({ channels: [spec({ asset: null })] }),
+      'the door must refuse a null asset',
+    ).toThrow(/'channels\.asset' for channel 1 is null/);
   });
 });

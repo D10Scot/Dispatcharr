@@ -63,7 +63,7 @@ immediately, never a 300s timeout.
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/scenarios` | Create. Body declares catalogue, optional credentials, `maxConnections` (default unlimited), `rate` (default 1). Returns **201** with the whole resolved scenario, not just the four keys you sent: `{ id, internal, control, channels }` plus the **resolved catalogue** — `vod`, `series`, the category lists, and any defaults the parser filled in. That echo is what makes the count form usable: declare `series: 2` and the response carries the generated series and **episode** ids, which you need for `/series/.../<id>.<ext>` and cannot construct yourself. `UpstreamScenario` (`e2e/fixtures/upstream.ts`) types those fields, so they are reachable without opening `src/` |
+| `POST` | `/scenarios` | Create. Body declares catalogue, optional credentials, `maxConnections` (default unlimited), `rate` (default 1); a channel's optional `asset` picks what its stream serves (see "The codec fixtures"). Returns **201** with the whole resolved scenario, not just the four keys you sent: `{ id, internal, control, channels }` plus the **resolved catalogue** — `vod`, `series`, the category lists, and any defaults the parser filled in. That echo is what makes the count form usable: declare `series: 2` and the response carries the generated series and **episode** ids, which you need for `/series/.../<id>.<ext>` and cannot construct yourself. `UpstreamScenario` (`e2e/fixtures/upstream.ts`) types those fields, so they are reachable without opening `src/` |
 | `GET` | `/scenarios` | List live scenarios. Also the readiness endpoint `e2e_up.sh` waits on |
 | `DELETE` | `/scenarios/<id>` | Optional explicit close |
 | `POST` | `/s/<id>/fault` | Apply or clear a fault. Body takes an optional `channel` filter and per-fault parameters. Returns `{ fault, active, appliedTo }` |
@@ -376,13 +376,39 @@ duration and packet count are **measured from the asset at server startup**, nev
 version drift in ffmpeg is expected to change those numbers; nothing in this codebase or in a
 consuming test may assume a specific duration or packet count.
 
-`scripts/make-asset.sh` is not runnable on macOS outside the Docker build — it uses a `drawtext`
-filter that Homebrew's ffmpeg build typically lacks. It only ever runs against Debian's ffmpeg, in
-the builder stage.
+`scripts/make-asset.sh` with no variant (the `loop` asset) is not runnable on macOS outside the
+Docker build — it uses a `drawtext` filter that Homebrew's ffmpeg build typically lacks. It only
+ever runs against Debian's ffmpeg, in the builder stage. The codec fixtures below use no
+`drawtext` and build with any ffmpeg that has libx264 and libx265.
 
 A frame counter is burned into the video. It is a **human debugging aid only**, for eyeballing a
 captured TS artifact in a video player after a test failure — nothing in this suite decodes video
 or asserts on it.
+
+## The codec fixtures
+
+Phase 4a's HLS tests need sources the `loop` asset is not: interlaced, MPEG-2, HEVC, a long GOP,
+AC-3, E-AC-3, and no audio at all. Six more looping TS assets cover them, built beside `loop` by
+`scripts/make-asset.sh <out.ts> <name>` at image build time and served from `/app/assets/<name>.ts`
+(`UPSTREAM_ASSET_DIR`). A scenario channel picks one by name:
+
+```json
+{ "channels": [
+    { "id": 1, "name": "Interlaced", "tvgId": "i.e2e", "logo": null, "asset": "h264-1080i-aac-ac3" },
+    { "id": 2, "name": "Default", "tvgId": "d.e2e", "logo": null }
+] }
+```
+
+An omitted `asset` is `loop`, and the echo always carries the resolved name; an unknown one is a
+`400`. The count form (`channels: 3`) gives every channel `loop`. The names, and each fixture's
+exact streams, PIDs and keyframe spacing, are in `CONTRACT.md`'s "Guarantees": that table is the
+promise, and `make-asset.sh` fails the image build if a fixture does not match it. Each fixture is
+20 s at 25 frames per second with PIDs of its own, so two fixtures fed one after the other really
+do change PIDs, as two providers' streams would.
+
+Channels on different fixtures are distinguishable by codec and PID; channels on the same fixture
+are not (the D6 non-guarantee in `CONTRACT.md`). Nothing in this package decodes the video:
+`testsrc2` pictures and sine tones carry no frame counter or marker to assert on.
 
 ## The VOD asset
 

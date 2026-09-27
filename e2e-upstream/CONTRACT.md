@@ -1,6 +1,6 @@
 # `e2e-upstream` contract
 
-**Version:** 1.2.0
+**Version:** 1.3.0
 
 **An unlisted behaviour is not a guarantee.** If it isn't named below, a
 consumer test must not depend on it, however consistently it happens to
@@ -24,13 +24,16 @@ Everything under `e2e-upstream/src/` reachable over HTTP: `POST`/`GET`/
 `e2e-upstream/scripts/` (asset generation) and `e2e-upstream/test/` (the
 package's own vitest suite) are covered only insofar as their behaviour is
 observable through those routes — the build scripts' internals and the test
-suite's own assertions are not themselves part of this contract.
+suite's own assertions are not themselves part of this contract. The one
+exception is the codec fixtures' stream shapes (see "Guarantees"), which
+`scripts/make-asset.sh` asserts when the image is built.
 
 ## Guarantees
 
-Every item below is enforced today by `e2e-upstream/test/*.test.ts` (see
-"Enforcement"), and is safe for a consumer test to depend on. Each links to
-the README section that documents the mechanism.
+Every item below is enforced today by `e2e-upstream/test/*.test.ts`, except
+the codec fixtures' shapes, which `scripts/make-asset.sh` enforces when the
+image is built (see "Enforcement"), and is safe for a consumer test to
+depend on. Each links to the README section that documents the mechanism.
 
 - **Real per-scenario connection accounting.** `ConnectionRegistry.tryAcquire`
   (`src/connections.ts`) admits or rejects before any response header is
@@ -65,6 +68,34 @@ the README section that documents the mechanism.
   catch-up request carried, in both layouts. See "Catch-up" below and in the
   README — this is a narrower guarantee than it may first read as; see the
   matching non-guarantee.
+- **A scenario channel streams the asset it names** (Phase 4a-0). A channel
+  in `POST /scenarios`'s `channels` array may carry `asset`, one of the seven
+  names in `ASSET_NAMES` (`src/asset.ts`); an omitted `asset` resolves to
+  `loop`, the asset every scenario served before 1.3.0, and the echo carries
+  the resolved `asset` on every channel. An unknown name is a `400` naming the
+  channel and the valid names. The plain stream route, `/live/` and both
+  catch-up routes all serve the channel's asset; a channel id the scenario
+  does not declare (which the plain route still serves) gets `loop`. See "The
+  codec fixtures" in the README.
+- **Each codec fixture has exactly the streams below, in this order, and
+  nothing else.** Every one is 20 s at 25 frames per second (500 video
+  frames), and its first frame is a keyframe. `scripts/make-asset.sh` probes
+  each fixture with ffprobe after writing it and fails the image build,
+  naming the stream, if any listed property differs; so an image that exists
+  has these shapes, whatever its ffmpeg version.
+
+  | `asset` | Video | Audio | PIDs |
+  |---|---|---|---|
+  | `mpeg2-576i-mp2` | MPEG-2 Main, 720×576, interlaced top field first (`field_order=tt`), keyframe every 2 s | MP2, stereo, 48 kHz | `0x200`, `0x201` |
+  | `h264-1080i-aac-ac3` | H.264 High, 1920×1080, interlaced top field first, keyframe every 2 s | AAC-LC stereo 48 kHz, then AC-3 5.1(side) 48 kHz | `0x300`, `0x301`, `0x302` |
+  | `hevc-aac` | HEVC Main (8-bit, `yuv420p`), 640×360, progressive, keyframe every 2 s | AAC-LC, stereo, 48 kHz | `0x400`, `0x401` |
+  | `h264-gop10-aac` | H.264 High, 640×360, progressive, keyframe every **10 s** | AAC-LC, stereo, 48 kHz | `0x500`, `0x501` |
+  | `h264-eac3` | H.264 High, 640×360, progressive, keyframe every 2 s | E-AC-3 5.1(side) 48 kHz, and no other audio | `0x600`, `0x601` |
+  | `h264-noaudio` | H.264 High, 640×360, progressive, keyframe every 2 s | **none**: the PMT declares no audio stream | `0x700` |
+
+  "Progressive" is by construction. ffprobe reports `field_order=progressive`
+  for the three H.264 ones, but `unknown` for `hevc-aac`, so the build does
+  not check that property there.
 - **The asset's loop duration and packet count are measured, never
   hardcoded**, so a drifted build-time ffmpeg cannot silently desynchronise
   the server from the asset it serves. See "The asset" in the README. This is
@@ -159,11 +190,14 @@ test can prove Dispatcharr does *not* rely on them either.
   request, so `appliedTo: 0` is their correct, expected result — not a sign
   the fault failed to apply. See `FaultStore.apply` (`src/faults.ts`).
 - **The TS asset carries no per-stream identity (spec D6).** `getAsset()`
-  (`src/server.ts`) serves one shared file to every channel and every
-  scenario; the mux is built with fixed PIDs (`scripts/make-asset.sh`'s
-  `-mpegts_start_pid 0x100 -streamid 0:256 -streamid 1:257`, i.e. video
-  `0x100`, audio `0x101`), so no two channels' byte streams can be told
-  apart by content. The burned-in frame counter is, in `make-asset.sh`'s own
+  (`src/server.ts`) serves one shared file per asset name to every channel
+  and every scenario that names it; the default `loop` is built with fixed
+  PIDs (`scripts/make-asset.sh`'s `-mpegts_start_pid 0x100 -streamid 0:256
+  -streamid 1:257`, i.e. video `0x100`, audio `0x101`), so no two channels
+  on the same asset can be told apart by content. Channels on *different*
+  assets differ in codecs and PIDs, but that is the asset's identity, not the
+  channel's, and the locked FFmpeg profile's remux rewrites the PIDs anyway.
+  The burned-in frame counter is, in `make-asset.sh`'s own
   words, "a human debugging aid only … no test asserts on it" — no consumer
   test may start asserting on it either. Building per-stream identity is
   feasible under the Proxy stream profile (a dedicated marker PID injected in
@@ -172,14 +206,23 @@ test can prove Dispatcharr does *not* rely on them either.
   lets the mpegts muxer rewrite PAT/PMT/PIDs itself; this is a provider
   capability nobody has built (see `e2e/COVERAGE.md`'s Streaming Gap row for
   this goal), not a guarantee this document can make today.
-- **Neither generated asset's exact size, packet count or duration may be
+- **No generated asset's exact size, packet count or duration may be
   hardcoded anywhere.** `scripts/make-asset.sh` and `make-vod-asset.sh`
   deliberately run an unpinned Debian ffmpeg; both scripts assert only shape
-  (TS-packet-aligned and sync-byte-prefixed; at least 1 KB and `ftyp`-prefixed
+  (TS-packet-aligned and sync-byte-prefixed, plus each codec fixture's streams
+  and keyframe spacing above; at least 1 KB and `ftyp`-prefixed
   respectively), not a byte-reproducible artifact. `measureLoop`
   (`src/asset.ts`) measures the loop duration from the asset at server
   startup for the same reason. A version drift in ffmpeg is expected to
-  change these numbers.
+  change these numbers. A codec fixture's 500 frames are guaranteed; its
+  size and its container duration are not.
+- **The loop seam is not frame-exact.** `measureLoop` spans every PCR, PTS
+  and DTS in the file and adds one mean step, which comes out slightly longer
+  than the media, so each wrap moves every timestamp forward by that excess:
+  measured at 35–81 ms on the six codec fixtures (built with `-muxdelay 0`
+  for this reason) and about 0.68 s on `loop`. Timestamps still only ever
+  increase across the seam. A test must not assume the video's frame
+  interval is constant across a wrap.
 - **The pacing rate is only approximate above 1×.** `streamLoop` sleeps
   per-chunk against that chunk's own size, not a cumulative target — the
   README records rate `10` measuring roughly `8.1×`, not `10×`. Assert an
@@ -212,6 +255,13 @@ and the README, never from the implementation.
 `e2e/tests/streaming-split/process-restart.spec.ts`'s Scenario B, which arms
 it to hold an M3U refresh in flight across a `relay-uwsgi` restart instead of
 contending decoy accounts against a large catalogue (#197).
+
+The channel `asset` field and the six codec fixtures (1.3.0) have no
+consumer yet. Their planned consumers are Phase 4a's HLS work
+(`docs/superpowers/specs/2026-09-27-phase4-apple-native-live-design.md`
+§ Testing): 4a-1a's real-ffmpeg packager tests, which may build the fixtures
+themselves with `scripts/make-asset.sh <out> <name>`, and the `streaming` and
+`frontend` project specs of 4a-1b, 4a-1c, 4a-1d and 4a-2.
 
 `e2e-upstream`'s own `test/*.test.ts` (vitest) is not a consumer in this
 sense — it is the thing that keeps this document honest (see "Enforcement").
@@ -250,13 +300,20 @@ existing guarantee changes, and every existing consumer keeps working
 unmodified. `package-lock.json`'s stale `1.0.0` — pre-existing drift the
 guard below does not read — is corrected in the same PR.
 
+**This landing is 1.3.0, a minor bump from 1.2.0.** It adds the optional
+channel `asset` field and six named codec fixtures (Phase 4a-0), and makes
+the fixtures' shapes a guarantee. That is a backward-compatible addition by
+the rule above: an omitted `asset` resolves to `loop`, the file every
+scenario served before, and the echo gains a key rather than changing one.
+
 ## Enforcement
 
-Two different things are enforced, at two different levels, and neither
-substitutes for the other:
+Three different things are enforced, at three different levels, and none
+substitutes for another:
 
 - **That the guarantees and non-guarantees above are actually true of the
-  running provider** is enforced by `e2e-upstream/test/*.test.ts` (vitest) —
+  running provider**, the codec fixtures' shapes aside (see the last item),
+  is enforced by `e2e-upstream/test/*.test.ts` (vitest) —
   it is the semantic check, and it existed before this document did. This
   document is a claim about what that suite (and the consumer specs that
   build on it) already prove; it does not add new runtime assertions of its
@@ -270,3 +327,12 @@ substitutes for the other:
   this document, or a documented version that doesn't match `package.json`,
   fails it immediately. Verified by mutation; see `e2e/COVERAGE.md`'s Guards
   table for the exact mutation and its output.
+- **That each codec fixture has the shape "Guarantees" lists** is enforced
+  when the image is built, not by vitest: `scripts/make-asset.sh` probes each
+  fixture it writes and exits non-zero naming the missing, wrong or
+  unexpected stream, or the keyframe that is out of place, which fails
+  `docker build` (the `build` job of `e2e-tests.yml`). vitest has no ffmpeg
+  and cannot see the files. What it does check, in
+  `test/asset-names.test.ts`, is that `ASSET_NAMES`, `make-asset.sh`'s
+  variants and the Dockerfile's build loop name the same seven assets, so the
+  door never accepts a name the image lacks.

@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { BadRequestError } from './errors.js';
+import { ASSET_NAMES, DEFAULT_ASSET, isAssetName } from './asset.js';
+import type { AssetName } from './asset.js';
 
 export interface ChannelSpec {
   id: number;
@@ -18,10 +20,18 @@ export interface ChannelSpec {
    * `parseScenarioRequest` applies it.
    */
   categoryId?: number;
+  /**
+   * The looping TS asset this channel's stream serves (Phase 4a-0), one of
+   * `ASSET_NAMES` (`src/asset.ts`). Optional on input: `parseScenarioRequest`
+   * and `ScenarioRegistry.create` both default it to `DEFAULT_ASSET`
+   * (`'loop'`), the one asset every scenario served before 4a-0, so an
+   * existing scenario streams exactly what it did.
+   */
+  asset?: AssetName;
 }
 
 /**
- * A `ChannelSpec` after category resolution. Every consumer of
+ * A `ChannelSpec` after category and asset resolution. Every consumer of
  * `Scenario.channels` — the playlist/XMLTV renderers and the XC route
  * handlers built in later tasks — needs a concrete `categoryId`, never
  * `undefined` silently widened to the string `"undefined"` at render time.
@@ -30,7 +40,7 @@ export interface ChannelSpec {
  * normal case; both `parseScenarioRequest` and `ScenarioRegistry.create`
  * resolve it before it reaches a `Scenario`.
  */
-export type ResolvedChannelSpec = ChannelSpec & { categoryId: number };
+export type ResolvedChannelSpec = ChannelSpec & { categoryId: number; asset: AssetName };
 
 export interface CategorySpec {
   id: number;
@@ -193,6 +203,7 @@ function defaultChannels(count: number, categoryId: number): ResolvedChannelSpec
       // logo URL cannot accidentally make a real network request.
       logo: `https://example.invalid/logo-${n}.png`,
       categoryId,
+      asset: DEFAULT_ASSET,
     };
   });
 }
@@ -601,7 +612,17 @@ export function parseScenarioRequest(body: Record<string, unknown>): ScenarioReq
         // the M3U's `group-title="E2E"` stays what it always was.
         const categoryId = channel.categoryId ?? liveCategories[0].id;
         assertKnownCategory(categoryId, liveCategories, 'channels.categoryId');
-        channels.push({ ...channel, categoryId });
+        // Checked here rather than in `isChannelSpec`, so the 400 names the
+        // asset and the names that exist instead of the generic shape
+        // message. A name this provider has no file for would otherwise be
+        // accepted and then 500 on the first stream request.
+        const asset: unknown = channel.asset;
+        if (asset !== undefined && !isAssetName(asset)) {
+          throw new BadRequestError(
+            `'channels.asset' for channel ${channel.id} is ${JSON.stringify(asset)}, which is not an asset this provider has; expected one of ${ASSET_NAMES.join(', ')}`,
+          );
+        }
+        channels.push({ ...channel, categoryId, asset: asset ?? DEFAULT_ASSET });
       }
       request.channels = channels;
     } else if (isNonNegativeInteger(body.channels)) {
@@ -737,6 +758,7 @@ export class ScenarioRegistry {
       ? request.channels.map((channel) => ({
           ...channel,
           categoryId: channel.categoryId ?? liveCategories[0].id,
+          asset: channel.asset ?? DEFAULT_ASSET,
         }))
       : defaultChannels(request.channels ?? 1, liveCategories[0].id);
 
