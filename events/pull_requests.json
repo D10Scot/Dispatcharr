@@ -1,8 +1,218 @@
 {
  "detail": null,
- "fetched_at": "2026-09-26T10:52:20+00:00",
+ "fetched_at": "2026-09-27T11:28:20+00:00",
  "kind": "pull_requests",
  "records": [
+  {
+   "additions": 2173,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 5,
+   "closed_at": "2026-09-27T10:39:15Z",
+   "created_at": "2026-09-27T03:21:40Z",
+   "deletions": 5,
+   "files": [
+    "CLAUDE.md",
+    "CONTEXT.md",
+    "docs/adr/0008-phase-4-reopens-the-programme-for-apple-native-live-playback.md",
+    "docs/adr/0009-the-hls-output-re-encodes-by-default.md",
+    "docs/superpowers/specs/2026-09-27-phase4-apple-native-live-design.md"
+   ],
+   "head_ref": "docs/phase4-apple-live",
+   "id": 523,
+   "merged_at": "2026-09-27T10:39:15Z",
+   "title": "docs(phase4): Apple-native live playback \u2014 spec, ADRs 0008/0009, glossary",
+   "updated_at": "2026-09-27T10:39:17Z"
+  },
+  {
+   "additions": 1308,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 12,
+   "closed_at": "2026-09-26T20:45:43Z",
+   "created_at": "2026-09-26T19:56:35Z",
+   "deletions": 7,
+   "files": [
+    "CLAUDE.md",
+    "apps/proxy/slot_reconciler.py",
+    "apps/proxy/tests/test_slot_reconciler.py",
+    "apps/proxy/vod_proxy/multi_worker_connection_manager.py",
+    "apps/timeshift/views.py",
+    "core/tasks.py",
+    "core/tests/test_reconcile_provider_slots.py",
+    "dispatcharr/settings.py",
+    "dispatcharr/test_discovery.py",
+    "docs/adr/0005-the-relay-is-chosen-by-name-once-per-tune.md",
+    "docs/superpowers/plans/2026-09-26-slot-counter-reconciler.md",
+    "tests/test_ci_test_routing.py"
+   ],
+   "head_ref": "fix/slot-counter-reconciler",
+   "id": 522,
+   "merged_at": "2026-09-26T20:45:43Z",
+   "title": "feat(proxy): recompute the provider-slot counters from ground truth",
+   "updated_at": "2026-09-26T20:45:45Z"
+  },
+  {
+   "additions": 606,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 9,
+   "closed_at": "2026-09-26T19:26:26Z",
+   "created_at": "2026-09-26T18:52:44Z",
+   "deletions": 13,
+   "files": [
+    "apps/proxy/vod_proxy/held_records.py",
+    "apps/proxy/vod_proxy/multi_worker_connection_manager.py",
+    "apps/proxy/vod_proxy/tests/test_held_records.py",
+    "apps/timeshift/tests/test_pool_worker_id.py",
+    "apps/timeshift/views.py",
+    "dispatcharr/settings.py",
+    "dispatcharr/settings_test.py",
+    "dispatcharr/test_discovery.py",
+    "tests/test_ci_test_routing.py"
+   ],
+   "head_ref": "fix/slot-holder-liveness",
+   "id": 521,
+   "merged_at": "2026-09-26T19:26:26Z",
+   "title": "feat(proxy): a liveness key per relay-uwsgi process, and the records its streams hold",
+   "updated_at": "2026-09-26T19:26:28Z"
+  },
+  {
+   "additions": 919,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 13,
+   "closed_at": "2026-09-26T18:30:47Z",
+   "created_at": "2026-09-26T18:05:29Z",
+   "deletions": 253,
+   "files": [
+    "CLAUDE.md",
+    "apps/channels/models.py",
+    "apps/m3u/connection_pool.py",
+    "apps/m3u/tests/slot_script_fake.py",
+    "apps/m3u/tests/test_connection_pool.py",
+    "apps/m3u/tests/test_property_connection_pool.py",
+    "apps/m3u/tests/test_slot_script.py",
+    "apps/proxy/tests/test_next_source_api.py",
+    "apps/proxy/tests/test_next_source_resolution.py",
+    "apps/proxy/vod_proxy/multi_worker_connection_manager.py",
+    "apps/proxy/vod_proxy/tests/test_profile_connections.py",
+    "dispatcharr/test_discovery.py",
+    "tests/test_ci_test_routing.py"
+   ],
+   "head_ref": "fix/slot-script-470-471",
+   "id": 520,
+   "merged_at": "2026-09-26T18:30:47Z",
+   "title": "fix(m3u): every provider-slot counter write goes through one versioned Lua script",
+   "updated_at": "2026-09-26T18:30:49Z"
+  },
+  {
+   "additions": 137,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 5,
+   "closed_at": "2026-09-26T16:44:56Z",
+   "created_at": "2026-09-26T16:25:36Z",
+   "deletions": 44,
+   "files": [
+    "e2e/README.md",
+    "e2e/fixtures/auth.ts",
+    "e2e/fixtures/index.ts",
+    "e2e/setup/login.ts",
+    "e2e/tests/seeded/token-refresh-deleted-user.spec.ts"
+   ],
+   "head_ref": "fix/474-seeded-login-throttle",
+   "id": 519,
+   "merged_at": "2026-09-26T16:44:56Z",
+   "title": "fix(e2e): the deleted-user token-refresh test waits out the login throttle instead of failing on it (#474)",
+   "updated_at": "2026-09-26T16:44:58Z"
+  },
+  {
+   "additions": 4062,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": "2026-09-26T17:43:00Z",
+   "created_at": "2026-09-26T13:55:37Z",
+   "deletions": 0,
+   "files": [
+    "docs/superpowers/plans/2026-09-26-slot-counter-reconciler.md"
+   ],
+   "head_ref": "docs/plan-slot-counter-reconciler",
+   "id": 518,
+   "merged_at": "2026-09-26T17:42:59Z",
+   "title": "docs(plans): plan for #513, the provider-slot counter reconciler (D1)",
+   "updated_at": "2026-09-26T17:43:01Z"
+  },
+  {
+   "additions": 337,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 2,
+   "closed_at": "2026-09-26T16:01:23Z",
+   "created_at": "2026-09-26T13:16:50Z",
+   "deletions": 20,
+   "files": [
+    "apps/timeshift/tests/test_views.py",
+    "apps/timeshift/views.py"
+   ],
+   "head_ref": "fix/catchup-stop-poll-cadence",
+   "id": 517,
+   "merged_at": "2026-09-26T16:01:23Z",
+   "title": "fix(timeshift): poll the catch-up stop key on a cadence, not per chunk (#514)",
+   "updated_at": "2026-09-26T16:01:25Z"
+  },
+  {
+   "additions": 203,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 11,
+   "closed_at": "2026-09-26T13:22:57Z",
+   "created_at": "2026-09-26T13:05:09Z",
+   "deletions": 160,
+   "files": [
+    "CLAUDE.md",
+    "CONTEXT.md",
+    "docs/adr/0007-phase-3-is-closed-because-phase-2-met-its-charter.md",
+    "e2e/README.md",
+    "e2e/fixtures/greybox/redis.ts",
+    "e2e/tests/guards/allowlist.ts",
+    "e2e/tests/guards/capabilities.spec.ts",
+    "e2e/tests/streaming-failover/stream-limit-429.spec.ts",
+    "e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts",
+    "e2e/tests/streaming-greybox/output-profile-sharing.spec.ts",
+    "metrics/curated/catalogue.yml"
+   ],
+   "head_ref": "docs/adr-0007-close-phase-3",
+   "id": 516,
+   "merged_at": "2026-09-26T13:22:57Z",
+   "title": "docs(adr): ADR 0007 \u2014 Phase 3 is closed; its charter was met by Phase 2",
+   "updated_at": "2026-09-26T13:22:58Z"
+  },
+  {
+   "additions": 21,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 8,
+   "closed_at": "2026-09-26T12:26:19Z",
+   "created_at": "2026-09-26T12:03:53Z",
+   "deletions": 19,
+   "files": [
+    ".claude/skills/README.md",
+    ".claude/skills/implement-review-escalate/SKILL.md",
+    ".claude/skills/implement-review-escalate/references/project.md",
+    ".claude/skills/plan-review-fix/SKILL.md",
+    ".claude/skills/plan-review-fix/references/project.md",
+    ".claude/skills/pr-merge-gate/references/project.md",
+    ".claude/skills/worktree-per-change/references/project.md",
+    "CLAUDE.md"
+   ],
+   "head_ref": "docs/claude-md-skills-hooks",
+   "id": 512,
+   "merged_at": "2026-09-26T12:26:19Z",
+   "title": "docs: CLAUDE.md follows the process skills and the hooks as they exist",
+   "updated_at": "2026-09-26T12:26:21Z"
+  },
   {
    "additions": 434,
    "author": "Dionmm",
@@ -71,11 +281,11 @@
    "updated_at": "2026-09-25T22:41:31Z"
   },
   {
-   "additions": 1144,
+   "additions": 1151,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-09-26T12:33:54Z",
    "created_at": "2026-09-25T21:38:41Z",
    "deletions": 0,
    "files": [
@@ -83,9 +293,9 @@
    ],
    "head_ref": "docs/plan-490-vod-category-pure-read",
    "id": 507,
-   "merged_at": null,
+   "merged_at": "2026-09-26T12:33:54Z",
    "title": "docs(plans): plan for #490, VODCategoryViewSet.list() as a pure read",
-   "updated_at": "2026-09-25T21:59:14Z"
+   "updated_at": "2026-09-26T12:33:55Z"
   },
   {
    "additions": 205,
@@ -123,11 +333,11 @@
    "updated_at": "2026-09-25T22:41:28Z"
   },
   {
-   "additions": 20,
+   "additions": 43,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-09-26T13:00:17Z",
    "created_at": "2026-09-25T21:17:12Z",
    "deletions": 0,
    "files": [
@@ -135,9 +345,9 @@
    ],
    "head_ref": "docs/issue-tracker-closing-keywords",
    "id": 504,
-   "merged_at": null,
+   "merged_at": "2026-09-26T13:00:17Z",
    "title": "docs(agents): closing keywords in a PR body close issues whatever the PR changes",
-   "updated_at": "2026-09-25T21:17:12Z"
+   "updated_at": "2026-09-26T13:00:18Z"
   },
   {
    "additions": 228,
@@ -215,11 +425,11 @@
    "updated_at": "2026-09-25T20:58:39Z"
   },
   {
-   "additions": 1103,
+   "additions": 1199,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-09-26T12:51:04Z",
    "created_at": "2026-09-25T19:30:13Z",
    "deletions": 0,
    "files": [
@@ -227,16 +437,16 @@
    ],
    "head_ref": "docs/plan-452-replace-template-backslash",
    "id": 499,
-   "merged_at": null,
-   "title": "docs: plan for #452, backslash in an M3U replace template (grammar ruling)",
-   "updated_at": "2026-09-25T19:48:40Z"
+   "merged_at": "2026-09-26T12:51:03Z",
+   "title": "docs: plan for #452, a backslash in an M3U replace template is literal text (ruling (a))",
+   "updated_at": "2026-09-26T12:51:05Z"
   },
   {
-   "additions": 857,
+   "additions": 933,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-09-26T12:43:53Z",
    "created_at": "2026-09-25T19:20:40Z",
    "deletions": 0,
    "files": [
@@ -244,9 +454,9 @@
    ],
    "head_ref": "docs/plan-444-read-only-fields-lint",
    "id": 498,
-   "merged_at": null,
+   "merged_at": "2026-09-26T12:43:52Z",
    "title": "docs(plans): plan for #444 \u2014 recast the read_only_fields guard as a lint",
-   "updated_at": "2026-09-25T19:38:15Z"
+   "updated_at": "2026-09-26T12:43:54Z"
   },
   {
    "additions": 668,
@@ -266,11 +476,11 @@
    "updated_at": "2026-09-25T20:58:36Z"
   },
   {
-   "additions": 16,
+   "additions": 22,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-09-26T12:14:13Z",
    "created_at": "2026-09-25T19:06:49Z",
    "deletions": 0,
    "files": [
@@ -278,9 +488,9 @@
    ],
    "head_ref": "docs/re-triage-label",
    "id": 496,
-   "merged_at": null,
+   "merged_at": "2026-09-26T12:14:13Z",
    "title": "docs(agents): document the re-triage label the 2026-09-23 issue sweep introduced",
-   "updated_at": "2026-09-25T19:06:49Z"
+   "updated_at": "2026-09-26T12:14:14Z"
   },
   {
    "additions": 12,
