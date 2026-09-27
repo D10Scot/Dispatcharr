@@ -38,7 +38,7 @@ All of it in the planner's scratchpad; nothing was written into the repository.
 - **Asset-stage build time** under amd64 emulation on the planner's host: `loop` 12 s, `mpeg2-576i-mp2` 5 s, `h264-1080i-aac-ac3` 16 s, `hevc-aac` 19 s, `h264-gop10-aac` 6 s, `h264-eac3` 4 s, `h264-noaudio` 4 s. The whole `docker build` of the image took 2 min 31 s emulated. CI builds natively and will be faster; nothing gates on this.
 - **Sizes.** The six fixtures total about 44.7 MB (bookworm build: 11.0, 17.2, 3.2, 4.3, 5.0 and 3.9 MB, in table order). Sizes vary with the ffmpeg version by up to 0.4 % (`hevc-aac`: 3,193,180 bytes on 5.1.9, 3,204,836 on 9.0.1), which is why no size is guaranteed.
 - **The image, run.** The built image (`docker build --platform linux/amd64`) was started on a private port. `POST /scenarios` with seven channels, one per asset, echoed `asset` on every channel; `asset: "nope"` answered `400 {"error":"'channels.asset' for channel 1 is \"nope\", which is not an asset this provider has; expected one of loop, mpeg2-576i-mp2, h264-1080i-aac-ac3, hevc-aac, h264-gop10-aac, h264-eac3, h264-noaudio"}`. Each channel was read for 4 s at `rate: 20` (two to three loop wraps) and ffprobed: every served stream had its asset's streams and PIDs, and video DTS strictly increased across every wrap (the largest step 0.075-0.121 s, against 0.040 s within a loop; see § Decisions 7).
-- **vitest.** 277 tests in 16 files at the seed; 292 in 17 with Appendix A (15 added). `npm run typecheck` exits 0. `e2e`'s `npx tsc --noEmit -p .` exits 0 and the `guards` project passes 49/49 with the version bump.
+- **vitest.** 277 tests in 16 files at the seed; 294 in 17 with Appendix A (17 added). `npm run typecheck` exits 0. `e2e`'s `npx tsc --noEmit -p .` exits 0 and the `guards` project passes 49/49 with the version bump.
 - **The 1080i encode cost (informative, not a gate).** D8's software transcode (bwdif, 1920×1080 50p, `libx264 -preset veryfast -tune zerolatency`, 6 Mb/s) over the 20 s `h264-1080i-aac-ac3` fixture took 3.6 s with `-threads 2` on an M4 Pro (5.5× real time). CI runners are slower; CLAUDE.md's measure-where-enforced rule means this sets nothing (§ Residual risks).
 
 ### The fixtures, measured
@@ -67,9 +67,9 @@ ffprobe on the bookworm build (the image's). The 9.0.1 build probes to the same 
 | 4a-1a (`:1211-1212`) boundary test "two fixtures with different PIDs" | distinct PIDs between fixtures | every fixture has its own PID base (`0x200`…`0x700`, `loop` `0x100`) |
 | 4a-1a (`:1213-1216`) rendition filling, gen 0 on 1080i AAC + AC-3, gen 1 on MPEG-2 + MP2 | an MP2-only source after an AC-3 one | `h264-1080i-aac-ac3` then `mpeg2-576i-mp2` |
 | D8/D9 deinterlace (`:217-218`), 4a-1d "copy interlaced video" break-check (`:1432`) | interlaced sources that ffprobe reports as interlaced | `mpeg2-576i-mp2` and `h264-1080i-aac-ac3`: `field_order=tt`, and genuinely interlaced (a 50p `testsrc2` woven by `interlace=scan=tff`, so the two fields are 20 ms apart) |
-| 4a-1d decision table (`:597-601`, `:1423`) | one fixture per rule, each differing from a copy-eligible source in one property | MPEG-2 → transcode; interlaced H.264 → transcode; HEVC Main 8-bit progressive, K = 2 s → copy; H.264 K = 10 s → transcode ("K > 6 s"); AAC → copy; MP2 → encode AAC; AC-3/E-AC-3 → as transcode. `h264-gop10-aac` differs from a copyable source **only** in its GOP |
+| 4a-1d decision table (`:597-601`, `:1423`) | one fixture per rule, each differing from a copy-eligible source in one property | MPEG-2 → transcode; interlaced H.264 → transcode; HEVC Main 8-bit progressive, K = 2 s → copy; H.264 with a 10 s GOP → transcode; AAC → copy; MP2 → encode AAC; AC-3/E-AC-3 → as transcode. `h264-gop10-aac` differs from a copyable source **only** in its GOP, but under D9's probe bound ("5 MB or 8 s", `:218`) no probe window can hold two of its keyframes (0 s and 10 s), so it trips the rule's **"fewer than 2 keyframes seen"** branch (`:598`), not "K > 6 s". It does not pin the 6 s threshold (§ Follow-ups) |
 | 4a-1d declared-family (`:1424`) "a copied-HEVC run whose next source is MPEG-2" | copyable HEVC, then MPEG-2 | `hevc-aac` then `mpeg2-576i-mp2` |
-| 4a-1d E2E (`:1430`) "an automatic channel on the H.264 asset serves copied video with the source's `CODECS`" | progressive H.264 with K ≤ 6 s | `h264-noaudio` or `h264-eac3` (both High, 2 s GOP). **Not `loop`**: its GOP is 10 s, so automatic mode transcodes it |
+| 4a-1d E2E (`:1430`) "an automatic channel on the H.264 asset serves copied video with the source's `CODECS`" | progressive H.264 with K ≤ 6 s | `h264-noaudio` or `h264-eac3` (both High, 2 s GOP). **Not `loop`**: its GOP is 10 s, so an 8 s probe window sees one keyframe and automatic mode transcodes it |
 | 4a-1b E2E (`:1128-1129`) failover "to an alternate with a **different** asset" | two channels, two assets | the per-channel `asset` field |
 | 4a-1c E2E (`:1130-1143`) `maxConnections: 1` | already exists | unchanged |
 
@@ -79,13 +79,13 @@ The spec fixes the six assets' codecs and says they are short, SD and built by `
 
 1. **Names.** `mpeg2-576i-mp2`, `h264-1080i-aac-ac3`, `hevc-aac`, `h264-gop10-aac`, `h264-eac3`, `h264-noaudio`, and `loop` for the existing default. Each name says what the fixture is, so a consumer spec reads without a lookup. They are neutral identifiers (R15 concerns externally visible product identifiers; these are test-only).
 2. **Per channel, not per scenario.** `channels[].asset`, as the spec's "a scenario channel can name its asset" says. The count form (`channels: 3`) gives every channel `loop`; a scenario that needs fixtures uses the array form. An omitted `asset` resolves to `loop` and the echo always carries the resolved name, because `CONTRACT.md` guarantees the echo includes "every default the parser filled in". An unknown or non-string name is a `400` naming the channel, the value and the valid names: accepted, it would `500` on the first stream request, far from its cause. A channel id the scenario does not declare (the plain `/stream/<n>.ts` route serves any id, `src/server.ts:254-258` at the seed) keeps getting `loop`.
-3. **Geometry, and the spec's one contradiction.** The spec says the assets are "SD" (`:1108`) and also lists "H.264 1080i" (`:1110`). The 1080i fixture is 1920×1080: its name is the spec's, M3/M4 prototyped exactly that source, D8's "at most 1920×1080, never upscaled" and the `bwdif` 50i → 50p path are what it exists to exercise, and 4a-1a feeds it from a file, not in real time. The other five are SD: `mpeg2-576i-mp2` at 720×576, the rest at 640×360 (the existing asset's size). The real-time cost is a named risk (§ Residual risks), not a reason to rename the spec's fixture.
+3. **Geometry, and the spec's one contradiction.** The spec says the assets are "SD" (`:1108`) and also lists "H.264 1080i" (`:1110`). The 1080i fixture is 1920×1080: its name is the spec's, M3/M4 prototyped exactly that source, D8's "at most 1920×1080, never upscaled" and the `bwdif` 50i → 50p path are what it exists to exercise, and 4a-1a feeds it from a file, not in real time. The other five are SD: `mpeg2-576i-mp2` at 720×576, the rest at 640×360 (the existing asset's size). The real-time cost is a named risk (§ Residual risks), not a reason to rename the spec's fixture. **This is now the owner's ruling R29** (2026-09-27): the 1080i fixture stays 1920×1080 so that it exercises real 1080i, and 4a-1b measures whether CI's software transcode keeps real time and, if it does not, raises that as a finding rather than lowering an assertion.
 4. **20 s, 25 fps, a 2 s GOP.** 20 s is the spec's ceiling, is the shortest length that gives the 10 s-GOP fixture two keyframes, and covers 4a-1a's 12 s. Every GOP is a whole divisor of the loop (500 frames), so a wrap never makes a short GOP. The copy-eligible fixtures use a fixed 2 s GOP (`-g 50 -keyint_min 50 -sc_threshold 0`, x265 `keyint=50:min-keyint=50:scenecut=0`) so that automatic mode's `TARGETDURATION` is 2 and its segment cut is deterministic. H.264 and HEVC keep B-frames, as broadcast does, so the copy path meets composition offsets. MPEG-2 uses `-bf 0`: with B-frames its encoder placed I-frames at 0, 51, 99, 147, … (measured), which the GOP check rejects and which no consumer needs.
 5. **Distinct PIDs.** Each fixture's PIDs start at its own `0x?00` (`-mpegts_start_pid` and `-streamid`), so any two fixtures fed one after the other change PIDs as two providers' streams do. That is the case M3 showed one encoder silently drops, and 4a-1a's boundary test needs it. `loop` keeps `0x100`/`0x101`.
 6. **Interlace for real.** The interlaced fixtures come from a 50 fps `testsrc2` woven into top-field-first frames by `interlace=scan=tff`, encoded field-aware (`-flags +ildct+ilme`, x264 `tff=1`). ffprobe reports `field_order=tt` on every ffmpeg measured, and the fields differ in time, so a missing deinterlace is visible.
 7. **`-muxdelay 0 -muxpreload 0` on the six.** `measureLoop()` (`src/asset.ts:30-83`) spans every PCR, PTS and DTS and adds one mean step. With ffmpeg's default 0.7 s PCR lead that overshoots the media by about 0.76 s, so every wrap jumps all timestamps forward that much: measured 20.74-20.77 s for a 20 s fixture. That is harmless for TS clients but lands in 4a-1d's copy path: a copied segment spanning a wrap would be about 2.76 s, over its "target + 0.5 s" limit (`:614-615`), and would end the generation every 20 s. With zero mux delay the excess is 35-81 ms (a segment of at most 2.08 s). `measureLoop()` itself is not changed, because `loop` and every existing consumer depend on its current behaviour; its overshoot on `loop` (0.68 s) is a follow-up, written into `CONTRACT.md` as a non-guarantee.
 8. **The shape check runs at image build, not in vitest.** CI's `upstream` job (`.github/workflows/e2e-tests.yml:189-216`) has Node and no ffmpeg, and the fixtures exist only inside the image. `make-asset.sh` therefore probes each fixture right after writing it: `check_shape` compares each stream's ffprobe `key=value` pairs against the expected ones and names the missing, wrong or unexpected stream; `check_gop` checks 500 frames and a keyframe at exactly every GOP boundary. A failure prints `make-asset.sh: <asset>: …`, deletes the file and exits 1, which fails `docker build` in the `build` job (and every E2E job after it). The Dockerfile's loop carries `|| exit 1`, because `sh -c` has no `-e` and a `for` loop's status is its last command's: measured, without it the build exits 0 with the failure message printed. This is the "asset-shape test" of the spec's break-check. Two ffprobe differences are handled: 5.1 prints a blank line after every `csv` packet line (dropped before counting), and `-of compact` lists each stream twice for a TS (under its program and at top level; deduplicated).
-9. **What the shape check does not assert.** It omits `field_order` for `hevc-aac`, because ffprobe reports `unknown` for that progressive HEVC on every build measured (5.1.9, 8.1.2, 9.0.1; x265's `pic-struct`, `hrd` and `frame-dup` options did not change it). It omits `profile` for MP2, AC-3 and E-AC-3 (ffprobe prints `unknown`), and levels, bitrates, sizes and durations, which drift with ffmpeg. See § Follow-ups for what the HEVC value means for 4a-1d.
+9. **What the shape check does not assert.** It omits `field_order` for `hevc-aac`, because ffprobe reports `unknown` for that progressive HEVC on every build measured (5.1.9, 8.1.2, 9.0.1; x265's `pic-struct`, `hrd` and `frame-dup` options did not change it). It omits `profile` for MP2, AC-3 and E-AC-3 (ffprobe prints `unknown`), and levels, bitrates, sizes and durations, which drift with ffmpeg. Ruling R28 treats `unknown` as progressive for copy eligibility (only an explicit `tt`/`bb`/`tb`/`bt` is interlaced); the hand-off to 4a-1a and 4a-1d is issue #525 (§ Follow-ups).
 10. **One list of names, held to the build.** `src/asset.ts` exports `ASSET_NAMES`. A new vitest file, `test/asset-names.test.ts`, reads `scripts/make-asset.sh`'s `case` labels and the Dockerfile's `for name in …` list and requires both to equal `ASSET_NAMES`, so the door never accepts a name the image has no file for. `e2e/fixtures/upstream.ts` gains an `UpstreamAsset` union mirroring the list, as `FaultName` mirrors the fault catalogue; a drift there is loud either way (a compile error, or a `400` naming the name), so no guard is added for it.
 11. **Paths.** A named asset is `<name>.ts` under `UPSTREAM_ASSET_DIR` (default `/app/assets`); `loop` keeps `UPSTREAM_ASSET`. The Dockerfile builds all seven plus `vod.mp4` into `/build/assets/` and copies the directory, so `/app/assets/loop.ts` and `/app/assets/vod.mp4` stay where they were. `getAsset()` caches by resolved path, as `getVodAsset()` already does, and still resolves before `tryAcquire`, so a missing file costs no slot.
 12. **No `drawtext` in the fixtures.** The six build with any ffmpeg that has libx264 and libx265, so 4a-1a may build them in Go tests with the production ffmpeg (`make-asset.sh <out> <name>`) rather than depending on the upstream image. `testsrc2` and sine tones carry no marker, and nothing asserts on picture content. The 5.1 fixtures give each channel its own tone, so a downmix is audible as one.
@@ -100,14 +100,14 @@ The spec fixes the six assets' codecs and says they are short, SD and built by `
 - `e2e-upstream/src/asset.ts:1-2,4`. `ASSET_NAMES`, `AssetName`, `DEFAULT_ASSET`, `isAssetName`, `assetPath`.
 - `e2e-upstream/src/scenario.ts:2,20-21,23-33,194-196,602-604,736-741`. `ChannelSpec.asset`, `ResolvedChannelSpec.asset`, the door check and both defaults.
 - `e2e-upstream/src/server.ts:9-10,39-54,381-386`. `getAsset(name)` with a path-keyed cache; `serveChannelStream` picks the channel's asset.
-- `e2e-upstream/test/asset-names.test.ts`. New (2 tests).
+- `e2e-upstream/test/asset-names.test.ts`. New (3 tests).
 - `e2e-upstream/test/asset.test.ts:2,52`. The import line; 4 tests appended.
 - `e2e-upstream/test/scenario.test.ts:3,32,42`. One import added; one existing test's title and expectation change (§ Tests); 5 tests appended.
-- `e2e-upstream/test/server.test.ts:1023`. 4 tests appended.
+- `e2e-upstream/test/server.test.ts:1023`. 5 tests appended.
 - `e2e-upstream/CONTRACT.md:3,24-27,31-33,68,161-167,175-179,199-218,219-252,253-272`. Version 1.3.0; the fixture guarantees and table; the D6 and size non-guarantees reworded; a seam non-guarantee; planned consumers; the 1.3.0 landing note; the third enforcement level.
 - `e2e-upstream/README.md:66,379-381,386`. The `POST /scenarios` row; the `drawtext` paragraph narrowed to `loop`; a new "The codec fixtures" section before "The VOD asset" (`:387`).
 - `e2e-upstream/package.json:4`, `e2e-upstream/package-lock.json:3,9`. `1.2.0` → `1.3.0`.
-- `e2e/fixtures/upstream.ts:88-92`. `UpstreamAsset` and `UpstreamChannel.asset?`.
+- `e2e/fixtures/upstream.ts:88-92,165`. `UpstreamAsset`, `UpstreamChannel.asset?`, and `UpstreamScenario.channels` typed with a non-optional `asset`, because the provider always echoes it.
 - `e2e/COVERAGE.md:51,208`. The D6 row's added sentence; the new 4a-0 row after `:208`.
 
 **Tasks.**
@@ -126,9 +126,10 @@ The spec fixes the six assets' codecs and says they are short, SD and built by `
    - **BC2, the long GOP.** In the `h264-gop10-aac)` case change `-g 250 -keyint_min 250` to `-g 50 -keyint_min 50`: exit 1, `make-asset.sh: h264-gop10-aac: video stream 0 has 10 keyframes, expected 2 (one every 250 frames); expected one keyframe every 10 s`.
    - **BC3, interlacing.** In the `mpeg2-576i-mp2)` case change `-c:v mpeg2video -flags +ildct+ilme` to `-c:v mpeg2video`: exit 1, `make-asset.sh: mpeg2-576i-mp2: stream 0: expected field_order=tt, found index=0|…|field_order=progressive|id=0x200|…`.
    - **BC4, the build loop.** Delete ` h264-noaudio` from the Dockerfile's `for name in …` list: `npx vitest run test/asset-names.test.ts` fails `the Dockerfile builds every name in ASSET_NAMES, and no other` with `AssertionError: Dockerfile's asset build loop vs src/asset.ts ASSET_NAMES: expected [ 'h264-1080i-aac-ac3', …(5) ] to deeply equal [ 'h264-1080i-aac-ac3', …(6) ]` and a diff whose one `-` line is `"h264-noaudio",`.
-   - **BC5, routing.** In `src/server.ts` change `  const asset = getAsset(assetName);` to `  const asset = getAsset(DEFAULT_ASSET);`: three tests in `test/server.test.ts` fail, `AssertionError: channel 1 names h264-eac3 (PID 0x600); the channel's asset picks the file: expected 256 to be 1536`, the same for `/live/ channel 1`, and `hevc-aac.ts was never written, so its load must fail: expected 200 to be 500`.
+   - **BC5, routing.** In `src/server.ts` change `  const asset = getAsset(assetName);` to `  const asset = getAsset(DEFAULT_ASSET);`: four tests in `test/server.test.ts` fail, `AssertionError: channel 1 names h264-eac3 (PID 0x600); the channel's asset picks the file: expected 256 to be 1536`, the same for `/live/ channel 1` and for `PATH catch-up channel 1` (the catch-up test stops at its first assertion, so the QUERY layout's message does not print), and `hevc-aac.ts was never written, so its load must fail: expected 200 to be 500`.
    - **BC6, the door.** In `src/scenario.ts` change `if (asset !== undefined && !isAssetName(asset)) {` to `if (asset !== undefined && !isAssetName(asset) && false) {`: two tests in `test/scenario.test.ts` fail, `AssertionError: the door must refuse an asset name the provider has no file for: expected [Function] to throw an error` and `the door must refuse a non-string asset: expected [Function] to throw an error`.
-   - **BC7, the Dockerfile's `|| exit 1` (a negative control, not a test).** Apply BC1 and also delete ` || exit 1` from the Dockerfile's loop: `docker build --target asset …` exits **0** although it prints BC1's message, because the loop's status is `h264-noaudio`'s. This shows why the guard is there; revert both.
+   - **BC7, the Dockerfile's `|| exit 1`.** Delete ` || exit 1` from the Dockerfile's loop (`./make-asset.sh "/build/assets/${name}.ts" "${name}" || exit 1; \` becomes `./make-asset.sh "/build/assets/${name}.ts" "${name}"; \`): `npx vitest run test/asset-names.test.ts` fails `the Dockerfile fails the build when make-asset.sh fails for any name` with `AssertionError: the Dockerfile's asset loop must run make-asset.sh with '|| exit 1', or a failed shape check does not fail docker build: expected 'FROM debian:bookworm-slim@sha256:8820…' to match /do \\\n\s*\.\/make-a…/make-asset\.sh "\` (vitest truncates the regex). Why the guard matters, measured: with this edit **and** BC1 applied together, `docker build --target asset …` exits **0** although it prints BC1's message, because the loop's status is `h264-noaudio`'s. Revert.
+   - **BC8, a silent probe.** Put a `ffprobe` that exits 1 first on `PATH` (`printf '#!/bin/sh\nexit 1\n' > <dir>/ffprobe; chmod +x <dir>/ffprobe`) and run `PATH="<dir>:$PATH" bash e2e-upstream/scripts/make-asset.sh /tmp/p.ts h264-noaudio`: exit 1, `make-asset.sh: h264-noaudio: ffprobe could not list the streams of /tmp/p.ts`, and no `/tmp/p.ts`. Without the `|| fail` on `probe_streams` the script dies with no message.
 10. **Push and open the PR as a draft** (`implement-review-escalate`), with the description below. CI's `E2E result`, `Lifecycle result` and the `upstream` job must be green; the full matrix runs because the branch is `migration/…`.
 
 **Tests added.**
@@ -137,8 +138,8 @@ The spec fixes the six assets' codecs and says they are short, SD and built by `
 |---|---|---|
 | `test/scenario.test.ts` | `channel asset (Phase 4a-0)`: `keeps a named asset and defaults an omitted one to loop, through the parser and the registry`; `gives count-form channels the default asset`; `accepts every name in ASSET_NAMES`; `rejects an unknown asset, naming the channel, the value and the names that exist`; `rejects a non-string asset, naming the field` (3 and `null`) | Decision 2 at the door and in `create()` |
 | `test/asset.test.ts` | `asset names and paths (Phase 4a-0)`: `defaults to loop, which is one of the names`; `recognises exactly the declared names`; `keeps loop on UPSTREAM_ASSET and puts every other name under UPSTREAM_ASSET_DIR`; `falls back to the image's /app/assets for both` | Decision 11 |
-| `test/asset-names.test.ts` | `make-asset.sh builds a variant for every name in ASSET_NAMES, and no other`; `the Dockerfile builds every name in ASSET_NAMES, and no other` | Decision 10 |
-| `test/server.test.ts` | `per-channel assets (Phase 4a-0)`: `echoes each channel's resolved asset, defaulting an omitted one to loop`; `streams a channel's named asset, the default for the others and for an undeclared id`; `streams the named asset on the XC /live/ route too`; `answers 500 naming the file when a named asset is missing, and holds no slot` | Decisions 2 and 11 over HTTP, with two synthetic assets told apart by PID |
+| `test/asset-names.test.ts` | `make-asset.sh builds a variant for every name in ASSET_NAMES, and no other`; `the Dockerfile fails the build when make-asset.sh fails for any name`; `the Dockerfile builds every name in ASSET_NAMES, and no other` | Decisions 8 and 10 |
+| `test/server.test.ts` | `per-channel assets (Phase 4a-0)`: `echoes each channel's resolved asset, defaulting an omitted one to loop`; `streams a channel's named asset, the default for the others and for an undeclared id`; `streams the named asset on the XC /live/ route too`; `streams the named asset on both catch-up layouts too`; `answers 500 naming the file when a named asset is missing, and holds no slot` | Decisions 2 and 11 over HTTP, with two synthetic assets told apart by PID |
 
 `make-asset.sh`'s own checks are the fixtures' shape tests (Decision 8); they run in every `docker build` of the image.
 
@@ -152,7 +153,9 @@ The spec fixes the six assets' codecs and says they are short, SD and built by `
 >
 > Tests changed: `test/scenario.test.ts`'s `accepts explicit channel specs verbatim, defaulting a missing categoryId` now also expects `asset: 'loop'` in the echoed channel, because the echo gains that key. Before and after are in the plan.
 >
-> Break-checks: building the 1080i fixture without its AC-3 track fails the build with `missing stream 2: expected …codec_name=ac3…`; a 2 s GOP on the long-GOP fixture, a progressive MPEG-2, a name missing from the Dockerfile, ignoring the channel's asset and dropping the door check each redden the test named in the plan.
+> Break-checks: building the 1080i fixture without its AC-3 track fails the build with `missing stream 2: expected …codec_name=ac3…`; a 2 s GOP on the long-GOP fixture, a progressive MPEG-2, a name missing from the Dockerfile, dropping the Dockerfile loop's `|| exit 1`, ignoring the channel's asset, dropping the door check and a failing ffprobe each redden the check named in the plan.
+>
+> Follow-ups: ffprobe reports `field_order=unknown` for the progressive `hevc-aac` fixture; ruling R28 treats that as progressive for copy eligibility, and 4a-1a's probe and 4a-1d's copy rule carry it (Refs #525). `h264-gop10-aac` exercises automatic mode's "fewer than 2 keyframes in the probe window" branch, not its 6 s threshold, which 4a-1d pins itself.
 >
 > Inert for viewers: no Django, relay, frontend or workflow change.
 >
@@ -203,13 +206,30 @@ No sibling Phase 4 plan exists yet. 4a-1a's plan should build the fixtures it ne
 
 ## Follow-ups
 
-- **For 4a-1d (and D9):** ffprobe reports `field_order=unknown`, not `progressive`, for a progressive HEVC stream in TS (measured on ffmpeg 5.1.9, 8.1.2 and 9.0.1, including the production 9.0 image). The spec's automatic copy rule reads "HEVC Main 8-bit, **progressive**" and D9 decides interlacing from `field_order`. If the relay treats `unknown` as not progressive, automatic mode never copies HEVC and 4a-1d's declared-family test (`:1424`, "a copied-HEVC run") has no HEVC run to start from. 4a-1d's plan must rule on `unknown` (for HEVC at least) before its decision table is written. The same applies to D9 generally: Q7 (`:1527`) asks whether `field_order` is reliable on real channels.
+- **For 4a-1a and 4a-1d (Refs #525, ruling R28):** ffprobe reports `field_order=unknown`, not `progressive`, for a progressive HEVC stream in TS (measured on ffmpeg 5.1.9, 8.1.2 and 9.0.1, including the production 9.0 image). R28 rules that `unknown` counts as progressive for copy eligibility and that only an explicit `tt`/`bb`/`tb`/`bt` is interlaced. **4a-1a** owns the probe (D9, `:218`), so its probe type must keep `unknown` distinct (a tri-state, never folded into "interlaced") and its deinterlace decision (D8) must follow R28. **4a-1d** owns the copy rule (`:597`) and the declared-family test (`:1424`, "a copied-HEVC run"), which `hevc-aac` can start only under R28. Issue #525 is the durable hand-off; the PR that lands 4a-1d's copy rule closes it, and this PR does not.
+- **For 4a-1d: the 6 s threshold is not pinned by any 4a-0 fixture.** `h264-gop10-aac` (and `loop`) have keyframes 10 s apart, so D9's 8 s probe window never holds two of them and they take the "fewer than 2 keyframes seen" branch. A break-check that moves the K threshold (6 s → 12 s, say) would not redden a test on them. Pinning the threshold needs a source whose GOP is between 6 s and the probe window (7 s, for example), which 4a-1d can build with a local `make-asset.sh`-style ffmpeg command, or a unit row over a probe result.
 - **`measureLoop()` overshoots on `loop`:** each 60 s wrap jumps every timestamp forward about 0.68 s, because the span includes the PCR lead and B-frame DTS. Harmless for today's TS consumers; a 4a E2E test that runs automatic copy on `loop` would see an over-long segment at each wrap. A per-PID PTS span would fix it but changes `loop`'s served timeline, so it wants its own PR.
 - **4a-1d's E2E should name `h264-noaudio` or `h264-eac3` as "the H.264 asset"**, not `loop` (10 s GOP, Constrained Baseline).
 
+## Review changelog
+
+### Round 1, reviewed at `5cb5c638`
+
+FAIL: four should-fix, three nits. Rulings R28 and R29 followed. Each fix is in Appendix A (regenerated from the scratch worktree, still one byte-exact diff against `6c985473`) and re-measured.
+
+1. **The Dockerfile's `|| exit 1` was unpinned** (should-fix). `test/asset-names.test.ts` gains `the Dockerfile fails the build when make-asset.sh fails for any name`, and BC7 is now a real break-check with its message quoted verbatim.
+2. **CONTRACT.md claimed catch-up routing no test enforced** (should-fix). `test/server.test.ts` gains `streams the named asset on both catch-up layouts too` (PATH and QUERY). It passes, and BC5 now reddens four tests, the PATH catch-up one included.
+3. **`h264-gop10-aac` was said to exercise "K > 6 s"** (should-fix). The Consumers rows now say it takes the "fewer than 2 keyframes in the probe window" branch under D9's 8 s bound, and § Follow-ups tells 4a-1d that the 6 s threshold needs a source of its own.
+4. **The HEVC `field_order=unknown` hand-off named only 4a-1d and lived only in this plan** (should-fix). Per R28 it is addressed to 4a-1a (probe representation) and 4a-1d (copy rule), with issue #525 as the durable record ("Refs #525" here and in the PR-description draft, never a closing keyword).
+5. **`probe_streams` could fail silently** (nit). `actual="$(probe_streams)" || fail "ffprobe could not list the streams of ${OUT}"`, pinned by BC8.
+6. **1080i versus "SD"** (nit). Recorded as R29 in Decision 3.
+7. **The echo type's `asset` was optional** (nit). `UpstreamScenario.channels` is `(UpstreamChannel & { asset: UpstreamAsset })[]`, and the e2e package's `tsc` is clean.
+
+Re-measured: vitest 294 in 17 files (seed 277 in 16); `npm run typecheck` 0; e2e `tsc --noEmit` 0; `guards` 49/49; all six fixtures rebuilt on Homebrew ffmpeg 9.0.1, and the image's asset stage rebuilt natively on bookworm (exit 0); BC4, BC5, BC7 and BC8 re-run. `git apply --check --whitespace=error` passes at the seed.
+
 ## Appendix A: PR 4a-0, against the seed `6c985473`
 
-Produced by `git diff 6c985473` in a scratch worktree detached at the seed, after `git add -N e2e-upstream/test/asset-names.test.ts` (15 files, 718 insertions, 62 deletions). `git apply --check --whitespace=error` passes against a clean checkout of the seed.
+Produced by `git diff 6c985473` in a scratch worktree detached at the seed, after `git add -N e2e-upstream/test/asset-names.test.ts` (15 files, 757 insertions, 63 deletions). `git apply --check --whitespace=error` passes against a clean checkout of the seed.
 
 <!-- appendix-A-begin -->
 ```diff
@@ -504,7 +524,7 @@ index 8c9c337b..41fb894f 100644
    "scripts": {
      "build": "tsc",
 diff --git a/e2e-upstream/scripts/make-asset.sh b/e2e-upstream/scripts/make-asset.sh
-index 267d12aa..d7d60906 100755
+index 267d12aa..f357550e 100755
 --- a/e2e-upstream/scripts/make-asset.sh
 +++ b/e2e-upstream/scripts/make-asset.sh
 @@ -1,25 +1,253 @@
@@ -586,7 +606,7 @@ index 267d12aa..d7d60906 100755
 +check_shape() {
 +  local actual line
 +  local -a lines=()
-+  actual="$(probe_streams)"
++  actual="$(probe_streams)" || fail "ffprobe could not list the streams of ${OUT}"
 +  while IFS= read -r line; do
 +    [ -n "${line}" ] && lines+=("${line}")
 +  done <<< "${actual}"
@@ -991,10 +1011,10 @@ index ba3943c0..375751fe 100644
    // any header — a rejected client must never see a 200 first. The
 diff --git a/e2e-upstream/test/asset-names.test.ts b/e2e-upstream/test/asset-names.test.ts
 new file mode 100644
-index 00000000..09f025a4
+index 00000000..d9eb6b13
 --- /dev/null
 +++ b/e2e-upstream/test/asset-names.test.ts
-@@ -0,0 +1,46 @@
+@@ -0,0 +1,62 @@
 +import { describe, it, expect } from 'vitest';
 +import { readFileSync } from 'node:fs';
 +import { fileURLToPath } from 'node:url';
@@ -1026,12 +1046,28 @@ index 00000000..09f025a4
 +
 +const sorted = (names: readonly string[]) => [...names].sort();
 +
++/** The loop body, `./make-asset.sh "/build/assets/${name}.ts" "${name}" || exit 1; \`, then `done`. */
++const GUARDED_LOOP_BODY =
++  /do \\\n\s*\.\/make-asset\.sh "\/build\/assets\/\$\{name\}\.ts" "\$\{name\}" \|\| exit 1; \\\n\s*done/;
++
 +describe('asset names (Phase 4a-0)', () => {
 +  it('make-asset.sh builds a variant for every name in ASSET_NAMES, and no other', () => {
 +    expect(
 +      sorted(makeAssetVariants(makeAsset)),
 +      'scripts/make-asset.sh case labels vs src/asset.ts ASSET_NAMES',
 +    ).toEqual(sorted(ASSET_NAMES));
++  });
++
++  it('the Dockerfile fails the build when make-asset.sh fails for any name', () => {
++    // `RUN` is `sh -c` with no `-e`, and a `for` loop's status is its last
++    // command's: without `|| exit 1` a fixture that fails its shape check
++    // prints the failure and the image builds anyway (measured), so the
++    // CONTRACT.md guarantee that an image which exists has these shapes
++    // rests on this one guard.
++    expect(
++      dockerfile,
++      "the Dockerfile's asset loop must run make-asset.sh with '|| exit 1', or a failed shape check does not fail docker build",
++    ).toMatch(GUARDED_LOOP_BODY);
 +  });
 +
 +  it('the Dockerfile builds every name in ASSET_NAMES, and no other', () => {
@@ -1172,10 +1208,10 @@ index b59612f2..e8586bb7 100644
 +  });
 +});
 diff --git a/e2e-upstream/test/server.test.ts b/e2e-upstream/test/server.test.ts
-index de5b5f57..58b28585 100644
+index de5b5f57..4032e33c 100644
 --- a/e2e-upstream/test/server.test.ts
 +++ b/e2e-upstream/test/server.test.ts
-@@ -1021,3 +1021,106 @@ describe('dead-air and slow-trickle applying to connections opened after they ar
+@@ -1021,3 +1021,127 @@ describe('dead-air and slow-trickle applying to connections opened after they ar
      expect(outcome).toBe('stalled');
    });
  });
@@ -1270,6 +1306,27 @@ index de5b5f57..58b28585 100644
 +    ).toBe(EAC3_PID);
 +  });
 +
++  it('streams the named asset on both catch-up layouts too', async () => {
++    server = await startServer(0);
++    const scenario = await createScenario({
++      xc: true,
++      username: 'user',
++      password: 'pass',
++      channels: [channel(1, { asset: 'h264-eac3' })],
++    });
++    const base = `http://127.0.0.1:${server.port}/s/${scenario.id}`;
++    const start = '2026-08-29:14-00';
++    expect(
++      await firstPid(`${base}/timeshift/user/pass/65/${start}/1.ts`),
++      "PATH catch-up channel 1 names h264-eac3 (PID 0x600); the channel's asset picks the file",
++    ).toBe(EAC3_PID);
++    const query = `username=user&password=pass&stream=1&start=${encodeURIComponent(start)}&duration=65`;
++    expect(
++      await firstPid(`${base}/streaming/timeshift.php?${query}`),
++      "QUERY catch-up channel 1 names h264-eac3 (PID 0x600); the channel's asset picks the file",
++    ).toBe(EAC3_PID);
++  });
++
 +  it('answers 500 naming the file when a named asset is missing, and holds no slot', async () => {
 +    server = await startServer(0);
 +    const scenario = await createScenario({
@@ -1304,7 +1361,7 @@ index a26b8591..916370de 100644
  The ten G1 rows above are covered by these specs (the two seeding rows
  share one file, as do the two principal rows):
 diff --git a/e2e/fixtures/upstream.ts b/e2e/fixtures/upstream.ts
-index bf30f80f..98646daa 100644
+index bf30f80f..d34273b5 100644
 --- a/e2e/fixtures/upstream.ts
 +++ b/e2e/fixtures/upstream.ts
 @@ -85,11 +85,34 @@ export interface FaultResult {
@@ -1342,5 +1399,15 @@ index bf30f80f..98646daa 100644
    /**
     * Optional — mirrors the provider's `ChannelSpec.categoryId` (G8 task 1).
     * When omitted, the provider defaults it to the scenario's first declared
+@@ -162,7 +185,8 @@ export interface UpstreamScenario {
+   /** Origin Playwright resolves. Hand these to fetch/streamClient. */
+   control: string;
+   credentialQuery: string;
+-  channels: UpstreamChannel[];
++  /** The provider always echoes each channel's resolved `asset` (4a-0). */
++  channels: (UpstreamChannel & { asset: UpstreamAsset })[];
+   /**
+    * Echoed by the provider and typed here because an XC account needs the two
+    * values *separately*: `credentialQuery` is the pre-formatted query string,
 ```
 <!-- appendix-A-end -->
