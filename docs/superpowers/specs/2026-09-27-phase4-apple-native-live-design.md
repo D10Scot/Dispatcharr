@@ -571,7 +571,12 @@ No new event type is added, because the Connect vocabulary is a fixed dict. Then
   The self-stop goroutine drops them (§ Presence › Who ends sessions).
 - **The pipeline is torn down at once.** With every session STOPPED its refcount is 0, so it stops
   exactly as at any last departure. In 4a-3 it does **not** linger, and its window is discarded.
-- **New HLS entries answer 502** while the mark is set.
+- **New HLS entries answer 502** while the mark is set. The check is in `StreamHandler`'s HLS
+  entry path, after `Attach` and before `AttachOutput`. An entry that finds the mark set has
+  already registered a client (and, as the first client, may have started the channel). So it
+  **calls its Attach release func before answering 502**, as any failed HLS attach does. That
+  release runs the ordinary `Manager.release` → `stopIfStillIdle`, so a channel that the refused
+  entry alone started is stopped by the normal idle rule, `ShutdownDelay` included.
 - **The channel and its TS clients are unaffected.**
 
 **The next real source boundary (D10) only clears the mark.** It starts nothing: there is no
@@ -1286,8 +1291,9 @@ PR description draft:
 
     The admin-stop path is kept as a coverage row: a GET gets 410 within 1 s of `Manager.Stop`
     returning.
-  - HLS failure and recovery (round-6 finding 1). A channel with a TS client and an HLS session;
-    every generation attempt fails.
+  - HLS failure and recovery (round-6 finding 1). A channel with a TS client and an HLS session.
+    The stand-in fails every generation attempt on the first source, and succeeds after the source
+    switch.
     - The session gets 410 once, the pipeline is torn down, and a new entry answers 502.
     - While the mark is set, no ffmpeg HLS generation is running: the stand-in records zero
       spawns.
@@ -1731,6 +1737,8 @@ Filled in as PRs merge.
     - 2: a stop path inserts into the releasing set only while `released` is still open, checked
       under `m.mu`.
     - 3: declared `ac3`/`eac3` layouts are clamped to 2.0 or 5.1.
+- **2026-09-27, round 7 PASS at `e1dcfa5c`; nits applied** (the recovery test's stand-in
+  succeeds after the switch; a 502-refused entry calls its release func first).
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
