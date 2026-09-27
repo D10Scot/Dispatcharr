@@ -200,7 +200,7 @@ No sibling Phase 4 plan exists yet. 4a-1a's plan should build the fixtures it ne
 
 ## Residual risks
 
-- **The 1080i fixture's real-time cost on CI.** Through the relay's software transcode it is the heaviest of the six (1920×1080, 50p out). On the planner's host it ran at 5.5× real time on two threads; a CI runner is slower. No 4a-0 test encodes it, so this is 4a-1b's to measure where it is enforced. If CI cannot keep up, the lever is 4a-1b's timeouts (which are "generous and are not gates", spec `:1146-1147`), not a smaller fixture: the name and the geometry are the spec's.
+- **The 1080i fixture's real-time cost on CI.** Through the relay's software transcode it is the heaviest of the six (1920×1080, 50p out). On the planner's host it ran at 5.5× real time on two threads; a CI runner is slower. No 4a-0 test encodes it, so 4a-1b measures it where it is enforced and, per R29, raises a shortfall as a finding rather than lowering an assertion or shrinking the fixture.
 - **An unpinned Debian ffmpeg can drift.** That is why the shapes are asserted rather than the bytes. A drift that breaks a shape fails the image build loudly, naming the stream; it cannot ship a wrong fixture.
 - **ffprobe's `hevc` `field_order=unknown`** is measured on three builds, not on every future one. The build does not assert it (Decision 9), so a future ffprobe that says `progressive` changes nothing here.
 
@@ -226,6 +226,10 @@ FAIL: four should-fix, three nits. Rulings R28 and R29 followed. Each fix is in 
 7. **The echo type's `asset` was optional** (nit). `UpstreamScenario.channels` is `(UpstreamChannel & { asset: UpstreamAsset })[]`, and the e2e package's `tsc` is clean.
 
 Re-measured: vitest 294 in 17 files (seed 277 in 16); `npm run typecheck` 0; e2e `tsc --noEmit` 0; `guards` 49/49; all six fixtures rebuilt on Homebrew ffmpeg 9.0.1, and the image's asset stage rebuilt natively on bookworm (exit 0); BC4, BC5, BC7 and BC8 re-run. `git apply --check --whitespace=error` passes at the seed.
+
+### Round 2 PASS at `c97f790c`; nit N1 applied
+
+N1: § Residual risks' first bullet now follows R29 (4a-1b measures the real-time cost where it is enforced and raises a shortfall as a finding), in place of "the lever is 4a-1b's timeouts". Plan text only; Appendix A is unchanged.
 
 ## Appendix A: PR 4a-0, against the seed `6c985473`
 
