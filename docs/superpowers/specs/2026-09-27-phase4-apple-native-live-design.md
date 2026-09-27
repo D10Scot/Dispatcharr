@@ -215,7 +215,7 @@ exports `LIBVA_DRIVERS_PATH`. The compose files carry `/dev/dri` only as a comme
 | **D6** | **The relay owns packaging.** One ffmpeg per (channel, HLS profile) reads the channel's ring on stdin. It writes **one fragmented-MP4 stream per rendition on its own file descriptor**: video on fd 1, stereo AAC on fd 3, AC-3 on fd 4, E-AC-3 on fd 5, each `-movflags frag_keyframe+delay_moov+default_base_moof`. A new package, `relay/hls`, parses the boxes (stdlib `encoding/binary`), cuts segments, stores them, and renders every playlist. The segmenter accumulates video fragments until the 2 s grid is reached, and checks that each segment's first sample is a sync sample; it does not cut at every fragment. **Rejected:** ffmpeg's own `-f hls` muxer, and one muxed audio-plus-video stream. | M4 shows the shape works, with 2.000 s segments on every rendition. `-f hls` writes files the relay would have to watch (no inotify in the stdlib) and playlists it would have to rewrite: for tokens, for D10's discontinuities across processes, and for 4a-3's on-disk window. A muxed stream cannot carry two alternative audio codecs as HLS renditions. `buffer.Fragments` is not reused, because it is a cursor stream for one long response, and HLS needs random access by media sequence across aligned renditions (`hls.Store`). The spawn helper gains `ExtraFiles` (stdlib `os/exec`); `start()` (`relay/ffmpeg/spawn.go:113-197`) keeps `Setpgid` and `Pdeathsig`. Accumulating to the grid guards against stray non-IDR keyframes the encoder may emit (Q1). |
 | **D7** | **Playlists** (§ Playlists, exact tags). There is one video rendition and one audio group per audio codec: `aac` always; `ac3` when the source carries AC-3 or E-AC-3; `eac3` when it carries E-AC-3. Each group gets its own `EXT-X-STREAM-INF` on the same video playlist. `CODECS` is read from each rendition's **init segment** (`avcC`, `hvcC`, `esds`, `dac3` and `dec3` boxes). `EXT-X-PROGRAM-DATE-TIME` is written on **every** segment, derived from the ring's **arrival time** of the generation's first chunk plus media time (the known drift is § Risks). `TARGETDURATION` is 2 (transcode), with `INDEPENDENT-SEGMENTS`, `VERSION:7`, a media sequence that continues across generations, and `DISCONTINUITY-SEQUENCE`. The live-edge playlist lists 10 segments. A media playlist request **waits** for its rendition's first segment, bounded by 20 s, then answers 503 with `Retry-After: 1`. The multivariant waits for every first-generation init segment, bounded the same way. | Apple rules 2.3, 2.5-2.6, 7.4, 8.4, 8.11 and 9.11-9.12 (Appendix A). The 2 s target departs **deliberately** from Apple 7.5/7.6's 6 s target (a SHOULD): R8 prefers lower latency, and M4 measured about 7.3 s behind PDT at 2 s against about 24.5 s at 6 s. Codec strings read from init segments stay true in every mode, copy included. Arrival time rather than publish time keeps PDT honest while the encoder catches up the first generation's `JoinBehind` backlog. Holding a request until content exists is simpler for every player than an empty live playlist. |
 | **D8** | **The default re-encode** (§ Encoder argv). The source is decoded in software, and deinterlaced with `bwdif=mode=send_field:deint=interlaced` when the probe says it is interlaced (50i → 50p, Apple 1.14-1.15). **Output geometry and frame rate are fixed for the channel's run** at the first generation's probe: at most 1920×1080, never upscaled at the first generation, and `scale`/`pad`/`fps` enforce them on every later generation. Video is H.264 High@L4.2 at constant frame rate, with a forced IDR every 2.000 s and a bitrate from a table by output height. It is encoded with `h264_qsv` behind `hwupload`, or with `libx264 -preset veryfast -tune zerolatency` (D11). **Audio**, per R20 and Apple 2.3/2.6: stereo AAC 160 kb/s always. An AC-3 source track is copied. An E-AC-3 source track is copied **and** an AC-3 rendition is encoded from it at the source's layout (640 kb/s at 5.1, 192 kb/s at 2.0; § Encoder argv › Channel layouts), giving three audio renditions. Only **qualifying** audio streams are mapped (§ Encoder argv). **The rendition set is fixed at generation 0**, as geometry is, and every later generation fills every declared rendition (§ Encoder argv, rendition filling). A rendition with no source is filled with **relay-synthesised silence** (M8): canned silent frames, counted against the video segments' time spans, with no audio output in the ffmpeg argv at all. | ADR 0009 makes codec, field order and keyframe spacing Mino's decisions. Software decode plus `bwdif`'s `deint=interlaced` handles mixed progressive and interlaced content without a hardware filter chain whose behaviour on progressive frames is unknown (Q1). Encoding is the expensive half, and it is the half that goes to Quick Sync. Fixed output parameters are what ADR 0009 promised across a switch, and what keeps the multivariant true after one. A PMT-declared audio track with no packets would otherwise make ffmpeg fail every rendition (finding 7). Silence satisfies Apple 2.3 on a video-only source. It is synthesised by the relay because an ffmpeg `anullsrc` input never lets the generation exit on stdin EOF, and it is unpaced (M8). |
-| **D9** | **A probe precedes every generation, and reads from where that generation will start** (D10): the first generation from `JoinBehind` behind live, every later one from its boundary index. The probe is `ffprobe -show_streams -of json`, bounded to 5 MB or 8 s, decoded with stdlib `encoding/json`. It decides interlacing (`field_order`), frame rate, geometry and the qualifying audio streams, and, in *automatic* mode, the copy decisions (D12). A probe that finds no video stream fails the HLS attach with 502, and the channel's TS clients are unaffected. `Channel.AttachOutput` holds `outMu` across a pipeline's start (`relay/channel/output.go:126-185`). The HLS attach therefore only registers its pipeline under `outMu`, and runs the probe (up to 8 s) and the init wait (up to 20 s) **outside** it, so an fMP4 or Output Profile attach on the same channel never waits behind them. | Every later choice depends on these facts, and the relay is the only process that can see the bytes. Probing across a boundary would describe the old source's streams, and M3 shows how silently a stream mismatch fails (finding 6). |
+| **D9** | **A probe precedes every generation, and reads from where that generation will start** (D10): the first generation from `JoinBehind` behind live, every later one from its boundary index. The probe is `ffprobe -show_streams -of json`, decoded with stdlib `encoding/json`, bounded to **3 s or 3,000,000 bytes** (`-analyzeduration 3000000 -probesize 3000000`; 3 MB is 3 s of an 8 Mb/s source, and a faster one ends on bytes first), with **one re-probe at 8 s or 5 MB only when the video has no width, height or `field_order`** (or, in *automatic* mode only, the 3 s window held fewer than 2 keyframes, R37) and the first probe's feed stopped for a reason more bytes would change (not at a boundary or the ring's close). The encoder analyses its own `pipe:0` input at the bound its generation's probe succeeded with (amended by R30). It decides interlacing (`field_order`), frame rate, geometry and the qualifying audio streams, and, in *automatic* mode, the copy decisions (D12). A probe that finds no video stream fails the HLS attach with 502, and the channel's TS clients are unaffected. `Channel.AttachOutput` holds `outMu` across a pipeline's start (`relay/channel/output.go:126-185`). The HLS attach therefore only registers its pipeline under `outMu`, and runs the probe (3 s, or 11 s with its re-probe) and the init wait (up to 20 s) **outside** it, so an fMP4 or Output Profile attach on the same channel never waits behind them. | Every later choice depends on these facts, and the relay is the only process that can see the bytes. Probing across a boundary would describe the old source's streams, and M3 shows how silently a stream mismatch fails (finding 6). The 3 s bound (R30): on an MPEG-TS pipe ffprobe reads to its `-analyzeduration` whatever it has found (mpegts is a no-header format), so the bound **is** the probe's share of the zap time and the failover gap. The 4a-1a plan review measured every decision on the 4a-0 fixtures identical to a full probe at 2.5-3 s and geometry lost at 1 s; the bound must exceed the GOP, which the re-probe covers when it does not. |
 | **D10** | **The encoder restarts at every source boundary. It does not survive a switch.** A boundary is every new upstream connection: an `applySwitch`, or a reconnect of the same URL. The channel records the ring index of the boundary's first chunk. The running generation's writer stops **at** that index and closes stdin. The generation then exits on its own (M8: 0.065 s), and its flushed tail becomes the generation's last, possibly short, segments. The argv never carries an input that could keep it alive: no lavfi source. A generation still running 5 s after stdin closed is killed. The grace is its own constant,
 `hls.GenerationExitGrace` = 5 s, and `ffmpeg.KillWait` (500 ms, `relay/ffmpeg/spawn.go:60-62`)
 stays the reap budget after the kill. If the channel has an HLS pipeline, a new generation is probed and started at the boundary. A channel with none starts nothing there (R19; § Encoder argv › Failure). Its first segment is marked `EXT-X-DISCONTINUITY` with a new `EXT-X-MAP` (`init-<gen>.mp4`), and the media sequence continues. | M3: a surviving encoder silently drops a source with different PIDs, so every failover to another provider would be a picture that stops with no error anywhere. M6: AVPlayer plays across a discontinuity. Restarting also makes a change of codec, resolution or audio layout between providers safe, and the fixed output parameters (D8) keep the declared variant true. The cost is the gap measured in M6 (Q6). |
@@ -228,7 +228,7 @@ stays the reap budget after the kill. If the channel has an HLS pipeline, a new 
 | **D17** | **Four settings, in the `proxy_settings` group** (4a-3):<br>- `rewind_window_minutes`: default 60; 0 disables the window; at most 120.<br>- `rewind_linger_seconds`: default 300; 0 means drop at once.<br>- `rewind_behind_live_grace_seconds`: default 10.<br>- `rewind_disk_cap_gb`: default 16.<br>They are back-filled by `get_proxy_settings`' defaults, sent on every next-source answer (A1.4), and required by the relay. | `proxy_settings` is the group the relay already receives. The names are neutral (R15). A channel snapshots them at start. The disk cap is process-wide and takes the most recent answer's value. The 120-minute ceiling is Apple's tvOS scrub-back figure. |
 | **D18** | **The browser player plays live *channels* over hls.js, and keeps stream previews on mpegts.js over TS** (4a-2; R18). Playback of a channel, by UUID, from the channels table, the guide, the DVR page and the recording cards and modals, requests `output_format=hls`. It plays through hls.js where MSE or ManagedMediaSource exists (`xhrSetup` sends the `Bearer` JWT), and natively with `?token=` otherwise. When the player closes or switches, it calls the leave route (D5). Stream previews by stream hash, and the stats card's play button (`StreamConnectionCard.jsx:516`, preview-style per R26), keep `output_format=mpegts`, mpegts.js and the web-player Output Profile preference. | R17 for channels, and R18 for previews: an admin previewing a stream wants the stream as it is, with no encode and no slot held after close. R26: the stats card watches a running channel that may have only TS clients, and an HLS play there would start an encode that R19 forbids for a TS-only channel. mpegts.js and the preference therefore stay (the preference applies to the TS previews). |
 | **D19** | **A Mino capability document:** `GET /api/mino/capabilities/` (4a-1b), `AllowAny`, gated by the `XC_API` network ACL (§ 4b). It reports `server_version` **deliberately**: the app shows it, and on a LAN-only server (R3) it discloses nothing the web UI's login page does not. | R16: the app refuses a server without 4a, and must be able to ask before sign-in. The route is Mino-named (R15). |
-| **D20** | **Gates** (§ Testing and gates):<br>- **The Go ratchet, amended by R21.** A Go PR **may** raise `scripts/coverage_relay_go.floor`'s `missing`, but only by the uncovered statements of its own new or changed code. They are listed per file in the PR body, with **≥ 85%** statement coverage on the PR's additions, measured by the ≥12-round CI census. The reviewer checks the listing. A noise draw above the floor still gets a re-measurement PR of its own, never a bump.<br>- **A package that is not yet linked (R27).** In 4a-1a, `relay/hls` is unlinked, so it is outside the gate's denominator. 4a-1a's PR therefore shows `relay/hls`'s own per-package coverage: ≥ 85%, CI-measured with the same `-count=1 -race -covermode=atomic` flags, with a per-file uncovered listing. 4a-1b links it. It re-baselines `packages=` and `package_count` and may raise `missing` by exactly two amounts, each listed per file: `relay/hls`'s uncovered statements as 4a-1a listed them, re-measured; plus 4a-1b's own new or changed uncovered statements, with ≥ 85% on 4a-1b's own additions and a 12-round CI census. Anything else above the floor is a finding, not a bump. The same rule applies to any later PR that first links a package.<br>- **Python Gate 2 is unchanged:** new lines in its nine modules are covered, and `missing` stays 33.<br>- **Parity rows** land pinned in the PR that makes the behaviour.<br>- **E2E** runs the software encoder on CI.<br>- **AVPlayer** is a manual gate recorded in the PR body. | R21 (owner), R27 (orchestrator). Since 2c-9 no Go PR has moved `missing` (`git log -- scripts/coverage_relay_go.floor` shows one commit), so this is a change of policy, and it is recorded as one: in CLAUDE.md, and in 4a-1a's edit to the floor file's "HOW TO MOVE" header. There is no macOS or iOS 27 runner in this repository's CI, and automated AVPlayer checks belong in the app repository (Q8). |
+| **D20** | **Gates** (§ Testing and gates):<br>- **The Go ratchet, amended by R21.** A Go PR **may** raise `scripts/coverage_relay_go.floor`'s `missing`, but only by the uncovered statements of its own new or changed code. They are listed per file in the PR body, with **≥ 85%** statement coverage on the PR's additions, measured by the ≥12-round CI census. The reviewer checks the listing. A noise draw above the floor still gets a re-measurement PR of its own, never a bump.<br>- **A package that is not yet linked (R27).** In 4a-1a, `relay/hls` is unlinked, so it is outside the gate's denominator. 4a-1a's PR therefore shows `relay/hls`'s own per-package coverage: ≥ 85%, CI-measured with the same `-count=1 -race -covermode=atomic` flags, with a per-file uncovered listing. 4a-1b links it. It re-baselines `packages=` and `package_count` and may raise `missing` by exactly two amounts, each listed per file: `relay/hls`'s uncovered statements as 4a-1a listed them, re-measured as the maximum over 4a-1b's own 12-round CI census (R34); plus 4a-1b's own new or changed uncovered statements, with ≥ 85% on 4a-1b's own additions and a 12-round CI census. Anything else above the floor is a finding, not a bump. The same rule applies to any later PR that first links a package.<br>- **Python Gate 2 is unchanged:** new lines in its nine modules are covered, and `missing` stays 33.<br>- **Parity rows** land pinned in the PR that makes the behaviour.<br>- **E2E** runs the software encoder on CI.<br>- **AVPlayer** is a manual gate recorded in the PR body. | R21 (owner), R27 (orchestrator). Since 2c-9 no Go PR has moved `missing` (`git log -- scripts/coverage_relay_go.floor` shows one commit), so this is a change of policy, and it is recorded as one: in CLAUDE.md, and in 4a-1a's edit to the floor file's "HOW TO MOVE" header. There is no macOS or iOS 27 runner in this repository's CI, and automated AVPlayer checks belong in the app repository (Q8). |
 
 ## The ADR 0006 amendment
 
@@ -308,7 +308,7 @@ every mechanism above is `os/exec`, `os`, `crypto/rand`, `encoding/binary`, `enc
 | `GET /live/<u>/<p>/<id>.m3u8`, `GET /<u>/<p>/<id>.m3u8` | `xcForcedFormat` (`.m3u8` ⇒ `hls`) | same |
 | any of the above on a channel whose probe finds no video | relay | 502 `{"error": "no video stream in the source"}`. TS clients are unaffected. |
 | any of the above when the channel's HLS output has failed (§ Encoder argv, failure) | relay | 502 `{"error": "HLS output failed"}` |
-| first-generation init segments not ready within 20 s | relay | 503, `Retry-After: 1`. The session is dropped. |
+| first-generation init segments not ready within 20 s (the first generation that writes a complete set, R41) | relay | 503, `Retry-After: 1`. The session is dropped. |
 | draining relay | relay (`Lifecycle`) | 503, as for every tune |
 | every hop denial (401, 403, 404, 429) | unchanged | unchanged |
 
@@ -374,7 +374,7 @@ Multivariant, for a source with AC-3 (sample; the values are illustrative):
 - An E-AC-3 source adds an `eac3` group (`CODECS` `ec-3`; Q3) and a third `EXT-X-STREAM-INF`.
 - `LANGUAGE` is emitted only when the probe reports a language tag.
 - `BANDWIDTH` is the video `maxrate` plus the audio bitrate in transcode mode. In a copied
-  rendition it is 1.25× the ring's measured rate over the probe window.
+  rendition it is 1.25× the ring's measured rate over the probe window (the full 8 s window whenever automatic mode re-probed, R37).
 - The AAC group is listed first. Which group a given device picks is Q2 (M4: macOS and iOS chose
   AAC).
 
@@ -401,9 +401,10 @@ video/<seq>.m4s
 
 - `EXT-X-PROGRAM-DATE-TIME` is written on every segment, at about 45 bytes each.
 - Audio playlists list the same sequence numbers with their own `EXTINF`. An audio segment holds
-  the audio fragments whose start time falls within its video segment's span. With 200 ms audio
-  fragments (`-frag_duration 200000`), an audio segment is within 0.2 s of its video segment,
-  which is inside Apple 7.7's +0.5 s.
+  the audio fragments whose start time falls within its video segment's span. With audio
+  fragments of at least 200 ms (`-frag_duration 200000`, rounded up to whole frames: 213 ms of AAC,
+  224 ms of AC-3), an audio segment is within one audio fragment, 0.225 s, of its video segment,
+  which is inside Apple 7.7's +0.5 s (erratum, 4a-1a plan review; the text said 0.2 s).
 - `EXT-X-ENDLIST` is never written.
 
 ### Next-source additions
@@ -485,7 +486,9 @@ itself:
   is byte-identical), and caches them for the life of the process.
 - **Each segment.** For each video segment `[start, end)`, the rendition's segment holds every
   frame whose start falls before `end`, continuing from the previous segment's last frame, with
-  `tfdt` at the first frame's start. It is one `moof` (with `tfhd` default duration and size,
+  `tfdt` at the first frame's start **on the video's timeline**: frame 0 presents with the
+  generation's first video frame, so its `tfdt` is that frame's `tfdt` converted to `Ta`
+  (erratum, 4a-1a plan review). It is one `moof` (with `tfhd` default duration and size,
   `tfdt` v1, and `trun` with a data offset) plus an `mdat` of the repeated frame.
 - **The arithmetic is integer, and absolute per generation.** A segment's `end`, in ticks of the
   video timescale `Tv`, is converted to a frame index at the audio timescale `Ta` (48000) with a
@@ -504,6 +507,15 @@ itself:
   `media_time` 256, which is 5.3 ms; its AAC init has none. The relay **strips `edts`** from every
   canned init, so every silent rendition presents from 0 in its own timeline, aligned with the
   video. This is a decision, not an accident of the encode.
+- **Edit lists on the encoder's own outputs** (erratum, 4a-1a plan review). Each fragmented-MP4
+  output starts its `tfdt` at 0 and records where its track really starts, relative to the output's
+  zero, as an **empty edit** (measured on ffmpeg 9.0.1 after a mid-GOP join: video 0.86 s, the
+  copied AC-3 none). Aligned by `tfdt` alone the renditions would be 0.86 s apart, and hls.js
+  ignores edit lists. So the relay moves every fragment's `tfdt` by its track's offset (the empty
+  edit converted from the movie to the media timescale, less any `media_time`, never negative) and
+  strips `edts` from **every** init it serves, the encoder's included; every rendition of a
+  generation is then aligned by `tfdt` alone. A `media_time` longer than the empty edit cannot be
+  represented that way, which is why the video output carries `+negative_cts_offsets` (R31).
 - **Generations.** The init segment serves every generation's `EXT-X-MAP` for that rendition, and a
   generation boundary starts the frame count again at the new generation's first video `tfdt`.
 - **What was measured.** M8 prototyped AAC and AC-3. E-AC-3's canned frame uses the same mechanism,
@@ -515,7 +527,9 @@ inline:
 ```
 ffmpeg -hide_banner -loglevel warning -nostats
   -init_hw_device qsv=hw:/dev/dri/renderD128 -filter_hw_device hw          # software: omitted
-  -fflags +genpts+discardcorrupt -f mpegts -i pipe:0
+  -fflags +genpts+discardcorrupt
+  -probesize 3000000 -analyzeduration 3000000 -f mpegts -i pipe:0          # the probe's bound (R30);
+                                                                           # 5000000 / 8000000 after a re-probe
   -map 0:v:0
   -vf "[bwdif=mode=send_field:deint=interlaced,]scale=W:H:force_original_aspect_ratio=decrease,
        pad=W:H:(ow-iw)/2:(oh-ih)/2,fps=R,format=nv12,hwupload=extra_hw_frames=64"
@@ -524,7 +538,7 @@ ffmpeg -hide_banner -loglevel warning -nostats
        -b:v B -maxrate M -bufsize M -g G -idr_interval 0 -forced_idr 1     #   -preset veryfast -tune zerolatency
        -force_key_frames "expr:gte(t,n_forced*2)"                          #   -profile:v high -level:v 4.2
                                                                            #   -g G -keyint_min G -sc_threshold 0
-  -f mp4 -movflags frag_keyframe+delay_moov+default_base_moof pipe:1
+  -f mp4 -movflags frag_keyframe+delay_moov+default_base_moof+negative_cts_offsets pipe:1
   [-map <aac source> -c:a aac -ac 2 -b:a 160k
    -f mp4 -movflags frag_keyframe+delay_moov+default_base_moof -frag_duration 200000 pipe:3]
   [-map <ac3 source> -c:a copy | -c:a ac3 -ac <declared> -b:a <640k|192k> … -frag_duration 200000 pipe:4]
@@ -542,6 +556,13 @@ ffmpeg -hide_banner -loglevel warning -nostats
 - Bitrate `B` / `M`: height ≥ 1080 is 6 / 8 Mb/s; ≥ 720 is 4 / 5 Mb/s; otherwise 2.5 / 3 Mb/s.
 - The software variant is the shape M4 ran (Appendix B), with `-nostats` added and the audio maps
   generalised.
+- **The video output carries `+negative_cts_offsets`** (amended by R31). With B-frames (h264_qsv's
+  default, and any copied source's) ffmpeg's mp4 muxer otherwise shifts the track by its reorder
+  delay and records the shift as the edit list's `media_time` (measured, libx264 `-bf 2` from a
+  keyframe-aligned start: 80 ms). The relay strips every init's edit list (§ Edit lists above), so
+  the video would present that much late for the whole generation. With negative composition
+  offsets (`trun` version 1) no `media_time` is needed. The 4a-1a plan measured a B-frame encode
+  playing on AVPlayer, macOS 27 and the iOS 27 Simulator, across a boundary.
 - **The QSV argv has not been run on Quick Sync.** No hardware was available. M2 shows only that
   the device option fails cleanly without a device. Its first run on the household host is Q1, and
   4a-1a's PR body records it.
@@ -590,11 +611,29 @@ ring's current head, while its sessions keep their pipeline. That restart is bou
 death within 60 s counts as total failure, exactly as above: the mark is set, the sessions are
 STOPPED, and the pipeline is torn down.
 
+**A stalled encoder is a death** (amended by R33). A generation that writes no new video fragment
+for `max(10 s, 5 × TARGETDURATION)` while the channel's ring keeps advancing is killed, and counts
+as a death after its first segment (or an early exit before it) under the rules above. An encoder
+that neither exits nor reads its input, a wedged device driver say, otherwise holds the pipeline
+until a stop. The ring is the measure of "input advancing", not the bytes fed to the encoder,
+because an encoder that stops reading its stdin stops the feed too; the clock starts at the first
+ring advance after the latest fragment and stops whenever the ring has not moved for half the
+timeout, so an upstream in dead air never reads as a stalled encoder. 4a-1a implements it.
+
+**A connection that ends before it can be probed is skipped** (4a-1a plan review, finding 3; R39
+for generation 0). When a generation's probe feed stopped at the next boundary and the probe found no
+complete video (or failed), there is nothing of that connection to encode: the pipeline moves on to
+the next boundary, as at any boundary. Generation 0 does the same and keeps its number: it starts
+`JoinBehind` behind live, so a failover in the last few seconds can put a boundary inside its probe
+window. Only a probe that read its whole bound and still failed ends the output. A probe whose
+feed ended because the channel's ring closed is a stop, at every generation (R40): the channel is
+ending.
+
 **Automatic generation (4a-1d).** The rules are applied per rendition, from the probe:
 
 | Source | Automatic does |
 |---|---|
-| video H.264, or HEVC **Main profile, 8-bit** (`yuv420p`), progressive, with ≥ 2 keyframes in the probe window and a maximum keyframe interval K ≤ 6 s | copies it (`-c:v copy`, with HEVC tagged `hvc1`). `TARGETDURATION` = max(2, ⌈K⌉). The segmenter cuts at the first keyframe at or after 2 s. |
+| video H.264, or HEVC **Main profile, 8-bit** (`yuv420p`), progressive, with ≥ 2 keyframes in the probe window and a maximum keyframe interval K ≤ 6 s (automatic mode re-probes at the full 8 s / 5 MB bound whenever the 3 s probe saw fewer than 2 keyframes, R37, so K up to 6 s stays observable) | copies it (`-c:v copy`, with HEVC tagged `hvc1`). `TARGETDURATION` = max(2, ⌈K⌉). The segmenter cuts at the first keyframe at or after 2 s. |
 | any other video: interlaced, MPEG-2, HEVC Main10 or any other profile or bit depth, K > 6 s, or fewer than 2 keyframes seen | runs the transcode chain above (H.264) |
 | audio AAC | copies it into the `aac` rendition |
 | audio MP2, MP3 or anything else qualifying | encodes AAC 160 kb/s stereo |
@@ -1070,7 +1109,8 @@ Taken up after 4b's first playable build (R1, R14). Questions to answer before a
   `classifyTableLine` skips any one-line `<!-- … -->` (`e2e/tests/guards/parity-matrix.ts:135-141`).
   The first PR to add a row also extends the matrix's "Blocks, in file order" sentence
   (`docs/relay-parity-matrix.md:155-156`) to name the new block.
-- 4a-1b widens the preamble's scope sentence ("the live TS/fMP4 path") to include HLS.
+- 4a-1a, which adds the first HLS rows, widens the preamble's scope sentence ("the live TS/fMP4
+  path") to include HLS (housekeeping, 4a-1a plan review).
 - Ids are assigned at merge time, as the next free id.
 
 The behaviours, by owning PR:
@@ -1195,6 +1235,11 @@ PR description draft:
   - `relay/ffmpeg` gains an extra-output-pipes spawn.
   - The channel records the ring index of each source boundary.
   - The floor file's R21 header edit.
+  - Amended by the 4a-1a plan review: the probe's 3 s bound and re-probe (R30), with automatic
+    mode's keyframe re-probe decided here for 4a-1d (R37); the video output's
+    `+negative_cts_offsets` (R31); the stall watchdog (R33); skipping a connection too short to
+    probe, at generation 0 too (finding 3, R39); a ring closing under a probe as a stop (R40); and
+    `Ready` on the first generation with every init (R41).
   - No route and no Django change: nothing reaches the package.
 - **Tests.**
   - Unit tests and fuzzing for the box reader, plus a stand-in for pipe shapes and early exits.
@@ -1221,7 +1266,8 @@ PR description draft:
     after the boundary".
   - Probe generation 1 from `JoinBehind`. The second-probe assertion reddens, naming the old
     source's codec.
-  - Drop `delay_moov`. The AC-3 test reddens, naming the moov error.
+  - Replace `delay_moov` with `empty_moov`. The AC-3 test reddens, naming the moov error. (Erratum,
+    4a-1a plan review: dropping `delay_moov` alone stays green on ffmpeg 9.0.1.)
   - Mark QSV unusable on any early failure. The source-failure test reddens.
   - Add an `anullsrc` input to the no-audio argv. The exit-on-EOF assertion reddens, timing out.
   - Rebuild the rendition set from generation 1's probe. The rendition-filling test reddens: `ac3`
@@ -1332,7 +1378,7 @@ PR description draft:
 - **Gates.** The Python Gate 2 isolated run (`authorize.py`, `relay_serializers.py`). The Go gate
   under R27: 4a-1b first links `relay/hls`, so it re-baselines `packages=` and `package_count`, and
   raises `missing` by exactly two amounts, each listed per file: `relay/hls`'s uncovered
-  statements as 4a-1a listed them (re-measured), plus 4a-1b's own. It needs ≥ 85% on its own
+  statements as 4a-1a listed them (re-measured as the census maximum, R34), plus 4a-1b's own. It needs ≥ 85% on its own
   additions and a 12-round CI census.
 - **Manual gate.** The AVPlayer run: macOS, the iOS 27 Simulator and the Apple TV.
 - **Stopping point.** Not on its own. On a slot-constrained provider a third-party app that never
@@ -1418,6 +1464,14 @@ PR description draft:
   - Next-source `hls_profile`.
   - The channel form's "HLS output" select. Bulk edit is not in scope.
   - The relay's automatic rules, including the declared-family rule with `hevc_qsv` and `libx265`.
+  - Counting keyframes in the probe window (`Probe.Keyframes`), which 4a-1a's re-probe decision
+    already reads in automatic mode (R37).
+  - The stall watchdog's timeout becomes per-pipeline, `max(10 s, 5 × TARGETDURATION)` at the
+    pipeline's own TARGETDURATION (R42): 4a-1a's is a constant for transcode's TD = 2, 10 s.
+  - Which video `CODECS` string the multivariant advertises when a copied and an encoded HEVC
+    generation differ in level (for example `hvc1…L120` against `L123`). Since R41 the string is
+    read from the first generation that writes a complete set of inits, not from generation 0's
+    probe; in transcode every generation's string is the same (4a-1a plan review, round 4).
 - **Tests.**
   - Migrations forward and back.
   - A per-rendition decision table against the 4a-0 assets.
@@ -1619,8 +1673,8 @@ Filled in as PRs merge.
 
 | Item | PR | Merged |
 |---|---|---|
-| Spec, ADR 0008, ADR 0009, glossary | #523 | |
-| 4a-0 e2e-upstream fixtures | | |
+| Spec, ADR 0008, ADR 0009, glossary | #523 | 2026-09-27 (`6c985473`) |
+| 4a-0 e2e-upstream fixtures | #526 | 2026-09-27 (`97675e88`) |
 | 4a-1a packager | | |
 | 4a-1b live HLS end to end | | |
 | 4a-1c slot reclaim | | |
@@ -1739,6 +1793,41 @@ Filled in as PRs merge.
     - 3: declared `ac3`/`eac3` layouts are clamped to 2.0 or 5.1.
 - **2026-09-27, round 7 PASS at `e1dcfa5c`; nits applied** (the recovery test's stand-in
   succeeds after the switch; a 502-refused entry calls its release func first).
+- **2026-09-27, amended by the 4a-1a plan review** (PR #528, round 1 reviewed at `ae8dde9f`;
+  rulings R30-R36).
+  - **R30.** The probe is bounded to 3 s / 3,000,000 bytes, with one re-probe at 8 s / 5 MB when the
+    video lacks width, height or `field_order`; the encoder's input analysis follows the bound its
+    probe needed (D9, § Encoder argv). Measured: at 8 s the probe alone took 7.7-9.5 s of wall time
+    on a paced feed.
+  - **R31.** The video output carries `+negative_cts_offsets`, so a B-frame encode keeps its sync
+    once the relay strips edit lists (§ Encoder argv).
+  - **R33.** A stalled encoder is a death (§ Encoder argv, failure).
+  - **Errata** (R32): § Playlists' "within 0.2 s" is "within one audio fragment, 0.225 s"; the
+    silent `tfdt` is on the video's timeline; every init's edit list is stripped and every
+    fragment's `tfdt` moved, not only the canned inits'; the `delay_moov` break-check swaps it for
+    `empty_moov`; a later generation whose connection ends before it can be probed is skipped.
+  - **Housekeeping** (R32): the parity preamble's scope sentence moves to 4a-1a; the Done log
+    records #523 and #526.
+- **2026-09-27, amended by the 4a-1a plan review, round 2** (reviewed at `178b92b8`; rulings
+  R37-R39).
+  - **R37.** Automatic mode re-probes at the full bound when the 3 s probe saw fewer than 2
+    keyframes, so the copy rule's K ≤ 6 s and the copied rendition's bitrate over the probe window
+    stay observable (D9, § Automatic generation, § Playlists). The default re-encode keeps 3 s.
+  - **R38.** The stall watchdog is a parity row.
+  - **R39.** Generation 0 skips a connection too short to probe, as later generations do.
+  - **Errata:** the edit-list cross-reference points above; D20 and § Testing state R34's census
+    maximum for the re-measured `relay/hls` amount.
+- **2026-09-27, amended by the 4a-1a plan review, round 3** (reviewed at `dea8332a`; rulings
+  R40-R42).
+  - **R40.** A ring that closes during a probe is a stop, at every generation (§ Encoder argv,
+    failure).
+  - **R41.** `Ready`, and the multivariant's init wait, are answered by the first generation that
+    writes a complete set of init segments (§ Entry).
+  - **R42.** 4a-1d makes the stall watchdog's timeout per-pipeline (§ 4a-1d).
+  - **Errata:** § 4a-1a's scope note names R37, R39, R40 and R41.
+- **2026-09-27, amended by the 4a-1a plan review, round 4** (reviewed at `255bd7c7`).
+  - **4a-1d:** decides which video `CODECS` string the multivariant uses when copied and encoded
+    HEVC generations differ in level (§ 4a-1d).
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
@@ -1834,7 +1923,7 @@ These override any default in this spec.
   is unlinked and outside the Go gate. 4a-1a's PR shows `relay/hls`'s own per-package coverage:
   ≥ 85%, CI-measured with `-count=1 -race -covermode=atomic`, with a per-file uncovered listing.
   4a-1b links it. It re-baselines `packages=`, and may raise `missing` by exactly `relay/hls`'s
-  listed uncovered statements (re-measured) plus 4a-1b's own new or changed uncovered statements.
+  listed uncovered statements (re-measured as the census maximum, R34) plus 4a-1b's own new or changed uncovered statements.
   Each is listed per file, with ≥ 85% on 4a-1b's own additions and a 12-round CI census. Anything
   else above the floor is a finding. The same rule applies to any later PR that first links a
   package.
