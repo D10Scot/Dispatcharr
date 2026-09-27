@@ -1468,6 +1468,10 @@ PR description draft:
     already reads in automatic mode (R37).
   - The stall watchdog's timeout becomes per-pipeline, `max(10 s, 5 × TARGETDURATION)` at the
     pipeline's own TARGETDURATION (R42): 4a-1a's is a constant for transcode's TD = 2, 10 s.
+  - Which video `CODECS` string the multivariant advertises when a copied and an encoded HEVC
+    generation differ in level (for example `hvc1…L120` against `L123`). Since R41 the string is
+    read from the first generation that writes a complete set of inits, not from generation 0's
+    probe; in transcode every generation's string is the same (4a-1a plan review, round 4).
 - **Tests.**
   - Migrations forward and back.
   - A per-rendition decision table against the 4a-0 assets.
@@ -1821,6 +1825,9 @@ Filled in as PRs merge.
     writes a complete set of init segments (§ Entry).
   - **R42.** 4a-1d makes the stall watchdog's timeout per-pipeline (§ 4a-1d).
   - **Errata:** § 4a-1a's scope note names R37, R39, R40 and R41.
+- **2026-09-27, amended by the 4a-1a plan review, round 4** (reviewed at `255bd7c7`).
+  - **4a-1d:** decides which video `CODECS` string the multivariant uses when copied and encoded
+    HEVC generations differ in level (§ 4a-1d).
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
