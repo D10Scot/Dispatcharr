@@ -216,7 +216,9 @@ exports `LIBVA_DRIVERS_PATH`. The compose files carry `/dev/dri` only as a comme
 | **D7** | **Playlists** (§ Playlists, exact tags). There is one video rendition and one audio group per audio codec: `aac` always; `ac3` when the source carries AC-3 or E-AC-3; `eac3` when it carries E-AC-3. Each group gets its own `EXT-X-STREAM-INF` on the same video playlist. `CODECS` is read from each rendition's **init segment** (`avcC`, `hvcC`, `esds`, `dac3` and `dec3` boxes). `EXT-X-PROGRAM-DATE-TIME` is written on **every** segment, derived from the ring's **arrival time** of the generation's first chunk plus media time (the known drift is § Risks). `TARGETDURATION` is 2 (transcode), with `INDEPENDENT-SEGMENTS`, `VERSION:7`, a media sequence that continues across generations, and `DISCONTINUITY-SEQUENCE`. The live-edge playlist lists 10 segments. A media playlist request **waits** for its rendition's first segment, bounded by 20 s, then answers 503 with `Retry-After: 1`. The multivariant waits for every first-generation init segment, bounded the same way. | Apple rules 2.3, 2.5-2.6, 7.4, 8.4, 8.11 and 9.11-9.12 (Appendix A). The 2 s target departs **deliberately** from Apple 7.5/7.6's 6 s target (a SHOULD): R8 prefers lower latency, and M4 measured about 7.3 s behind PDT at 2 s against about 24.5 s at 6 s. Codec strings read from init segments stay true in every mode, copy included. Arrival time rather than publish time keeps PDT honest while the encoder catches up the first generation's `JoinBehind` backlog. Holding a request until content exists is simpler for every player than an empty live playlist. |
 | **D8** | **The default re-encode** (§ Encoder argv). The source is decoded in software, and deinterlaced with `bwdif=mode=send_field:deint=interlaced` when the probe says it is interlaced (50i → 50p, Apple 1.14-1.15). **Output geometry and frame rate are fixed for the channel's run** at the first generation's probe: at most 1920×1080, never upscaled at the first generation, and `scale`/`pad`/`fps` enforce them on every later generation. Video is H.264 High@L4.2 at constant frame rate, with a forced IDR every 2.000 s and a bitrate from a table by output height. It is encoded with `h264_qsv` behind `hwupload`, or with `libx264 -preset veryfast -tune zerolatency` (D11). **Audio**, per R20 and Apple 2.3/2.6: stereo AAC 160 kb/s always. An AC-3 source track is copied. An E-AC-3 source track is copied **and** an AC-3 640 kb/s 5.1 rendition is encoded from it, giving three audio renditions. Only **qualifying** audio streams are mapped (§ Encoder argv). **The rendition set is fixed at generation 0**, as geometry is, and every later generation fills every declared rendition (§ Encoder argv, rendition filling). A rendition with no source is filled with **relay-synthesised silence** (M8): canned silent frames, counted against the video segments' time spans, with no audio output in the ffmpeg argv at all. | ADR 0009 makes codec, field order and keyframe spacing Mino's decisions. Software decode plus `bwdif`'s `deint=interlaced` handles mixed progressive and interlaced content without a hardware filter chain whose behaviour on progressive frames is unknown (Q1). Encoding is the expensive half, and it is the half that goes to Quick Sync. Fixed output parameters are what ADR 0009 promised across a switch, and what keeps the multivariant true after one. A PMT-declared audio track with no packets would otherwise make ffmpeg fail every rendition (finding 7). Silence satisfies Apple 2.3 on a video-only source. It is synthesised by the relay because an ffmpeg `anullsrc` input never lets the generation exit on stdin EOF, and it is unpaced (M8). |
 | **D9** | **A probe precedes every generation, and reads from where that generation will start** (D10): the first generation from `JoinBehind` behind live, every later one from its boundary index. The probe is `ffprobe -show_streams -of json`, bounded to 5 MB or 8 s, decoded with stdlib `encoding/json`. It decides interlacing (`field_order`), frame rate, geometry and the qualifying audio streams, and, in *automatic* mode, the copy decisions (D12). A probe that finds no video stream fails the HLS attach with 502, and the channel's TS clients are unaffected. `Channel.AttachOutput` holds `outMu` across a pipeline's start (`relay/channel/output.go:126-185`). The HLS attach therefore only registers its pipeline under `outMu`, and runs the probe (up to 8 s) and the init wait (up to 20 s) **outside** it, so an fMP4 or Output Profile attach on the same channel never waits behind them. | Every later choice depends on these facts, and the relay is the only process that can see the bytes. Probing across a boundary would describe the old source's streams, and M3 shows how silently a stream mismatch fails (finding 6). |
-| **D10** | **The encoder restarts at every source boundary. It does not survive a switch.** A boundary is every new upstream connection: an `applySwitch`, or a reconnect of the same URL. The channel records the ring index of the boundary's first chunk. The running generation's writer stops **at** that index and closes stdin. The generation then exits on its own (M8: 0.065 s), and its flushed tail becomes the generation's last, possibly short, segments. The argv never carries an input that could keep it alive: no lavfi source. A generation still running 5 s after stdin closed is killed (`ffmpeg.KillWait`'s pattern). A new generation is probed and started at the boundary. Its first segment is marked `EXT-X-DISCONTINUITY` with a new `EXT-X-MAP` (`init-<gen>.mp4`), and the media sequence continues. | M3: a surviving encoder silently drops a source with different PIDs, so every failover to another provider would be a picture that stops with no error anywhere. M6: AVPlayer plays across a discontinuity. Restarting also makes a change of codec, resolution or audio layout between providers safe, and the fixed output parameters (D8) keep the declared variant true. The cost is the gap measured in M6 (Q6). |
+| **D10** | **The encoder restarts at every source boundary. It does not survive a switch.** A boundary is every new upstream connection: an `applySwitch`, or a reconnect of the same URL. The channel records the ring index of the boundary's first chunk. The running generation's writer stops **at** that index and closes stdin. The generation then exits on its own (M8: 0.065 s), and its flushed tail becomes the generation's last, possibly short, segments. The argv never carries an input that could keep it alive: no lavfi source. A generation still running 5 s after stdin closed is killed. The grace is its own constant,
+`hls.GenerationExitGrace` = 5 s, and `ffmpeg.KillWait` (500 ms, `relay/ffmpeg/spawn.go:60-62`)
+stays the reap budget after the kill. A new generation is probed and started at the boundary. Its first segment is marked `EXT-X-DISCONTINUITY` with a new `EXT-X-MAP` (`init-<gen>.mp4`), and the media sequence continues. | M3: a surviving encoder silently drops a source with different PIDs, so every failover to another provider would be a picture that stops with no error anywhere. M6: AVPlayer plays across a discontinuity. Restarting also makes a change of codec, resolution or audio layout between providers safe, and the fixed output parameters (D8) keep the declared variant true. The cost is the gap measured in M6 (Q6). |
 | **D11** | **With no usable Quick Sync, the relay encodes in software and says so. It never refuses** (accepted, R23). At the first HLS attach in the process, the relay runs a one-frame QSV test encode (§ Encoder argv, detection) and caches the answer. **A generation that exits before its first segment** is retried once with the same engine. If the retry also fails on QSV, the same input is retried in software. **QSV is marked unusable for the process only when that software retry succeeds and the detection encode, re-run, now fails**: both are needed to show the failure was the device's. Any other early failure fails that channel's HLS output alone (§ Encoder argv, failure). The channel payload carries `hls_encoder` (`"qsv"` or `"software"`), and the fallback is logged once at WARNING. | Refusing would reproduce the failure ADR 0009 exists to prevent: an Apple TV showing nothing, because `/dev/dri` was left out of a compose file. Fallback also makes the path testable on CI and developer Macs. Distinguishing a device failure from a source failure (finding 5) stops one bad channel from pushing every channel in the process onto the CPU. |
 | **D12** | ***Automatic* is an Output Profile mode, selected per channel.** `OutputProfile` gains `hls_mode` (blank; `transcode`; `automatic`). Two **locked** rows are seeded, "HLS (Re-encode)" and "HLS (Automatic)", with `command="ffmpeg"` and `parameters="(built by the relay)"`. They are never executed, because every consumer that builds or offers an argv excludes them. Rows with a non-blank `hls_mode` cannot be created or edited through the API. `Channel` gains `hls_output_profile`, a nullable FK with `on_delete=SET_NULL` (null means the built-in transcode). Next-source carries the channel's choice as `hls_profile: {id, mode} \| null`. **Every OutputProfile consumer excludes `hls_mode != ''`:** `resolve_output_profile`, `_resolve_hdhr_output_profile_id`, the next-source `output_profiles` map, the viewset's writes, and the frontend selects (User, HDHR, web player, the M3U-link builder). The only select that offers them is the new channel-form "HLS output" select. On an `hls` tune, `X-Relay-Output` is ignored. | ADR 0009: "reuses the existing Output Profile mechanism… and adds no new one". The per-channel FK is new because R7 says "opt-in per channel", and Output Profiles are selected per client today. A per-client HLS profile would break "one shared encode per channel". The policy is product-owned (an argv the relay builds from a probe), which is why the rows are locked. Without the exclusions, an admin could pick "HLS (Automatic)" as the HDHR profile and get a silent no-op (finding 11). |
 | **D13** | **A Redirect-profile channel is served over HLS through the relay, as Proxy** (accepted, R23). It reserves and holds a provider slot like any Proxy tune. TS clients on the same channel keep their 302 unless the channel is already running, in which case they attach to it, as any client does. | HLS is made by the relay from bytes it holds. A 302 to the provider's endless TS is exactly what AVPlayer cannot play (ADR 0008). `startTune` already takes this path for an internal principal (`relay/httpapi/stream.go:701-713`). |
@@ -451,7 +453,18 @@ generations are ignored.
 |---|---|
 | `aac` | the first qualifying stream, encoded (or copied if AAC, in *automatic*); otherwise **silence** |
 | `ac3` | a qualifying AC-3 stream, copied; else a qualifying E-AC-3 stream, encoded AC-3 640 kb/s; else the first qualifying stream, encoded AC-3 640 kb/s; otherwise **silence** |
-| `eac3` | a qualifying E-AC-3 stream, copied; else the first qualifying stream, encoded with ffmpeg's `eac3` encoder; otherwise **silence** |
+| `eac3` | a qualifying E-AC-3 stream, copied; else the first qualifying stream, encoded with ffmpeg's `eac3` encoder at 640 kb/s for 5.1 (256 kb/s for 2.0); otherwise **silence** |
+
+**Channel layouts** (nit 5). Generation 0 fixes each rendition's declared channel count, which is
+the `CHANNELS` attribute: `aac` is always 2, and `ac3`/`eac3` take generation 0's source layout.
+Every later generation fills a rendition **at its declared layout**:
+
+- **Copy** only when the source's channel count matches the declared one.
+- **Otherwise encode**, with `-ac` set to the declared count, up- or down-mixing: AC-3 at
+  640 kb/s for 5.1 and 192 kb/s for 2.0; E-AC-3 as in the table above.
+- **Canned silence** is encoded once per (codec, declared layout).
+
+So `CHANNELS` stays true across every discontinuity.
 
 **Silence is synthesised by the relay, never by ffmpeg** (M8). An ffmpeg `anullsrc` input keeps
 the generation alive after stdin EOF, which breaks D10, and it floods unpaced audio. So a rendition
@@ -464,9 +477,23 @@ itself:
   is byte-identical), and caches them for the life of the process.
 - **Each segment.** For each video segment `[start, end)`, the rendition's segment holds every
   frame whose start falls before `end`, continuing from the previous segment's last frame, with
-  `tfdt` at the first frame's start. That puts it in the same time base as the video, so it is
-  exact by construction. It is one `moof` (with `tfhd` default duration and size, `tfdt` v1, and
-  `trun` with a data offset) plus an `mdat` of the repeated frame.
+  `tfdt` at the first frame's start. It is one `moof` (with `tfhd` default duration and size,
+  `tfdt` v1, and `trun` with a data offset) plus an `mdat` of the repeated frame.
+- **The arithmetic is integer, and absolute per generation.** A segment's `end` is converted from
+  the video timescale `Tv` to the audio timescale `Ta` (48000) as
+  `endA = end_ticks × Ta / Tv`, in 64-bit integers, rounded down. With `spf` samples per frame
+  (1024 AAC, 1536 AC-3/E-AC-3), the segment ends at frame index `ceil(endA / spf)`, computed as
+  `(endA + spf − 1) / spf`. The next segment starts where this one ended. Because every segment is
+  computed from the generation's absolute sample index rather than from a running sum, the error
+  never accumulates: each segment's end is within one frame of its video segment's end.
+- **The generation's last segment** is the flushed tail after stdin EOF, and may be short. Its
+  `end` is its video `tfdt` plus the **sum of its video sample durations** from the `trun`, never
+  an assumed 2 s. (M8's Python prototype used floats and `start + 2.0` for the tail. A Go port
+  must not copy either.)
+- **Edit lists.** A canned init segment may carry an `edts`/`elst`. M8's AC-3 init has
+  `media_time` 256, which is 5.3 ms; its AAC init has none. The relay **strips `edts`** from every
+  canned init, so every silent rendition presents from 0 in its own timeline, aligned with the
+  video. This is a decision, not an accident of the encode.
 - **Generations.** The init segment serves every generation's `EXT-X-MAP` for that rendition, and a
   generation boundary starts the frame count again at the new generation's first video `tfdt`.
 - **What was measured.** M8 prototyped AAC and AC-3. E-AC-3's canned frame uses the same mechanism,
@@ -589,7 +616,7 @@ Transcode mode always has TD = 2. *Automatic* mode may declare up to 6 (4a-1d). 
       │ ── admin client stop / limit termination ► removed (client_disconnect; release())
       │ ── idle departure ──► DEPARTED (client_disconnect; release(); departed_at)
       │                        │ valid request within 300 s AND channel still running
-      │                        │   ⇒ re-attach via Attach (client_connect) ⇒ ACTIVE
+      │                        │   ⇒ re-attach via AttachExisting (client_connect) ⇒ ACTIVE
       │                        └ 300 s elapse ⇒ removed
       └ ACTIVE or DEPARTED, and its channel stops (admin channel stop, reclaim, drain, the
         channel's run ending) or its HLS output fails ──► STOPPED (client_disconnect if
@@ -617,8 +644,34 @@ Transcode mode always has TD = 2. *Automatic* mode may declare up to 6 (4a-1d). 
   the end time. The response is written with no lock held.
 - **The lock order is `m.mu` → `c.mu` → `st.mu`.** Code holding `st.mu` never takes `c.mu` or
   `m.mu`, and code holding `c.mu` never takes `m.mu`. A resuming request looks its session up
-  under `st.mu`, releases it, and only then calls `Attach`. `claim()` already takes `c.mu` (`addClient`) under `m.mu` (`manager.go:196-234`).
+  under `st.mu`, releases it, and only then attaches (see "Resume never starts a channel" below). `claim()` already takes `c.mu` (`addClient`) under `m.mu` (`manager.go:196-234`).
   ReclaimFor (§ Slot reclaim) takes `st.mu` under `m.mu`.
+
+### Resume never starts a channel
+
+`Manager.Attach` starts a channel when it is absent from the map (`claim` hands the caller a
+gate, and `start()` runs next-source; `relay/channel/manager.go:131-181`). A resume must never
+do that: a `/hls/` GET has run no authorize hop and no stream-limit check. So resume uses a new
+**non-starting** attach, `Manager.AttachExisting(id, client)`:
+
+- It takes `m.mu` and looks the channel up.
+- It registers the client only when the channel is in the map and its ring is open.
+- Otherwise, including while a start is in progress, it returns `ErrChannelAbsent`, and never a
+  gate.
+- It has no start function.
+
+The resume sequence:
+
+1. Under `st.mu`, find the session DEPARTED and within 300 s. Release `st.mu`.
+2. Call `AttachExisting`. On `ErrChannelAbsent`, mark the session STOPPED if it is still
+   DEPARTED, and answer **410**. The entry is then removed.
+3. On success, re-take `st.mu` and confirm the session is **still DEPARTED**. If it became STOPPED
+   or was removed in the meantime (its channel stopped between step 1 and step 2), release `st.mu`,
+   call the new attachment's release func at once, and answer **410**. Otherwise move it to ACTIVE,
+   store the new release func, and serve the request.
+
+A resume can therefore never reserve a provider slot or start an upstream, and a session the
+table says is STOPPED never holds a client entry.
 
 ### Who ends sessions, and from which goroutine
 
@@ -877,7 +930,7 @@ the capability document below:
 | Now/next | `player_api.php?action=get_short_epg&stream_id=<id>[&limit=]` (unchanged). |
 | Programme markers inside the window | `player_api.php?action=get_simple_data_table&stream_id=<id>` (unchanged). Times follow `server_info` (`apps/output/views.py`'s `_build_xc_server_info`). |
 | Rewind | Seek within the playlist's range. The depth is the capability document's `depth_seconds`. |
-| Errors | 401/403 from the entry means credentials or ACL. 429 means the stream limit. 403 from `/hls/`: re-request the entry URL once, then show an error. 410: the channel stopped, so re-tune. 503 with `Retry-After`: retry. |
+| Errors | 401/403 from the entry means credentials or ACL. 429 means the stream limit. 403 from `/hls/`: re-request the entry URL once, then show an error. After a channel stops, an app fetching video and audio playlists in parallel may see one 410 and then 403s ("410 once", § Presence): treat both the same, by re-requesting the entry, and do not treat that 403 as a failure. 410: the channel stopped, so re-tune. 503 with `Retry-After`: retry. |
 
 **App-side, recorded here and owned by the app repository:**
 
@@ -1166,8 +1219,17 @@ PR description draft:
 - **Tests.** As § Testing lists for 4a-1b, plus these Go tests:
   - STOPPED: after an admin channel stop, a GET gets 410 once, and 403 after that. A DELETE gets
     204.
-  - Stopping a channel with HLS sessions returns within 1 s, with no `StopWait` warning logged.
-    `dropHLSClients` never calls `Manager.release`.
+  - Self-stop without self-wait (finding 2). A channel with two HLS sessions attached, whose
+    `run()` ends on its own (the stand-in source exhausts every candidate), and separately one
+    whose HLS output fails. In both, the sessions become STOPPED and the channel is removed within
+    1 s, with no "source goroutine did not return in time" warning (`channel.go:748-755`). The
+    admin-stop path is kept as a coverage row: a GET gets 410 within 1 s of `Manager.Stop`
+    returning.
+  - Resume never starts a channel (finding 1). A test hook between the resume's lookup (step 1)
+    and `AttachExisting` (step 2) stops the channel. The GET answers 410. The control-plane stub
+    sees **no second next-source call**, and the session table ends with no entry for that sid. A
+    second case uses the same hook to stop the channel between step 2 and step 3: the fresh
+    attachment's release func is called, and the answer is 410.
   - The sweeper: after a lone viewer departs and the pipeline and channel stop, the session table
     is empty within 300 s + one tick.
 - **Break-checks.**
@@ -1176,8 +1238,15 @@ PR description draft:
   - Make `DELETE /hls/<token>` return 204 without ending the session. The post-leave spec reddens.
   - Put `auth_request` on `^~ /hls/`. The greybox fifth test reddens.
   - Remove the session end from the client stop. The revoke spec reddens.
-  - End a stopped channel's sessions through `Manager.release`. The 1 s stop-time test reddens:
-    the stop waits `StopWait` on its own `done`.
+  - On the self-stop paths, mark and drop the sessions **synchronously from `run()`'s defer
+    chain** through `Manager.release`, instead of on a new goroutine. The self-stop test reddens.
+    `Manager.release` → `stopIfStillIdle` → `c.stop` then runs on the channel's own goroutine,
+    before `close(c.done)` (the defers at `channel.go:444-457` run `stopOutputs` first and
+    `close(done)` later). So `stop` waits its full `StopWait` (5 s) and logs "source goroutine did
+    not return in time", which names the mechanism.
+  - Resume through the ordinary starting `Attach` instead of `AttachExisting`. The resume test
+    reddens: the stub records a second next-source call, and the GET answers 200 on a freshly
+    started channel.
   - Run the idle sweep per pipeline. The sweeper test reddens: the departed entry is never
     removed.
 - **Gates.** The Python Gate 2 isolated run (`authorize.py`, `relay_serializers.py`). The Go gate
@@ -1549,6 +1618,20 @@ Filled in as PRs merge.
     - 16: `G = round(2 × R)`, and EXTINF can be 2.002.
     - 17: the probe runs outside `outMu`.
     - 18: the deliberate 2 s target is recorded.
+- **2026-09-27, round 4, reviewed at `4456392f`** (two should-fix, six nits).
+  - **Resume never starts a channel (finding 1).** It goes through a non-starting
+    `AttachExisting`, which answers 410 when the channel is absent, and re-checks the session
+    under `st.mu` after attaching. There is a hook-driven Go test and a break-check (the stub sees
+    a second next-source call).
+  - **The self-stop test and its wrong edit target the real self-wait (finding 2):** `run()`
+    ending on its own, and HLS-output failure, rather than admin stop.
+  - **Nits.**
+    - 3: canned inits have `edts` stripped.
+    - 4: integer absolute-index arithmetic, and the tail's `end` from sample durations.
+    - 5: declared channel layouts are kept across generations, and E-AC-3 has a bitrate.
+    - 6: CLAUDE.md's R27 clause is completed.
+    - 7: `hls.GenerationExitGrace` is named separately from `ffmpeg.KillWait`.
+    - 8: the 4b Errors row covers a 410 followed by 403s.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
