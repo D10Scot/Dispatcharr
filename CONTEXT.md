@@ -3,6 +3,14 @@
 Canonical vocabulary for this codebase. Use these terms verbatim in code,
 test names, issue titles and commit messages.
 
+## Mino
+
+The working name for the whole product, the server and the Apple app together. The fork has
+diverged far enough from upstream Dispatcharr that it will be renamed. Until that rename happens,
+existing code, images and identifiers keep saying "Dispatcharr". Every **new** externally visible
+identifier (a route, a header, a setting key, a Bonjour service type, an app bundle identifier) is named neutrally
+or for Mino, never for Dispatcharr, so that the rename does not have to break it.
+
 ## Profiles — three different things
 
 Never write a bare "profile".
@@ -118,6 +126,20 @@ issue titles; use **timeshift** only when naming a symbol that already spells it
 those, and don't introduce a new symbol spelled "catchup"/"catch_up" where an existing convention
 already says "timeshift".
 
+## Live rewind window
+
+The recent past of a **live** channel that Dispatcharr itself keeps while the channel is being
+watched over HLS. A client can pause, rewind and fast-forward live TV back to live, up to a
+configured depth. It starts when the channel's first HLS viewer arrives, never before: there is
+nothing to rewind to from before anyone was watching. A channel watched only over MPEG-TS keeps no
+window. There is one window per channel, shared by every client watching it. It outlives the last
+client by a short linger, so a viewer who zaps back keeps their rewind. It is read over HLS. A
+reader for MPEG-TS clients is a known extension, not something that exists.
+
+**Not catch-up.** Catch-up replays the *provider's* archive; the live rewind window is Dispatcharr's
+own recording of what it relayed. Never call it "timeshift" (catch-up's other name) or "DVR"
+(scheduled recordings).
+
 ## User levels
 
 Streamer (0), Standard User (1), Admin (10) — model labels, verbatim
@@ -166,6 +188,19 @@ vestigial — do not use them.
   ownership leases and the client sets out of Redis, which was the whole of
   the charter. What is left on VOD, catch-up and the provider-slot counters
   is coordination, and stays in Redis.
+- **Phase 4** — "Apple-native live playback": reopens the programme after
+  ADR 0007 closed it, for one goal: watching live TV on iPhone, iPad and
+  Apple TV through Apple's own player. Three deliverables (ADR 0008):
+  - **Phase 4a** — the server half: an HLS output for live channels and the
+    live rewind window, served by the Go relay, and the browser player's
+    switch to HLS for live.
+  - **Phase 4b** — the **Apple app**: a first-party iOS and tvOS client,
+    published on the App Store, that plays live channels over HLS from a
+    Dispatcharr server on the same network. Live TV only; VOD, catch-up and
+    recordings are out of its scope.
+  - **Phase 4c** — paired-device auth: per-device, revocable, Mino-only
+    credentials in place of Xtream ones, investigated after 4b's first
+    playable build.
 - **Parity matrix** — `docs/relay-parity-matrix.md`: one row per
   externally-observable live-path behaviour, each carrying the source it
   was derived from and the test that pins it. Rows are addressed by number
