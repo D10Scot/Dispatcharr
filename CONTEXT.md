@@ -190,13 +190,17 @@ vestigial — do not use them.
   is coordination, and stays in Redis.
 - **Phase 4** — "Apple-native live playback": reopens the programme after
   ADR 0007 closed it, for one goal: watching live TV on iPhone, iPad and
-  Apple TV through Apple's own player. Two deliverables:
-  - **Phase 4a** — the server half: an HLS output for live channels, and the
-    live rewind window, served by the Go relay.
+  Apple TV through Apple's own player. Three deliverables (ADR 0008):
+  - **Phase 4a** — the server half: an HLS output for live channels and the
+    live rewind window, served by the Go relay, and the browser player's
+    switch to HLS for live.
   - **Phase 4b** — the **Apple app**: a first-party iOS and tvOS client,
     published on the App Store, that plays live channels over HLS from a
     Dispatcharr server on the same network. Live TV only; VOD, catch-up and
     recordings are out of its scope.
+  - **Phase 4c** — paired-device auth: per-device, revocable, Mino-only
+    credentials in place of Xtream ones, investigated after 4b's first
+    playable build.
 - **Parity matrix** — `docs/relay-parity-matrix.md`: one row per
   externally-observable live-path behaviour, each carrying the source it
   was derived from and the test that pins it. Rows are addressed by number
