@@ -218,12 +218,12 @@ exports `LIBVA_DRIVERS_PATH`. The compose files carry `/dev/dri` only as a comme
 | **D9** | **A probe precedes every generation, and reads from where that generation will start** (D10): the first generation from `JoinBehind` behind live, every later one from its boundary index. The probe is `ffprobe -show_streams -of json`, bounded to 5 MB or 8 s, decoded with stdlib `encoding/json`. It decides interlacing (`field_order`), frame rate, geometry and the qualifying audio streams, and, in *automatic* mode, the copy decisions (D12). A probe that finds no video stream fails the HLS attach with 502, and the channel's TS clients are unaffected. `Channel.AttachOutput` holds `outMu` across a pipeline's start (`relay/channel/output.go:126-185`). The HLS attach therefore only registers its pipeline under `outMu`, and runs the probe (up to 8 s) and the init wait (up to 20 s) **outside** it, so an fMP4 or Output Profile attach on the same channel never waits behind them. | Every later choice depends on these facts, and the relay is the only process that can see the bytes. Probing across a boundary would describe the old source's streams, and M3 shows how silently a stream mismatch fails (finding 6). |
 | **D10** | **The encoder restarts at every source boundary. It does not survive a switch.** A boundary is every new upstream connection: an `applySwitch`, or a reconnect of the same URL. The channel records the ring index of the boundary's first chunk. The running generation's writer stops **at** that index and closes stdin. The generation then exits on its own (M8: 0.065 s), and its flushed tail becomes the generation's last, possibly short, segments. The argv never carries an input that could keep it alive: no lavfi source. A generation still running 5 s after stdin closed is killed. The grace is its own constant,
 `hls.GenerationExitGrace` = 5 s, and `ffmpeg.KillWait` (500 ms, `relay/ffmpeg/spawn.go:60-62`)
-stays the reap budget after the kill. A new generation is probed and started at the boundary. Its first segment is marked `EXT-X-DISCONTINUITY` with a new `EXT-X-MAP` (`init-<gen>.mp4`), and the media sequence continues. | M3: a surviving encoder silently drops a source with different PIDs, so every failover to another provider would be a picture that stops with no error anywhere. M6: AVPlayer plays across a discontinuity. Restarting also makes a change of codec, resolution or audio layout between providers safe, and the fixed output parameters (D8) keep the declared variant true. The cost is the gap measured in M6 (Q6). |
-| **D11** | **With no usable Quick Sync, the relay encodes in software and says so. It never refuses** (accepted, R23). At the first HLS attach in the process, the relay runs a one-frame QSV test encode (§ Encoder argv, detection) and caches the answer. **A generation that exits before its first segment** is retried once with the same engine. If the retry also fails on QSV, the same input is retried in software. **QSV is marked unusable for the process only when that software retry succeeds and the detection encode, re-run, now fails**: both are needed to show the failure was the device's. Any other early failure fails that channel's HLS output alone (§ Encoder argv, failure). The channel payload carries `hls_encoder` (`"qsv"` or `"software"`), and the fallback is logged once at WARNING. | Refusing would reproduce the failure ADR 0009 exists to prevent: an Apple TV showing nothing, because `/dev/dri` was left out of a compose file. Fallback also makes the path testable on CI and developer Macs. Distinguishing a device failure from a source failure (finding 5) stops one bad channel from pushing every channel in the process onto the CPU. |
+stays the reap budget after the kill. If the channel has an HLS pipeline, a new generation is probed and started at the boundary. A channel with none starts nothing there (R19; § Encoder argv › Failure). Its first segment is marked `EXT-X-DISCONTINUITY` with a new `EXT-X-MAP` (`init-<gen>.mp4`), and the media sequence continues. | M3: a surviving encoder silently drops a source with different PIDs, so every failover to another provider would be a picture that stops with no error anywhere. M6: AVPlayer plays across a discontinuity. Restarting also makes a change of codec, resolution or audio layout between providers safe, and the fixed output parameters (D8) keep the declared variant true. The cost is the gap measured in M6 (Q6). |
+| **D11** | **With no usable Quick Sync, the relay encodes in software and says so. It never refuses** (accepted, R23). At the first HLS attach in the process, the relay runs a one-frame QSV test encode (§ Encoder argv, detection) and caches the answer. **A generation that exits before its first segment** is retried once with the same engine. If the retry also fails on QSV, the same input is retried in software. **QSV is marked unusable for the process only when that software retry succeeds and the detection encode, re-run, now fails**: both are needed to show the failure was the device's. Any other early failure fails that channel's HLS output alone: a mark on the channel, cleared at its next source boundary, with the pipeline torn down (§ Encoder argv, failure). The channel payload carries `hls_encoder` (`"qsv"` or `"software"`), and the fallback is logged once at WARNING. | Refusing would reproduce the failure ADR 0009 exists to prevent: an Apple TV showing nothing, because `/dev/dri` was left out of a compose file. Fallback also makes the path testable on CI and developer Macs. Distinguishing a device failure from a source failure (finding 5) stops one bad channel from pushing every channel in the process onto the CPU. |
 | **D12** | ***Automatic* is an Output Profile mode, selected per channel.** `OutputProfile` gains `hls_mode` (blank; `transcode`; `automatic`). Two **locked** rows are seeded, "HLS (Re-encode)" and "HLS (Automatic)", with `command="ffmpeg"` and `parameters="(built by the relay)"`. They are never executed, because every consumer that builds or offers an argv excludes them. Rows with a non-blank `hls_mode` cannot be created or edited through the API. `Channel` gains `hls_output_profile`, a nullable FK with `on_delete=SET_NULL` (null means the built-in transcode). Next-source carries the channel's choice as `hls_profile: {id, mode} \| null`. **Every OutputProfile consumer excludes `hls_mode != ''`:** `resolve_output_profile`, `_resolve_hdhr_output_profile_id`, the next-source `output_profiles` map, the viewset's writes, and the frontend selects (User, HDHR, web player, the M3U-link builder). The only select that offers them is the new channel-form "HLS output" select. On an `hls` tune, `X-Relay-Output` is ignored. | ADR 0009: "reuses the existing Output Profile mechanism… and adds no new one". The per-channel FK is new because R7 says "opt-in per channel", and Output Profiles are selected per client today. A per-client HLS profile would break "one shared encode per channel". The policy is product-owned (an argv the relay builds from a probe), which is why the rows are locked. Without the exclusions, an admin could pick "HLS (Automatic)" as the HDHR profile and get a silent no-op (finding 11). |
 | **D13** | **A Redirect-profile channel is served over HLS through the relay, as Proxy** (accepted, R23). It reserves and holds a provider slot like any Proxy tune. TS clients on the same channel keep their 302 unless the channel is already running, in which case they attach to it, as any client does. | HLS is made by the relay from bytes it holds. A 302 to the provider's endless TS is exactly what AVPlayer cannot play (ADR 0008). `startTune` already takes this path for an internal principal (`relay/httpapi/stream.go:701-713`). |
 | **D14** | **The rewind window is the HLS output's own segments, kept on disk** (4a-3, § The live rewind window). It **starts at the channel's first HLS viewer** (R19). A TS-only channel (DVR, TS apps) keeps no window and triggers no encode. The layout is `/data/cache/rewind/<boot-id>/<channel>/<gen>/<rendition>/<seq>.m4s`, and `docker/init/03-init-dispatcharr.sh` creates the root. The depth is a setting, with a global byte cap. The last 12 segments per rendition stay in memory. A disk error degrades the window and never the live output. The window is deleted on drain, and every boot directory is deleted at start-up. Playlists become a **sliding window with no `EXT-X-PLAYLIST-TYPE`**, listing every segment in the window. | ADR 0008: about 3.6 GB per channel-hour is too big for memory, and a restart discards it rather than recovering it. `EVENT` forbids removing segments from the head, so it cannot express a full window. 60 min (the default) is well past Apple's 15-minute SHOULD (8.11). |
-| **D15** | **The window lingers, and a lingering window holds its channel open** (4a-3). When the channel's last HLS session leaves, its HLS pipeline keeps running for `rewind_linger_seconds`, growing the window and holding the channel, its upstream and its provider slot. Lingering is not a client and appears in no client list or stream-limit count. A lingering channel is **reclaimable** (D16) when it has zero clients of any format and its grace has passed. The grace is `rewind_behind_live_grace_seconds` only when the last session **departed without an explicit leave** (idle departure) while **behind live**, meaning its last segment request was more than 5 × TARGETDURATION older than the newest segment (§ Presence thresholds). The grace is 0 in every other case, including **any explicit leave** (R25). For the Mino app's own zap, R11's countdown already was the grace. | R10: zapping back keeps the rewind, and the window stays continuous to live, so the encoder must keep running. A channel with a TS viewer still attached is watched, and is never reclaimed. R25: a grace after the countdown would add 10 s of "no source available" to a behind-live zap on a constrained provider. |
+| **D15** | **The window lingers, and a lingering window holds its channel open** (4a-3). When the channel's last HLS session leaves (by a leave or an idle departure, not by going STOPPED), its HLS pipeline keeps running for `rewind_linger_seconds`, growing the window and holding the channel, its upstream and its provider slot. Lingering is not a client and appears in no client list or stream-limit count. A lingering channel is **reclaimable** (D16) when it has zero clients of any format and its grace has passed. The grace is `rewind_behind_live_grace_seconds` only when the last session **departed without an explicit leave** (idle departure) while **behind live**, meaning its last segment request was more than 5 × TARGETDURATION older than the newest segment (§ Presence thresholds). The grace is 0 in every other case, including **any explicit leave** (R25). For the Mino app's own zap, R11's countdown already was the grace. | R10: zapping back keeps the rewind, and the window stays continuous to live, so the encoder must keep running. A channel with a TS viewer still attached is watched, and is never reclaimed. R25: a grace after the countdown would add 10 s of "no source available" to a behind-live zap on a constrained provider. |
 | **D16** | **A blocked tune reclaims a channel nobody is watching** (4a-1c; 4a-3 adds lingering windows). When `get_stream()` finds every profile full, next-source answers `capacity: {blocked: true, profile_ids: […]}`: each `profile_full` profile, and each profile sharing a `credential_full` profile's credential counter. The relay reclaims one **reclaimable** channel whose current `m3u_profile_id` is in that list. A channel is reclaimable when it has **no TS or fMP4 client**, and **either** every HLS session on it is **silent**: no request in flight, and more than **2 × TARGETDURATION** since its last request **ended** (§ Presence thresholds), **or** it is a lingering window past its grace (4a-3). Holding the Manager mutex, the relay either picks a channel on those profiles that is already releasing and waits for it, or picks, re-checks under the session-table lock, and removes a reclaimable one, or finds neither (§ Slot reclaim). In **every** case it then retries next-source **once**. At most one reclaim per tune. A zero-client channel held only by a non-zero `channel_shutdown_delay` countdown is reclaimable too, deliberately: under slot pressure that setting keeps a channel warm only until a tune needs its slot. | ADR 0005: slots stay in Django, and the relay does not decide them. Django knows why a tune is blocked; the relay knows which channels are idle. Answering with the blocking profiles keeps both facts where they are, with no Django-to-relay call inside next-source. The silence rule (4 s at the transcode target of 2 s) reclaims a session its client abandoned without a leave, long before the idle timeout. A paused AVPlayer (reloading every 2 s, M7) is never caught, and neither is a viewer whose entry request or first media-playlist long-poll is still in flight. Waiting for in-flight releases covers a leave that has stopped channel A before its release POST lands. Retrying in every case covers a release that completes before B looks at all. The #513 reconciler needs no change: a reclaimable channel is listed with its own `state` and counted as the holder it is, and a reclaim's release is an ordinary release that bumps the version. |
 | **D17** | **Four settings, in the `proxy_settings` group** (4a-3):<br>- `rewind_window_minutes`: default 60; 0 disables the window; at most 120.<br>- `rewind_linger_seconds`: default 300; 0 means drop at once.<br>- `rewind_behind_live_grace_seconds`: default 10.<br>- `rewind_disk_cap_gb`: default 16.<br>They are back-filled by `get_proxy_settings`' defaults, sent on every next-source answer (A1.4), and required by the relay. | `proxy_settings` is the group the relay already receives. The names are neutral (R15). A channel snapshots them at start. The disk cap is process-wide and takes the most recent answer's value. The 120-minute ceiling is Apple's tvOS scrub-back figure. |
 | **D18** | **The browser player plays live *channels* over hls.js, and keeps stream previews on mpegts.js over TS** (4a-2; R18). Playback of a channel, by UUID, from the channels table, the guide, the DVR page and the recording cards and modals, requests `output_format=hls`. It plays through hls.js where MSE or ManagedMediaSource exists (`xhrSetup` sends the `Bearer` JWT), and natively with `?token=` otherwise. When the player closes or switches, it calls the leave route (D5). Stream previews by stream hash, and the stats card's play button (`StreamConnectionCard.jsx:516`, preview-style per R26), keep `output_format=mpegts`, mpegts.js and the web-player Output Profile preference. | R17 for channels, and R18 for previews: an admin previewing a stream wants the stream as it is, with no encode and no slot held after close. R26: the stats card watches a running channel that may have only TS clients, and an HLS play there would start an encode that R19 forbids for a TS-only channel. mpegts.js and the preference therefore stay (the preference applies to the TS previews). |
@@ -456,7 +456,15 @@ generations are ignored.
 | `eac3` | a qualifying E-AC-3 stream, copied; else the first qualifying stream, encoded with ffmpeg's `eac3` encoder at 640 kb/s for 5.1 (256 kb/s for 2.0); otherwise **silence** |
 
 **Channel layouts** (nit 5). Generation 0 fixes each rendition's declared channel count, which is
-the `CHANNELS` attribute: `aac` is always 2, and `ac3`/`eac3` take generation 0's source layout.
+the `CHANNELS` attribute. `aac` is always 2. `ac3` and `eac3` take generation 0's source layout,
+**clamped to 2.0 or 5.1** (round 6):
+
+- mono or 2.0 → 2.0;
+- any layout with more than 2 channels → 5.1. That includes 5.0, 6.1 and 7.1: AC-3 cannot carry
+  7.1, and the bitrate table has only these two.
+
+`CHANNELS` is set to "2" or "6" to match. A generation-0 source whose layout is not exactly the
+clamped one is **encoded**, not copied.
 Every later generation fills a rendition **at its declared layout**:
 
 - **Copy** only when the source's channel count matches the declared one.
@@ -555,18 +563,27 @@ marked unusable for the process only if that software attempt succeeds **and** a
 detection encode fails. A transiently bad source that happens to recover on the third attempt
 therefore does not write QSV off.
 
-When every attempt fails, the channel's **HLS output** is marked failed until the channel's next
-source boundary (D10), where a new generation is attempted, so a failover to a good source
-recovers it, and the failure is logged at ERROR with the last stderr lines through `redact.Line`.
-No new event type is added: the Connect vocabulary is a fixed dict. From then on:
+When every attempt fails, the relay sets a mark **on the channel**, `hlsFailedUntilBoundary`,
+never on a pipeline. It logs the failure at ERROR with the last stderr lines through `redact.Line`.
+No new event type is added, because the Connect vocabulary is a fixed dict. Then:
 
-- new HLS entries answer 502;
-- existing sessions become STOPPED: one 410 on their next request, then removal (§ Presence);
-- the channel and its TS clients are unaffected.
+- **Existing sessions become STOPPED:** one 410 on their next request, then removal (§ Presence).
+  The self-stop goroutine drops them (§ Presence › Who ends sessions).
+- **The pipeline is torn down at once.** With every session STOPPED its refcount is 0, so it stops
+  exactly as at any last departure. In 4a-3 it does **not** linger, and its window is discarded.
+- **New HLS entries answer 502** while the mark is set.
+- **The channel and its TS clients are unaffected.**
+
+**The next real source boundary (D10) only clears the mark.** It starts nothing: there is no
+pipeline and no session at that point, and a TS-only channel must trigger no encode (R19). After
+the boundary, a new HLS entry is accepted again. It gets 200 and starts a **fresh pipeline** at
+generation 0, with its own probe, rendition set and multivariant. So a failover to a good source
+makes HLS available again, but no encode runs until someone asks for one.
 
 A generation that dies **after** its first segment is treated as a source boundary (D10) at the
-ring's current head. That restart is bounded: a third such death within 60 s marks the HLS output
-failed, exactly as above, until the next real source boundary.
+ring's current head, while its sessions keep their pipeline. That restart is bounded: a third such
+death within 60 s counts as total failure, exactly as above: the mark is set, the sessions are
+STOPPED, and the pipeline is torn down.
 
 **Automatic generation (4a-1d).** The rules are applied per rendition, from the probe:
 
@@ -696,8 +713,8 @@ table says is STOPPED never holds a client entry.
   - it calls **`Manager.StopIfIdle(c)`**, a new exported wrapper around `stopIfStillIdle`.
 
   `StopIfIdle` makes the manager's ordinary idle decision, off the channel's goroutine. When
-  `Clients()` is 0, it removes the channel from the map, inserts it into the releasing set, and
-  stops it, honouring `ShutdownDelay` exactly as `release` does. When a TS or fMP4 client remains,
+  `Clients()` is 0, it removes the channel from the map, inserts it into the releasing set if its
+  `released` is still open (§ Slot reclaim), and stops it, honouring `ShutdownDelay` exactly as `release` does. When a TS or fMP4 client remains,
   it does nothing, and the channel keeps running for that client.
   - **Run ended:** the channel is removed. Its slot was already released by `releaseSlot`, and
     `c.stop` returns at once because `done` has closed.
@@ -746,8 +763,12 @@ table says is STOPPED never holds a client entry.
     `apps/proxy/utils.py:143-254`, which removes it through `DELETE …/clients/<id>`). With it off
     (`apps/proxy/utils.py:400-402`), B gets 429 until A's session departs: at most one idle
     timeout (12 s at TD = 2) plus one 1 s sweep tick.
-- **The HLS pipeline's refcount** is the number of ARRIVED and ACTIVE sessions. In 4a-1 the last
-  departure stops the pipeline at once. In 4a-3 it starts the linger (D15).
+- **The HLS pipeline's refcount** is the number of ARRIVED and ACTIVE sessions. When it reaches 0,
+  whether by the last departure, the last leave, or the last session going STOPPED, the pipeline
+  stops at once in 4a-1. In 4a-3 it starts the linger (D15), except when the sessions went STOPPED
+  because the HLS output failed or the channel stopped: then it is torn down with no linger. **A
+  pipeline never exists with a refcount of 0 outside a linger**, so no encode runs without a
+  viewer or a window to feed (R19).
 
 ## The live rewind window (4a-3)
 
@@ -799,6 +820,8 @@ table says is STOPPED never holds a client entry.
   that `Clients()` and every client list exclude. It stops, releasing the hold, when the linger
   elapses, when the channel is reclaimed (D16), or when a new session arrives, which cancels the
   linger and makes the pipeline ACTIVE again.
+  A pipeline whose sessions all went STOPPED, because its HLS output failed or its channel
+  stopped, never lingers (§ Encoder argv › Failure).
 - **Channel shutdown.** `Manager.release`'s shutdown-delay countdown starts only when both the
   client count and the linger hold are zero (§ The ADR 0006 amendment).
 - **Reclaimable** means: LINGERING, zero clients of every format, and now ≥ lingering-start +
@@ -854,6 +877,12 @@ otherwise unchanged.
 
    `released` is a new signal, closed after `releaseSlot` returns (`relay/channel/channel.go:445`,
    `:697-702`). The channel leaves the releasing set when `released` closes, under `m.mu`.
+   **Insertion is conditional.** Each stop path inserts the channel only if `released` is still
+   open, checked under `m.mu` in the same critical section as the map delete (a `select` on
+   `released` with a `default`). The close handler removes the entry under `m.mu` too. So an
+   insertion and a removal are ordered by the lock, and a channel whose `releaseSlot` has already
+   run is never inserted. This matters for self-stop case (i), where `run()` has already ended, and
+   for a last client leaving after run end. Neither leaks an entry.
 
    **Every path that removes a channel from the map inserts it into the releasing set in the same
    `m.mu` critical section as the delete.** There are four, and `manager.go` has exactly three
@@ -1257,6 +1286,13 @@ PR description draft:
 
     The admin-stop path is kept as a coverage row: a GET gets 410 within 1 s of `Manager.Stop`
     returning.
+  - HLS failure and recovery (round-6 finding 1). A channel with a TS client and an HLS session;
+    every generation attempt fails.
+    - The session gets 410 once, the pipeline is torn down, and a new entry answers 502.
+    - While the mark is set, no ffmpeg HLS generation is running: the stand-in records zero
+      spawns.
+    - A source switch clears the mark. The stand-in still records **no** spawn until the next
+      entry. That entry answers 200 and starts generation 0 of a fresh pipeline.
   - Resume never starts a channel (finding 1). A test hook between the resume's lookup (step 1)
     and `AttachExisting` (step 2) stops the channel. The GET answers 410. The control-plane stub
     sees **no second next-source call**, and the session table ends with no entry for that sid. A
@@ -1278,6 +1314,8 @@ PR description draft:
     `close(done)` later). So `stop` waits its full `StopWait` (5 s) and logs "source goroutine did
     not return in time", which names the mechanism. Cases (ii) and (iii) are coverage only: on the
     HLS-failure path the wrong edit runs on the pipeline's goroutine, which need not self-wait.
+  - Start a new generation at the boundary instead of only clearing the mark. The recovery test
+    reddens: the stand-in records a spawn with no session attached.
   - Drop the sessions without calling `Manager.StopIfIdle`. Self-stop cases (i) and (ii) redden:
     the channel stays in the map, and in (ii) it keeps its slot with zero clients.
   - Resume through the ordinary starting `Attach` instead of `AttachExisting`. The resume test
@@ -1329,7 +1367,9 @@ PR description draft:
     The test calls leave on A, then `ReclaimFor` for B's profiles. It asserts B waits on A's
     `released` and its retry succeeds once the stub releases. It also asserts, under a test hook
     placed between A's map delete and the end of that critical section, that A is always found
-    either in the map or in the releasing set, on each of the four stop paths.
+    in the map, in the releasing set, or with `released` already closed, on each of the four stop
+    paths. It asserts too that an entry never outlives its `released` (the round-6 conditional
+    insertion).
   - Go, **(b)**: in-flight activity. An entry request is held in its init wait, and a
     media-playlist request in its long-poll, for longer than 2 × TD. `ReclaimFor` must not pick
     the channel. Once each request completes and more than 2 × TD passes, it must.
@@ -1681,6 +1721,16 @@ Filled in as PRs merge.
       row and the argv's `-ac`.
     - 3: the silence frame index is a single integer ceiling, measured from the generation's first
       video `tfdt`.
+- **2026-09-27, round 6, reviewed at `a116d934`** (one should-fix, two nits).
+  - **The failed mark lives on the channel (finding 1),** as `hlsFailedUntilBoundary`.
+    - STOPPED tears the pipeline down at refcount 0, with no linger.
+    - The next source boundary only clears the mark, and the next entry starts a fresh pipeline
+      (200). A pipeline never exists at refcount 0 outside a linger (R19).
+    - The recovery test and break-check are added, and the refcount wording is reconciled.
+  - **Nits.**
+    - 2: a stop path inserts into the releasing set only while `released` is still open, checked
+      under `m.mu`.
+    - 3: declared `ac3`/`eac3` layouts are clamped to 2.0 or 5.1.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
