@@ -308,7 +308,7 @@ every mechanism above is `os/exec`, `os`, `crypto/rand`, `encoding/binary`, `enc
 | `GET /live/<u>/<p>/<id>.m3u8`, `GET /<u>/<p>/<id>.m3u8` | `xcForcedFormat` (`.m3u8` ⇒ `hls`) | same |
 | any of the above on a channel whose probe finds no video | relay | 502 `{"error": "no video stream in the source"}`. TS clients are unaffected. |
 | any of the above when the channel's HLS output has failed (§ Encoder argv, failure) | relay | 502 `{"error": "HLS output failed"}` |
-| first-generation init segments not ready within 20 s | relay | 503, `Retry-After: 1`. The session is dropped. |
+| first-generation init segments not ready within 20 s (the first generation that writes a complete set, R41) | relay | 503, `Retry-After: 1`. The session is dropped. |
 | draining relay | relay (`Lifecycle`) | 503, as for every tune |
 | every hop denial (401, 403, 404, 429) | unchanged | unchanged |
 
@@ -625,7 +625,9 @@ for generation 0). When a generation's probe feed stopped at the next boundary a
 complete video (or failed), there is nothing of that connection to encode: the pipeline moves on to
 the next boundary, as at any boundary. Generation 0 does the same and keeps its number: it starts
 `JoinBehind` behind live, so a failover in the last few seconds can put a boundary inside its probe
-window. Only a probe that read its whole bound and still failed ends the output.
+window. Only a probe that read its whole bound and still failed ends the output. A probe whose
+feed ended because the channel's ring closed is a stop, at every generation (R40): the channel is
+ending.
 
 **Automatic generation (4a-1d).** The rules are applied per rendition, from the probe:
 
@@ -1233,9 +1235,11 @@ PR description draft:
   - `relay/ffmpeg` gains an extra-output-pipes spawn.
   - The channel records the ring index of each source boundary.
   - The floor file's R21 header edit.
-  - Amended by the 4a-1a plan review: the probe's 3 s bound and re-probe (R30), the video output's
-    `+negative_cts_offsets` (R31), the stall watchdog (R33), and skipping a later connection too
-    short to probe (finding 3).
+  - Amended by the 4a-1a plan review: the probe's 3 s bound and re-probe (R30), with automatic
+    mode's keyframe re-probe decided here for 4a-1d (R37); the video output's
+    `+negative_cts_offsets` (R31); the stall watchdog (R33); skipping a connection too short to
+    probe, at generation 0 too (finding 3, R39); a ring closing under a probe as a stop (R40); and
+    `Ready` on the first generation with every init (R41).
   - No route and no Django change: nothing reaches the package.
 - **Tests.**
   - Unit tests and fuzzing for the box reader, plus a stand-in for pipe shapes and early exits.
@@ -1460,6 +1464,10 @@ PR description draft:
   - Next-source `hls_profile`.
   - The channel form's "HLS output" select. Bulk edit is not in scope.
   - The relay's automatic rules, including the declared-family rule with `hevc_qsv` and `libx265`.
+  - Counting keyframes in the probe window (`Probe.Keyframes`), which 4a-1a's re-probe decision
+    already reads in automatic mode (R37).
+  - The stall watchdog's timeout becomes per-pipeline, `max(10 s, 5 × TARGETDURATION)` at the
+    pipeline's own TARGETDURATION (R42): 4a-1a's is a constant for transcode's TD = 2, 10 s.
 - **Tests.**
   - Migrations forward and back.
   - A per-rendition decision table against the 4a-0 assets.
@@ -1805,6 +1813,14 @@ Filled in as PRs merge.
   - **R39.** Generation 0 skips a connection too short to probe, as later generations do.
   - **Errata:** the edit-list cross-reference points above; D20 and § Testing state R34's census
     maximum for the re-measured `relay/hls` amount.
+- **2026-09-27, amended by the 4a-1a plan review, round 3** (reviewed at `dea8332a`; rulings
+  R40-R42).
+  - **R40.** A ring that closes during a probe is a stop, at every generation (§ Encoder argv,
+    failure).
+  - **R41.** `Ready`, and the multivariant's init wait, are answered by the first generation that
+    writes a complete set of init segments (§ Entry).
+  - **R42.** 4a-1d makes the stall watchdog's timeout per-pipeline (§ 4a-1d).
+  - **Errata:** § 4a-1a's scope note names R37, R39, R40 and R41.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 

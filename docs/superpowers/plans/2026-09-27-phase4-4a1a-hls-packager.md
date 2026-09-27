@@ -10,7 +10,7 @@
 
 **Authority.** In order of precedence:
 
-1. The owner's and orchestrator's rulings R1-R39 (the orchestrator's `rulings.md`). The ones this PR carries: R20 (E-AC-3-only sources get three audio renditions), R21 and R27 (the coverage rule for linked and unlinked packages), R28 (issue #525: `field_order=unknown` is a third state, treated as progressive), and round 1's R30 (the 3 s probe and its re-probe), R31 (`+negative_cts_offsets`), R32 (the deviations and spec errata), R33 (the stall watchdog), R34 (R27's re-measure is a census maximum), R35 (one PR) and R36 (the live-path note in the PR description), and round 2's R37 (automatic mode's keyframe re-probe), R38 (the watchdog's parity row) and R39 (generation 0's skip). Models: opus only.
+1. The owner's and orchestrator's rulings R1-R42 (the orchestrator's `rulings.md`). The ones this PR carries: R20 (E-AC-3-only sources get three audio renditions), R21 and R27 (the coverage rule for linked and unlinked packages), R28 (issue #525: `field_order=unknown` is a third state, treated as progressive), and round 1's R30 (the 3 s probe and its re-probe), R31 (`+negative_cts_offsets`), R32 (the deviations and spec errata), R33 (the stall watchdog), R34 (R27's re-measure is a census maximum), R35 (one PR) and R36 (the live-path note in the PR description), and round 2's R37 (automatic mode's keyframe re-probe), R38 (the watchdog's parity row) and R39 (generation 0's skip), and round 3's R40 (a ring closing under a probe is a stop), R41 (`Ready` on the first complete generation) and R42 (the 4a-1d hand-off below). Models: opus only.
 2. The Phase 4 spec, `docs/superpowers/specs/2026-09-27-phase4-apple-native-live-design.md`: § 4a-1a (`:1189-1250`), and everything it depends on — D6-D11 (`:215-222`), D20 (`:231`), § Encoder argv (`:434-618`, including the rendition set and filling, channel layouts, silence and its integer arithmetic, the transcode argv, detection, the failure policy), § Playlists (`:358-408`), § State the relay adds (`:284-299`), § Testing and gates (`:1035-1159`), M1-M8 (`:52-59`) and Appendix B.
 3. The 4a-0 plan and fixtures on main (`docs/superpowers/plans/2026-09-27-phase4-4a0-upstream-fixtures.md`, `e2e-upstream/scripts/make-asset.sh`, `e2e-upstream/CONTRACT.md`): this PR's real-ffmpeg tests build the fixtures with `make-asset.sh <out> <name>`, as that plan's § Overlap recommends, and build the declared-but-empty audio PID source themselves, as its § What this plan does not do hands off.
 4. CLAUDE.md (the Go hooks, stdlib-only, credlint, the Go coverage ratchet as amended by R21/R27), ADR 0006, the Phase 2 spec where relay packages are concerned, and `docs/relay-parity-matrix.md` (this PR adds its behaviours as pinned rows, spec § Testing).
@@ -32,9 +32,9 @@
 
 All of it in the planner's scratchpad (`p4a1a/`), against a scratch worktree of the seed carrying exactly Appendix A; nothing was written into the repository.
 
-- **The code, green.** On the scratch tree (the seed plus Appendix A): `go build ./...`, `go vet ./...`, `golangci-lint run ./...` natively and under `GOOS=linux` and `GOOS=darwin` (`0 issues.` each), `scripts/check_go_stdlib_only.sh relay` (`OK`), `scripts/check_go_credential_logging.sh relay` (`credlint: 13 package(s) clean`), and `go test -count=1 -race ./...` over the whole module (every package `ok`, re-run on the round-2 code; `relay/hls` 59 s, `relay/channel` 84 s, `relay/httpapi` 125 s on the planner's M-series Mac). The three fuzz targets ran 20 s each with no finding. `go list -deps .` from `relay/` does not list `relay/hls`. `cd e2e && npx tsc --noEmit -p . && npx playwright test --project=guards`: `tsc` 0, `49 passed`.
-- **The production ffmpeg, on Linux.** The `relay/hls` test binary, cross-built without cgo, passed every run inside `lscr.io/linuxserver/ffmpeg:version-9.0-cli@sha256:47fbdc93…` (`docker/DispatcharrBase:7`'s pin, `ffmpeg version 9.0`, which carries `bash` and `ffprobe`) with `CI=1`, so no real test could skip. On the round-2 code: three consecutive full runs on linux/arm64 (the eleven real tests 0.01-2.5 s each), and one full run on **linux/amd64 under emulation** — CI's architecture, with the amd64 build's QSV encoders present and no device — where the real tests took 0.05-25 s each (`TestRealABFrameEncodeStaysInSyncWithItsAudio` 1.95 s, `TestRealALongGOPIsReprobedAtTheFullBound` 12.98 s). Round 0's twelve arm64 runs and its amd64 run are what found Decision 20: with the production 5 s exit grace the emulated host killed the 1080i generation mid-flush and the test saw 3 of its 6 segments.
-- **Coverage.** `relay/hls` alone, `-count=1 -race -covermode=atomic`: **94.19% — 1,549 statements, 90 uncovered** on the round-2 code (Task 10's commands). Per file, statements / uncovered: `argv.go` 126/0, `box.go` 56/8, `detect.go` 62/0, `feed.go` 34/0, `fragment.go` 133/3, `init.go` 230/31, `lock.go` 6/0, `pipeline.go` 401/28, `playlist.go` 12/0, `probe.go` 51/0, `reader.go` 57/1, `segmenter.go` 158/5, `silence.go` 130/14, `store.go` 93/0. The uncovered blocks, by line, as round 1 measured them (the round-2 edits moved `pipeline.go`'s numbering; Task 10's `awk` prints the current list): `box.go` 47-56, 144; `fragment.go` 65-66, 96-97, 180-181; `init.go` 73-81, 92, 114-115, 129-134, 148-153, 178-179, 189-198, 217-223, 267, 290-295, 317-353, 369-370, 402-421 (thirty short-box returns); `pipeline.go` 142-155, 215-216, 245-246, 256, 314-316, 362-365, 440-441, 469-470, 495-496, 533-534, 575-577, 598-600, 632-650, 784-793; `reader.go` 130-131; `segmenter.go` 120, 221-222, 284-285, 325-326, 386-396; `silence.go` 131-252 (fourteen refusals). The review saw `pipeline.go` and `segmenter.go` move by one statement between runs (its O-6); R34 makes the census maximum the figure of record. What is uncovered is almost entirely malformed-box arms (`init.go`'s short-box returns, `box.go`'s 64-bit-size arm, `silence.go`'s `fragmentSamples` refusals) and process-failure arms in `pipeline.go` (a spawn that fails, a probe that cannot start, a canned encode that fails). CI's figure (Task 12) is the authoritative one. Every added statement in `relay/buffer`, `relay/channel` and `relay/ffmpeg` is covered by those packages' own tests (the R21 listing is "none"); whole-package figures 89.8%, 80.5% and 92.9%.
+- **The code, green.** On the scratch tree (the seed plus Appendix A): `go build ./...`, `go vet ./...`, `golangci-lint run ./...` natively and under `GOOS=linux` and `GOOS=darwin` (`0 issues.` each), `scripts/check_go_stdlib_only.sh relay` (`OK`), `scripts/check_go_credential_logging.sh relay` (`credlint: 13 package(s) clean`), and `go test -count=1 -race ./...` over the whole module (every package `ok`, re-run on the round-3 code; `relay/hls` 70 s, `relay/channel` 84 s, `relay/httpapi` 125 s on the planner's M-series Mac). The three fuzz targets ran 20 s each with no finding. `go list -deps .` from `relay/` does not list `relay/hls`. `cd e2e && npx tsc --noEmit -p . && npx playwright test --project=guards`: `tsc` 0, `49 passed`.
+- **The production ffmpeg, on Linux.** The `relay/hls` test binary, cross-built without cgo, passed every run inside `lscr.io/linuxserver/ffmpeg:version-9.0-cli@sha256:47fbdc93…` (`docker/DispatcharrBase:7`'s pin, `ffmpeg version 9.0`, which carries `bash` and `ffprobe`) with `CI=1`, so no real test could skip. On the round-3 code: three consecutive full runs on linux/arm64 (the eleven real tests 0.01-2.5 s each), and one full run on **linux/amd64 under emulation** — CI's architecture, with the amd64 build's QSV encoders present and no device — where the real tests took 0.05-25 s each (`TestRealABFrameEncodeStaysInSyncWithItsAudio` 1.95 s, `TestRealALongGOPIsReprobedAtTheFullBound` 12.98 s). Round 0's twelve arm64 runs and its amd64 run are what found Decision 20: with the production 5 s exit grace the emulated host killed the 1080i generation mid-flush and the test saw 3 of its 6 segments.
+- **Coverage.** `relay/hls` alone, `-count=1 -race -covermode=atomic`: **94.42% — 1,559 statements, 87 uncovered** on the round-3 code (Task 10's commands). Per file, statements / uncovered: `argv.go` 126/0, `box.go` 56/8, `detect.go` 62/0, `feed.go` 34/0, `fragment.go` 133/3, `init.go` 230/31, `lock.go` 6/0, `pipeline.go` 411/25, `playlist.go` 12/0, `probe.go` 51/0, `reader.go` 57/1, `segmenter.go` 158/5, `silence.go` 130/14, `store.go` 93/0. The uncovered blocks, by line, as round 1 measured them (the round-2 and round-3 edits moved `pipeline.go`'s numbering; Task 10's `awk` prints the current list): `box.go` 47-56, 144; `fragment.go` 65-66, 96-97, 180-181; `init.go` 73-81, 92, 114-115, 129-134, 148-153, 178-179, 189-198, 217-223, 267, 290-295, 317-353, 369-370, 402-421 (thirty short-box returns); `pipeline.go` 142-155, 215-216, 245-246, 256, 314-316, 362-365, 440-441, 469-470, 495-496, 533-534, 575-577, 598-600, 632-650, 784-793; `reader.go` 130-131; `segmenter.go` 120, 221-222, 284-285, 325-326, 386-396; `silence.go` 131-252 (fourteen refusals). The review saw `pipeline.go` and `segmenter.go` move by one statement between runs (its O-6); R34 makes the census maximum the figure of record. What is uncovered is almost entirely malformed-box arms (`init.go`'s short-box returns, `box.go`'s 64-bit-size arm, `silence.go`'s `fragmentSamples` refusals) and process-failure arms in `pipeline.go` (a spawn that fails, a probe that cannot start, a canned encode that fails). CI's figure (Task 12) is the authoritative one. Every added statement in `relay/buffer`, `relay/channel` and `relay/ffmpeg` is covered by those packages' own tests (the R21 listing is "none"); whole-package figures 89.8%, 80.5% and 92.9%.
 - **The probe's cost, before and after R30.** ffprobe with each bound, fed each 4a-0 fixture in 255,868-byte chunks at the fixture's own rate (`probetime.py` in the scratchpad), from the start and from a 37% cut, wall time to ffprobe's exit:
 
   | Fixture | 3 s / 3 MB (R30) | 8 s / 5 MB (D9 before) | Decisions |
@@ -98,7 +98,7 @@ Each is a choice the spec does not make. The reviewer should read them as the pl
 13. **Transcode mode always encodes AAC** (copying AAC is automatic mode's, 4a-1d), and every encode's bitrate is written in bits per second (`-b:a 160000`), the same value as the spec's `160k`.
 14. **`R`, `G`, geometry.** `G = round(2R)` is computed in integers as `(4·num + den) / (2·den)`. A rate ffprobe cannot read is taken as 25/1. `R` above 60 becomes exactly 60/1. Geometry keeps a source that fits 1920×1080; a larger one is scaled into it with its aspect kept; both dimensions are floored to even (4:2:0).
 15. **The Store** keeps 12 segments across every rendition, bounded also at 64 MiB (a runaway guard the spec's "bounded by count and bytes" asks for), and keeps the init segments of every generation a stored segment belongs to plus the newest. `EXT-X-DISCONTINUITY` is written before the first segment of every generation after the first **even when that segment is the first one listed**, and `EXT-X-DISCONTINUITY-SEQUENCE` counts discontinuities that have left the list, so a segment's discontinuity sequence number never changes between reloads. NAME is `Stereo` for `aac` and `Surround` for `ac3` and `eac3` (different GROUP-IDs, so sharing a NAME is legal).
-16. **Readiness is inits, not health.** `Pipeline.Ready` returns once every generation-0 init segment exists (real outputs' from ffmpeg, silent ones' canned), or the pipeline ends first. A pipeline that fails after that still answers `nil`; `Done` and `Err` say it ended.
+16. **Readiness is inits, not health.** `Pipeline.Ready` returns once one generation's init segments all exist (real outputs' from ffmpeg, silent ones' canned) — normally generation 0's, but **the first generation that writes a complete set** (ruling R41), so a generation 0 that ends at a boundary or dies before writing every init does not hold `Ready` while a later generation serves — or the pipeline ends first. The multivariant's CODECS come from that generation's inits (the output they describe is fixed for the run). A pipeline that fails after that still answers `nil`; `Done` and `Err` say it ended.
 17. **The API 4a-1b builds on:** `hls.Start(ctx, hls.Config{ChannelID, Source, JoinBehind, Detector, Silence, …}) (*Pipeline, error)`, `(*Pipeline).Ready`, `Multivariant(base)`, `Store()` (`MediaPlaylist(rendition) (body, lastModified, ok)`, `Segment(rendition, seq)`, `Init(rendition, gen)`, `WaitSegment(ctx)`), `Engine()`, `Generation()`, `Done()`, `Err()`, `Stop()`; process-wide `*hls.Detector` and `*hls.SilenceCache`. Test seams, none of which a production caller sets: `Config.Command`, `Config.ProbeCommand`, `Config.ExitGrace`, `Config.AudioWait`, `Config.StallTimeout`, and `relay/ffmpeg`'s `newPipe`.
 18. **A generation's exit after its input closed is logged at INFO** (`after_input_closed=`), because it is the first term of Q6's failover gap and the no-audio test reads it.
 19. **The stand-in gains `--fd-file N=PATH`, `--wait-stdin-eof` and `--ignore-stdin-eof`** (`relay/internal/relaytest/hls.go`): it writes each file to its descriptor, holds every descriptor open (an encoder's exit is what closes them), and exits at once, at stdin EOF, or never. The unit tests' fMP4 is built by test helpers (`relay/hls/helpers_test.go`), never captured.
@@ -106,7 +106,7 @@ Each is a choice the spec does not make. The reviewer should read them as the pl
 21. **Only a conclusive detection is cached or writes Quick Sync off** (finding 1 of round 1). `detect` returns `(usable, conclusive)`: conclusive is false when the CALLER's context ended first, which is no evidence about the device; the detection's own `DetectTimeout` is conclusive. `Engine` caches only a conclusive answer (an inconclusive call answers software for that call alone), and the re-check goroutine calls `MarkUnusable` only on a conclusive failure, so a pipeline stopped during a detection or its re-run never writes Quick Sync off.
 22. **The two process-wide locks honour the waiter's context** (nit 6 of round 1). The detection encode and the canned silence encode each hold a lock across a subprocess of up to 10 s; both are a `ctxLock` (a one-slot channel), so a pipeline waiting behind another channel's gives up at its own context's end — `Engine` answers software without caching, `SilenceCache.Get` returns the context's error — and its `Stop` is never held past `stopJoinWait`. The answer fields sit under a plain mutex never held across a subprocess.
 23. **The stall watchdog is implemented here, not handed to 4a-1b** (ruling R33; it was small). `StallTimeout = max(10 s, 5 × TARGETDURATION)` = 10 s. Each attempt's `watch` goroutine kills the process when no new video fragment has arrived for `StallTimeout` **of the ring advancing**: the clock starts at the first ring advance after the latest fragment and stops whenever the ring has not moved for half the timeout. So an encoder that neither exits nor reads its input (whose feed is then blocked too, which is why the ring rather than the feed is the measure) dies, and an encoder starved by an upstream in dead air, or resuming after one, does not. The kill is classified as any process that ended on its own: a death after the first segment (the restart bound counts it), an early exit before it (the retry policy).
-24. **A stop is never a failure** (finding 1 of round 2). An attempt whose context has ended when the canned-silence wait or the encoder spawn returns reports `outcomeStopped`, not an early exit: after Decision 22 a pipeline stopped while waiting behind another channel's canned encode reached that path routinely, retried on its dead context, and ended as `ErrFailed`, which 4a-1b would turn into 502s until the next boundary.
+24. **A stop is never a failure** (finding 1 of round 2; round 3's findings 2 and R40). An attempt whose context has ended when the canned-silence wait or the encoder spawn returns reports `outcomeStopped`, not an early exit: after Decision 22 a pipeline stopped while waiting behind another channel's canned encode — or behind another channel's Quick Sync detection, whose dead-context answer sends it straight to the spawn when every rendition is encoded — reached those paths routinely, retried on its dead context, and ended as `ErrFailed`, which 4a-1b would turn into 502s until the next boundary. Likewise **a ring that closes under a probe that then fails or finds no complete video is a stop** (`finish(nil)`), at every generation, never `ErrFailed` or `ErrNoVideo` (R40): the channel is ending.
 
 ## Deviations from the spec's text
 
@@ -153,11 +153,11 @@ This PR edits the spec itself (`docs/superpowers/specs/2026-09-27-phase4-apple-n
 3. **Build, vet and lint under three GOOS.** `cd relay && go build ./... && go vet ./...`, then `golangci-lint run ./...`, `GOOS=linux golangci-lint run ./...` and `GOOS=darwin golangci-lint run ./...` (v2.13.2): each prints `0 issues.` The `PostToolUse` Go hook does not run for a `git apply`, so this task is what stands in for it.
 4. **Stdlib and credential logging.** From the repo root, `scripts/check_go_stdlib_only.sh relay` prints `OK: relay depends on the standard library only.` and `scripts/check_go_credential_logging.sh relay` prints `credlint: 13 package(s) clean`.
 5. **Inertness.** `cd relay && go list -deps . | grep -c 'relay/hls'` prints `0` (and exits 1): the shipped binary does not link the package, so it is outside the coverage gate's denominator (R27) and no viewer can reach it.
-6. **The suite.** `cd relay && go test -count=1 -race ./...`: every package `ok`. `relay/hls` takes about 60 s on the planner's Mac (most of it spawning the re-executed stand-in) and `relay/channel`/`relay/httpapi` their usual 85 s and 125 s. The eleven `TestReal*` tests need `ffmpeg`, `ffprobe` and `bash` on PATH; without them they **skip** locally (and fail under `CI`, where the base image carries them). If they skipped, say so; do not describe them as run.
-7. **The real tests against the production ffmpeg 9.0, on Linux** (local evidence; CI's `build` job runs them in the base image anyway): `cd relay && GOOS=linux GOARCH=$(go env GOARCH) CGO_ENABLED=0 go test -c -o "$SCRATCH/hls.linux.test" ./hls`, then `docker run --rm -e CI=1 -v "$PWD/..":/repo -v "$SCRATCH":/s -w /repo/relay/hls --entrypoint bash lscr.io/linuxserver/ffmpeg:version-9.0-cli@sha256:47fbdc93828be04d7c52ca9a9a95f7957f887b80369f3581b8ff661873ed77a0 -c '/s/hls.linux.test -test.count=1'` prints `PASS` (measured on the round-2 code: three runs on linux/arm64, and one on linux/amd64 under emulation — build with `GOARCH=amd64` and add `--platform linux/amd64` to repeat it; it takes minutes). No `-race` there: the binary is built without cgo.
+6. **The suite.** `cd relay && go test -count=1 -race ./...`: every package `ok`. `relay/hls` takes about 70 s on the planner's Mac (most of it spawning the re-executed stand-in) and `relay/channel`/`relay/httpapi` their usual 85 s and 125 s. The eleven `TestReal*` tests need `ffmpeg`, `ffprobe` and `bash` on PATH; without them they **skip** locally (and fail under `CI`, where the base image carries them). If they skipped, say so; do not describe them as run.
+7. **The real tests against the production ffmpeg 9.0, on Linux** (local evidence; CI's `build` job runs them in the base image anyway): `cd relay && GOOS=linux GOARCH=$(go env GOARCH) CGO_ENABLED=0 go test -c -o "$SCRATCH/hls.linux.test" ./hls`, then `docker run --rm -e CI=1 -v "$PWD/..":/repo -v "$SCRATCH":/s -w /repo/relay/hls --entrypoint bash lscr.io/linuxserver/ffmpeg:version-9.0-cli@sha256:47fbdc93828be04d7c52ca9a9a95f7957f887b80369f3581b8ff661873ed77a0 -c '/s/hls.linux.test -test.count=1'` prints `PASS` (measured on the round-3 code: three runs on linux/arm64, and one on linux/amd64 under emulation — build with `GOARCH=amd64` and add `--platform linux/amd64` to repeat it; it takes minutes). No `-race` there: the binary is built without cgo.
 8. **The e2e guards.** `cd e2e && npm ci && npx tsc --noEmit -p . && npx playwright test --project=guards`: `tsc` exits 0 and `49 passed`, the parity guard printing `parity matrix (Go): 34 of 34 pinned rows carry a Go reference; 2 row(s) are not pinnable.`
 9. **Break-checks** (§ Break-checks): each applied alone, run, the message compared with the one recorded there, then reverted; `git diff --stat` afterwards is Task 2's.
-10. **Coverage evidence, local.** `cd relay && go test -count=1 -race -covermode=atomic -coverprofile="$SCRATCH/hls.cover" ./hls` reports about 94.2% (measured 94.19%). The per-file table: `awk 'NR>1 {f=$1; sub(/:.*/,"",f); sub(/.*\//,"",f); t[f]+=$2; if ($3==0) m[f]+=$2} END {for (f in t) printf "%-14s %4d %4d %6.2f%%\n", f, t[f], m[f], 100*(t[f]-m[f])/t[f]}' "$SCRATCH/hls.cover" | sort`, and the uncovered blocks: `awk 'NR>1 && $3==0 {print $1, $2}' "$SCRATCH/hls.cover"`. The linked packages' additions are fully covered: run `go test -count=1 -race -covermode=atomic -coverprofile="$SCRATCH/linked.cover" ./buffer ./channel ./ffmpeg`, list the diff's added line ranges with `git diff -U0 "${SEED}" -- relay/buffer/ring.go relay/channel/channel.go relay/ffmpeg/spawn.go | grep '^@@'` plus the whole of `relay/channel/boundary.go`, and confirm no `$3==0` block of `$SCRATCH/linked.cover` falls inside them (measured: none).
+10. **Coverage evidence, local.** `cd relay && go test -count=1 -race -covermode=atomic -coverprofile="$SCRATCH/hls.cover" ./hls` reports about 94.4% (measured 94.42%). The per-file table: `awk 'NR>1 {f=$1; sub(/:.*/,"",f); sub(/.*\//,"",f); t[f]+=$2; if ($3==0) m[f]+=$2} END {for (f in t) printf "%-14s %4d %4d %6.2f%%\n", f, t[f], m[f], 100*(t[f]-m[f])/t[f]}' "$SCRATCH/hls.cover" | sort`, and the uncovered blocks: `awk 'NR>1 && $3==0 {print $1, $2}' "$SCRATCH/hls.cover"`. The linked packages' additions are fully covered: run `go test -count=1 -race -covermode=atomic -coverprofile="$SCRATCH/linked.cover" ./buffer ./channel ./ffmpeg`, list the diff's added line ranges with `git diff -U0 "${SEED}" -- relay/buffer/ring.go relay/channel/channel.go relay/ffmpeg/spawn.go | grep '^@@'` plus the whole of `relay/channel/boundary.go`, and confirm no `$3==0` block of `$SCRATCH/linked.cover` falls inside them (measured: none).
 11. **Push and open the PR as a draft** (`implement-review-escalate`), branch `migration/phase4-4a1a-hls-packager`, with the description below; commit messages carry no closing keyword (`Refs #525` only).
 12. **Coverage evidence, CI (R27, authoritative).** From the PR's first green `Go Tests` run, download the `relay-go-coverage` artifact (`gh run download <run-id> --repo D10Scot/Dispatcharr -n relay-go-coverage -D "$SCRATCH/ci-cov"`) and compute `relay/hls`'s per-package figure and per-file listing from `relay.coverprofile` with Task 10's two `awk` commands, filtered to `/relay/hls/` (`grep -E '^(mode:|github.com/D10Scot/Dispatcharr/relay/hls/)'` first). CI's number, not the local one, goes in the PR body; it must be ≥ 85%. The per-file listing moves by a statement or two between runs (round 1's O-6: `pipeline.go` 25-26, `segmenter.go` 5-6), so the listing 4a-1b re-measures against is the **maximum over Task 13's census rounds** (ruling R34), each round's `relay/hls` figure read off that round's artifact. The coverage job's own report lists the package as `~out of scope, not counted: github.com/D10Scot/Dispatcharr/relay/hls, <n> statements`, which is correct and expected.
 13. **The R21 census for the linked packages.** Dispatch `go-tests.yml` on the branch at least twelve times (`gh workflow run go-tests.yml --repo D10Scot/Dispatcharr --ref migration/phase4-4a1a-hls-packager`, one at a time: the workflow's concurrency group cancels an in-flight run on the same ref), and record every `Coverage gate` job's `this run missing=` in order, until the maximum has held for six consecutive rounds (≥ 12 total), exactly as the floor file's step 1 says. **Expected: every round ≤ 589**, because every new statement in `relay/buffer`, `relay/channel` and `relay/ffmpeg` is covered (Task 10), so the floor does not move and the PR body's R21 listing is "none". If a round exceeds 589, attribute it block by block (the floor file's `awk` diff between that round's profile and a 589 one): a block inside this PR's added ranges is listed per file and `missing` rises by exactly that count (R21, with ≥ 85% on the PR's additions); a pre-existing block is a flap and a finding for a re-measurement PR of its own — never a bump here.
@@ -228,10 +228,13 @@ This PR edits the spec itself (`docs/superpowers/specs/2026-09-27-phase4-apple-n
 | | `TestAStoppedAudioOutputDoesNotStallTheVideo` | Decision 6's `AudioWait` |
 | | `TestSegmentsAccumulateToTheGridAndCutOnlyAtASyncSample` | D6 and row 31: accumulation to the grid, no cut before a non-sync fragment |
 | | `TestAStalledEncoderIsKilledAsADeath` | R33, Decision 23, row 36: no video while the ring advances is a death; the third fails the output |
-| | `TestAStarvedEncoderIsNotKilled` | R33's "while its input is advancing", row 36: an encoder starved by an idle ring is left alone |
+| | `TestAStarvedEncoderIsNotKilled` | R33's "while its input is advancing", row 36: an encoder starved by an idle ring, **or by a stuttering one** (a chunk, then more than half the timeout of dead air, six times) is left alone — the second case pins the idle reset (round 3, finding 1) |
 | | `TestAConnectionTooShortToProbeIsSkipped` | finding 3, Decision 11, row 33: a connection that ends at the next boundary before it can be probed is skipped; generation 2 publishes |
 | | `TestGenerationZeroSkipsAConnectionTooShortToProbe` | R39, Decision 11: generation 0 moves past an old connection's tail too short to probe, and keeps its number |
 | | `TestAStopDuringTheSilenceWaitIsAStopNotAFailure` | Decision 24, round-2 finding 1: a pipeline stopped while its attempt waits on the silence lock ends with no error and no ERROR log |
+| | `TestAStopDuringTheDetectionWaitIsAStopNotAFailure` | Decision 24, round-3 finding 2: stopped while waiting behind a held detection, with every rendition encoded, the spawn fails on the dead context — a stop |
+| | `TestARingThatClosesDuringAProbeIsAStop` | Decision 24, R40: a ring that closes under a failing probe ends the pipeline with no error |
+| | `TestReadyFiresOnTheFirstGenerationWithEveryInit` | Decision 16, R41: a generation 0 that ends at a boundary with no init does not hold `Ready`; generation 1's inits answer it |
 | `relay/hls/real_test.go` (real ffmpeg) | `TestRealThe1080iFixtureGivesAligned2sSegmentsOnThreeRenditions` | spec § 4a-1a's first test and row 31: 12 s of `h264-1080i-aac-ac3`, three renditions, CODECS, 2.000 s ± one frame, sync starts, audio within one fragment |
 | | `TestRealTheEAC3FixtureGivesThreeAudioRenditions` | R20: `aac` and `ac3` encoded from E-AC-3, `eac3` copied |
 | | `TestRealADeclaredButEmptyAudioPIDIsNotMapped` | row 35: the source 4a-0 handed off, built by stripping PID 0x302 |
@@ -244,13 +247,13 @@ This PR edits the spec itself (`docs/superpowers/specs/2026-09-27-phase4-apple-n
 | | `TestRealABFrameEncodeStaysInSyncWithItsAudio` | R31, finding 2: a libx264 `-bf 2` encode (the production argv without `-tune zerolatency`) presents its first video frame within half a frame of its copied E-AC-3 |
 | | `TestRealALongGOPIsReprobedAtTheFullBound` | R30: the 10 s-GOP fixture joined 3 s in is re-probed at the full bound, and the encoder's input analysis follows it |
 
-**Break-checks.** Each wrong edit is applied alone to the tree Appendix A produced, the named test run with `cd relay && go test -count=1 -race -run '<test>' <package>`, the red message compared with the one recorded here (observed while planning on the planner's Mac with Homebrew ffmpeg 9.0.1; a line number may drift by a few lines), and the edit reverted. BC1-BC6 are the spec's six (BC1 and BC3 in the forms § Deviations explains; BC3's is now the spec's own text); BC7-BC12 are this plan's own, one for each decision a reviewer would otherwise take on trust; BC13-BC18 were added in round 1, one per finding and ruling. BC19-BC21 were added in round 2. All twenty-one were re-run on the round-2 code, and the messages below are those runs'.
+**Break-checks.** Each wrong edit is applied alone to the tree Appendix A produced, the named test run with `cd relay && go test -count=1 -race -run '<test>' <package>`, the red message compared with the one recorded here (observed while planning on the planner's Mac with Homebrew ffmpeg 9.0.1; a line number may drift by a few lines), and the edit reverted. BC1-BC6 are the spec's six (BC1 and BC3 in the forms § Deviations explains; BC3's is now the spec's own text); BC7-BC12 are this plan's own, one for each decision a reviewer would otherwise take on trust; BC13-BC18 were added in round 1, one per finding and ruling. BC19-BC21 were added in round 2 and BC22-BC25 in round 3. All twenty-five were re-run on the round-3 code, and the messages below are those runs'.
 
 - **BC1 — the encoder survives the switch** (spec: "remove the restart at a boundary"). `relay/hls/feed.go`: `if has && index >= boundary {` → `if has && index >= boundary && limit > 0 {` (only the probe's feed, which has a byte limit, still stops at a boundary; the generation's is fed straight across it). `TestRealABoundaryGivesTwoGenerationsAndADiscontinuity` reddens: `real_test.go:434: generation 1 produced no segments after the boundary (generations: map[0:3])` — M3 reproduced: one encoder fed `mpeg2-576i-mp2` then `h264-eac3` (different PIDs) silently drops the second and exits cleanly. *Why not remove boundaries from `feed` outright:* then the probe also reads across the boundary, sees both sources' streams, plans an E-AC-3 rendition from the second source's PMT, and the generation fails on `-map 0:i:0x601` matching nothing — red, but for a different reason than the one this check names.
 - **BC2 — probe generation 1 from JoinBehind.** `relay/hls/pipeline.go`, in `run`: `probe, bound, fed, err := p.probeGeneration(ctx, gen, start)` → `probe, bound, fed, err := p.probeGeneration(ctx, gen, ring.Join(p.cfg.JoinBehind))`. Same test: `real_test.go:425: generation 1's probe describes mpeg2video + mp2, want the second source (h264 + eac3): it did not read from the boundary`.
 - **BC3 — the moov error** (spec: "drop `delay_moov`"; see Deviation 1). `relay/hls/argv.go`: `const fragFlags = "frag_keyframe+delay_moov+default_base_moof"` → `"frag_keyframe+empty_moov+default_base_moof"`. `TestRealThe1080iFixtureGivesAligned2sSegmentsOnThreeRenditions` reddens: `real_test.go:236: the pipeline failed: hls: the HLS output failed`, its log carrying `level=WARN msg="HLS encoder stderr" … line="[mp4 @ …] Cannot write moov atom before AC3 packets. Set the delay_moov flag to fix this."` and `level=ERROR msg="the HLS output failed: every attempt at a generation exited before its first segment"`. (With `delay_moov` simply removed the test stays green on ffmpeg 9.0.1: measured.)
 - **BC4 — mark QSV unusable on any early failure.** `relay/hls/pipeline.go`, in `generation`, after `p.log.Warn("an HLS generation exited before its first segment; retrying", …)` add `p.det.MarkUnusable()`. `TestASourceCausedEarlyFailureDoesNotWriteQuickSyncOff` reddens: `pipeline_test.go:205: a source-caused early failure wrote Quick Sync off: the detector now answers software`.
-- **BC5 — an `anullsrc` input in the no-audio argv.** `relay/hls/argv.go`, in `Output.Argv`: after `"-f", "mpegts", "-i", "pipe:0",` add `"-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",`, and after `"-f", "mp4", "-movflags", videoFragFlags, "pipe:1",` add `"-map", "1:a", "-c:a", "aac", "-f", "null", "-",` (an input that is read, as M8's was). `TestRealTheNoAudioFixtureGetsRelaySynthesisedSilence` reddens, timing out: `real_test.go:338: the generation took 20.002584291s to exit after its stdin closed; want < 1s` — it never exited, and the real tests' 20 s exit grace killed it (Decision 20).
+- **BC5 — an `anullsrc` input in the no-audio argv.** `relay/hls/argv.go`, in `Output.Argv`: after `"-f", "mpegts", "-i", "pipe:0",` add `"-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo",`, and after `"-f", "mp4", "-movflags", videoFragFlags, "pipe:1",` add `"-map", "1:a", "-c:a", "aac", "-f", "null", "-",` (an input that is read, as M8's was). `TestRealTheNoAudioFixtureGetsRelaySynthesisedSilence` reddens, timing out: `real_test.go:338: the generation took 20.003703458s to exit after its stdin closed; want < 1s` — it never exited, and the real tests' 20 s exit grace killed it (Decision 20).
 - **BC6 — rebuild the rendition set from generation 1's probe.** `relay/hls/pipeline.go`, in `run`: `first := p.output == nil` → `first := true`. `TestRealTheRenditionSetSurvivesABoundaryAndIsFilled` reddens: `real_test.go:470: segment 3 (generation 1) has no ac3 part: the ac3 rendition stopped growing`.
 - **BC7 — no tfdt rewrite** (Decision 3). `relay/hls/pipeline.go`, in `attempt`'s `onFrag`: `shiftStart(&f, info.StartOffset)` → `shiftStart(&f, 0)`. `TestSegmentsAreAlignedAcrossRenditions` reddens: `pipeline_test.go:445: segment 0's video starts at 0.000 s, want its tfdt moved by the 0.86 s empty edit` (and the same for segments 1-3).
 - **BC8 — silence from a running sum** (the M8 prototype's shape the spec forbids, `:499-502`). `relay/hls/silence.go`: add a field `lastEnd uint64` to `silenceClock`, and in `segment` replace `end := s.endIndex(endRel, tv)` with `end := s.next + (endRel-s.lastEnd)*uint64(s.canned.Track.Timescale)/(uint64(tv)*spf)` followed by `s.lastEnd = endRel` (a per-segment floor). `TestSilenceIsExactAndNeverAccumulates` reddens: `silence_test.go:49: AAC against 50p at 12800 Hz: after segment 1 the silence ends -0.0160 s from its video, want within one frame (0.0213 s) and never short`.
@@ -260,23 +263,27 @@ This PR edits the spec itself (`docs/superpowers/specs/2026-09-27-phase4-apple-n
 - **BC12 — record no boundary at a connection attempt.** `relay/channel/channel.go`, in `runAttempt`: delete `c.markBoundary()`. `TestEveryConnectionAttemptRecordsASourceBoundary` reddens: `boundary_test.go:60: connection 1: NextBoundary(0) = 0, false, want 1`.
 - **BC13 — a detection cut short by the caller is conclusive** (finding 1). `relay/hls/detect.go`, in `detect`: delete `if parent.Err() != nil { return false, false }` (so a killed detection reads as a conclusive failure). Run `-run 'TestADetectionCutShortByTheCallerIsNotCached|TestQuickSyncIsWrittenOffOnlyWhenSoftwareSucceedsAndRedetectionFails'`: `detect_test.go:104: a cut-short detection was cached: a later caller with a live context got software, want qsv` and `pipeline_test.go:269: the pipeline stops during a re-run that would fail: the detector answers software, want qsv`.
 - **BC14 — no `+negative_cts_offsets`** (R31, finding 2). `relay/hls/argv.go`: `const videoFragFlags = fragFlags + "+negative_cts_offsets"` → `const videoFragFlags = fragFlags`. `TestRealABFrameEncodeStaysInSyncWithItsAudio` reddens: `real_test.go:653: the B-frame video presents +0.080 s from its audio, want within half a frame (0.020 s): the reorder delay was stripped with the edit list` (its log line: `first video presentation 0.0800 s (decode 0.0000 s, B-frames reordered: true), first E-AC-3 0.0000 s`).
-- **BC15 — fail on a connection too short to probe** (finding 3). `relay/hls/pipeline.go`, in `run`: `if fed.end == feedBoundary && (…) {` → `if false && fed.end == feedBoundary && (…) {`. `TestAConnectionTooShortToProbeIsSkipped` reddens: `pipeline_test.go:729: a connection too short to probe failed the output: hls: the HLS output failed`.
+- **BC15 — fail on a connection too short to probe** (finding 3). `relay/hls/pipeline.go`, in `run`: `if fed.end == feedBoundary && (…) {` → `if false && fed.end == feedBoundary && (…) {`. `TestAConnectionTooShortToProbeIsSkipped` reddens: `pipeline_test.go:747: a connection too short to probe failed the output: hls: the HLS output failed`.
 - **BC16 — never re-probe for missing geometry** (R30). `relay/hls/pipeline.go`, in `needsFullProbe`: delete `if !p.Video.Complete() { return true }`. Run `-run 'TestRealALongGOPIsReprobedAtTheFullBound|TestTheReprobeDecision'`: `probe_test.go:160: no width or height, bound reached, mode 0: needsFullProbe = false, want true` (and the two other incomplete cases), and `real_test.go:668: the pipeline failed: hls: no video stream in the source`.
 - **BC17 — the watchdog notices but does not kill** (R33). `relay/hls/pipeline.go`, in `watch`: delete `proc.Kill()`. `TestAStalledEncoderIsKilledAsADeath` reddens: `pipeline_test.go:669: the pipeline did not end within 20s`.
-- **BC18 — a waiter cannot give up on a process-wide lock** (nit 6). `relay/hls/lock.go`, in `lock`: delete the `case <-ctx.Done(): return ctx.Err()` arm. `TestAWaiterGivesUpOnTheProcessWideLocks` reddens: `detect_test.go:129: a waiter behind a running detection answered qsv after 942.210458ms, want software at its own deadline`.
-- **BC19 — a stop during the silence wait counts as an early exit** (round-2 finding 1). `relay/hls/pipeline.go`, in `attempt`: `if ctx.Err() != nil {` (the one before "Stopped while waiting for the canned encode") → `if false && ctx.Err() != nil {`. `TestAStopDuringTheSilenceWaitIsAStopNotAFailure` reddens: `pipeline_test.go:806: Err after a Stop during the silence wait = hls: the HLS output failed, want nil: a stop is not a failure`.
-- **BC20 — generation 0 does not skip** (R39). `relay/hls/pipeline.go`, in `run`: `if fed.end == feedBoundary && (…) {` → `if gen > 0 && fed.end == feedBoundary && (…) {`. `TestGenerationZeroSkipsAConnectionTooShortToProbe` reddens: `pipeline_test.go:769: Ready = hls: no video stream in the source: generation 0 did not move past a connection too short to probe`.
-- **BC21 — automatic mode ignores the keyframe count** (R37). `relay/hls/pipeline.go`, in `needsFullProbe`: `return mode == ModeAutomatic && p.Keyframes < 2` → `return false`. `TestTheReprobeDecision` reddens: `probe_test.go:160: complete video, mode 1: needsFullProbe = false, want true`, and `probe_test.go:180: automatic, one keyframe: needsFullProbe = false, want true`.
+- **BC18 — a waiter cannot give up on a process-wide lock** (nit 6). `relay/hls/lock.go`, in `lock`: delete the `case <-ctx.Done(): return ctx.Err()` arm. `TestAWaiterGivesUpOnTheProcessWideLocks` reddens: `detect_test.go:129: a waiter behind a running detection answered qsv after 935.266125ms, want software at its own deadline`.
+- **BC19 — a stop during the silence wait counts as an early exit** (round-2 finding 1). `relay/hls/pipeline.go`, in `attempt`: `if ctx.Err() != nil {` (the one before "Stopped while waiting for the canned encode") → `if false && ctx.Err() != nil {`. `TestAStopDuringTheSilenceWaitIsAStopNotAFailure` reddens: `pipeline_test.go:824: Err after a Stop during the silence wait = hls: the HLS output failed, want nil: a stop is not a failure`.
+- **BC20 — generation 0 does not skip** (R39). `relay/hls/pipeline.go`, in `run`: `if fed.end == feedBoundary && (…) {` → `if gen > 0 && fed.end == feedBoundary && (…) {`. `TestGenerationZeroSkipsAConnectionTooShortToProbe` reddens: `pipeline_test.go:787: Ready = hls: no video stream in the source: generation 0 did not move past a connection too short to probe`.
+- **BC21 — automatic mode ignores the keyframe count** (R37). `relay/hls/pipeline.go`, in `needsFullProbe`: `return mode == ModeAutomatic && p.Keyframes < 2` → `return false`. `TestTheReprobeDecision` reddens with three lines: `probe_test.go:160: complete video, mode 1: needsFullProbe = false, want true`, `probe_test.go:160: HEVC reporting unknown is complete (R28), mode 1: needsFullProbe = false, want true`, and `probe_test.go:180: automatic, one keyframe: needsFullProbe = false, want true`.
+- **BC22 — the watchdog's clock never stops on an idle ring** (round-3 finding 1). `relay/hls/pipeline.go`, in `watch`: `} else if now.Sub(moved) >= stall/2 {` → `} else if false && now.Sub(moved) >= stall/2 {`. `TestAStarvedEncoderIsNotKilled` reddens on its stuttering case: `pipeline_test.go:711: stutter=true: an encoder starved of input was killed as stalled:` followed by the log.
+- **BC23 — a stop during the spawn counts as an early exit** (round-3 finding 2). `relay/hls/pipeline.go`, in `attempt`: delete the `if ctx.Err() != nil { return genResult{outcome: outcomeStopped} }` before `p.log.Error("the HLS encoder could not start", …)`. `TestAStopDuringTheDetectionWaitIsAStopNotAFailure` reddens: `pipeline_test.go:853: Err after a Stop during the detection wait = hls: the HLS output failed, want nil: a stop is not a failure`.
+- **BC24 — a ring closing under a probe fails the output** (R40). `relay/hls/pipeline.go`, in `run`: `if fed.end == feedClosed && (err != nil …` → `if false && fed.end == feedClosed && (err != nil …`. `TestARingThatClosesDuringAProbeIsAStop` reddens: `pipeline_test.go:888: Err after the ring closed under a probe = hls: the HLS output failed, want nil: the channel is ending`.
+- **BC25 — `Ready` only on generation 0** (R41). `relay/hls/pipeline.go`, in `noteInit`: after `p.store.SetInit(name, gen, data)` add `if gen != 0 { return }`. `TestReadyFiresOnTheFirstGenerationWithEveryInit` reddens: `pipeline_test.go:913: Ready = context deadline exceeded: a generation 0 that wrote no init held Ready while generation 1 served`.
 
 **PR description draft** (fill the `<…>` slots from Tasks 12-14; no closing keyword anywhere):
 
 > **Phase 4a-1a: the HLS packager (inert).** Adds `relay/hls`, which turns a channel's ring into fMP4/CMAF HLS renditions. A probe (at each generation's own start) decides deinterlacing, geometry and which audio streams qualify. One ffmpeg per generation writes video, stereo AAC and AC-3/E-AC-3 on separate pipes, and a segmenter cuts 2-second segments and renders playlists. The encoder restarts at every source boundary, because a surviving encoder silently drops a source with different PIDs (spec M3). Quick Sync when the one-frame detection succeeds, libx264 otherwise, and QSV is only written off for the process when the failure is shown to be the device's. A rendition with no source is relay-synthesised silence, never an ffmpeg input (M8). No route reaches it yet: `go list -deps .` does not list `relay/hls`. Spec D6-D11; ADR 0009. Plan: `docs/superpowers/plans/2026-09-27-phase4-4a1a-hls-packager.md` at `<plan PASS SHA>`.
 >
-> Also: `relay/ffmpeg` gains `StartPipedExtra` (output pipes from fd 3); `relay/buffer` gains `Ring.MarkBoundary`/`ArrivedAt` and `relay/channel` records the ring index of every source boundary (every connection attempt). **One live-path change, on the linked TS path:** on a same-URL reconnect the old connection's pending whole packets are now published as their own short chunk, and its dangling partial packet is dropped instead of being glued to the new connection's first packet (R36); the Go coverage floor's "HOW TO MOVE" header states ruling R21/R27; parity rows 31-36 land pinned in a new `phase 4` block. From the plan's review (rulings R30-R36, carried in the spec): the probe is 3 s with one 8 s re-probe for video without its geometry or field order, and the encoder analyses its input to match (R30); the video output carries `+negative_cts_offsets` so a B-frame encode keeps its sync (R31); a stalled encoder is killed as a death (R33); a detection cut short by the relay's own stop writes nothing off; a stop during the silence wait is a stop, not a failure; and a connection too short to probe is skipped, at generation 0 as later (R39). Refs #525 (the probe keeps `field_order=unknown` a third state, treated as progressive; 4a-1d's PR closes it).
+> Also: `relay/ffmpeg` gains `StartPipedExtra` (output pipes from fd 3); `relay/buffer` gains `Ring.MarkBoundary`/`ArrivedAt` and `relay/channel` records the ring index of every source boundary (every connection attempt). **One live-path change, on the linked TS path:** on a same-URL reconnect the old connection's pending whole packets are now published as their own short chunk, and its dangling partial packet is dropped instead of being glued to the new connection's first packet (R36); the Go coverage floor's "HOW TO MOVE" header states ruling R21/R27; parity rows 31-36 land pinned in a new `phase 4` block. From the plan's review (rulings R30-R42, carried in the spec): the probe is 3 s with one 8 s re-probe for video without its geometry or field order, and the encoder analyses its input to match (R30); the video output carries `+negative_cts_offsets` so a B-frame encode keeps its sync (R31); a stalled encoder is killed as a death (R33); a detection cut short by the relay's own stop writes nothing off; a stop during the silence wait or the spawn, and a ring closing under a probe (R40), are stops, not failures; a connection too short to probe is skipped, at generation 0 as later (R39); and `Ready` answers on the first generation with a complete set of inits (R41). Refs #525 (the probe keeps `field_order=unknown` a third state, treated as progressive; 4a-1d's PR closes it).
 >
 > **Coverage.** `relay/hls` is unlinked (R27): CI-measured `<n>%` (`-count=1 -race -covermode=atomic`, from the `relay-go-coverage` artifact of run `<id>`), uncovered statements per file, the maximum over the census rounds (R34): `<file: count (blocks)>`. Linked packages (`relay/buffer`, `relay/channel`, `relay/ffmpeg`): every added statement covered, R21 listing **none**; census `<twelve or more rounds, in order>`, max `<589>`, `missing` unchanged at 589.
 >
-> **Break-checks:** `<BC1-BC21, one line each: the wrong edit, the test, the red message>`.
+> **Break-checks:** `<BC1-BC25, one line each: the wrong edit, the test, the red message>`.
 >
 > **AVPlayer** (planner's scratch run of this code, macOS 27 and the iOS 27 Simulator): see the plan's § What was measured. **QSV on the household host:** `<result, or "first item of 4a-1b's body">`.
 >
@@ -289,6 +296,7 @@ This PR edits the spec itself (`docs/superpowers/specs/2026-09-27-phase4-apple-n
 - **The zero-sample mid-generation audio fragment** (Decision 6) is unmeasured on AVPlayer: only the tail case was (Decision 7). It is reached only when an audio output stops for a whole `AudioWait`; if 4a-1b's manual gate shows a stall there, dropping is the same one-line choice Decision 7 made.
 - **`+negative_cts_offsets` on Quick Sync** is measured with libx264 B-frames on AVPlayer (macOS 27 and the iOS 27 Simulator); h264_qsv's own B-frame output is Q1's to confirm. If AVPlayer rejects it there, R31's fallback is `-bf 0` on the QSV argv.
 - **The stall watchdog is inert below about 410 kb/s** (round-2 nit 4): its clock resets whenever the ring is idle for half its 10 s timeout, and a 255,868-byte chunk arrives less often than every 5 s below that rate. Rare for video; a stalled encoder on such a source is left to the channel's own failover or a stop.
+- **Hand-off to 4a-1d (ruling R42): `StallTimeout` becomes per-pipeline.** It is a package constant here, `max(10 s, 5 × TARGETDURATION)` with transcode's fixed TARGETDURATION of 2, so 10 s. Once automatic mode can declare TARGETDURATION up to 6, the watchdog must use that pipeline's own value (30 s at TD = 6); a 10 s constant would not kill a healthy copy with K ≤ 6 s, but it is stricter than the spec says. The spec's 4a-1d section records the same.
 - **Q1**: the QSV argv has not run on Quick Sync (spec § Risks); no QSV claim is made until the owner's run.
 - **tvOS** (Q2-Q4) was not available to the planner.
 
@@ -333,6 +341,19 @@ No sibling Phase 4 plan is open. 4a-0 (#526) is merged and is only read (its `ma
   | 6 | nit: R34 not in the durable text | The floor header (Appendix A, `scripts/coverage_relay_go.floor:216`) and spec D20 (`:231`) and § Testing (`:1377`, `:1903`) state the census maximum. |
 
   **R38:** parity row 36, the stall watchdog, pinned by `TestAStalledEncoderIsKilledAsADeath` and `TestAStarvedEncoderIsNotKilled`; `HIGHEST_ROW_ID` 36; the guard passes (34 of 34 pinned rows carry a Go reference). Spec changelog entry at `:1799`.
+- **Round 3, reviewed at `dea8332a` by a fresh cold reviewer: FAIL** (3 should-fix, 4 nits; no production defect, every gate green, nothing regressed). Rulings R40-R42. Fixed in the scratch tree, every gate re-run (real tests in the production ffmpeg 9.0 image on linux/arm64 ×3 and linux/amd64 emulated), Appendix A regenerated and round-trip-verified.
+
+  | # | Finding | Disposition |
+  |---|---|---|
+  | 1 | should-fix: row 36's "starved" pin is hollow for the idle reset | `TestAStarvedEncoderIsNotKilled` gains the reviewer's stuttering case (1 s timeout; a chunk then 700 ms of dead air, six times); BC22 disables the reset and reddens it. |
+  | 2 | should-fix: the spawn-error `outcomeStopped` branch is unpinned | `TestAStopDuringTheDetectionWaitIsAStopNotAFailure` (held `Detector.run`, every rendition encoded, Stop after the probe); BC23. |
+  | 3 | should-fix: PR #528's body is stale | Rewritten at the final head with the current numbers (rows 31-36, `HIGHEST_ROW_ID` 36, coverage, 25 break-checks, 24 decisions, rounds 1-3), `Refs #525`, no closing keyword. |
+  | 4 | nit: a ring closing during a probe ends as `ErrFailed` | R40: a stop (`finish(nil)`) at every generation (Decision 24). `TestARingThatClosesDuringAProbeIsAStop`; BC24. Spec `:628`. |
+  | 5 | nit: `Ready` keyed to generation 0 only | R41, done here (small): `noteInit` answers `Ready` on the first generation with every init, taking its CODECS (Decision 16). `TestReadyFiresOnTheFirstGenerationWithEveryInit`; BC25. Spec `:311`. |
+  | 6 | nit: stale scope wording | Spec § 4a-1a scope note (`:1239`) names R37, R39, R40, R41; the implementation-PR draft says R30-R42. |
+  | 7 | nit: BC21 prints three lines | Recorded. |
+
+  **R42:** the 4a-1d hand-off (per-pipeline `StallTimeout`) is in § Residual risks and follow-ups and the spec's § 4a-1d scope (`:1469`). Spec changelog entry at `:1816`.
 
 ## Appendix A — the diff
 
@@ -341,7 +362,7 @@ Apply at the seed with `git apply --whitespace=error`. It creates `relay/hls/` (
 <!-- appendix-A-begin -->
 ```diff
 diff --git a/docs/relay-parity-matrix.md b/docs/relay-parity-matrix.md
-index 8c66be19..c107fe1b 100644
+index 8c66be19..89aad3a6 100644
 --- a/docs/relay-parity-matrix.md
 +++ b/docs/relay-parity-matrix.md
 @@ -19,8 +19,10 @@ Rows were derived by reading the source, not by cataloguing tests that happen to
@@ -375,10 +396,10 @@ index 8c66be19..c107fe1b 100644
 +<!-- block: phase 4 -->
 +| 31 | An HLS generation's segments are 2.000 s plus or minus one frame, each starting with a sync sample: the segmenter accumulates the encoder's fragments until the 2 s grid from the generation's first video frame is reached and cuts only before a fragment that opens on a sync sample | `relay/hls/segmenter.go:238-275`, `relay/hls/argv.go:340-393` | `relay/hls/real_test.go::TestRealThe1080iFixtureGivesAligned2sSegmentsOnThreeRenditions`, `relay/hls/pipeline_test.go::TestSegmentsAccumulateToTheGridAndCutOnlyAtASyncSample` | Phase 4a-1a (spec D6, D8). The real pin runs 12 s of the 4a-0 `h264-1080i-aac-ac3` fixture through the software transcode (`-force_key_frames expr:gte(t,n_forced*2)`, `-g` and `-keyint_min` at round(2R)) and checks every segment but the generation's flushed last one. The stand-in pin feeds one-second fragments, a non-sync one on a grid line included, so the accumulation and the sync rule are held without a real encoder. Inert until 4a-1b serves the store. |
 +| 32 | A source boundary (every new upstream connection: a failover or a same-URL reconnect) ends the HLS generation at the boundary's first chunk, and the next generation's first segment carries `EXT-X-DISCONTINUITY` and a new `EXT-X-MAP` while the media sequence continues | `relay/channel/boundary.go:38-63`, `relay/channel/channel.go:603-605`, `relay/hls/feed.go:61-104`, `relay/hls/store.go:119-148`, `relay/hls/store.go:221-253` | `relay/hls/real_test.go::TestRealABoundaryGivesTwoGenerationsAndADiscontinuity`, `relay/channel/boundary_test.go::TestEveryConnectionAttemptRecordsASourceBoundary` | Phase 4a-1a (spec D10, M3). The real pin feeds two 4a-0 fixtures with different PIDs across a recorded boundary; one encoder fed straight across it silently drops the second source, which is the break-check. `buffer.Ring.MarkBoundary` publishes the old connection's pending whole packets before the boundary, so the chunk at the boundary index is the new connection's own. |
-+| 33 | Each HLS generation is probed where it starts: the first from the join point behind live, every later one from its boundary index, so the second generation's probe describes the second source | `relay/hls/pipeline.go:304-412`, `relay/hls/pipeline.go:436-517` | `relay/hls/real_test.go::TestRealABoundaryGivesTwoGenerationsAndADiscontinuity` | Phase 4a-1a (spec D9). The probe's feed stops at the next boundary as the generation's does. It is bounded at 3 s or 3,000,000 bytes, with one re-probe at 8 s or 5 MB when the video has no geometry or field order (ruling R30; the long-GOP case is `relay/hls/real_test.go::TestRealALongGOPIsReprobedAtTheFullBound`); on an MPEG-TS pipe ffprobe reads to its bound whatever it has found, so the bound is the probe's share of the failover gap (Q6). A connection that ends at the next boundary before it can be probed is skipped rather than failing the output, at generation 0 as at any later one (plan review, round 1 finding 3 and ruling R39). |
-+| 34 | With no usable Quick Sync the HLS encoder runs in software and never refuses: a missing render node, a failing one-frame detection encode or its timeout selects libx264, and Quick Sync is written off for the process only when a software retry succeeds where it failed and the detection encode, re-run, fails | `relay/hls/detect.go:89-173`, `relay/hls/pipeline.go:542-574` | `relay/hls/detect_test.go::TestDetection`, `relay/hls/real_test.go::TestRealDetectionWithoutQuickSyncGivesSoftware`, `relay/hls/pipeline_test.go::TestASourceCausedEarlyFailureDoesNotWriteQuickSyncOff`, `relay/hls/pipeline_test.go::TestQuickSyncIsWrittenOffOnlyWhenSoftwareSucceedsAndRedetectionFails`, `relay/hls/detect_test.go::TestADetectionCutShortByTheCallerIsNotCached` | Phase 4a-1a (spec D11, finding 5). A detection or re-check cut short by the caller's own context is no evidence and writes nothing off (plan review, finding 1). The QSV argv itself has not run on Quick Sync hardware (Q1); these pins hold the selection and the write-off rule, not the device. |
++| 33 | Each HLS generation is probed where it starts: the first from the join point behind live, every later one from its boundary index, so the second generation's probe describes the second source | `relay/hls/pipeline.go:324-440`, `relay/hls/pipeline.go:464-545` | `relay/hls/real_test.go::TestRealABoundaryGivesTwoGenerationsAndADiscontinuity` | Phase 4a-1a (spec D9). The probe's feed stops at the next boundary as the generation's does. It is bounded at 3 s or 3,000,000 bytes, with one re-probe at 8 s or 5 MB when the video has no geometry or field order (ruling R30; the long-GOP case is `relay/hls/real_test.go::TestRealALongGOPIsReprobedAtTheFullBound`); on an MPEG-TS pipe ffprobe reads to its bound whatever it has found, so the bound is the probe's share of the failover gap (Q6). A connection that ends at the next boundary before it can be probed is skipped rather than failing the output, at generation 0 as at any later one (plan review, round 1 finding 3 and ruling R39); a ring that closes under a probe is a stop (R40). |
++| 34 | With no usable Quick Sync the HLS encoder runs in software and never refuses: a missing render node, a failing one-frame detection encode or its timeout selects libx264, and Quick Sync is written off for the process only when a software retry succeeds where it failed and the detection encode, re-run, fails | `relay/hls/detect.go:89-173`, `relay/hls/pipeline.go:570-602` | `relay/hls/detect_test.go::TestDetection`, `relay/hls/real_test.go::TestRealDetectionWithoutQuickSyncGivesSoftware`, `relay/hls/pipeline_test.go::TestASourceCausedEarlyFailureDoesNotWriteQuickSyncOff`, `relay/hls/pipeline_test.go::TestQuickSyncIsWrittenOffOnlyWhenSoftwareSucceedsAndRedetectionFails`, `relay/hls/detect_test.go::TestADetectionCutShortByTheCallerIsNotCached` | Phase 4a-1a (spec D11, finding 5). A detection or re-check cut short by the caller's own context is no evidence and writes nothing off (plan review, finding 1). The QSV argv itself has not run on Quick Sync hardware (Q1); these pins hold the selection and the write-off rule, not the device. |
 +| 35 | An audio stream that does not qualify (no known codec, 0 channels or a 0 sample rate, which is what a PMT-declared PID carrying no packets probes as) declares no HLS rendition and is never mapped into the encoder's argv | `relay/hls/probe.go:167-173`, `relay/hls/argv.go:124-154`, `relay/hls/argv.go:260-294` | `relay/hls/real_test.go::TestRealADeclaredButEmptyAudioPIDIsNotMapped`, `relay/hls/argv_test.go::TestANonQualifyingAudioStreamIsNotMapped` | Phase 4a-1a (spec § Encoder argv, finding 7). Mapping such a stream fails every output of the generation (ffmpeg 9.0.1: `sample rate not set`). The real pin strips the AC-3 PID's packets from the 4a-0 1080i fixture and keeps its PMT entry. |
-+| 36 | A stalled HLS encoder is a death: a generation that writes no new video fragment for max(10 s, 5 x TARGETDURATION) of the channel's ring advancing is killed and counted against the restart bound, while an encoder starved by an idle ring is left alone | `relay/hls/pipeline.go:38`, `relay/hls/pipeline.go:699`, `relay/hls/pipeline.go:770-807` | `relay/hls/pipeline_test.go::TestAStalledEncoderIsKilledAsADeath`, `relay/hls/pipeline_test.go::TestAStarvedEncoderIsNotKilled` | Phase 4a-1a (ruling R33, R38). The ring, not the bytes fed, is the measure of input advancing, because a wedged encoder that stops reading its stdin stops the feed too. The clock starts at the first ring advance after the latest fragment and resets whenever the ring is idle for half the timeout, so the watchdog is inert below roughly 410 kb/s (a 255,868-byte chunk less often than every 5 s). |
++| 36 | A stalled HLS encoder is a death: a generation that writes no new video fragment for max(10 s, 5 x TARGETDURATION) of the channel's ring advancing is killed and counted against the restart bound, while an encoder starved by an idle ring is left alone | `relay/hls/pipeline.go:38`, `relay/hls/pipeline.go:727`, `relay/hls/pipeline.go:798-835` | `relay/hls/pipeline_test.go::TestAStalledEncoderIsKilledAsADeath`, `relay/hls/pipeline_test.go::TestAStarvedEncoderIsNotKilled` | Phase 4a-1a (ruling R33, R38). The ring, not the bytes fed, is the measure of input advancing, because a wedged encoder that stops reading its stdin stops the feed too. The clock starts at the first ring advance after the latest fragment and resets whenever the ring is idle for half the timeout, so the watchdog is inert below roughly 410 kb/s (a 255,868-byte chunk less often than every 5 s). |
  <!-- end of matrix -->
 diff --git a/e2e/tests/guards/parity-matrix.ts b/e2e/tests/guards/parity-matrix.ts
 index 89898176..76763c5d 100644
@@ -3712,10 +3733,10 @@ index 00000000..381841ed
 +func (l *ctxLock) unlock() { <-l.ch }
 diff --git a/relay/hls/pipeline.go b/relay/hls/pipeline.go
 new file mode 100644
-index 00000000..33707a03
+index 00000000..7cd7b6e0
 --- /dev/null
 +++ b/relay/hls/pipeline.go
-@@ -0,0 +1,821 @@
+@@ -0,0 +1,849 @@
 +package hls
 +
 +import (
@@ -3844,9 +3865,12 @@ index 00000000..33707a03
 +	readyErr error
 +	output   *Output
 +	codecs   map[string]string
-+	engine   Engine
-+	gen      int
-+	probes   map[int]Probe
++	// initCodecs is each generation's CODECS values until one generation
++	// has them all and they become codecs (noteInit).
++	initCodecs map[int]map[string]string
++	engine     Engine
++	gen        int
++	probes     map[int]Probe
 +}
 +
 +// Start begins a pipeline. It returns at once: the probe (3 s, or 11 s with
@@ -3938,8 +3962,9 @@ index 00000000..33707a03
 +	return *p.output, true
 +}
 +
-+// Ready waits until every generation-0 init segment exists (the multivariant
-+// waits for them, D7), the pipeline ends first, or ctx ends. It reports
++// Ready waits until one generation's init segments all exist -- normally
++// generation 0's (the multivariant waits for them, D7; R41) -- the pipeline
++// ends first, or ctx ends. It reports
 +// readiness, not health: a pipeline that fails after its inits exist still
 +// answers nil here, and Done and Err are what say it ended.
 +func (p *Pipeline) Ready(ctx context.Context) error {
@@ -3987,23 +4012,39 @@ index 00000000..33707a03
 +	})
 +}
 +
-+// noteInit records a rendition's init segment, and generation 0's CODECS
-+// values, and marks the pipeline ready once generation 0 has every one.
++// noteInit records a rendition's init segment and its CODECS value, and
++// marks the pipeline ready once ONE generation has every rendition's init
++// (ruling R41): usually generation 0, but a generation 0 that ended at a
++// boundary, or died, before writing all of its inits must not leave Ready
++// unanswered while a later generation serves segments. The multivariant's
++// CODECS come from that generation's inits; the output they describe is
++// fixed for the run (D8), so every generation's are the same.
 +func (p *Pipeline) noteInit(name string, gen int, data []byte, codec string) {
 +	p.store.SetInit(name, gen, data)
-+	if gen != 0 {
++	select {
++	case <-p.readyCh:
++		return
++	default:
++	}
++	p.mu.Lock()
++	if p.initCodecs == nil {
++		p.initCodecs = map[int]map[string]string{}
++	}
++	if p.initCodecs[gen] == nil {
++		p.initCodecs[gen] = map[string]string{}
++	}
++	p.initCodecs[gen][name] = codec
++	out := p.output
++	p.mu.Unlock()
++	if out == nil || !p.store.hasInits(gen, out.Renditions()) {
 +		return
 +	}
 +	p.mu.Lock()
 +	if p.codecs == nil {
-+		p.codecs = map[string]string{}
++		p.codecs, p.initCodecs = p.initCodecs[gen], nil
 +	}
-+	p.codecs[name] = codec
-+	out := p.output
 +	p.mu.Unlock()
-+	if out != nil && p.store.hasInits(0, out.Renditions()) {
-+		p.markReady(nil)
-+	}
++	p.markReady(nil)
 +}
 +
 +func (p *Pipeline) finish(err error) {
@@ -4037,6 +4078,14 @@ index 00000000..33707a03
 +		}
 +		probe, bound, fed, err := p.probeGeneration(ctx, gen, start)
 +		if ctx.Err() != nil {
++			p.finish(nil)
++			return
++		}
++		if fed.end == feedClosed && (err != nil || probe.Video == nil || !probe.Video.Complete()) {
++			// The channel's ring closed under the probe (ruling R40): the
++			// channel is ending, and a probe of its last few bytes failing
++			// is that, not a failure of the output. A stop, as attempt
++			// classifies a ring that closes under an encoder.
 +			p.finish(nil)
 +			return
 +		}
@@ -4539,10 +4588,10 @@ index 00000000..33707a03
 +}
 diff --git a/relay/hls/pipeline_test.go b/relay/hls/pipeline_test.go
 new file mode 100644
-index 00000000..abd86203
+index 00000000..de788a44
 --- /dev/null
 +++ b/relay/hls/pipeline_test.go
-@@ -0,0 +1,811 @@
+@@ -0,0 +1,922 @@
 +package hls
 +
 +import (
@@ -5223,21 +5272,39 @@ index 00000000..abd86203
 +// R33's "while its input is advancing": an encoder starved by an upstream in
 +// dead air is not stalled, and the watchdog leaves it alone.
 +func TestAStarvedEncoderIsNotKilled(t *testing.T) {
-+	h := newHarness(t)
-+	oneFragment := file(t, "v.mp4", videoStream(0, 1, 50))
-+	p := h.startWith(probeVideoOnly, func(c *Config) { c.StallTimeout = 300 * time.Millisecond }, func(Spawn) []string {
-+		return []string{"--fd-file", relaytest.FDFileArg(1, oneFragment), "--ignore-stdin-eof"}
-+	})
-+	if err := p.Ready(context.Background()); err != nil {
-+		t.Fatalf("Ready: %v", err)
-+	}
-+	select {
-+	case <-p.Done():
-+		t.Fatalf("the pipeline ended with the ring idle: %v\n%s", p.Err(), h.logs.String())
-+	case <-time.After(1500 * time.Millisecond):
-+	}
-+	if strings.Contains(h.logs.String(), "stalled encoder") {
-+		t.Fatalf("an encoder starved of input was killed as stalled:\n%s", h.logs.String())
++	// Two shapes of "not advancing". An idle ring from the start never arms
++	// the clock. A STUTTERING ring -- a chunk, then longer than half the
++	// timeout of dead air, again and again -- arms it on every chunk, and
++	// only the idle reset keeps it from reaching the timeout (round 3,
++	// finding 1: the idle case alone passes with that reset removed).
++	for _, stutter := range []bool{false, true} {
++		h := newHarness(t)
++		oneFragment := file(t, "v.mp4", videoStream(0, 1, 50))
++		stall := 300 * time.Millisecond
++		if stutter {
++			stall = time.Second
++		}
++		p := h.startWith(probeVideoOnly, func(c *Config) { c.StallTimeout = stall }, func(Spawn) []string {
++			return []string{"--fd-file", relaytest.FDFileArg(1, oneFragment), "--ignore-stdin-eof"}
++		})
++		if err := p.Ready(context.Background()); err != nil {
++			t.Fatalf("stutter=%t: Ready: %v", stutter, err)
++		}
++		if stutter {
++			for i := 0; i < 6; i++ {
++				h.src.write(t, chunkOf('s'))
++				time.Sleep(700 * time.Millisecond)
++			}
++		}
++		select {
++		case <-p.Done():
++			t.Fatalf("stutter=%t: the pipeline ended with the ring idle or stuttering: %v\n%s", stutter, p.Err(), h.logs.String())
++		case <-time.After(1500 * time.Millisecond):
++		}
++		if strings.Contains(h.logs.String(), "stalled encoder") {
++			t.Fatalf("stutter=%t: an encoder starved of input was killed as stalled:\n%s", stutter, h.logs.String())
++		}
++		p.Stop()
 +	}
 +}
 +
@@ -5352,6 +5419,99 @@ index 00000000..abd86203
 +	}
 +	if strings.Contains(h.logs.String(), "level=ERROR") {
 +		t.Fatalf("a stop was logged as an error:\n%s", h.logs.String())
++	}
++}
++
++// Finding 2 of round 3: a pipeline stopped while waiting behind another
++// channel's Quick Sync detection gets software on its dead context, has no
++// silence to wait for when every rendition is encoded, and reaches the
++// encoder spawn with its context ended. That is a stop, not ErrFailed.
++func TestAStopDuringTheDetectionWaitIsAStopNotAFailure(t *testing.T) {
++	h := newHarness(t)
++	det := &Detector{Command: lookPath(t, "true"), Device: device(t), Log: h.logs.logger()}
++	if err := det.run.lock(context.Background()); err != nil {
++		t.Fatal(err)
++	}
++	defer det.run.unlock()
++	p := h.startWith(probeWithAAC, func(c *Config) { c.Detector = det }, func(Spawn) []string { return nil })
++	deadline := time.Now().Add(10 * time.Second)
++	for !strings.Contains(h.logs.String(), "HLS generation probed") {
++		if time.Now().After(deadline) {
++			t.Fatalf("the probe never finished:\n%s", h.logs.String())
++		}
++		time.Sleep(10 * time.Millisecond)
++	}
++	time.Sleep(200 * time.Millisecond)
++	p.Stop()
++	if err := p.Err(); err != nil {
++		t.Fatalf("Err after a Stop during the detection wait = %v, want nil: a stop is not a failure\n%s", err, h.logs.String())
++	}
++	if strings.Contains(h.logs.String(), "level=ERROR") {
++		t.Fatalf("a stop was logged as an error:\n%s", h.logs.String())
++	}
++}
++
++// Ruling R40: when the channel's ring closes under a probe that then fails,
++// the channel is ending; the pipeline stops, it does not fail.
++func TestARingThatClosesDuringAProbeIsAStop(t *testing.T) {
++	h := newHarness(t)
++	h.t.Setenv(relaytest.StandInEnv, "1")
++	withVideo := file(t, "probe-video.json", []byte(probeVideoOnly))
++	video := file(t, "v.mp4", videoStream(0, 2, 50))
++	p := h.startWith(probeVideoOnly, func(c *Config) {
++		c.ProbeCommand = func(gen int) (string, []string) {
++			if gen == 0 {
++				return relaytest.StandInCommand("--fd-file", relaytest.FDFileArg(1, withVideo))
++			}
++			// What ffprobe does on a closed, near-empty pipe: no streams,
++			// a non-zero exit once its input ends.
++			return relaytest.StandInCommand("--fd-file", relaytest.FDFileArg(1, file(t, "empty.json", nil)), "--wait-stdin-eof", "--exit-code", "1")
++		}
++	}, func(Spawn) []string {
++		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--wait-stdin-eof"}
++	})
++	if err := p.Ready(context.Background()); err != nil {
++		t.Fatalf("Ready: %v", err)
++	}
++	h.src.mark()
++	h.src.write(t, chunkOf('z'))
++	time.Sleep(300 * time.Millisecond)
++	h.src.ring.Close()
++	waitDone(t, p, 10*time.Second)
++	if err := p.Err(); err != nil {
++		t.Fatalf("Err after the ring closed under a probe = %v, want nil: the channel is ending\n%s", err, h.logs.String())
++	}
++	if strings.Contains(h.logs.String(), "level=ERROR") {
++		t.Fatalf("a ring closing under a probe was logged as an error:\n%s", h.logs.String())
++	}
++}
++
++// Ruling R41: Ready fires on the first generation that writes every init,
++// not only generation 0. Here generation 0 ends at a boundary having written
++// none, and generation 1 serves.
++func TestReadyFiresOnTheFirstGenerationWithEveryInit(t *testing.T) {
++	h := newHarness(t)
++	h.src.mark()
++	h.src.write(t, chunkOf('b'))
++	video := file(t, "v.mp4", videoStream(0, 2, 50))
++	nothing := file(t, "none.mp4", nil)
++	p := h.start(probeVideoOnly, nil, func(s Spawn) []string {
++		if s.Generation == 0 {
++			return []string{"--fd-file", relaytest.FDFileArg(1, nothing), "--wait-stdin-eof"}
++		}
++		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--wait-stdin-eof"}
++	})
++	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
++	defer cancel()
++	if err := p.Ready(ctx); err != nil {
++		t.Fatalf("Ready = %v: a generation 0 that wrote no init held Ready while generation 1 served\n%s", err, h.logs.String())
++	}
++	mv, err := p.Multivariant("/hls/T")
++	if err != nil || !strings.Contains(string(mv), `CODECS="avc1.64002a,mp4a.40.2"`) {
++		t.Fatalf("multivariant %s, %v", mv, err)
++	}
++	if _, ok := p.Store().Init(RenditionVideo, 1); !ok {
++		t.Fatalf("generation 1's init is not stored")
 +	}
 +}
 diff --git a/relay/hls/playlist.go b/relay/hls/playlist.go
