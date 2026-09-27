@@ -86,11 +86,12 @@ type Config struct {
 // Ring is one channel's in-memory buffer: the packetiser, the monotonic chunk
 // index, the bounded chunk store and the reader wake-up.
 //
-// CONCURRENCY. One writer goroutine calls Write, ResetPosition and Close; any
-// number of reader goroutines call Read, Head, Join, Oldest and Wait. Every
-// field below is guarded by mu -- writers take Lock, readers take RLock. The
-// only thing that leaves the lock is a Chunk's Data slice header, which is
-// safe precisely because of the immutability rule on Chunk.
+// CONCURRENCY. One writer goroutine calls Write, ResetPosition, MarkBoundary
+// and Close; any number of reader goroutines call Read, Head, Join, Oldest,
+// ArrivedAt and Wait. Every field below is guarded by mu -- writers take
+// Lock, readers take RLock. The only thing that leaves the lock is a Chunk's
+// Data slice header, which is safe precisely because of the immutability
+// rule on Chunk.
 //
 // WHAT -race SHOULD CATCH IF THIS IS WRONG. Reading head, chunks or notify
 // without the lock is an unsynchronised access the detector reports directly.
@@ -238,6 +239,62 @@ func (r *Ring) ResetPosition() {
 	defer r.mu.Unlock()
 	r.partial = nil
 	r.pending = nil
+}
+
+// MarkBoundary ends the byte stream of one upstream connection and returns
+// the index the NEXT connection's first chunk will be published at: a source
+// boundary (Phase 4 spec, D10). The channel calls it as each connection
+// attempt starts, so that relay/hls can stop a generation's input exactly
+// where one provider's bytes end and another's begin.
+//
+// THE OLD CONNECTION'S WHOLE PACKETS ARE PUBLISHED, NOT DROPPED. Bytes still
+// in pending would otherwise be prepended to the new connection's first
+// chunk, so the chunk at the returned index would open with the old source's
+// PAT, PMT and PIDs -- exactly the mixed input an encoder silently drops a
+// source over (spec M3), and what a probe at the boundary would misdescribe.
+// Publishing them as one short final chunk keeps every byte a TS client was
+// going to receive, and makes the chunk at the returned index the new
+// connection's own. A chunk shorter than chunkBytes is harmless to every
+// reader: nothing in this module assumes a chunk's length.
+//
+// THE CARRIED PARTIAL PACKET IS DROPPED, as ResetPosition drops it: fewer
+// than 188 bytes that the old connection never finished can only corrupt the
+// new connection's first packet. After a failover ResetPosition has already
+// cleared both, so this publishes nothing.
+//
+// Like ResetPosition it never rewinds head (parity-matrix row 7).
+func (r *Ring) MarkBoundary() uint64 {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.partial = nil
+	if len(r.pending) > 0 && !r.closed {
+		data := make([]byte, len(r.pending))
+		copy(data, r.pending)
+		r.pending = r.pending[:0]
+		r.head++
+		r.evictLocked()
+		r.chunks = append(r.chunks, Chunk{Index: r.head, At: r.now(), Data: data})
+		close(r.notify)
+		r.notify = make(chan struct{})
+	}
+	return r.head + 1
+}
+
+// ArrivedAt is when the chunk at index was published, and false when that
+// chunk is not (or no longer) in the ring. relay/hls anchors a generation's
+// EXT-X-PROGRAM-DATE-TIME on it (spec D7): the arrival of the generation's
+// first chunk, never the moment the encoder got round to it.
+func (r *Ring) ArrivedAt(index uint64) (time.Time, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if len(r.chunks) == 0 {
+		return time.Time{}, false
+	}
+	oldest := r.chunks[0].Index
+	if index < oldest || index > r.head {
+		return time.Time{}, false
+	}
+	return r.chunks[index-oldest].At, true
 }
 
 // Head is the highest index published so far, 0 before the first chunk.

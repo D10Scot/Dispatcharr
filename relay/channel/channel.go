@@ -95,6 +95,9 @@ type Channel struct {
 	// Profile transcodes. Its own mutex, never nested with mu -- see
 	// output.go's lock-order note.
 	outputRegistry
+	// boundaryLog is Phase 4a-1a's: the ring index where each upstream
+	// connection's bytes begin (boundary.go).
+	boundaryLog
 
 	// outputProfiles is the active OutputProfile set as the control plane
 	// last described it, under mu. REPLACED WHOLESALE, never mutated in
@@ -596,6 +599,10 @@ func (c *Channel) runAttempt(ctx context.Context, source Source) error {
 	}
 	attemptCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
+
+	// Every attempt is a new upstream connection, a same-URL reconnect as
+	// much as a failover, and so a source boundary (Phase 4 spec, D10).
+	c.markBoundary()
 
 	c.mu.Lock()
 	now := c.now()

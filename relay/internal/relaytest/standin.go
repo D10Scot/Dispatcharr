@@ -95,6 +95,20 @@ import (
 //	                         processes were STARTED, and a log says that
 //	                         directly where a count of survivors says it only
 //	                         indirectly.
+//	--fd-file N=PATH         (repeatable) ignore the copy loop: write PATH's
+//	                         bytes to fd N (1 for stdout, 3 and up for the
+//	                         extra output pipes relay/hls's encoder is given),
+//	                         holding each open until it exits, then exit.
+//	                         What an HLS generation or an ffprobe
+//	                         looks like from the relay's side: the subject is
+//	                         the relay's reaction to the bytes, the exit and
+//	                         its moment, which a real encoder cannot be made to
+//	                         produce exactly on demand (hls.go).
+//	--wait-stdin-eof         with --fd-file: after writing, drain fd 0 and exit
+//	                         only at its EOF -- a generation that ends because
+//	                         the relay closed its input
+//	--ignore-stdin-eof       with --fd-file: after writing, stay alive whatever
+//	                         fd 0 does -- a generation that will not exit
 
 // StandInEnv is the environment variable that turns the re-executed test
 // binary into the stand-in.
@@ -137,6 +151,9 @@ type standInOptions struct {
 	tsPID          int
 	haveTSPID      bool
 	stdinPIDLog    string
+	fdFiles        []fdFile
+	waitStdinEOF   bool
+	ignoreStdinEOF bool
 	haveExitAfter  bool
 	haveDeadAir    bool
 	positional     []string
@@ -193,6 +210,16 @@ func parseStandIn(args []string) standInOptions {
 			o.haveTSPID = true
 		case "--stdin-pid-log":
 			o.stdinPIDLog = next()
+		case "--fd-file":
+			if f, ok := parseFDFile(next()); ok {
+				o.fdFiles = append(o.fdFiles, f)
+			} else {
+				o.fatalParseFlag = a
+			}
+		case "--wait-stdin-eof":
+			o.waitStdinEOF = true
+		case "--ignore-stdin-eof":
+			o.ignoreStdinEOF = true
 		case "--spawn-log":
 			o.spawnLog = next()
 		case "-i":
@@ -253,6 +280,9 @@ func RunStandIn(args []string) int {
 	}
 	if o.haveFMP4 {
 		return runFMP4StandIn(o)
+	}
+	if len(o.fdFiles) > 0 {
+		return runFDFileStandIn(o)
 	}
 
 	if o.input == "" {
