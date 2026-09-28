@@ -1,6 +1,6 @@
 {
  "detail": null,
- "fetched_at": "2026-09-27T11:30:16+00:00",
+ "fetched_at": "2026-09-28T13:02:39+00:00",
  "kind": "scorecard",
  "records": [
   {
@@ -24,9 +24,9 @@
     "Token-Permissions": 10,
     "Vulnerabilities": 6
    },
-   "commit": "6c98547399a58acbd025c306f77c349c9dfcd308",
-   "date": "2026-09-27T10:39:27Z",
-   "id": "2026-09-27T10:39:27Z",
+   "commit": "0f8d5bd06c3dd13ba2ab5041fc53fea3cafbf0f3",
+   "date": "2026-09-27T22:50:24Z",
+   "id": "2026-09-27T22:50:24Z",
    "score": 6.7
   }
  ],
