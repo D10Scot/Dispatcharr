@@ -509,6 +509,13 @@ export type ChannelStatus = {
   width?: string;
   height?: string;
   video_bitrate?: string;
+  /**
+   * Phase 4a-1b: present only while the channel runs an HLS pipeline.
+   * `hls_encoder` is `'qsv'` or `'software'` once the first generation has
+   * chosen its engine; `hls_generation` is the current generation number.
+   */
+  hls_encoder?: 'qsv' | 'software';
+  hls_generation?: number;
 };
 
 /* ------------------------------------------------------------------------ *

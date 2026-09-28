@@ -203,6 +203,9 @@ services:
     #  #- render  # Uncomment if your GPU requires it
     #devices:
     #  - /dev/dri:/dev/dri  # For Intel/AMD GPU acceleration (VA-API)
+    #    The same device is Intel Quick Sync for the live HLS output's
+    #    encode (Phase 4, ADR 0009). Without /dev/dri the relay encodes HLS
+    #    in software (libx264), logs that once at WARNING, and never refuses.
 
   # ============================================================================
   # Celery Service - Background task worker

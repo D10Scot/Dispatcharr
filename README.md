@@ -150,7 +150,7 @@ We welcome **PRs, issues, ideas, and suggestions**!
 - 📁 **Media Library** — Import local files and serve them over XC API
 - 👥 **Enhanced User Management** — Customizable XC API output per user account
 - 🔌 **Fallback Videos** — Automatic fallback content when channels are unavailable
-- 📡 **HLS Output** — Serve streams as HLS alongside existing container formats
+- 📡 **HLS Output** — Live channels are served as HLS today (fMP4 segments, re-encoded for Apple devices, alongside MPEG-TS and fMP4); VOD, catch-up and recordings over HLS are still upcoming
 
 ---
 

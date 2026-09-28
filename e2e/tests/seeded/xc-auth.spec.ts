@@ -53,7 +53,9 @@ test('player_api.php returns a user_info / server_info envelope for valid creden
     status: 'Active',
     // max_connections is a string in the envelope, not a number.
     max_connections: '3',
-    allowed_output_formats: ['ts', 'mp4'],
+    // `m3u8` since Phase 4a-1b: the Xtream API advertises the live HLS
+    // output (Phase 4 spec § 4b, ruling R9).
+    allowed_output_formats: ['ts', 'mp4', 'm3u8'],
   });
 
   // server_info.timezone is what XC clients use to interpret every EPG
