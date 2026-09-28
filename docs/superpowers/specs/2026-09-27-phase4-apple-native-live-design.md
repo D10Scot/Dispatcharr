@@ -626,6 +626,12 @@ until a stop. The ring is the measure of "input advancing", not the bytes fed to
 because an encoder that stops reading its stdin stops the feed too; the clock starts at the first
 ring advance after the latest fragment and stops whenever the ring has not moved for half the
 timeout, so an upstream in dead air never reads as a stalled encoder. 4a-1a implements it.
+**Before a generation's first video fragment the allowance is three times that** (amended by R55,
+30 s at TARGETDURATION 2): a cold software encode of an interlaced 1080 source is fed at the
+provider's real-time rate and needs its deinterlacer's lookahead and a full GOP before it writes
+anything, and the first attempt of a cold tune was measured killed at 10 s with nothing wrong with
+it (4a-1b's AVPlayer runs, macOS 27, software libx264: the second attempt, fed from a ring with
+backlog, was ready in 5 s). After the first fragment the plain timeout applies.
 
 **A connection that ends before it can be probed is skipped** (4a-1a plan review, finding 3; R39
 for generation 0). When a generation's probe feed stopped at the next boundary and the probe found no
@@ -1887,6 +1893,13 @@ Filled in as PRs merge.
   - **R52 and R53** bind the 4a-1b implementation, not this text: the Go floor becomes
     `589 + H + O`, every census round at or under it, and the floor header's R21 sentence reads
     "does not exceed"; the orchestrator files the issue if R29's measurement is below real time.
+
+- **2026-09-28, amended by the 4a-1b implementation (R55).** The stall watchdog's arming is
+  changed (§ Encoder argv, failure): a generation that has written no video fragment yet gets
+  `3 × max(10 s, 5 × TARGETDURATION)` before it is killed as stalled, and the plain timeout applies
+  after its first fragment. Pinned by `relay/hls/pipeline_test.go`'s
+  `TestASlowFirstFragmentIsNotKilledAsAStall` and
+  `TestAnEncoderThatWritesNothingPastTheStartupAllowanceIsKilled`.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
