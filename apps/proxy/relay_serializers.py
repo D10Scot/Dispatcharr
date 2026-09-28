@@ -63,6 +63,9 @@ class RelayChannelSerializer(serializers.Serializer):
     audio_codec = serializers.CharField(required=False)
     audio_channels = serializers.CharField(required=False)
     stream_type = serializers.CharField(required=False)
+    # Phase 4a-1b: present only while the channel runs an HLS pipeline.
+    hls_encoder = serializers.CharField(required=False)
+    hls_generation = serializers.IntegerField(required=False)
     clients = RelayChannelClientSerializer(many=True, required=False)
 
 
@@ -139,6 +142,8 @@ class RelayChannelDetailSerializer(serializers.Serializer):
     actual_fps = serializers.CharField(required=False)
     ffmpeg_bitrate = serializers.CharField(required=False)
     stream_type = serializers.CharField(required=False)
+    hls_encoder = serializers.CharField(required=False)
+    hls_generation = serializers.IntegerField(required=False)
     clients = RelayDetailClientSerializer(many=True, required=False)
 
 

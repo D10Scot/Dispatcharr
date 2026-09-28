@@ -199,3 +199,28 @@ class NotificationDismissalSerializer(serializers.ModelSerializer):
         model = NotificationDismissal
         fields = ['id', 'notification', 'dismissed_at', 'action_taken']
         read_only_fields = ['dismissed_at']
+
+
+# ─────────────────────────────
+# The Mino capability document (Phase 4a-1b, spec D19)
+# ─────────────────────────────
+class RewindWindowCapabilitySerializer(serializers.Serializer):
+    available = serializers.BooleanField()
+    depth_seconds = serializers.IntegerField()
+
+
+class LiveHLSCapabilitySerializer(serializers.Serializer):
+    available = serializers.BooleanField()
+    segment_seconds = serializers.IntegerField()
+    session_leave = serializers.BooleanField()
+    rewind_window = RewindWindowCapabilitySerializer()
+
+
+class MinoCapabilitiesSerializer(serializers.Serializer):
+    """What this server offers the Mino app. `api_version` is the document's
+    own version, not the server's."""
+
+    product = serializers.CharField()
+    api_version = serializers.IntegerField()
+    server_version = serializers.CharField()
+    live_hls = LiveHLSCapabilitySerializer()

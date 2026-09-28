@@ -253,7 +253,16 @@ _FORMAT_ALIASES = {
     "ts": "mpegts",
     "fmp4": "fmp4",
     "mp4": "fmp4",
+    # Phase 4a-1b: the HLS output. Reached only from the request (D2: never a
+    # user or deployment default -- see resolve_output_format).
+    "hls": "hls",
+    "m3u8": "hls",
 }
+
+
+# Stored spellings of the HLS output that a user row or the deployment default
+# must never resolve to.
+_HLS_ONLY_FROM_THE_REQUEST = ("hls", "m3u8")
 
 
 def resolve_output_format(request, user, force=None) -> str:
@@ -277,9 +286,15 @@ def resolve_output_format(request, user, force=None) -> str:
     if user:
         custom = getattr(user, "custom_properties", None) or {}
         user_format = custom.get("output_format")
-        if user_format:
+        # `hls` resolves only from the request (spec D2): a stored value would
+        # turn every byte-stream tune of that user into a playlist. Skipped,
+        # not rejected -- the user API does not validate the value.
+        if user_format and user_format not in _HLS_ONLY_FROM_THE_REQUEST:
             return user_format
-    return CoreSettings.get_default_output_format()
+    default_format = CoreSettings.get_default_output_format()
+    if default_format in _HLS_ONLY_FROM_THE_REQUEST:
+        return "mpegts"
+    return default_format
 
 
 def _acl_key(surface: str) -> str:
