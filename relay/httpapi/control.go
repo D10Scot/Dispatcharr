@@ -141,7 +141,21 @@ func ClientHandler(deps ControlDeps) http.HandlerFunc {
 			})
 			return
 		}
-		signalled := ch.StopClient(clientID)
+		// Phase 4a-1b: an HLS session's client entry is held by the session,
+		// not by a goroutine, so the stop reaches it through the table -- an
+		// admin stop and a stream-limit termination both arrive here. The
+		// table's answer and the registry's are OR'd: the session's own
+		// release drops the entry, after which StopClient finds nothing.
+		signalled := false
+		if deps.Sessions != nil {
+			if departure := deps.Sessions.EndClient(ch, clientID); departure != nil {
+				departure.Run()
+				signalled = true
+			}
+		}
+		if ch.StopClient(clientID) {
+			signalled = true
+		}
 		published := false
 		writeJSON(w, log, stopPayload{
 			Status:         "success",

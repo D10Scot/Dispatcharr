@@ -171,8 +171,20 @@ type Channel struct {
 	// because the stderr reader's buffering switch counts against it too.
 	switches int
 
+	// onRunEnd is the manager's run-ended hook (Phase 4a-1b), nil when the
+	// manager has no session table. Set at publish, before run starts, and
+	// never touched again.
+	onRunEnd func(*Channel)
+
 	cancel context.CancelFunc
 	done   chan struct{}
+}
+
+// fireRunEnd runs the run-ended hook on a goroutine of its own. See run.
+func (c *Channel) fireRunEnd() {
+	if c.onRunEnd != nil {
+		go c.onRunEnd(c)
+	}
 }
 
 // ID is the channel uuid the control plane and every client address it by.
@@ -447,6 +459,13 @@ type attachable interface{ attach(*Channel) }
 func (c *Channel) run(ctx context.Context, first Source) {
 	defer c.releaseSlot()
 	defer close(c.done)
+	// Phase 4a-1b: the run-ended self-stop, declared right after close(done)
+	// so it runs just BEFORE it -- after the ring has closed and the outputs
+	// have stopped, which is what makes a session added by an entry that
+	// raced the channel's stop still get marked STOPPED. It fires on a fresh
+	// goroutine (fireRunEnd): the stop it may lead to waits on c.done, and c.done
+	// cannot close until this deferred call returns.
+	defer c.fireRunEnd()
 	// BEFORE close(c.done), and that ordering is load-bearing: stop() returns
 	// the moment done closes, so an emit after it would race the SIGTERM
 	// drain's own emitter flush and lose the last channel_stop of a

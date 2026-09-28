@@ -9,13 +9,18 @@ import (
 	"time"
 )
 
-// StoreSegments and StoreBytes bound an hls.Store: 12 segments per rendition
-// (spec § State; about 26 MB per channel at D8's top rate, computed), and a
-// byte ceiling well above that which only a runaway would reach. LiveEdge is
-// how many of them a media playlist lists (D7); the two kept beyond it are
-// still fetchable by a player that loaded the previous playlist.
+// StoreSegments and StoreBytes bound an hls.Store: 21 segments per rendition
+// (ruling R44), and a byte ceiling above that which only a runaway would
+// reach. LiveEdge is how many of them a media playlist lists (D7).
+//
+// THE ARITHMETIC IS RFC 8216 § 6.2.2's: a segment removed from the playlist
+// must stay available for its own duration plus the playlist's. At a target
+// duration of 2 s the live edge lists 10 segments, 20 s, so a removed segment
+// must stay fetchable for 2 s + 20 s, which is 11 publications after it
+// leaves the list -- the store keeps 10 + 11 = 21. About 46 MB per channel at
+// D8's top rate with AAC and AC-3, under StoreBytes' 64 MiB.
 const (
-	StoreSegments = 12
+	StoreSegments = 21
 	StoreBytes    = 64 << 20
 	LiveEdge      = 10
 	// TargetDuration is transcode mode's EXT-X-TARGETDURATION, in seconds.

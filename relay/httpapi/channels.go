@@ -12,6 +12,7 @@ import (
 
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
+	"github.com/D10Scot/Dispatcharr/relay/session"
 )
 
 // DefaultClientLimit caps the clients list when ?clients=all is absent.
@@ -28,6 +29,11 @@ type ControlDeps struct {
 	Channels *channel.Manager
 	Log      *slog.Logger
 	Now      func() time.Time
+
+	// Sessions is the HLS session table, reached by the admin client stop
+	// (Phase 4a-1b): a client that is an HLS session's is ended through it.
+	// Nil means no HLS.
+	Sessions *session.Table
 }
 
 // clientPayload is one row of the `clients` list, field for field and IN
@@ -114,6 +120,13 @@ type channelPayload struct {
 	AudioCodec     string   `json:"audio_codec,omitempty"`
 	AudioChannels  string   `json:"audio_channels,omitempty"`
 	StreamType     string   `json:"stream_type,omitempty"`
+
+	// The HLS output's encoder engine and generation (Phase 4a-1b), present
+	// only while the channel runs an HLS pipeline, and the engine only once
+	// the first generation has chosen one. A pointer for the generation
+	// because 0 is a real value.
+	HLSEncoder    string `json:"hls_encoder,omitempty"`
+	HLSGeneration *int   `json:"hls_generation,omitempty"`
 
 	// Clients is ALWAYS PRESENT, never omitted: channel_status.py:587 assigns
 	// it on every path, so an empty channel renders "clients": [] and not an
@@ -258,6 +271,7 @@ func describeChannel(c *channel.Channel, limit int, at time.Time) channelPayload
 	if stats.StreamType != nil {
 		out.StreamType = *stats.StreamType
 	}
+	out.HLSEncoder, out.HLSGeneration = hlsFields(c)
 
 	for i, cl := range clients {
 		if limit >= 0 && i >= limit {

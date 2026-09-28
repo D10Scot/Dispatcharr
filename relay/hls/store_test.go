@@ -109,23 +109,24 @@ func TestTheDiscontinuitySequenceCountsWhatLeftTheList(t *testing.T) {
 	if !strings.Contains(string(got), "#EXT-X-MEDIA-SEQUENCE:3\n#EXT-X-DISCONTINUITY-SEQUENCE:1\n") {
 		t.Fatalf("a discontinuity that left the list is not counted:\n%s", got)
 	}
-	publishN(s, 2, 12, t0) // everything but generation 2 leaves the store
+	publishN(s, 2, 12, t0) // everything but generation 2 leaves the list
 	got, _, _ = s.MediaPlaylist(RenditionVideo)
 	if !strings.Contains(string(got), "#EXT-X-DISCONTINUITY-SEQUENCE:2\n") {
 		t.Fatalf("a discontinuity evicted from the store is not counted:\n%s", got)
 	}
 }
 
-// The store keeps 12 segments (two past the live edge) and the init
-// segments of the generations they belong to; anything else is a 404.
+// The store keeps StoreSegments segments (R44: RFC 8216 § 6.2.2's availability
+// past the live edge) and the init segments of the generations they belong to;
+// anything else is a 404.
 func TestTheStoreIsBoundedAndServesBySequence(t *testing.T) {
 	s := NewStore(nil)
 	s.SetInit(RenditionVideo, 0, []byte("init0"))
 	publishN(s, 0, 1, t0)
 	s.SetInit(RenditionVideo, 1, []byte("init1"))
-	publishN(s, 1, 13, t0)
+	publishN(s, 1, StoreSegments+1, t0)
 	if _, ok := s.Segment(RenditionVideo, 1); ok {
-		t.Errorf("segment 1 is still stored past the 12-segment bound")
+		t.Errorf("segment 1 is still stored past the StoreSegments bound")
 	}
 	if data, ok := s.Segment(RenditionVideo, 2); !ok || string(data) != "v1" {
 		t.Errorf("segment 2 = %q, %t", data, ok)
@@ -209,10 +210,11 @@ func TestTheMultivariant(t *testing.T) {
 
 // PR #529 review (thread on store.go:125): every segment a media playlist
 // lists is in the store -- the one just served, and the one served a reload
-// earlier -- because the store keeps StoreSegments = LiveEdge + 2. What the
-// headroom does NOT reach is RFC 8216 § 6.2.2's availability after removal
-// (a segment's duration plus the playlist's), which the thread's reply puts
-// to a ruling: StoreSegments is the spec's number (§ State, D14).
+// earlier -- because the store keeps StoreSegments = LiveEdge + 11 (R44), which
+// is also RFC 8216 § 6.2.2's availability after removal (a segment's duration
+// plus the playlist's):
+// TestARemovedSegmentStaysAvailableForItsDurationPlusThePlaylists pins that
+// half.
 func TestEverySegmentAListedPlaylistNamesIsStored(t *testing.T) {
 	s := NewStore(nil)
 	s.SetInit(RenditionVideo, 0, []byte("init0"))
@@ -235,5 +237,32 @@ func TestEverySegmentAListedPlaylistNamesIsStored(t *testing.T) {
 			}
 		}
 		previous = current
+	}
+}
+
+// Row 43, R44: a segment that leaves the 10-segment list is still fetchable for
+// its own duration plus the playlist's (RFC 8216 § 6.2.2): 2 s + 20 s, which
+// is 11 publications after it leaves.
+func TestARemovedSegmentStaysAvailableForItsDurationPlusThePlaylists(t *testing.T) {
+	s := NewStore(nil)
+	s.SetInit(RenditionVideo, 0, []byte("init0"))
+	publishN(s, 0, 1, t0)        // segment 0: the one under test
+	publishN(s, 0, LiveEdge, t0) // segments 1..10: segment 10's publication removes segment 0 from the list
+	listed, _, _ := s.MediaPlaylist(RenditionVideo)
+	if strings.Contains(string(listed), "video/0.m4s") {
+		t.Fatalf("segment 0 is still listed once segment %d is published:\n%s", LiveEdge, listed)
+	}
+	// Available after each of the 10 publications that follow (s+11 .. s+20)...
+	for i := 1; i <= 10; i++ {
+		publishN(s, 0, 1, t0)
+		if _, ok := s.Segment(RenditionVideo, 0); !ok {
+			t.Fatalf("segment 0 was evicted after %d publications past its removal from the list: it must stay available for 22 s at 2 s a segment", i)
+		}
+	}
+	// ...and evicted by the 11th (s+21). Both halves, so a store that keeps
+	// more than 21 fails too.
+	publishN(s, 0, 1, t0)
+	if _, ok := s.Segment(RenditionVideo, 0); ok {
+		t.Fatalf("segment 0 is still stored 11 publications past its removal from the list: the store keeps more than StoreSegments = %d", StoreSegments)
 	}
 }

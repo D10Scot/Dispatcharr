@@ -19,10 +19,10 @@
 // detection encode succeeds, libx264 otherwise, and is written off for the
 // process only when a failure is shown to be the device's (detect.go, D11).
 //
-// THE PACKAGE IS INERT IN PHASE 4a-1a. Nothing in the relay imports it, so it
-// is outside the shipped binary and outside the Go coverage gate's
-// denominator (ruling R27); 4a-1b attaches a Pipeline through
-// Channel.AttachOutput and serves its Store under /hls/.
+// THE PACKAGE WAS INERT IN PHASE 4a-1a and is linked into the relay since
+// 4a-1b, which attaches a Pipeline through Channel.AttachHLS and serves its
+// Store under /hls/ (relay/httpapi's HLS handlers), so it is inside the Go
+// coverage gate's denominator (rulings R27, R34).
 //
 // Everything is in process memory (ADR 0006): no Redis, no Postgres, and the
 // standard library only (scripts/check_go_stdlib_only.sh).

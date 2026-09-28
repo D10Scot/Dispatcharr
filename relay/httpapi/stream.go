@@ -17,6 +17,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/output"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
+	"github.com/D10Scot/Dispatcharr/relay/session"
 )
 
 // StreamDeps is everything the live TS handler needs.
@@ -54,6 +55,18 @@ type StreamDeps struct {
 	// of what this handler serves, not of how a channel is owned -- and 2c-7's
 	// Output Profile command arrives the same way.
 	Remux output.Remux
+
+	// Sessions is the HLS session table (Phase 4a-1b), process-wide: main.go
+	// builds one and runs its sweeper. Nil means this relay serves no HLS,
+	// and an hls tune is refused 501.
+	Sessions *session.Table
+
+	// HLS is the HLS output's process-wide state and its test seams.
+	HLS HLSDeps
+
+	// hooks are the HLS handlers' test seams (hls.go), nil in production and
+	// set only by this package's own tests.
+	hooks *hlsHooks
 }
 
 // The proxy_settings keys this PR reads. Named constants rather than literals
@@ -227,9 +240,18 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		// counterpart, and views.py:461 reads it off the decision to keep a
 		// Redirect channel from 302ing that header to a provider.
 		internal := control.IsInternalPrincipal(deps.Secret, r.Header.Get(control.HeaderInternal))
+		// D13 (Phase 4a-1b): an HLS tune is served through the relay on a
+		// Redirect-profile channel, exactly as an internal principal's is --
+		// a 302 to the provider would hand the player a URL it cannot play
+		// as HLS and would bypass the session table. The two reasons share
+		// one arm; the reason is only what the log says.
+		viaProxy, proxyReason := internal, "an internal principal"
+		if client.OutputFormat == OutputFormatHLS {
+			viaProxy, proxyReason = true, "an HLS output"
+		}
 
 		ch, release, err := deps.Channels.Attach(id, client, func() (channel.Started, error) {
-			return startTune(r.Context(), tuneDeps{control: deps.Control, probe: deps.Probe, log: log}, id, internal)
+			return startTune(r.Context(), tuneDeps{control: deps.Control, probe: deps.Probe, log: log, proxyReason: proxyReason}, id, viaProxy)
 		})
 		if err != nil {
 			var redirect *redirectAnswer
@@ -244,6 +266,14 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 				return
 			}
 			writeTuneFailure(w, log, id, err)
+			return
+		}
+		// Phase 4a-1b: the HLS branch is taken BEFORE `defer release()`,
+		// because an HLS viewer's registry entry outlives this request: the
+		// entry hands release to its session, which runs it when the session
+		// ends, and calls it itself on every failure path.
+		if client.OutputFormat == OutputFormatHLS {
+			serveHLSEntry(w, r, deps, ch, client, release, log)
 			return
 		}
 		defer release()
@@ -316,8 +346,10 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 // wrong in a way nothing on the wire says, and serving it under the label
 // "mpegts" would be a lie in the payload /proxy/stats/ renders. 2c-6 brought
 // fMP4 and 2c-7 the Output Profiles, so this now only ever names a format
-// NEITHER implementation has -- `hls`, whose Python manager does not exist
-// either (_OUTPUT_FORMAT_MANAGERS registers only fmp4, server.py:1352-1353).
+// NEITHER implementation has: anything but mpegts, fmp4 and, since Phase
+// 4a-1b, hls (whose Python manager never existed -- _OUTPUT_FORMAT_MANAGERS
+// registered only fmp4, server.py:1352-1353 -- and which this relay serves
+// from relay/hls).
 // ProfileID is kept on the struct and is never set: it is what the 501's log
 // line named for two stages and removing it would silently narrow the
 // message.
@@ -330,7 +362,7 @@ func (e *ErrUnsupportedOutput) Error() string {
 	if e.ProfileID != "" {
 		return fmt.Sprintf("the Go relay serves no Output Profile yet, and this tune asked for %q", e.ProfileID)
 	}
-	return fmt.Sprintf("the Go relay serves only %q and %q, not %q", OutputFormatMPEGTS, output.FormatFMP4, e.Format)
+	return fmt.Sprintf("the Go relay serves only %q, %q and %q, not %q", OutputFormatMPEGTS, output.FormatFMP4, OutputFormatHLS, e.Format)
 }
 
 // identify resolves which channel this request is for and who is asking.
@@ -396,7 +428,7 @@ func identify(r *http.Request, secret string, now func() time.Time, decision *co
 	// by fix plan J-1.
 	outputFormat := OutputFormatMPEGTS
 	if format := header("X-Relay-Output-Format"); format != "" {
-		if format != OutputFormatMPEGTS && format != output.FormatFMP4 {
+		if format != OutputFormatMPEGTS && format != output.FormatFMP4 && format != OutputFormatHLS {
 			return id, nil, &ErrUnsupportedOutput{Format: format}
 		}
 		outputFormat = format
@@ -650,9 +682,17 @@ type tuneDeps struct {
 	control *control.Client
 	probe   *http.Client
 	log     *slog.Logger
+	// proxyReason is what the log says when a Redirect channel is served via
+	// Proxy: "an internal principal" (the DVR) or "an HLS output". Empty reads
+	// as the first, which is what every caller before Phase 4a-1b was.
+	proxyReason string
 }
 
-func startTune(parent context.Context, deps tuneDeps, id string, internal bool) (channel.Started, error) {
+// startTune asks the control plane for a source and builds the channel's
+// Started. viaProxy serves a Redirect-profile channel through the relay as if
+// it were Proxy: an internal principal's tune (views.py:462-467) and, since
+// Phase 4a-1b, an HLS tune (spec D13).
+func startTune(parent context.Context, deps tuneDeps, id string, viaProxy bool) (channel.Started, error) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), tuneBudget)
 	defer cancel()
 	client := deps.control
@@ -699,7 +739,7 @@ func startTune(parent context.Context, deps tuneDeps, id string, internal bool) 
 	switch kind {
 	case control.KindProxy, control.KindTranscode:
 	case control.KindRedirect:
-		if !internal {
+		if !viaProxy {
 			// views.py:468-547: probe, fall through the cached alternates,
 			// release the slot, and hand the client the provider URL.
 			return channel.Started{}, redirectTune(ctx, deps, id, answer, defaultUserAgent)
@@ -709,7 +749,12 @@ func startTune(parent context.Context, deps tuneDeps, id string, internal bool) 
 		// its -headers line -- X-Dispatcharr-Internal included -- to
 		// whatever a 302 names. `transcode` is forced False there; here the
 		// kind is read as Proxy from this point on, force_ffmpeg included.
-		deps.log.Info("internal principal on a Redirect-profile channel: serving via Proxy", "channel", id)
+		// An HLS tune takes the same arm (spec D13, Phase 4a-1b).
+		reason := deps.proxyReason
+		if reason == "" {
+			reason = "an internal principal"
+		}
+		deps.log.Info("a Redirect-profile channel is served via Proxy", "channel", id, "reason", reason)
 		kind = control.KindProxy
 	default:
 		return channel.Started{}, &ErrUnservedKind{Kind: kind}

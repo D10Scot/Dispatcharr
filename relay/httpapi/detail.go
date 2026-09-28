@@ -161,6 +161,8 @@ type detailPayload struct {
 	ActualFPS      string                `json:"actual_fps,omitempty"`
 	FFmpegBitrate  string                `json:"ffmpeg_bitrate,omitempty"`
 	StreamType     string                `json:"stream_type,omitempty"`
+	HLSEncoder     string                `json:"hls_encoder,omitempty"`
+	HLSGeneration  *int                  `json:"hls_generation,omitempty"`
 	Clients        []detailClientPayload `json:"clients"`
 }
 
@@ -346,6 +348,7 @@ func describeChannelDetail(c *channel.Channel, at time.Time) detailPayload {
 	if stats.StreamType != nil {
 		out.StreamType = *stats.StreamType
 	}
+	out.HLSEncoder, out.HLSGeneration = hlsFields(c)
 	return out
 }
 

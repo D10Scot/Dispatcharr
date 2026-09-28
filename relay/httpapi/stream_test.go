@@ -1,18 +1,24 @@
 package httpapi
 
 import (
+	"bytes"
+	"context"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
+	"github.com/D10Scot/Dispatcharr/relay/hls"
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
 	"github.com/D10Scot/Dispatcharr/relay/output"
+	"github.com/D10Scot/Dispatcharr/relay/session"
 )
 
 const testSecret = "phase2c1-test-secret"
@@ -55,6 +61,71 @@ type rig struct {
 	// Lifecycle is the drain flag the tune path and /readyz share, so a test
 	// can raise it the way the SIGTERM handler does (2c-8).
 	Lifecycle *Lifecycle
+
+	// Sessions is the process-wide HLS session table (Phase 4a-1b), built with
+	// a clock of its own: SessionClock is fake and only the test advances it,
+	// separate from the channels' and rings' real one. A test that departs or
+	// expires a session advances SessionClock past the threshold and then
+	// calls tick, because ticks alone cannot age a session.
+	Sessions     *session.Table
+	SessionClock *sessionClock
+
+	// Log is every logger the HLS paths reach, captured per test: channels log
+	// from their own goroutines, so it is mutex-guarded.
+	Log *logCapture
+
+	ticks chan time.Time
+}
+
+// logCapture is a log sink a test can read back safely under -race.
+type logCapture struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (l *logCapture) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.Write(p)
+}
+
+func (l *logCapture) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.buf.String()
+}
+
+func (l *logCapture) logger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(l, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// sessionClock is the session table's clock.
+type sessionClock struct {
+	mu sync.Mutex
+	t  time.Time
+}
+
+func (c *sessionClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.t
+}
+
+func (c *sessionClock) Advance(d time.Duration) {
+	c.mu.Lock()
+	c.t = c.t.Add(d)
+	c.mu.Unlock()
+}
+
+// tick delivers one sweeper tick, failing with the mechanism's name when no
+// sweeper takes it, rather than hanging to go test's timeout.
+func (r *rig) tick(t *testing.T) {
+	t.Helper()
+	select {
+	case r.ticks <- r.SessionClock.Now():
+	case <-time.After(2 * time.Second):
+		t.Fatal("no sweeper consumed the tick: the sweep is not process-wide")
+	}
 }
 
 // rigOption adjusts the StreamDeps the rig is built with, for the one thing a
@@ -100,10 +171,20 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 	// sees them in one request log.
 	client := &control.Client{Secret: testSecret, BaseURL: controlPlane.URL(), HTTP: httpClient}
 	emitter := control.NewEmitter(client, nil)
+	logs := &logCapture{}
+	logger := logs.logger()
+	clock := &sessionClock{t: time.Now()}
+	ticks := make(chan time.Time)
+	sessions := session.NewTable(session.Config{Now: clock.Now, Tick: ticks, Log: logger})
+	sweepCtx, stopSweeper := context.WithCancel(context.Background())
+	go sessions.Run(sweepCtx)
+	t.Cleanup(stopSweeper)
 	manager := channel.NewManager(channel.ManagerConfig{
 		BudgetBytes: rigBudgetBytes,
 		Events:      EventSink(emitter),
 		Release:     ReleaseVia(client, nil),
+		Log:         logger,
+		Sessions:    sessions,
 	})
 	// Order matters: channels stop (and release) before the emitter drains,
 	// and the emitter drains before the fake closes.
@@ -116,6 +197,14 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 		Channels:  manager,
 		Control:   client,
 		Lifecycle: lifecycle,
+		Log:       logger,
+		Sessions:  sessions,
+		// Software, spawning nothing: the device does not exist. The encoder
+		// and the probe are the stand-in a test installs (withHLS).
+		HLS: HLSDeps{
+			Detector: &hls.Detector{Device: "/nonexistent", Log: logger},
+			Silence:  &hls.SilenceCache{Log: logger},
+		},
 	}
 	for _, opt := range opts {
 		opt(&stream)
@@ -126,7 +215,7 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 		// THE SAME manager, not a second one. Two would give the list endpoint
 		// an empty map while the tune path filled another, and every assertion
 		// about what the list shows would be about the wrong object.
-		Control: ControlDeps{Secret: testSecret, Channels: manager},
+		Control: ControlDeps{Secret: testSecret, Channels: manager, Sessions: sessions, Log: logger},
 		Health:  HealthDeps{Channels: manager, Lifecycle: lifecycle},
 	})
 	relay := httptest.NewServer(server.Handler())
@@ -135,6 +224,7 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 	return &rig{
 		Relay: relay, Upstream: upstream, Control: controlPlane,
 		Manager: manager, Emitter: emitter, Lifecycle: lifecycle,
+		Sessions: sessions, SessionClock: clock, Log: logs, ticks: ticks,
 	}
 }
 

@@ -19,9 +19,9 @@ const maxBoundaries = 64
 // neither should contend with mu, which guards the client registry and the
 // switch bookkeeping.
 //
-// NOTHING IN THIS MODULE READS IT YET. Phase 4a-1a lands the record and
-// relay/hls, which asks NextBoundary, unlinked; 4a-1b wires the two
-// together. Recording costs one mutex and one append per connection attempt.
+// relay/hls reads it through NextBoundary (Phase 4a-1b links it), and a new
+// boundary is also what clears the channel's hlsFailedUntilBoundary mark.
+// Recording costs one mutex and one append per connection attempt.
 type boundaryLog struct {
 	boundaryMu sync.Mutex
 	// boundaries is strictly increasing: an attempt that published nothing
@@ -36,16 +36,28 @@ type boundaryLog struct {
 // the first chunk at it can be published, which is what lets a reader that
 // has seen that chunk trust NextBoundary to report it.
 func (c *Channel) markBoundary() {
-	index := c.ring.MarkBoundary()
+	if c.recordBoundary(c.ring.MarkBoundary()) {
+		// The next REAL source boundary -- one that was recorded, so a
+		// connection that has published nothing is not one -- only clears the
+		// HLS failed mark. It starts nothing: a TS-only channel triggers no
+		// encode (R19), and the next HLS entry starts a fresh pipeline.
+		// After boundaryMu is released, so outMu never nests under it.
+		c.clearHLSFailed()
+	}
+}
+
+// recordBoundary appends index to the log and reports whether it was new.
+func (c *Channel) recordBoundary(index uint64) bool {
 	c.boundaryMu.Lock()
 	defer c.boundaryMu.Unlock()
 	if n := len(c.boundaries); n > 0 && c.boundaries[n-1] >= index {
-		return
+		return false
 	}
 	c.boundaries = append(c.boundaries, index)
 	if len(c.boundaries) > maxBoundaries {
 		c.boundaries = append(c.boundaries[:0], c.boundaries[len(c.boundaries)-maxBoundaries:]...)
 	}
+	return true
 }
 
 // NextBoundary is the first source boundary strictly after the ring index

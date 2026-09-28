@@ -103,8 +103,8 @@ type Config struct {
 // and the Store its segmenter publishes into. It is started by Start and runs
 // until Stop, the channel's ring closing, or ErrFailed.
 //
-// IT IS INERT IN 4a-1a. Nothing in the relay constructs one: 4a-1b's HLS
-// entry path attaches it through Channel.AttachOutput and serves its Store.
+// 4a-1b's HLS entry path attaches it through Channel.AttachHLS and serves its
+// Store under /hls/.
 type Pipeline struct {
 	cfg    Config
 	log    *slog.Logger
