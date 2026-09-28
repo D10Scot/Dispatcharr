@@ -49,7 +49,11 @@ type Process struct {
 	// stdin is non-nil only for a process started by StartPiped: the
 	// output-side remux, whose fd 0 is the relay's own ring rather than
 	// /dev/null (output/fmp4/manager.py:36's `-i pipe:0`).
-	stdin     io.WriteCloser
+	stdin io.WriteCloser
+	// extra is the read end of each output pipe beyond fd 2, indexed from
+	// fd 3; a nil entry is a descriptor the child was not given. Non-empty
+	// only for a process started by StartPipedExtra.
+	extra     []*os.File
 	closeOnce sync.Once
 	cancel    context.CancelFunc
 	// ended is closed by Wait once the process has been reaped.
@@ -92,7 +96,7 @@ func (e *ErrExited) Error() string {
 // input-side transcode reads its upstream over the network and never from the
 // relay; a writable stdin here would be a pipe nobody fills.
 func Start(ctx context.Context, command string, argv []string) (*Process, error) {
-	return start(ctx, command, argv, false)
+	return start(ctx, command, argv, false, nil)
 }
 
 // StartPiped is Start with a WRITABLE fd 0, for the output-side remux, whose
@@ -107,10 +111,31 @@ func Start(ctx context.Context, command string, argv []string) (*Process, error)
 // second implementation of the truth" warns about. The ONLY difference is
 // fd 0, and it is one parameter.
 func StartPiped(ctx context.Context, command string, argv []string) (*Process, error) {
-	return start(ctx, command, argv, true)
+	return start(ctx, command, argv, true, nil)
 }
 
-func start(ctx context.Context, command string, argv []string, pipeStdin bool) (*Process, error) {
+// StartPipedExtra is StartPiped with output pipes beyond fd 2: entry i of
+// extra says whether the child gets a pipe at fd 3+i, whose read end Extra(i)
+// returns. It is the HLS encoder's spawn (Phase 4 spec, D6): one ffmpeg reads
+// the channel's ring on fd 0 and writes video on fd 1 and one fragmented-MP4
+// audio rendition per descriptor from fd 3 (`pipe:3`, `pipe:4`, `pipe:5`).
+// A false entry is a descriptor the child does NOT have -- a rendition the
+// relay fills with its own silence this generation -- so the numbering of
+// the others never moves.
+//
+// THE SAME SPAWN, NOT A THIRD ONE, for StartPiped's own reason: the process
+// group, Pdeathsig, the SIGKILL cancel, KillWait and the exit mapping are
+// the contract this package holds once. The pipes are the parent's own
+// os.Pipe pairs, as stderr's is (#304): cmd.Wait never closes an
+// *os.File it did not create, so a reader draining one to EOF cannot have
+// it closed underneath it by a Wait on another goroutine. The parent's write
+// ends close as soon as the child holds its copies, so each reader's EOF is
+// exactly the child's last byte on that descriptor.
+func StartPipedExtra(ctx context.Context, command string, argv []string, extra []bool) (*Process, error) {
+	return start(ctx, command, argv, true, extra)
+}
+
+func start(ctx context.Context, command string, argv []string, pipeStdin bool, extra []bool) (*Process, error) {
 	if strings.Contains(command, "://") {
 		return nil, ErrCommandIsAURL
 	}
@@ -181,9 +206,20 @@ func start(ctx context.Context, command string, argv []string, pipeStdin bool) (
 		return nil, fmt.Errorf("ffmpeg: opening the stderr pipe: %w", err) // credential-logging: ok - an os.Pipe failure, no URL anywhere in it
 	}
 	cmd.Stderr = stderrWrite
+	extraRead, extraWrite, err := extraPipes(extra)
+	if err != nil {
+		closeFiles([]*os.File{stderrRead, stderrWrite})
+		cancel()
+		return nil, err
+	}
+	if len(extraWrite) > 0 {
+		cmd.ExtraFiles = extraWrite
+	}
 	if err := cmd.Start(); err != nil {
 		_ = stderrRead.Close()
 		_ = stderrWrite.Close()
+		closeFiles(extraRead)
+		closeFiles(extraWrite)
 		cancel()
 		// exec.Error carries the command NAME (refused above if it were a
 		// URL); a *fs.PathError carries the executable's path. Neither
@@ -193,7 +229,54 @@ func start(ctx context.Context, command string, argv []string, pipeStdin bool) (
 	// The child holds its own copy now, so the parent's must go or the reader
 	// never sees EOF (#304).
 	_ = stderrWrite.Close()
-	return &Process{cmd: cmd, stdout: stdout, stderr: stderrRead, stdin: stdin, cancel: cancel, ended: make(chan struct{})}, nil
+	closeFiles(extraWrite)
+	return &Process{cmd: cmd, stdout: stdout, stderr: stderrRead, stdin: stdin, extra: extraRead, cancel: cancel, ended: make(chan struct{})}, nil
+}
+
+// newPipe is os.Pipe, a variable so a test can make the extra pipes' own
+// failure path run: an os.Pipe that fails is descriptor exhaustion, which no
+// test can arrange for one call without arranging it for the whole process.
+var newPipe = os.Pipe
+
+// extraPipes makes one pipe per true entry of want, returning the read and
+// write ends indexed as want is, with nil for a false entry. os/exec hands a
+// nil ExtraFiles entry to the child as a closed descriptor.
+func extraPipes(want []bool) (read, write []*os.File, err error) {
+	if len(want) == 0 {
+		return nil, nil, nil
+	}
+	read = make([]*os.File, len(want))
+	write = make([]*os.File, len(want))
+	for i, wanted := range want {
+		if !wanted {
+			continue
+		}
+		r, w, pipeErr := newPipe()
+		if pipeErr != nil {
+			closeFiles(append(read, write...))
+			return nil, nil, fmt.Errorf("ffmpeg: opening the pipe for fd %d: %w", 3+i, pipeErr) // credential-logging: ok - an os.Pipe failure, no URL anywhere in it
+		}
+		read[i], write[i] = r, w
+	}
+	return read, write, nil
+}
+
+// closeFiles closes every non-nil file in files.
+func closeFiles(files []*os.File) {
+	for _, f := range files {
+		if f != nil {
+			_ = f.Close()
+		}
+	}
+}
+
+// Extra is the read end of the output pipe at fd 3+i, and nil when the
+// process was not given one there (StartPipedExtra).
+func (p *Process) Extra(i int) io.Reader {
+	if i < 0 || i >= len(p.extra) || p.extra[i] == nil {
+		return nil
+	}
+	return p.extra[i]
 }
 
 // Stdin is the write end of a StartPiped process's fd 0, and nil for one
@@ -312,6 +395,11 @@ func (p *Process) Wait() error {
 	default:
 	}
 	_ = p.stdout.Close()
+	// The extra output pipes close for stdout's reason: a child still
+	// writing to one after its reader has stopped gets EPIPE rather than
+	// blocking on a full pipe nobody drains. Their readers are the caller's,
+	// and like stdout's they must have finished before Wait is called.
+	closeFiles(p.extra)
 	err := p.cmd.Wait()
 	// exec.CommandContext reports the context's own error once it has
 	// killed the process, which would make "we cancelled it" and "it died

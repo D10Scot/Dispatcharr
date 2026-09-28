@@ -190,6 +190,36 @@
 #      JUST took and cannot know it is the Nth of a campaign.
 #   5. Re-run --gate and confirm it exits 0 against the new floor before
 #      committing.
+#
+# A PR MAY RAISE `missing` BY ITS OWN UNCOVERED CODE, AND BY NOTHING ELSE
+# (owner ruling R21, 2026-09-27; Phase 4 spec D20; CLAUDE.md § Testing). This
+# amends the ratchet: before it, no PR moved `missing` except a
+# re-measurement. Now a Go PR may raise it, but only by the uncovered
+# statements of its own new or changed code, and only when all of these hold:
+#   - its body lists those statements per file, block by block, read off a CI
+#     coverage artifact with the awk command above;
+#   - its statement coverage on its own additions is >= 85%;
+#   - it ran the >=12-round CI census of steps 1-2, and the census maximum is
+#     the old `missing` plus exactly the listed count;
+#   - the reviewer checked the listing against the artifact.
+# A draw above the floor that the listing does not explain is still a finding,
+# and still gets a re-measurement PR of its own, never a bump.
+#
+# A PACKAGE THAT IS NOT YET LINKED (ruling R27) is outside this file's
+# denominator, so the PR that adds it cannot move `missing` for it. That PR
+# shows the package's own per-package coverage instead: >= 85%, CI-measured
+# with this gate's flags (-count=1 -race -covermode=atomic; the package's
+# blocks are in the same CI artifact, reported "out of scope"), with a
+# per-file uncovered listing. The PR that first LINKS it re-baselines
+# `packages=` and `package_count` (steps 3-4) and may raise `missing` by
+# exactly two listed amounts: the package's uncovered statements as its
+# introducing PR listed them, re-measured as the MAXIMUM over the linking
+# PR's own >=12-round CI census (ruling R34: a package's uncovered count moves
+# by a statement or two between runs, so one run's figure would look like
+# drift); plus that PR's own new or changed uncovered statements under the
+# rule above. Phase 4a-1a is the first PR
+# under this rule: it adds relay/hls unlinked (4a-1b links it) and lists its
+# own additions to the linked packages.
 shape=go-race-per-package/v1
 statements=3696
 missing=589
