@@ -42,6 +42,7 @@ from django.test.utils import CaptureQueriesContext
 from apps.proxy import relay_client
 from apps.proxy.config import BaseConfig, TSConfig
 from apps.proxy.tests.test_next_source_api import RelayApiTestCase
+from core.models import STREAM_SETTINGS_KEY, CoreSettings, UserAgent
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[3]
 
@@ -164,6 +165,26 @@ def _cold():
 class TunePathQueryLedgerTests(RelayApiTestCase):
     """RelayApiTestCase supplies the channel, two streams, the fake Redis
     and the internal-header signing the Go relay's own client uses."""
+
+    def setUp(self):
+        super().setUp()
+        # The ledger pins a tune with a default User-Agent configured, the
+        # state a migrated database seeds (stream_settings.default_user_agent
+        # -> the TiviMate row). A TransactionTestCase elsewhere flushes that
+        # seed, and under the commit gate's shared --keepdb database the flush
+        # outlives its label (#536): the default then resolves to no id and
+        # the core_useragent SELECT the ledger pins never runs. Establish the
+        # state here instead of inheriting it.
+        default_ua = UserAgent.objects.create(
+            name="ledger-default-ua", user_agent="LedgerDefaultAgent/1.0"
+        )
+        CoreSettings.objects.update_or_create(
+            key=STREAM_SETTINGS_KEY,
+            defaults={
+                "name": "Stream Settings",
+                "value": {"default_user_agent": default_ua.id},
+            },
+        )
 
     def _observe(self, call):
         _cold()
