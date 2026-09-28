@@ -590,7 +590,10 @@ therefore does not write QSV off.
 
 When every attempt fails, the relay sets a mark **on the channel**, `hlsFailedUntilBoundary`,
 never on a pipeline. It logs the failure at ERROR with the last stderr lines through `redact.Line`.
-No new event type is added, because the Connect vocabulary is a fixed dict. Then:
+No new event type is added, because the Connect vocabulary is a fixed dict. **A probe that finds
+no video (`hls.ErrNoVideo`) sets the same mark** (ruling R50), and the mark records its reason, so
+the 502 body says which (`no video stream in the source` or `HLS output failed`) and an audio-only
+channel is not re-probed for every entry; the next source boundary clears it either way. Then:
 
 - **Existing sessions become STOPPED:** one 410 on their next request, then removal (§ Presence).
   The self-stop goroutine drops them (§ Presence › Who ends sessions).
@@ -783,14 +786,17 @@ table says is STOPPED never holds a client entry.
   synchronous `Manager.release` on the pipeline's goroutine) need not self-wait. That is why the
   break-check's oracle is the run-ended case (§ 4a-1b).
 - **Explicit leaves and idle departures call the session's Attach release func**, exactly as a TS
-  client's handler does. It runs on the request goroutine (for a leave) or the sweeper goroutine
-  (for idle), never on the channel's.
+  client's handler does. It runs on the request goroutine (for a leave) or, for an idle departure,
+  on a goroutine of its own that the sweeper starts (ruling R51), never on the channel's: a lone
+  viewer's release can stop its channel and wait out `StopWait`, and on the sweeper's own
+  goroutine that would delay every other departure behind it.
 
 ### The sweeper
 
 - **One process-wide sweeper goroutine**, started in `main.go` with the session table, ticks every
   1 s. It:
-  - departs ACTIVE sessions that have gone idle;
+  - departs ACTIVE sessions that have gone idle, running each departure's event and releases on a
+    goroutine of its own (R51);
   - removes DEPARTED sessions past 300 s;
   - removes STOPPED sessions left unrequested for 300 s.
 - Lookups apply the same expiry lazily, so a request never sees a state the sweeper has not yet
@@ -803,7 +809,11 @@ table says is STOPPED never holds a client entry.
 - **Resume** applies only while the channel is still running: another viewer is attached, or 4a-3's
   linger holds it. In 4a-1, a lone viewer's departure stops the pipeline, and with
   `channel_shutdown_delay` at its default of 0 (`core/models.py:726`) it stops the channel too. The
-  session then becomes STOPPED, a resume gets 410, and the app re-tunes.
+  session then becomes STOPPED, a resume gets 410, and the app re-tunes. **A resume also needs its
+  session's own HLS pipeline to be registered and running** (ruling R49): when the lone HLS viewer
+  departs, its pipeline stops at once, and a TS client can keep the channel running without it. A
+  resume then answers 410 rather than re-attaching a fresh pipeline, whose media sequence would
+  restart at 0 under the same playlist URL.
 - **A resumed session is not re-checked against the stream limit.** That is bounded by the 300 s
   window, and recorded rather than engineered away.
 - **What a limit-1 user gets on zap:**
@@ -1857,6 +1867,17 @@ Filled in as PRs merge.
     only that very channel (§ Resume never starts a channel).
   - **Housekeeping:** § 4a-1b names what it also carries (R44, Q6, R29, F1); the Done log records
     #529.
+- **2026-09-28, amended by the 4a-1b plan review, round 1** (reviewed at `22de7696`; rulings
+  R49-R53).
+  - **R49.** A resume needs its session's own HLS pipeline registered and running, else 410
+    (§ The rest).
+  - **R50.** `hls.ErrNoVideo` sets the channel's mark too, and the mark records its reason
+    (§ Encoder argv › Failure).
+  - **R51.** Each idle departure runs on a goroutine of its own that the sweeper starts
+    (§ Who ends sessions; § The sweeper).
+  - **R52 and R53** bind the 4a-1b implementation, not this text: the Go floor becomes
+    `589 + H + O`, every census round at or under it, and the floor header's R21 sentence reads
+    "does not exceed"; the orchestrator files the issue if R29's measurement is below real time.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
