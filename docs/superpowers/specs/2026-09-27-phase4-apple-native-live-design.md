@@ -680,7 +680,7 @@ Transcode mode always has TD = 2. *Automatic* mode may declare up to 6 (4a-1d). 
 ### Session states
 
 ```
- entry request arrives ──► ARRIVED (client registered via Attach; client_connect)
+ entry request arrives ──► ARRIVED (client registered via Attach; client_connect as its multivariant is written)
       │  the entry request stays in flight until the multivariant is written
       ▼
    ACTIVE ── DELETE /hls/<token> ──────────────► removed (client_disconnect; release())
@@ -1392,8 +1392,8 @@ PR description draft:
   - Drop the sessions without calling `Manager.StopIfIdle`. Self-stop cases (i) and (ii) redden:
     the channel stays in the map, and in (ii) it keeps its slot with zero clients.
   - Resume through the ordinary starting `Attach` instead of `AttachExisting`. The resume test
-    reddens: the stub records a second next-source call, and the GET answers 200 on a freshly
-    started channel.
+    reddens: the stub records a second next-source call. (Under R49 the GET itself still ends
+    410, at the re-attach to its own pipeline, so the second call is the oracle.)
   - Run the idle sweep per pipeline. The sweeper test reddens: the departed entry is never
     removed.
 - **Gates.** The Python Gate 2 isolated run (`authorize.py`, `relay_serializers.py`). The Go gate
@@ -1875,6 +1875,10 @@ Filled in as PRs merge.
     (§ Encoder argv › Failure).
   - **R51.** Each idle departure runs on a goroutine of its own that the sweeper starts
     (§ Who ends sessions; § The sweeper).
+  - **Round 3 of the 4a-1b plan review** (reviewed at `84dc45d6`): § Session states' diagram
+    says `client_connect` is emitted as the multivariant is written, not at `Attach`; § 4a-1b's
+    `AttachExisting` break-check names the second next-source call as its oracle, the GET
+    ending 410 under R49.
   - **D2, enforced (the 4a-1b plan's Decision 18).** `hls` resolves only from the request
     (`?output_format=`/`?output=` or the Xtream `.m3u8` override). A user's stored
     `custom_properties.output_format` of `hls` or `m3u8` is skipped, and a stored
