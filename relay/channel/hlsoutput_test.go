@@ -215,3 +215,40 @@ func TestAttachHLSRefusesAnEndingChannel(t *testing.T) {
 	}
 	release()
 }
+
+// FailHLS is identity-gated: a LATE call for a pipeline that is no longer the
+// registered one (the watcher's, landing after finish and the store's close,
+// by which time the next boundary may have cleared the mark and a fresh
+// pipeline may be serving) must not re-mark the channel under it.
+func TestAStaleFailHLSCannotReMarkAChannelWithAFreshPipeline(t *testing.T) {
+	_, ch := hlsChannel(t)
+	starter := &hlsStarter{}
+
+	p1, _, release1, err := ch.AttachHLS("hls", starter.start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ch.FailHLS("hls", p1, hls.ErrFailed) // the entry's own call: p1 is registered, so it marks
+	if ch.HLSFailed() == nil {
+		t.Fatal("the first FailHLS, while p1 was registered, did not mark the channel")
+	}
+	release1()
+	ch.clearHLSFailed() // the next source boundary
+
+	p2, started, release2, err := ch.AttachHLS("hls", starter.start)
+	if err != nil || !started {
+		t.Fatalf("the entry after the boundary: started %t, err %v", started, err)
+	}
+	ch.FailHLS("hls", p1, hls.ErrFailed) // the watcher's late call for p1
+	if ch.HLSFailed() != nil {
+		t.Fatalf("a stale FailHLS re-marked the channel (%v) although its fresh pipeline is serving", ch.HLSFailed())
+	}
+	joined, startedAgain, release3, err := ch.AttachHLS("hls", starter.start)
+	if err != nil || startedAgain || joined != p2 {
+		t.Fatalf("a new entry after the stale call: err %v, started %t, joined the fresh pipeline %t", err, startedAgain, joined == p2)
+	}
+	release3()
+	release2()
+	doneWithin(t, p2, "its last release")
+	p1.Stop()
+}

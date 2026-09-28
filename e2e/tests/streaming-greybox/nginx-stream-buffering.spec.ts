@@ -650,7 +650,7 @@ test(
         `location "${block.header}" does not set proxy_http_version 1.1:\n${body}`
       ).toBe(true);
 
-      // Above the relay's own 20 s waits (the entry's init wait, a media
+      // Above the relay's own 43 s waits (R57) (the entry's init wait, a media
       // playlist's first-segment wait), and the byte-path locations' own
       // connect budget rather than the server block's inherited 75.
       expect(

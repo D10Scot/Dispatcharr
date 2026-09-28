@@ -59,9 +59,13 @@ func (c *Channel) EmitClientConnect(client *Client) {
 	c.emit("client_connect", clientEventDetails(client))
 }
 
-// EmitClientDisconnect is client_disconnect, raised for a TS client ONLY.
+// EmitClientDisconnect is client_disconnect, raised for a TS client and, since
+// Phase 4a-1b, for an HLS session: the session's departure, its stop and a
+// failed entry that had already announced itself raise one (session/
+// departure.go, channel/sessions.go, httpapi/hls.go), where an HLS viewer has
+// no goroutine whose cleanup could.
 //
-// THE ASYMMETRY IS PYTHON'S AND IS REPRODUCED RATHER THAN EVENED OUT:
+// FOR A TS CLIENT THE ASYMMETRY IS PYTHON'S AND IS REPRODUCED RATHER THAN EVENED OUT:
 // output/ts/generator.py:652-666 raises it in the generator's cleanup, and
 // output/fmp4/generator.py raises no disconnect at all -- `emit_event`
 // appears once in that file, at :114. An fMP4 viewer's departure is therefore

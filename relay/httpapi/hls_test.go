@@ -1109,19 +1109,20 @@ const (
 	session300s = 300 * time.Second
 )
 
-// Ruling R56: the entry's wait for the encoder's init segments and the media
-// playlist's wait for its first segment must not be shorter than a legitimate
-// cold software start: the re-probe, then the startup stall allowance a
-// generation gets before its first fragment (R55). A 503 on the multivariant
+// Rulings R56 and R57: the entry's wait for the encoder's init segments and the
+// media playlist's wait for its first segment must not be shorter than a
+// legitimate cold software start: the quick probe and, in sequence, the
+// re-probe, then the startup stall allowance a generation gets before its
+// first fragment (R55). A 503 on the multivariant
 // fails an AVPlayer item outright. Held under nginx's 60 s read timeout.
 func TestTheEntryWaitsOutALegitimateColdStart(t *testing.T) {
-	cold := hls.FullProbe.Analyze + hls.StartupStallFactor*hls.StallTimeout
+	cold := hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStallFactor*hls.StallTimeout
 	for name, got := range map[string]time.Duration{
 		"ReadyWait":    HLSDeps{}.readyWait(),
 		"PlaylistWait": HLSDeps{}.playlistWait(),
 	} {
 		if got < cold {
-			t.Errorf("the default %s is %v, below a legitimate cold start's %v (full probe + startup stall allowance)", name, got, cold)
+			t.Errorf("the default %s is %v, below a legitimate cold start's %v (quick probe + re-probe + startup stall allowance)", name, got, cold)
 		}
 		if got >= 60*time.Second {
 			t.Errorf("the default %s is %v, not under nginx's 60 s proxy_read_timeout on /hls/", name, got)

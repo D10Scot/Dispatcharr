@@ -131,19 +131,24 @@ func (c *Channel) hlsRelease(key string, p *hls.Pipeline) func() {
 	})
 }
 
-// FailHLS sets the mark (err non-nil) and unregisters p if it is still key's.
-// Idempotent: the entry that saw Ready fail and the watcher that saw Done
-// close may both call it for one failure, and the second finds nothing to
-// unregister. It never stops p: a pipeline that failed is finishing on its
-// own.
+// FailHLS marks the channel (err non-nil) and unregisters p, but ONLY while p
+// is still key's registered pipeline. Idempotent and identity-safe: the entry
+// that saw Ready fail and the watcher that saw Done close may both call it for
+// one failure, and the second finds p already gone and does nothing. That
+// identity gate is what keeps a LATE call harmless -- the watcher's lands
+// after finish, the store's close and any background work, seconds later on
+// the Quick Sync fallback path, by which time the next source boundary may
+// have cleared the mark and a fresh pipeline may be serving; a stale call must
+// not re-mark the channel under it. It never stops p: a pipeline that failed
+// is finishing on its own.
 func (c *Channel) FailHLS(key string, p *hls.Pipeline, err error) {
 	c.outMu.Lock()
 	defer c.outMu.Unlock()
-	if err != nil {
-		c.hlsFailed = err
-	}
 	if entry, running := c.hls[key]; running && entry.pipeline == p {
 		delete(c.hls, key)
+		if err != nil {
+			c.hlsFailed = err
+		}
 	}
 }
 

@@ -40,14 +40,15 @@ const hlsKey = "hls"
 const readyWaitMargin = 2 * time.Second
 
 // The waits an HLS request may spend on the pipeline (spec § Entry, § Session
-// resources; ruling R56). DERIVED from the pipeline's own bounds so they cannot
-// drift below what a legitimate cold software start can take: the full probe
-// (the re-probe's 8 s) plus the startup stall allowance a generation gets
-// before its first fragment (R55, 30 s) plus a margin: 40 s. A 503 on the
-// multivariant fails an AVPlayer item outright, so this must not be shorter.
-// nginx's proxy_read_timeout on /hls/ is 60 s, above both.
+// resources; rulings R56 and R57). DERIVED from the pipeline's own bounds so
+// they cannot drift below what a legitimate cold software start can take: the
+// quick probe (3 s) and, in sequence, the re-probe (8 s), then the startup
+// stall allowance a generation gets before its first fragment (R55, 30 s),
+// plus a margin: 43 s. A 503 on the multivariant fails an AVPlayer item
+// outright, so this must not be shorter. nginx's proxy_read_timeout on /hls/
+// is 60 s, above both.
 var (
-	defaultReadyWait    = hls.FullProbe.Analyze + hls.StartupStallFactor*hls.StallTimeout + readyWaitMargin
+	defaultReadyWait    = hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStallFactor*hls.StallTimeout + readyWaitMargin
 	defaultPlaylistWait = defaultReadyWait
 )
 
