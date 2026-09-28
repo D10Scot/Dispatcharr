@@ -1875,6 +1875,11 @@ Filled in as PRs merge.
     (§ Encoder argv › Failure).
   - **R51.** Each idle departure runs on a goroutine of its own that the sweeper starts
     (§ Who ends sessions; § The sweeper).
+  - **D2, enforced (the 4a-1b plan's Decision 18).** `hls` resolves only from the request
+    (`?output_format=`/`?output=` or the Xtream `.m3u8` override). A user's stored
+    `custom_properties.output_format` of `hls` or `m3u8` is skipped, and a stored
+    `default_output_format` of either reads as `mpegts`, so no byte-stream URL becomes a playlist
+    by a default (`resolve_output_format`; nothing validates either value at `fabc663a`).
   - **R52 and R53** bind the 4a-1b implementation, not this text: the Go floor becomes
     `589 + H + O`, every census round at or under it, and the floor header's R21 sentence reads
     "does not exceed"; the orchestrator files the issue if R29's measurement is below real time.
