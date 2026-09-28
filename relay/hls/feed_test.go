@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,4 +78,56 @@ func TestArrival(t *testing.T) {
 		t.Errorf("arrival of a chunk not in the ring = %v, want now", got)
 	}
 	_ = src
+}
+
+// hookSource is a testSource whose first NextBoundary call runs hook just
+// AFTER it has answered: a new upstream connection that begins right after a
+// feed took its boundary snapshot.
+type hookSource struct {
+	*testSource
+	once sync.Once
+	hook func()
+}
+
+func (s *hookSource) NextBoundary(after uint64) (uint64, bool) {
+	index, has := s.testSource.NextBoundary(after)
+	s.once.Do(s.hook)
+	return index, has
+}
+
+// PR #529 review (thread on feed.go:72): a boundary snapshot taken once per
+// Read batch cannot let the batch carry a new connection's chunks into the
+// old generation, because the snapshot is taken AFTER the Read, and a
+// boundary is recorded before the first chunk at it is published
+// (channel.markBoundary): every chunk the Read returned was published before
+// the snapshot, so every boundary at or before those chunks is in it. Here a
+// new connection begins -- its boundary recorded, two of its chunks
+// published -- right after the first snapshot. The batch in hand is entirely
+// the old connection's, and the next Read stops at the boundary. A snapshot
+// taken BEFORE the Read would miss this boundary while the Read returned the
+// new connection's chunks with the old ones.
+func TestFeedNeverCarriesANewConnectionsChunksPastItsBoundary(t *testing.T) {
+	base := newTestSource()
+	base.mark()
+	base.write(t, chunkOf('a'))
+	base.write(t, chunkOf('a'))
+	var boundary uint64
+	src := &hookSource{testSource: base}
+	src.hook = func() {
+		boundary = base.mark()
+		base.write(t, chunkOf('b'))
+		base.write(t, chunkOf('b'))
+	}
+	// Bounded, so a feed that misses the boundary reads its end as a stop
+	// rather than waiting for a chunk that never comes.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	var out bytes.Buffer
+	res := feed(ctx, src, 0, &out, 0, nil)
+	if bytes.Contains(out.Bytes(), []byte{'b'}) || out.Len() != 2*testChunk {
+		t.Fatalf("feed wrote %d bytes including the new connection's: a batch carried chunks past a boundary recorded just after its snapshot", out.Len())
+	}
+	if res.end != feedBoundary || res.boundary != boundary || boundary != 3 {
+		t.Fatalf("feed ended %v at %d, want at the boundary 3", res.end, res.boundary)
+	}
 }

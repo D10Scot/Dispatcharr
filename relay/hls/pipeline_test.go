@@ -957,3 +957,117 @@ func TestReadyWaitsForEveryCodecNotOnlyEveryStoredInit(t *testing.T) {
 		t.Fatalf("multivariant %s, %v: want the aac codec in every variant", mv, err)
 	}
 }
+
+// PR #529 review (thread on pipeline.go:758): a Stop ends an encoder that
+// ignores stdin EOF. The feed then ends feedStopped, which runs no exit
+// grace, but the process was started on the attempt's context, a child of
+// the pipeline's, and exec.CommandContext kills the whole process group when
+// it ends (relay/ffmpeg's Cancel): the pipes close, the readers return, and
+// Stop does not have to give up on its bounded wait.
+func TestAStopKillsAnEncoderThatIgnoresStdinEOF(t *testing.T) {
+	h := newHarness(t)
+	video := file(t, "v.mp4", videoStream(0, 1, 50))
+	p := h.start(probeVideoOnly, nil, func(Spawn) []string {
+		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--ignore-stdin-eof"}
+	})
+	if err := p.Ready(context.Background()); err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		p.Stop()
+	}()
+	select {
+	case <-p.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatalf("the pipeline did not end within 3s of Stop: an encoder ignoring stdin EOF outlived the stop\n%s", h.logs.String())
+	}
+	<-stopped
+	if err := p.Err(); err != nil {
+		t.Fatalf("Err after a Stop = %v, want nil", err)
+	}
+	if strings.Contains(h.logs.String(), "did not stop in time") {
+		t.Fatalf("Stop gave up waiting:\n%s", h.logs.String())
+	}
+}
+
+// PR #529 review (thread on pipeline.go:731): an audio output that goes
+// silent for good while the video keeps flowing does not wedge the
+// generation. Its reader blocks in Read, but the video is published past it
+// (Decision 6: an empty fragment after AudioWait), and the generation ends
+// the ordinary way -- stdin EOF ends the encoder, whose exit closes every
+// pipe, the silent one included -- with no kill and no watchdog.
+func TestASilentAudioPipeDoesNotWedgeTheGeneration(t *testing.T) {
+	h := newHarness(t)
+	video := file(t, "v.mp4", videoStream(0, 4, 50)) // 8 s of video
+	audio := file(t, "a.mp4", audioStream(10))       // 2 s of audio, then a pipe held open and silent
+	// The exit grace is 3 s, not the harness's 300 ms: under -race the
+	// stand-in is a race-instrumented binary, whose runtime sleeps a second
+	// at exit (GORACE atexit_sleep_ms), and this test asserts that no kill
+	// was needed.
+	p := h.startWith(probeWithAAC, func(c *Config) { c.AudioWait, c.ExitGrace = 200*time.Millisecond, 3*time.Second }, func(Spawn) []string {
+		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--fd-file", relaytest.FDFileArg(3, audio), "--wait-stdin-eof"}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := p.Store().Segment(RenditionAAC, 2); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the video was not published past the silent audio pipe\n%s", h.logs.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	h.src.ring.Close()
+	waitDone(t, p, 6*time.Second)
+	if err := p.Err(); err != nil {
+		t.Fatalf("Err = %v, want nil: the channel ended", err)
+	}
+	logs := h.logs.String()
+	if strings.Contains(logs, "killing it") || !strings.Contains(logs, "HLS generation ended after its input closed") {
+		t.Fatalf("the generation did not end on its own at stdin EOF with an audio pipe silent:\n%s", logs)
+	}
+}
+
+// PR #529 review (thread on segmenter.go:354): the empty fragment a
+// mid-generation span gets when its audio output wrote nothing starts at the
+// span's start in audio ticks rounded UP, as the silence clock rounds
+// (silence.go), so it never starts before its span. Here the first video
+// fragment is at tfdt 1, so segment 2 starts at 51201 video ticks: 192003.75
+// audio ticks.
+func TestAnEmptyAudioFragmentNeverStartsBeforeItsSpan(t *testing.T) {
+	h := newHarness(t)
+	second := make([]uint32, 25)
+	for i := range second {
+		second[i] = 512
+	}
+	stream := videoInit(0)
+	for i := 0; i < 8; i++ {
+		stream = append(stream, fragSpec{seq: uint32(i + 1), trackID: 1, start: 1 + uint64(i)*12800, durations: second, sync: true}.build()...) // #nosec G115 -- a test's small count
+	}
+	video := file(t, "v.mp4", stream)
+	audio := file(t, "a.mp4", audioStream(10)) // 2 s of audio, then nothing
+	p := h.startWith(probeWithAAC, func(c *Config) { c.AudioWait = 200 * time.Millisecond }, func(Spawn) []string {
+		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--fd-file", relaytest.FDFileArg(3, audio), "--wait-stdin-eof"}
+	})
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := p.Store().Segment(RenditionAAC, 2); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("segment 2 was never published\n%s", h.logs.String())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	at, _ := ParseInit(audioInit())
+	data, _ := p.Store().Segment(RenditionAAC, 2)
+	f, err := ParseFragment(data, at)
+	if err != nil || f.Samples != 0 {
+		t.Fatalf("segment 2's aac part = %+v, %v; want an empty fragment", f, err)
+	}
+	if f.Start != 192004 {
+		t.Fatalf("the empty fragment starts at %d audio ticks, want 192004: its span starts at 192003.75, and a truncated tfdt starts it before its span", f.Start)
+	}
+}

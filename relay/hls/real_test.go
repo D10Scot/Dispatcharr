@@ -279,6 +279,40 @@ func TestRealThe1080iFixtureGivesAligned2sSegmentsOnThreeRenditions(t *testing.T
 	}
 }
 
+// PR #529 review (thread on segmenter.go:233): the segment grid does NOT
+// need the video's StartOffset to be 0. Joined mid-GOP, the encoder's first
+// frame is a keyframe at its own t = 0 and -force_key_frames puts the next
+// ones 2 s apart from it (Decision 5); the relay shifts every fragment by the
+// same StartOffset (Decision 3), so the keyframes stay 2 s apart, and the
+// grid is anchored on the first of them after the shift (segmenter.v0). Here
+// the join is 3 MB into the 1080i fixture, where the video's empty edit was
+// measured at 0.86 s: the first segment starts well after 0, and every
+// whole segment is still 2.000 s.
+func TestRealAMidGOPJoinKeepsTheGridOnTheKeyframes(t *testing.T) {
+	data := fixture(t, "h264-1080i-aac-ac3")
+	cut := 3_000_000 - 3_000_000%buffer.TSPacketSize
+	rest := data[cut:]
+	n := len(data) * 10 / 20
+	r := runReal(t, rest[:n-n%buffer.TSPacketSize])
+	r.ok(t)
+	video, _ := r.segments(t, RenditionVideo)
+	if len(video) < 4 {
+		t.Fatalf("%d segments from 10 s, want at least 4 whole ones", len(video))
+	}
+	if video[0].first.Start == 0 {
+		t.Fatalf("the video's first fragment starts at 0 after the shift: the join is no longer mid-GOP, so this test no longer exercises a non-zero StartOffset")
+	}
+	oneFrame := 1.0 / 50
+	for i, v := range video {
+		if !v.first.Sync {
+			t.Errorf("video segment %d does not start with a sync sample", v.seq)
+		}
+		if i < len(video)-1 && (v.dur < 2-oneFrame || v.dur > 2+oneFrame) {
+			t.Errorf("video segment %d is %.3f s with the video's StartOffset at %d ticks, want 2.000 s +/- one frame: the grid drifted off the keyframes", v.seq, v.dur, video[0].first.Start)
+		}
+	}
+}
+
 // The E-AC-3 fixture gives three audio renditions (R20): AAC and AC-3
 // encoded from the E-AC-3, which is copied.
 func TestRealTheEAC3FixtureGivesThreeAudioRenditions(t *testing.T) {

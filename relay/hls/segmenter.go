@@ -350,8 +350,11 @@ func (s *segmenter) publishOneLocked(seg videoSegment, last bool) {
 			// for it. The rendition still needs a segment at this
 			// sequence number, and the video must not stall behind it, so
 			// it gets an empty fragment of its own track at the span's
-			// start: a gap a player plays through.
-			data = synthFragment(1, id, seg.start*ta/tv, nil, 0, 1024)
+			// start: a gap a player plays through. The start is rounded UP
+			// to a whole audio tick, as the silence clock rounds
+			// (silence.go), so the fragment never starts before its span
+			// (PR #529 review).
+			data = synthFragment(1, id, (seg.start*ta+tv-1)/tv, nil, 0, 1024)
 			duration = parts[RenditionVideo].duration
 		}
 		parts[t.name] = part{data: data, duration: duration}

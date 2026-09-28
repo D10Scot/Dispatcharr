@@ -206,3 +206,34 @@ func TestTheMultivariant(t *testing.T) {
 		t.Errorf("a 59.94 output:\n%s", got)
 	}
 }
+
+// PR #529 review (thread on store.go:125): every segment a media playlist
+// lists is in the store -- the one just served, and the one served a reload
+// earlier -- because the store keeps StoreSegments = LiveEdge + 2. What the
+// headroom does NOT reach is RFC 8216 § 6.2.2's availability after removal
+// (a segment's duration plus the playlist's), which the thread's reply puts
+// to a ruling: StoreSegments is the spec's number (§ State, D14).
+func TestEverySegmentAListedPlaylistNamesIsStored(t *testing.T) {
+	s := NewStore(nil)
+	s.SetInit(RenditionVideo, 0, []byte("init0"))
+	var previous []byte
+	for i := 0; i < 3*StoreSegments; i++ {
+		publishN(s, 0, 1, t0.Add(time.Duration(i)*2*time.Second))
+		current, _, _ := s.MediaPlaylist(RenditionVideo)
+		for _, playlist := range [][]byte{previous, current} {
+			for _, line := range strings.Split(string(playlist), "\n") {
+				if !strings.HasSuffix(line, ".m4s") {
+					continue
+				}
+				var seq uint64
+				if _, err := fmt.Sscanf(line, RenditionVideo+"/%d.m4s", &seq); err != nil {
+					t.Fatalf("unparsable URI %q: %v", line, err)
+				}
+				if _, ok := s.Segment(RenditionVideo, seq); !ok {
+					t.Fatalf("after %d publishes the store no longer holds segment %d, which a playlist listed one reload ago or now: the store keeps fewer segments than its playlists advertise", i+1, seq)
+				}
+			}
+		}
+		previous = current
+	}
+}
