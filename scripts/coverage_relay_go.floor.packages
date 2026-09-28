@@ -5,6 +5,8 @@ github.com/D10Scot/Dispatcharr/relay/config
 github.com/D10Scot/Dispatcharr/relay/control
 github.com/D10Scot/Dispatcharr/relay/drain
 github.com/D10Scot/Dispatcharr/relay/ffmpeg
+github.com/D10Scot/Dispatcharr/relay/hls
 github.com/D10Scot/Dispatcharr/relay/httpapi
 github.com/D10Scot/Dispatcharr/relay/output
 github.com/D10Scot/Dispatcharr/relay/redact
+github.com/D10Scot/Dispatcharr/relay/session
