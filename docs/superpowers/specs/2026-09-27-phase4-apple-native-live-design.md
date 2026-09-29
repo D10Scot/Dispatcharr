@@ -915,11 +915,11 @@ table says is STOPPED never holds a client entry.
   - That is small beside the 6-8 Mb/s video on a LAN. Compression is a follow-up if Q4 shows
     reload time matters.
 
-*Amended by the 4a-3 plan* (`docs/superpowers/plans/2026-09-29-phase4-4a3-rewind-window.md`; the
-parts marked "OQ" await the orchestrator's ruling on that plan's open question of that number):
+*Amended by the 4a-3 plan* (`docs/superpowers/plans/2026-09-29-phase4-4a3-rewind-window.md`; rulings
+R82-R87 settle that plan's questions):
 
 - **Layout** gains a run component: `/data/cache/rewind/<boot-id>/<channel>/<run>/<gen>/<rendition>/<seq>.m4s`,
-  `<run>` a per-process counter for the pipeline (OQ 4). A channel can run two pipelines within one
+  `<run>` a per-process counter for the pipeline (R85). A channel can run two pipelines within one
   boot (one stops at its last session with the linger off, a later viewer starts another), and
   both would otherwise number their generations and sequences from 0 in one directory. `<channel>`
   is the relay's channel id when it matches `^[A-Za-z0-9_-]{1,64}$`, and `x` plus the first 16 hex
@@ -939,7 +939,7 @@ parts marked "OQ" await the orchestrator's ruling on that plan's open question o
   older than the newest, and **unlinks it `(StoreSegments − LiveEdge)` target durations later**
   (22 s at a target of 2), during which it stays fetchable by URL: RFC 8216 § 6.2.2's retention,
   taken at the live-edge playlist's reload arithmetic that R44 used, not at the window playlist's
-  full duration, which would double the disk the window needs (OQ 2).
+  full duration, which would double the disk the window needs (R83).
 - **Cap.** The writer enforces `rewind_disk_cap_gb` after every batch. Eviction order: segments
   already out of the playlist (above) first; then the oldest listed segment of a lingering window;
   then the oldest listed segment of any window, by PDT. A cap eviction unlinks at once, and a
@@ -948,14 +948,17 @@ parts marked "OQ" await the orchestrator's ruling on that plan's open question o
   that is logged once. The value is the most recent **initial** tune's answer (a failover answer
   does not re-read settings).
 - **Disk errors** (and a full queue) stop that pipeline's window persisting for the rest of the
-  **pipeline's** run: a later pipeline on the same channel tries the disk again. The playlist keeps
-  listing what is on disk only while it is contiguous with what is still listable: once an
-  unpersisted segment leaves the newest 10, everything older leaves the playlist with it, so the
-  playlist becomes the live edge (10, as with the window off) within 22 s. Segments a playlist
-  stopped listing stay fetchable for the retention above.
+  **pipeline's** run: a later pipeline on the same channel tries the disk again. An unpersisted
+  segment leaves the playlist when it leaves the newest 10, while memory keeps it fetchable until it
+  leaves the newest 21 (RFC 8216 § 6.2.2, as at the live edge), and everything older leaves the
+  playlist with it; so the playlist becomes the live edge (10, as with the window off) at most
+  10 target durations (20 s at a target of 2) after the first unpersisted segment. Segments already
+  on disk that a playlist stopped listing stay fetchable for the retention above.
 - **Reads.** A segment on disk is read by the request's own goroutine after the store has pinned
   it; the pin covers the read, so an eviction or the depth sweep never unlinks a file a request is
-  reading. The newest 21 are served from memory.
+  reading. A stopped pipeline's directory is removed only once no read of it is pinned, and the
+  writer marks the window as being removed in the same step, after which no new disk read of it
+  starts. The newest 21 are served from memory.
 - **Arithmetic, measured by the plan.** Rendering a 1,800-entry media playlist with six-digit
   sequence numbers takes about 0.54 ms and 148 KB (Go 1.27, Apple M4 Pro), not the 126 KB above.
   The store renders each rendition's playlist once per change and serves the same bytes to every
@@ -997,13 +1000,13 @@ Q4 (a 1,800-entry playlist on Apple TV) is the owner's measurement and does not 
     grace protects only viewers that depart without a leave, such as third-party apps or a
     backgrounded app.
 
-*Amended by the 4a-3 plan* (OQ 1 and OQ 3; D15's summary in § Decisions is read through this):
+*Amended by the 4a-3 plan* (rulings R82 and R84; D15's summary in § Decisions is read through this):
 
 - **Behind live** is decided per served media segment, when it is served: the segment's PDT more
   than 5 × TD older than the newest segment's at that moment (§ Presence thresholds). The latest
   served segment decides; a playlist, init or refused request moves nothing. Evaluated at the
   departure instead, every idle viewer would be behind live, because the idle timeout alone is 6 × TD.
-- **The grace runs from the session's silence point, not from the linger's start** (OQ 1). A
+- **The grace runs from the session's silence point, not from the linger's start** (R82). A
   session that stops without a leave is treated as departed for slot yield once it has been silent
   for 2 × TD (D16, R24), and that is when a slot could first be taken from it. So a behind-live
   session is **silent** only after 2 × TD **plus** `rewind_behind_live_grace_seconds` since its last
@@ -1017,7 +1020,7 @@ Q4 (a 1,800-entry playlist on Apple TV) is the owner's measurement and does not 
   termination remove their session, so they carry no grace (R25).
 - **The grace applies to every zero-client channel**, lingering or held by a
   `channel_shutdown_delay` countdown, since both are reclaimable through the same zero-client path.
-- **Which ends linger** (OQ 3): the last session ending by a leave, by an admin client stop or
+- **Which ends linger** (R84): the last session ending by a leave, by an admin client stop or
   stream-limit termination, or by an idle departure. An entry that never served its multivariant
   never leaves a lingering pipeline: a pipeline that has not become ready, or has ended, stops at
   its last release as in 4a-1b.
@@ -1832,11 +1835,11 @@ PR description draft:
   configured depth" becomes: at the default depth, a playlist that lists media sequence 0 after more
   than 21 segments, whose segment 0 is then fetched (so it is served from disk); the depth sweep
   itself is pinned in Go with an injected clock, since the shortest configurable depth is a minute
-  of encode per run (OQ 5). The linger scenario sets `rewind_linger_seconds` to 20 s in
+  of encode per run (R86). The linger scenario sets `rewind_linger_seconds` to 20 s in
   `streaming-failover` (the global-settings allowlist), because the 300 s default is not an E2E
   wait. The grace scenario waits past the idle timeout by construction: the grace ends 14 s after
   the last request, and R24's rule is about zaps. Every existing E2E that opens an HLS session stops
-  its channel when it ends, so a 300 s linger never runs an encode behind the next test (OQ 6).
+  its channel when it ends, so a 300 s linger never runs an encode behind the next test (R87).
 - **Break-checks.** The four above keep their oracles in Go (a channel with a TS client never
   reclaimed; the last session's end lingers; the grace holds a silent behind-live session; a leave
   has none); each E2E half is waived under R79, since each wrong edit reddens a gated Go test. The
@@ -2207,16 +2210,17 @@ Filled in as PRs merge.
   - writes go through one process-wide writer goroutine, never under a lock; a writer queue a
     whole store behind degrades the window as a write error does;
   - a segment leaving the window by depth stays fetchable for 22 s (at a target of 2) before it is
-    unlinked (OQ 2); the cap evicts out-of-playlist segments, then lingering windows', then the
+    unlinked (R83); the cap evicts out-of-playlist segments, then lingering windows', then the
     oldest, never a window's newest 21, and never a file under a read;
-  - a degraded window keeps listing its disk run only while it is contiguous with the live edge;
+  - a degraded window's unpersisted segments leave the playlist at the newest 10, and the playlist
+    becomes the live edge within 20 s; the shutdown-delay countdown starts only once the linger ends;
   - the playlist renders once per change, measured at 0.54 ms and 148 KB for 1,800 entries;
   - the behind-live grace runs from the session's silence point (2 × TD after its last request),
     holds for any idle-departed behind-live session and for any zero-client channel, and is decided
-    per served segment (OQ 1); D15's one-line summary is read through § Linger as amended;
-  - an admin client stop lingers with no grace (OQ 3); an unready or ended pipeline never lingers;
+    per served segment (R82); D15's one-line summary is read through § Linger as amended;
+  - an admin client stop lingers with no grace (R84); an unready or ended pipeline never lingers;
     one linger per channel;
-  - the settings' bounds, the capability document's two fields, the E2E as planned (OQ 5, OQ 6),
+  - the settings' bounds, the capability document's two fields, the E2E as planned (R86, R87),
     the R79 waivers and the R45 manual gate.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
