@@ -252,3 +252,79 @@ func TestAStaleFailHLSCannotReMarkAChannelWithAFreshPipeline(t *testing.T) {
 	doneWithin(t, p2, "its last release")
 	p1.Stop()
 }
+
+func TestAnHLSOutputFailedErrorNamesItsReasonAndUnwraps(t *testing.T) {
+	bare := ErrHLSOutputFailed{}
+	if got := bare.Error(); got != "channel: the HLS output failed" {
+		t.Errorf("a reasonless error reads %q", got)
+	}
+	withReason := ErrHLSOutputFailed{Reason: hls.ErrNoVideo}
+	if got := withReason.Error(); got != "channel: the HLS output failed: "+hls.ErrNoVideo.Error() {
+		t.Errorf("an error with a reason reads %q", got)
+	}
+	if !errors.Is(withReason, hls.ErrNoVideo) {
+		t.Error("errors.Is does not see through Unwrap to the reason")
+	}
+}
+
+// A start func that fails leaves nothing registered and no refcount held: the
+// next attach starts afresh.
+func TestAFailedHLSStartRegistersNothing(t *testing.T) {
+	_, ch := hlsChannel(t)
+	boom := errors.New("cannot start")
+	if _, started, release, err := ch.AttachHLS("hls", func(hls.Source) (*hls.Pipeline, error) { return nil, boom }); !errors.Is(err, boom) || started || release != nil {
+		t.Fatalf("AttachHLS with a failing start = started %t, release %t, err %v", started, release != nil, err)
+	}
+	if _, _, ok := ch.HLSStatus(); ok {
+		t.Fatal("a failed start left a pipeline registered")
+	}
+	starter := &hlsStarter{}
+	p, started, release, err := ch.AttachHLS("hls", starter.start)
+	if err != nil || !started {
+		t.Fatalf("the attach after the failed start: started %t, err %v", started, err)
+	}
+	release()
+	doneWithin(t, p, "its release")
+}
+
+// A resume re-attaches only to the very pipeline its session names, and only
+// while it is running.
+func TestAttachHLSExistingRefusesAnUnregisteredOrEndedPipeline(t *testing.T) {
+	_, ch := hlsChannel(t)
+	starter := &hlsStarter{}
+
+	p1, _, release1, err := ch.AttachHLS("hls", starter.start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stranger, err := starter.start(ch) // a pipeline the channel never registered
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(stranger.Stop)
+	if _, ok := ch.AttachHLSExisting("hls", stranger); ok {
+		t.Fatal("AttachHLSExisting joined a pipeline that is not the registered one")
+	}
+	if _, ok := ch.AttachHLSExisting("no-such-key", p1); ok {
+		t.Fatal("AttachHLSExisting joined a key with no registered pipeline")
+	}
+
+	// p1 ends on its own while still registered (its failure, before the
+	// watcher has unregistered it): a resume must not join a dead pipeline.
+	p1.Stop()
+	if _, ok := ch.AttachHLSExisting("hls", p1); ok {
+		t.Fatal("AttachHLSExisting joined a pipeline whose Done is closed")
+	}
+	release1()
+}
+
+func TestDroppingNoHLSClientsChangesNothingAndEmitsNothing(t *testing.T) {
+	events := &eventLog{}
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64, Events: events})
+	t.Cleanup(m.StopAll)
+	ch, _ := attachBlocking(t, m, "nodrop", "ts", testTuning())
+	ch.dropHLSClients(nil)
+	if ch.Clients() != 1 || len(events.of("client_disconnect")) != 0 {
+		t.Fatalf("an empty drop changed %d clients / emitted %d disconnects", ch.Clients(), len(events.of("client_disconnect")))
+	}
+}

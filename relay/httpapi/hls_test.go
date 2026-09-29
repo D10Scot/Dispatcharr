@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -52,6 +53,7 @@ const (
 	modeInitOnly = "initonly" // both inits and no fragment at all
 	modeNoInit   = "noinit"   // writes nothing and never exits on stdin EOF
 	modeStubborn = "stubborn" // full streams and a straggler that outlives the encoder's kill
+	modeSlowInit = "slowinit" // full streams, but only after a pause: an entry that has to wait
 	modeFlaky    = "flaky"    // init-only and fails on cue, or healthy once ok exists
 )
 
@@ -105,6 +107,9 @@ func (f *hlsFixture) command(hls.Spawn) (string, []string) {
 			"--wait-stdin-eof")
 	case modeNoInit:
 		return relaytest.StandInCommand("--spawn-log", f.encoderLog, "--ignore-stdin-eof")
+	case modeSlowInit:
+		return "sh", []string{"-c", "echo x >> " + f.encoderLog + "; sleep 1.5; cat " + f.path("vfull.mp4") +
+			"; cat " + f.path("afull.mp4") + " >&3; while true; do sleep 1; done"}
 	case modeStubborn:
 		// A shell that leaves a straggler in a process group of its OWN
 		// (job control), holding the encoder's pipes: the relay's SIGKILL of
@@ -151,6 +156,9 @@ func hlsRig(t *testing.T, f *hlsFixture, overrides map[string]any) *rig {
 	t.Helper()
 	return fanRigWith(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Rate: 4}, overrides, f.option())
 }
+
+// withoutHooks removes the test seams, so the handlers run as in production.
+func withoutHooks() rigOption { return func(d *StreamDeps) { d.hooks = nil } }
 
 func hlsHeader(channelID, clientID string) http.Header {
 	h := http.Header{}
@@ -477,7 +485,7 @@ func TestAMediaPlaylistWaitsForItsFirstSegmentAndCarriesItsHeaders(t *testing.T)
 		t.Errorf("bytes_sent grew from %d to %d, want at least the %d bytes served", before, after, len(initBytes)+len(media))
 	}
 
-	for _, path := range []string{"ac3.m3u8", "video/nope.bin", "video/999999.m4s", "video/init-99.mp4", "ac3/init-0.mp4"} {
+	for _, path := range []string{"ac3.m3u8", "video/nope.bin", "video/999999.m4s", "video/init-99.mp4", "ac3/init-0.mp4", "video/init-x.mp4", "video/init--1.mp4", "video/x.m4s"} {
 		if status, _, _ := r.getHLS(t, s.path(path)); status != http.StatusNotFound {
 			t.Errorf("GET %s answered %d, want 404", path, status)
 		}
@@ -1140,5 +1148,199 @@ func TestTheEntryWaitsOutALegitimateColdStart(t *testing.T) {
 		if got >= 60*time.Second {
 			t.Errorf("the default %s is %v, not under nginx's 60 s proxy_read_timeout on /hls/", name, got)
 		}
+	}
+}
+
+// enterAsync starts an HLS entry on a goroutine and returns what it answered.
+type entryAnswer struct {
+	status int
+	header http.Header
+}
+
+func (r *rig) enterAsync(ctx context.Context, t *testing.T, channelID, clientID string) <-chan entryAnswer {
+	t.Helper()
+	out := make(chan entryAnswer, 1)
+	go func() {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, r.Relay.URL+"/proxy/ts/stream/"+channelID, nil)
+		if err != nil {
+			out <- entryAnswer{}
+			return
+		}
+		request.Header = hlsHeader(channelID, clientID)
+		response, err := r.Relay.Client().Do(request)
+		if err != nil {
+			out <- entryAnswer{}
+			return
+		}
+		defer func() { _ = response.Body.Close() }()
+		_, _ = io.Copy(io.Discard, response.Body)
+		out <- entryAnswer{status: response.StatusCode, header: response.Header}
+	}()
+	return out
+}
+
+func TestAnHLSTuneOnARelayWithNoSessionTableIs501AndLeavesNoClient(t *testing.T) {
+	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
+	r := fanRigWith(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Rate: 4}, nil, f.option(), func(d *StreamDeps) { d.Sessions = nil })
+	status, _, _ := r.enter(t, "c-nosessions", "client-a")
+	if status != http.StatusNotImplemented {
+		t.Fatalf("an hls tune with no session table answered %d, want 501", status)
+	}
+	waitFor(t, "the lone channel to stop", 10*time.Second, channelGone(r, "c-nosessions"))
+}
+
+// The viewer hangs up while its entry waits for the encoder: nothing of it
+// remains -- no session, no registry entry, no channel it alone held.
+func TestAnHLSEntryWhoseViewerGoesAwayLeavesNoSessionOrClient(t *testing.T) {
+	f := newHLSFixture(t, modeNoInit, relaytest.HLSProbeJSON(true, true))
+	r := fanRigWith(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Rate: 4}, nil, f.option(), withoutHooks())
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	answer := r.enterAsync(ctx, t, "c-away", "client-a")
+	waitFor(t, "the entry's session to be admitted", 10*time.Second, func() bool { return r.Sessions.Len() == 1 })
+	cancel()
+	<-answer
+	waitFor(t, "the session to be abandoned", 10*time.Second, func() bool { return r.Sessions.Len() == 0 })
+	waitFor(t, "the lone channel to stop", 10*time.Second, channelGone(r, "c-away"))
+}
+
+// The channel is stopped while an entry waits for inits: the pipeline stops
+// with it, and the entry answers 503 rather than hanging out its wait.
+func TestAnEntryWaitingForInitsIs503WhenItsChannelIsStopped(t *testing.T) {
+	f := newHLSFixture(t, modeNoInit, relaytest.HLSProbeJSON(true, true))
+	r := hlsRig(t, f, nil)
+	answer := r.enterAsync(t.Context(), t, "c-stopwait", "client-a")
+	waitFor(t, "the entry's session to be admitted", 10*time.Second, func() bool { return r.Sessions.Len() == 1 })
+	if !r.Manager.Stop("c-stopwait") {
+		t.Fatal("no channel to stop")
+	}
+	got := <-answer
+	if got.status != http.StatusServiceUnavailable || got.header.Get("Retry-After") != "1" {
+		t.Fatalf("the entry answered %d with Retry-After %q, want 503 and 1", got.status, got.header.Get("Retry-After"))
+	}
+	waitFor(t, "the session to be forgotten", 10*time.Second, func() bool { return r.Sessions.Len() == 0 })
+}
+
+// An admin stops the entry's client while it waits for inits. The entry then
+// finds its session gone: it answers 503, and because it had already
+// announced itself it owes -- and raises -- its own client_disconnect, after
+// its client_connect.
+func TestAnEntryWhoseClientIsStoppedWhileItWaitsIs503AndOwesItsDisconnect(t *testing.T) {
+	f := newHLSFixture(t, modeSlowInit, relaytest.HLSProbeJSON(true, true))
+	r := hlsRig(t, f, nil)
+	// A second entry holds the pipeline, so stopping the first's client does not
+	// stop the pipeline (and end the first entry's wait some other way).
+	answer := r.enterAsync(t.Context(), t, "c-owed", "client-owed")
+	holder := r.enterAsync(t.Context(), t, "c-owed", "client-holder")
+	waitFor(t, "both entries' sessions to be admitted", 10*time.Second, func() bool { return r.Sessions.Len() == 2 })
+	if status, raw := r.internalCall(t, http.MethodDelete, "/proxy/relay/channels/c-owed/clients/client-owed", nil); status != http.StatusOK {
+		t.Fatalf("the client stop answered %d: %s", status, raw)
+	}
+	got := <-answer
+	if got.status != http.StatusServiceUnavailable || got.header.Get("Retry-After") != "1" {
+		t.Fatalf("the entry answered %d with Retry-After %q, want 503 and 1", got.status, got.header.Get("Retry-After"))
+	}
+	if held := <-holder; held.status != http.StatusOK {
+		t.Fatalf("the other entry answered %d, want 200", held.status)
+	}
+	perClient := func(typ string) int {
+		n := 0
+		for _, e := range r.eventsOf(typ) {
+			if e.ClientID == "client-owed" {
+				n++
+			}
+		}
+		return n
+	}
+	waitFor(t, "the entry's own connect and disconnect", 10*time.Second, func() bool {
+		return perClient("client_connect") == 1 && perClient("client_disconnect") == 1
+	})
+	seenConnect := false
+	for _, e := range r.Control.Events() {
+		if e.ClientID != "client-owed" {
+			continue
+		}
+		if e.Type == "client_connect" {
+			seenConnect = true
+		}
+		if e.Type == "client_disconnect" && !seenConnect {
+			t.Fatal("client_disconnect was raised before client_connect")
+		}
+	}
+	if r.Sessions.Len() != 1 {
+		t.Fatalf("%d sessions remain, want the other entry's", r.Sessions.Len())
+	}
+}
+
+// A GET that arrives while a departure is still releasing its client is Busy,
+// never a resume: a resume could re-register the client id before the
+// departure had dropped it.
+func TestAGetOnASettlingDepartureIsBusyThenResumes(t *testing.T) {
+	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
+	r := hlsRig(t, f, nil)
+	ts := r.tuneAs(t, "c-settle", "client-ts")
+	defer func() { _ = ts.Body.Close() }()
+
+	gate := make(chan struct{})
+	release := sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	f.hooks.beforeLeaveClientRelease = func() { <-gate }
+	a := r.session(t, "c-settle", "client-a")
+	f.hooks.beforeLeaveClientRelease = nil
+	b := r.session(t, "c-settle", "client-b") // holds the pipeline, so A can resume onto it
+
+	r.SessionClock.Advance(session12s)
+	if status, _, _ := r.getHLS(t, b.path("video.m3u8")); status != http.StatusOK {
+		t.Fatalf("B's GET answered %d", status)
+	}
+	r.tick(t) // A's departure starts on its own goroutine and stops at the gate
+
+	var busy http.Header
+	waitFor(t, "A's GET to be answered Busy", 10*time.Second, func() bool {
+		status, header, _ := r.getHLS(t, a.path("video.m3u8"))
+		busy = header
+		return status == http.StatusServiceUnavailable
+	})
+	if busy.Get("Retry-After") != "1" {
+		t.Fatalf("Busy answered Retry-After %q, want 1", busy.Get("Retry-After"))
+	}
+	release()
+	waitFor(t, "A's departure to finish", 10*time.Second, func() bool {
+		return sameIDs(clientIDs(r.listedClients(t, "c-settle")), "client-ts", "client-b")
+	})
+	if status, _, _ := r.getHLS(t, a.path("video.m3u8")); status != http.StatusOK {
+		t.Fatalf("A's resume after the departure settled answered %d, want 200", status)
+	}
+}
+
+// A resume whose client id is taken by another viewer is refused for now, and
+// the session stays resumable once the id is free.
+func TestAResumeWhoseClientIDIsTakenIs503AndTheSessionStaysResumable(t *testing.T) {
+	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
+	r := hlsRig(t, f, nil)
+	ts := r.tuneAs(t, "c-dup", "client-ts")
+	defer func() { _ = ts.Body.Close() }()
+	a := r.session(t, "c-dup", "client-a")
+	b := r.session(t, "c-dup", "client-b") // holds the pipeline, so A can resume onto it
+
+	r.SessionClock.Advance(session12s)
+	if status, _, _ := r.getHLS(t, b.path("video.m3u8")); status != http.StatusOK {
+		t.Fatalf("B's GET answered %d", status)
+	}
+	r.tick(t)
+	waitFor(t, "A's departure", 10*time.Second, func() bool {
+		return sameIDs(clientIDs(r.listedClients(t, "c-dup")), "client-ts", "client-b")
+	})
+	taker := r.tuneAs(t, "c-dup", "client-a") // a TS viewer now holds A's client id
+	status, header, _ := r.getHLS(t, a.path("video.m3u8"))
+	if status != http.StatusServiceUnavailable || header.Get("Retry-After") != "1" {
+		t.Fatalf("a resume onto a taken client id answered %d with Retry-After %q, want 503 and 1", status, header.Get("Retry-After"))
+	}
+	_ = taker.Body.Close()
+	waitFor(t, "the taker to leave", 10*time.Second, func() bool {
+		return sameIDs(clientIDs(r.listedClients(t, "c-dup")), "client-ts", "client-b")
+	})
+	if status, _, _ := r.getHLS(t, a.path("video.m3u8")); status != http.StatusOK {
+		t.Fatalf("the resume once the id was free answered %d, want 200", status)
 	}
 }
