@@ -427,7 +427,8 @@ because that field describes a failure rather than a setting.
 
 All are optional fields, preserved by `apps/proxy/relay_serializers.py`:
 
-- `hls_encoder` (4a-1b): `"qsv"` or `"software"`, present while an HLS pipeline runs.
+- `hls_encoder` (4a-1b): `"qsv"` or `"software"`, present while an HLS pipeline runs; `"copy"`
+  while the current generation copies its video (4a-1d).
 - `hls_generation` (4a-1b): an int.
 - `lingering_since` (4a-3): a float Unix time, present while lingering.
 - `rewind_window_seconds` (4a-3): a float.
@@ -636,15 +637,43 @@ window. Only a probe that read its whole bound and still failed ends the output.
 feed ended because the channel's ring closed is a stop, at every generation (R40): the channel is
 ending.
 
-**Automatic generation (4a-1d).** The rules are applied per rendition, from the probe:
+**Automatic generation (4a-1d).** The rules are applied per rendition, from the probe. Amended by the
+4a-1d plan: the copy conditions below are the whole rule; the rows the plan added are marked.
 
 | Source | Automatic does |
 |---|---|
-| video H.264, or HEVC **Main profile, 8-bit** (`yuv420p`), progressive, with ≥ 2 keyframes in the probe window and a maximum keyframe interval K ≤ 6 s (automatic mode re-probes at the full 8 s / 5 MB bound whenever the 3 s probe saw fewer than 2 keyframes, R37, so K up to 6 s stays observable) | copies it (`-c:v copy`, with HEVC tagged `hvc1`). `TARGETDURATION` = max(2, ⌈K⌉). The segmenter cuts at the first keyframe at or after 2 s. |
-| any other video: interlaced, MPEG-2, HEVC Main10 or any other profile or bit depth, K > 6 s, or fewer than 2 keyframes seen | runs the transcode chain above (H.264) |
-| audio AAC | copies it into the `aac` rendition |
-| audio MP2, MP3 or anything else qualifying | encodes AAC 160 kb/s stereo |
+| video H.264 (profile Constrained Baseline, Baseline, Main or High; 8-bit `yuv420p`/`yuvj420p`, 4a-1d plan), or HEVC **Main profile, 8-bit** (`yuv420p`), progressive (a `field_order` of `unknown` is progressive, R28, issue #525), with ≥ 2 keyframes in the probe window and a maximum keyframe interval K ≤ 6 s (automatic mode re-probes at the full 8 s / 5 MB bound whenever the 3 s probe saw fewer than 2 keyframes, R37), no larger than 1920×1080 and no faster than 60 frames a second (4a-1d plan: the output's geometry and rate are the source's, never scaled) | copies it (`-c:v copy`, with HEVC tagged `hvc1`). `TARGETDURATION` = max(2, ⌈K − 0.1 s⌉) (4a-1d plan: RFC 8216 § 4.3.3.1 rounds `EXTINF`, so a 2.002 s GOP keeps a target of 2 and every K keeps at least 0.4 s below `TARGETDURATION` + 0.5 s). The segmenter closes a segment before a keyframe fragment once the 2 s grid is reached, **or** when that fragment would take the segment to `TARGETDURATION` + 0.5 s or beyond (4a-1d plan: "the first keyframe at or after 2 s" alone lets a segment reach 2 s + K). |
+| any other video: interlaced, MPEG-2, HEVC Main10 or any other profile or bit depth, H.264 High 10 or 4:2:2, K > 6 s, fewer than 2 keyframes seen, or larger than 1920×1080 or faster than 60 frames a second | runs the transcode chain above (H.264) |
+| audio AAC-LC, stereo (4a-1d plan: the `aac` rendition declares `CHANNELS="2"` and `mp4a.40.2`) | copies it into the `aac` rendition, with `-bsf:a aac_adtstoasc` (measured, ffmpeg 9.0.1: an ADTS stream copied into MP4 otherwise fails with "Malformed AAC bitstream") |
+| audio AAC of any other profile or layout, MP2, MP3 or anything else qualifying | encodes AAC 160 kb/s stereo |
 | audio AC-3 / E-AC-3 | handles it as in transcode |
+
+**A later generation copies** only when the rule above holds for its own probe **and** its video is
+the declared family, its width, height and frame rate equal the run's fixed output, its K is no
+longer than the run's `TARGETDURATION` allows, and its level is no higher than the declared one
+(4a-1d plan). Otherwise it is encoded into the declared family. A run whose first generation was
+encoded may copy later, on the same conditions.
+
+**The probe in automatic mode** adds `-show_entries packet=stream_index,pts_time,flags,size` to
+`-show_streams` (4a-1d plan; one ffprobe, measured to keep every stream field): the keyframe count
+and K come from the first video stream's key packets, and the probe window's rate from the packet
+sizes. Transcode mode's probe argv is unchanged. The full bound is 5 MB **or** 8 s, so above
+about 5 Mb/s the window is shorter than 8 s and a K near 6 s can go unseen; that source is encoded,
+which is correct and only costs the copy (§ Risks).
+
+**The multivariant in automatic mode** (4a-1d plan, answering § 4a-1d's `CODECS` question).
+- The video `CODECS` is the declared family's **ceiling**. It is read from the first complete
+  generation's init, as in transcode (R41). Its level is then raised to the higher of that level and
+  the family's encode level: 4.2 for H.264 (`-level 42`), 4.1 for HEVC (`-level 41` on `hevc_qsv`,
+  `level-idc=4.1` on `libx265`). An H.264 profile is raised to High (`avc1.64…`).
+- So a copied Main@3.0 generation is declared `avc1.64002a`, and a copied HEVC Main@3.1
+  generation is declared `hvc1.1.6.L123.…`. Every generation of the run, copied or encoded, is then
+  decodable at the declared profile and level.
+- A later generation above the declared level is encoded, never copied (above). The init segments
+  still carry each generation's own string.
+- `BANDWIDTH` is the higher of transcode's figure and 1.25 × the probe window's measured rate plus the
+  group's audio rate; `AVERAGE-BANDWIDTH` is the higher of transcode's and the measured rate plus it.
+- The channel payload's `hls_encoder` is `"copy"` while the current generation copies its video.
 
 **Two run-level rules for automatic** (finding 8). Both are reasoning, not measured behaviour;
 4a-1d pins them with fixtures.
@@ -653,14 +682,25 @@ ending.
   a source boundary) that cannot copy is encoded **into the declared family**:
   - an H.264-declared run uses the transcode chain above;
   - an HEVC-declared run (only ever Main, 8-bit, by the copy rule above, so the declared `CODECS`
-    profile and bit depth stay true) uses `hevc_qsv -profile:v main` (8-bit `nv12`) with the same `-g`, `-idr_interval 0`,
-    `-forced_idr 1` and `force_key_frames`;
-  - without QSV, it uses `libx265 -preset ultrafast -x265-params keyint=G:min-keyint=G:scenecut=0`,
-    tagged `hvc1`. M1 shows `hevc_qsv` and `libx265` in the production image.
-- **The segmenter enforces the target duration.** A copied segment longer than `TARGETDURATION` +
-  0.5 s ends the generation **at once**, as a synthetic source boundary at the ring's head (as a
-  death after the first segment is treated), and every later generation of the run is encoded
+    profile and bit depth stay true) uses `hevc_qsv -profile:v main -level 41` (8-bit `nv12`) with the same `-g`, `-idr_interval 0`,
+    `-forced_idr 1`, `force_key_frames` and bitrate table, tagged `hvc1`; `hevc_qsv` is detected by its own one-frame encode, the first time it is needed, and written off on its own evidence (D11);
+  - without QSV, it uses `libx265 -preset ultrafast -x265-params keyint=G:min-keyint=G:scenecut=0:level-idc=4.1`
+    with the same bitrate table and `force_key_frames`, tagged `hvc1`. M1 shows `hevc_qsv` and `libx265` in the production image; the 4a-1d plan ran the `libx265` argv on ffmpeg 9.0.1 (Main, level 123, a keyframe every 2 s from an MPEG-2 576i source).
+- **The segmenter enforces the target duration.** A copied segment of `TARGETDURATION` +
+  0.5 s or longer (it would round above the target, RFC 8216 § 4.3.3.1) ends the generation **at once**, as a synthetic source boundary at the ring's head (as a
+  death after the first segment is treated), is never published, and every later generation of the run is encoded
   into the declared family. It counts toward the 3-in-60 s restart bound.
+- **Every threshold measured in target durations is the pipeline's own** (R42, 4a-1d plan). The
+  stall timeout is `max(10 s, 5 × TARGETDURATION)`, 30 s at 6. Its startup allowance before a
+  generation's first video fragment is `max(30 s, the stall timeout)`, not three times it: before the
+  first fragment the wait is an encoder's cold start, whose GOP is 2 s in every mode, or a copy's
+  first closed GOP, which is at most 2 × K = 12 s of media, and three times 30 s would push the
+  entry's wait (43 s) past nginx's 60 s `proxy_read_timeout` on `/hls/`. So the waits stay 43 s at
+  every target. The presence thresholds (§ Presence thresholds) take the session's pipeline's
+  target, set once the first generation's inits exist. The store's byte ceiling scales with the
+  target (64 MiB at 2, 192 MiB at 6), which keeps RFC 8216 § 6.2.2's 21 segments of a copied
+  source up to about 12 Mb/s at a target of 6, and the ten listed ones up to about 26 Mb/s; above
+  that it is the runaway guard it already is (computed, not measured).
 
 ## Presence and lifecycle (4a-1b, extended by 4a-3)
 
@@ -1499,6 +1539,17 @@ PR description draft:
     generation differ in level (for example `hvc1…L120` against `L123`). Since R41 the string is
     read from the first generation that writes a complete set of inits, not from generation 0's
     probe; in transcode every generation's string is the same (4a-1a plan review, round 4).
+    **Answered by the 4a-1d plan:** the family's ceiling (§ Automatic generation › The multivariant
+    in automatic mode), and each attempt of a generation starts with no codec recorded by an
+    earlier attempt, so a failed Quick Sync attempt's string never mixes with its retry's.
+  - The startup allowance and the entry's waits at a target of 6 (R42, R55, R57): the allowance is
+    `max(30 s, the stall timeout)`, and the waits stay 43 s (§ Automatic generation).
+  - The `hls_profile` key is required on every next-source answer, as `output_profiles` is: an
+    answer without it is a contract mismatch that answers an HLS entry 502, and a TS tune is not
+    affected (4a-1d plan). A non-degraded failover answer refreshes the channel's choice, as it
+    refreshes `output_profiles`; entries after it use the new profile.
+  - Issue #525 (R28) is closed by 4a-1d's implementation PR, which lands the copy rule's
+    `unknown`-is-progressive row.
 - **Tests.**
   - Migrations forward and back.
   - A per-rendition decision table against the 4a-0 assets.
@@ -1508,12 +1559,17 @@ PR description draft:
   - Presence at TD = 6 (finding 6): a reclaim-predicate row with sessions reloading every 6 s is
     not silent. The idle sweep does not depart it within 36 s.
   - Each exclusion: the HDHR resolver ignores an HLS row, and the HDHR select omits it.
-  - E2E: an automatic channel on the H.264 asset serves copied video with the source's `CODECS`.
+  - E2E: an automatic channel on the H.264 asset serves copied video: `hls_encoder` is `"copy"`,
+    and its init segment carries the source's own `avc1` string, while the multivariant declares
+    the family ceiling `avc1.64002a` (4a-1d plan; the spec's "with the source's `CODECS`" predates
+    the ceiling). The HEVC asset is declared `hvc1`, and the 10 s-GOP asset is encoded.
 - **Break-checks.**
   - Copy interlaced video. The decision test reddens, naming `field_order`.
   - Encode the HEVC run's second generation as H.264. The declared-family test reddens.
   - Let a copied segment exceed target + 0.5 s. The segmenter test reddens.
   - Hard-code the silence threshold at 4 s. The TD = 6 predicate row reddens.
+  - Treat `field_order=unknown` as interlaced. The HEVC decision row and the real HEVC copy test
+    redden (R28, #525).
 - **Gates.** The Python Gate 2 isolated run (`next_source.py`, `authorize.py`), and the Go census
   with its R21 listing.
 - **Stopping point.** Yes.
@@ -1887,6 +1943,25 @@ Filled in as PRs merge.
   - **R52 and R53** bind the 4a-1b implementation, not this text: the Go floor becomes
     `589 + H + O`, every census round at or under it, and the floor header's R21 sentence reads
     "does not exceed"; the orchestrator files the issue if R29's measurement is below real time.
+
+- **2026-09-29, amended by the 4a-1d plan** (`docs/superpowers/plans/2026-09-29-phase4-4a1d-automatic-profile.md`;
+  seed `4ed75d96`, #538's reviewed head). § Automatic generation and § 4a-1d only, plus one payload line.
+  - **The copy rule** names what it had left implicit: H.264's profiles and 8-bit 4:2:0, the
+    1920×1080 and 60 fps ceilings (a copy is never scaled), AAC copied only as LC stereo with
+    `aac_adtstoasc`, and when a later generation may copy.
+  - **`TARGETDURATION` = max(2, ⌈K − 0.1 s⌉)**, and the copy segmenter also closes before a keyframe
+    that would take a segment to the target + 0.5 s; a segment reaching that ends the generation
+    (RFC 8216 § 4.3.3.1's rounding, where "longer than the target + 0.5 s" let a 2.5 s segment
+    stand under a target of 2).
+  - **The automatic probe** lists the video packets for the keyframe count, K and the window's rate.
+  - **`CODECS`** (§ 4a-1d's open item): the family ceiling, and a per-attempt codec reset.
+  - **R42**: every target-duration threshold is the pipeline's; the startup allowance is
+    `max(30 s, the stall timeout)`, so the entry's 43 s waits (R57) hold at a target of 6 and stay
+    under nginx's 60 s.
+  - **The HEVC encode** pins level 4.1, takes the bitrate table, and has its own Quick Sync detection.
+  - **`hls_profile`** is required as `output_profiles` is, and refreshed by a non-degraded failover.
+  - **`hls_encoder`** gains `"copy"`.
+  - **The store's byte ceiling** scales with the target.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
