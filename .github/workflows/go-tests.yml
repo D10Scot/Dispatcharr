@@ -345,7 +345,8 @@ jobs:
       # floor that is DELETED turns --gate's documented bootstrap branch ("no
       # floor, this run is a census draw") into a permanent off switch. The
       # base ref is what tells the two apart from the legitimate one-time
-      # absence on the PR that introduces the floor.
+      # absence on the PR that introduces the floor. A rise is admitted only
+      # when declared and bounded (scripts/check_floor_raise.sh).
       - name: Refuse a floor edited downward or deleted
         if: always()
         env:
@@ -377,13 +378,10 @@ jobs:
             exit 0
           fi
           OLD=$(git cat-file blob "$OLD_BLOB" | grep -E '^missing=' | cut -d= -f2)
-          NEW=$(grep -E '^missing=' scripts/coverage_relay_go.floor | cut -d= -f2)
-          echo "floor: base=$OLD head=$NEW"
-          if [ "$NEW" -gt "$OLD" ]; then
-            echo "The floor was raised ($OLD -> $NEW): more missed statements are now permitted."
-            echo "A floor may rise only in a PR that earns and explains the rise."
-            exit 1
-          fi
+          # A rise is admitted only when the head floor declares it
+          # (raise_from == the base's missing, raise_listed > 0) and stays
+          # within raise_from + raise_listed: owner ruling R21, Phase 4 spec D20.
+          bash scripts/check_floor_raise.sh "$OLD" scripts/coverage_relay_go.floor
 
   # The one check in this workflow that may be required. It always reports,
   # because it is not gated on anything — see the comment on the triggers.
