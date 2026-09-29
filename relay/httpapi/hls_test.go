@@ -906,13 +906,26 @@ func TestADepartedSessionResumesOnItsRunningPipeline(t *testing.T) {
 	waitFor(t, "A's departure", 10*time.Second, func() bool {
 		return sameIDs(clientIDs(r.listedClients(t, "c-resume2")), "client-ts", "client-b")
 	})
-	connects := len(r.eventsOf("client_connect"))
 
 	status, _, body := r.getHLS(t, a.path("video.m3u8"))
 	if status != http.StatusOK || !strings.Contains(string(body), "#EXT-X-TARGETDURATION") {
 		t.Fatalf("A's resume answered %d: %s", status, body)
 	}
-	waitFor(t, "a second client_connect", 10*time.Second, func() bool { return len(r.eventsOf("client_connect")) == connects+1 })
+	// Events reach the control plane ASYNCHRONOUSLY, in batches, so a baseline
+	// count taken now can still miss earlier connects in flight and a later
+	// "baseline + 1" can be jumped over by a batch that lands two at once
+	// (the census flake: 3 of 10 CI rounds timed out here). What is monotone
+	// and has one writer per emit is A's OWN connects: its entry's and its
+	// resume's, exactly two, never more.
+	waitFor(t, "client-a's second client_connect (its entry's and its resume's)", 10*time.Second, func() bool {
+		n := 0
+		for _, e := range r.eventsOf("client_connect") {
+			if e.ClientID == "client-a" {
+				n++
+			}
+		}
+		return n == 2
+	})
 	if got := clientIDs(r.listedClients(t, "c-resume2")); !sameIDs(got, "client-ts", "client-a", "client-b") {
 		t.Fatalf("the registry lists %v after the resume, want the TS client and both sessions", got)
 	}
