@@ -669,11 +669,11 @@ describe('FloatingVideo', () => {
     it('uses the live HLS config', async () => {
       await renderHls();
 
-      expect(capturedHlsConfig.backBufferLength).toBe(120);
       expect(
         capturedHlsConfig.manifestLoadPolicy?.default?.maxLoadTimeMs ?? 0,
         'the entry timeout must cover the relay tune budget plus its ready wait'
       ).toBeGreaterThan(HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS);
+      expect(capturedHlsConfig.backBufferLength).toBe(120);
     });
 
     it('closing the player destroys hls.js, then leaves the session', async () => {
