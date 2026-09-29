@@ -48,6 +48,28 @@ const StallTimeout = max(10*time.Second, 5*TargetDuration*time.Second)
 // before its first video fragment (ruling R55): 30 s at TARGETDURATION 2.
 const StartupStallFactor = 3
 
+// StartupStall is the startup allowance for a pipeline of the given target
+// duration: what a generation gets before its first video fragment. The
+// entry's waits are derived from the longest target's (MaxTargetDuration).
+func StartupStall(target int) time.Duration {
+	_, startup := stallLimits(target)
+	return startup
+}
+
+// stallLimits is the watchdog's pair for a pipeline whose target duration is
+// target seconds (ruling R42): the stall timeout max(10 s, 5 x target), and
+// the allowance before a generation's first fragment, max(StartupStallFactor x
+// StallTimeout, the stall timeout) -- 30 s at every target from 2 to 6 (ruling
+// R58), which is what keeps the entry's waits at 43 s, under nginx's 60 s
+// read timeout on /hls/. The wait before a first fragment is an encoder's cold
+// start, whose GOP is 2 s in every mode, or a copy's first closed GOP, at most
+// 2 x K = 12 s of media, so the allowance does not need to grow with the
+// target: three times max(10 s, 5 x 6) would be 90 s.
+func stallLimits(target int) (stall, startup time.Duration) {
+	stall = max(StallTimeout, 5*time.Duration(target)*time.Second)
+	return stall, max(StartupStallFactor*StallTimeout, stall)
+}
+
 // stopJoinWait bounds Stop's wait for the pipeline to wind down: the exit
 // grace, the reap budget and a margin.
 const stopJoinWait = GenerationExitGrace + ffmpeg.KillWait + 2*time.Second
@@ -220,6 +242,37 @@ func (p *Pipeline) Generation() int {
 	return p.gen
 }
 
+// TargetDuration is the pipeline's target duration: its output's once
+// generation 0's probe has decided it (2 s in transcode, up to 6 s for a copied
+// automatic run), and the default before that. The session's presence
+// thresholds, the stall watchdog and the store's byte ceiling all scale with
+// it (ruling R42).
+func (p *Pipeline) TargetDuration() time.Duration {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.output == nil || p.output.Target <= 0 {
+		return TargetDuration * time.Second
+	}
+	return time.Duration(p.output.Target) * time.Second
+}
+
+// watchLimits is the watchdog's stall timeout and its startup allowance, in
+// the order a test override wins: cfg.StallTimeout, else the target's own;
+// cfg.StartupStallTimeout, else StartupStallFactor x an overridden
+// StallTimeout (the rule the seed's own tests pin), else the target's own.
+func (p *Pipeline) watchLimits() (stall, startup time.Duration) {
+	target := int(p.TargetDuration() / time.Second)
+	stall, startup = stallLimits(target)
+	if p.cfg.StallTimeout > 0 {
+		stall = p.cfg.StallTimeout
+		startup = StartupStallFactor * p.cfg.StallTimeout
+	}
+	if p.cfg.StartupStallTimeout > 0 {
+		startup = p.cfg.StartupStallTimeout
+	}
+	return stall, startup
+}
+
 // GenerationProbe is what a generation's probe found.
 func (p *Pipeline) GenerationProbe(gen int) (Probe, bool) {
 	p.mu.Lock()
@@ -323,6 +376,17 @@ func (p *Pipeline) noteInit(name string, gen int, data []byte, codec string) {
 		}
 	}
 	p.codecs, p.initCodecs = p.initCodecs[gen], nil
+	if p.output.Automatic {
+		// The multivariant declares the family's ceiling, not the first
+		// complete generation's own string (R59); the init segments keep
+		// each generation's own.
+		declared, ok := ceilingCodec(p.codecs[RenditionVideo], *p.output)
+		if !ok {
+			p.log.Warn("the video codec string could not be raised to the family's ceiling; declaring it as it is",
+				"generation", gen, "codec", p.codecs[RenditionVideo])
+		}
+		p.codecs[RenditionVideo] = declared
+	}
 	p.mu.Unlock()
 	p.markReady(nil)
 }
@@ -351,6 +415,23 @@ func (p *Pipeline) run(ctx context.Context) {
 		start = ring.Join(p.cfg.JoinBehind)
 	}
 	var deaths []time.Time
+	// forceEncode is set by an over-long copied segment: every later
+	// generation of the run is encoded into the declared family (spec § Two
+	// run-level rules for automatic).
+	forceEncode := false
+	// noteDeath records one death or over-long ending in the 3-in-60 s window
+	// and reports whether it was the third.
+	noteDeath := func() bool {
+		now := p.now()
+		kept := deaths[:0]
+		for _, at := range deaths {
+			if now.Sub(at) < deathWindow {
+				kept = append(kept, at)
+			}
+		}
+		deaths = append(kept, now)
+		return len(deaths) >= maxDeaths
+	}
 	for gen := 0; ; gen++ {
 		if ctx.Err() != nil {
 			p.finish(nil)
@@ -403,7 +484,7 @@ func (p *Pipeline) run(ctx context.Context) {
 		first := p.output == nil
 		p.mu.Unlock()
 		if first {
-			out, err := Decide(probe)
+			out, err := DecideFor(probe, p.cfg.Mode)
 			if err != nil {
 				if probe.Video != nil {
 					// Nit 5 (plan review, round 1): said as what it is.
@@ -417,6 +498,11 @@ func (p *Pipeline) run(ctx context.Context) {
 			p.mu.Lock()
 			p.output = &out
 			p.mu.Unlock()
+			// Before any publish: the media playlists' TARGETDURATION and the
+			// byte ceiling follow the pipeline's own target (R42).
+			p.store.SetTargetDuration(out.Target)
+			p.log.Info("HLS output decided", "generation", gen, "width", out.Width, "height", out.Height,
+				"frame_rate", out.FrameRate, "family", out.Family, "target", out.Target, "level", out.Level, "automatic", out.Automatic)
 		} else if probe.Video == nil {
 			p.log.Error("a later HLS generation's source has no video stream", "generation", gen)
 			p.finish(ErrFailed)
@@ -424,7 +510,7 @@ func (p *Pipeline) run(ctx context.Context) {
 		}
 		p.logProbe(gen, probe)
 
-		result := p.generation(ctx, gen, start, probe, bound)
+		result := p.generation(ctx, gen, start, probe, bound, forceEncode)
 		switch result.outcome {
 		case outcomeStopped:
 			p.finish(nil)
@@ -438,15 +524,7 @@ func (p *Pipeline) run(ctx context.Context) {
 			p.log.Info("source boundary: the HLS generation ended and the next starts there", "generation", gen, "boundary", result.boundary)
 			start = result.boundary - 1
 		case outcomeDied:
-			now := p.now()
-			kept := deaths[:0]
-			for _, at := range deaths {
-				if now.Sub(at) < deathWindow {
-					kept = append(kept, at)
-				}
-			}
-			deaths = append(kept, now)
-			if len(deaths) >= maxDeaths {
+			if noteDeath() {
 				p.log.Error("the HLS output failed: its generations keep dying",
 					"generation", gen, "deaths", len(deaths), "within", deathWindow, "stderr", strings.Join(result.tail, " | "))
 				p.finish(ErrFailed)
@@ -454,8 +532,45 @@ func (p *Pipeline) run(ctx context.Context) {
 			}
 			p.log.Warn("an HLS generation died after its first segment; restarting at the ring's head, as at a source boundary", "generation", gen)
 			start = ring.Head()
+		case outcomeOverlong:
+			// A copied segment that would round above the target ended the
+			// generation at once. It counts toward the restart bound as a
+			// death does, every later generation is encoded, and the run
+			// resumes at the ring's head as after a death.
+			if noteDeath() {
+				p.log.Error("the HLS output failed: its generations keep ending",
+					"generation", gen, "deaths", len(deaths), "within", deathWindow, "stderr", strings.Join(result.tail, " | "))
+				p.finish(ErrFailed)
+				return
+			}
+			forceEncode = true
+			p.log.Warn("a copied HLS segment was longer than the target duration allows; the run is encoded from here",
+				"generation", gen)
+			start = ring.Head()
 		}
 	}
+}
+
+// logVideoDecision logs an automatic attempt's video decision once, with the
+// one-word reason it was encoded (spec § Automatic generation), so a copy that
+// was not made says why. A field order of unknown is said to be treated as
+// progressive (R28, issue #525) whenever it is the field order.
+func (p *Pipeline) logVideoDecision(gen, n int, out Output, probe Probe, plan Plan, forceEncode bool) {
+	fill, reason := "encode", ""
+	if plan.VideoCopy {
+		fill = "copy"
+	} else {
+		_, reason = out.VideoDecision(probe, forceEncode)
+	}
+	field := "none"
+	if probe.Video != nil {
+		field = probe.Video.Field.String()
+		if probe.Video.Field == FieldUnknown {
+			field = "unknown, treated as progressive (R28)"
+		}
+	}
+	p.log.Info("HLS video", "generation", gen, "attempt", n, "fill", fill, "reason", reason,
+		"family", out.Family, "field_order", field, "keyframes", probe.Keyframes, "keyframe_interval", probe.KeyframeInterval)
 }
 
 // logProbe logs the probe's audio decisions, including a choice between
@@ -571,6 +686,10 @@ const (
 	outcomeEarly
 	outcomeDied
 	outcomeFailed
+	// outcomeOverlong is a copied generation ended at once by a segment that
+	// would round above the target duration. It is not outcomeEarly: no
+	// same-engine retry of a copy that would fail the same way.
+	outcomeOverlong
 )
 
 type genResult struct {
@@ -586,20 +705,53 @@ type genResult struct {
 // software attempt succeeds AND a re-run of the detection encode fails.
 // Anything else that fails every attempt fails this channel's HLS output
 // alone.
-func (p *Pipeline) generation(ctx context.Context, gen int, start uint64, probe Probe, bound ProbeBound) genResult {
-	engine := p.det.Engine(ctx)
-	r := p.attempt(ctx, gen, 1, start, probe, bound, engine, nil)
+//
+// A generation whose video an automatic run copies (4a-1d) has no encoder to
+// retry on another engine: it copies twice, and if both attempts exit before
+// their first segment it is encoded into the run's declared family under the
+// ordinary policy (R74), on the same input. Only when that encode fails too is
+// the generation, and so the channel's HLS output, failed.
+func (p *Pipeline) generation(ctx context.Context, gen int, start uint64, probe Probe, bound ProbeBound, forceEncode bool) genResult {
+	if p.cfg.Mode == ModeAutomatic {
+		out := p.currentOutput()
+		if copied, _ := out.VideoDecision(probe, forceEncode); copied {
+			r := p.attempt(ctx, gen, 1, start, probe, bound, EngineCopy, false, nil)
+			if r.outcome != outcomeEarly {
+				return r
+			}
+			p.log.Warn("a copied HLS generation exited before its first segment; retrying", "generation", gen)
+			r = p.attempt(ctx, gen, 2, start, probe, bound, EngineCopy, false, nil)
+			if r.outcome != outcomeEarly {
+				return r
+			}
+			p.log.Warn("a copy generation exited before its first segment twice; encoding it into the declared family",
+				"generation", gen, "family", out.Family)
+			return p.encodeGeneration(ctx, gen, start, probe, bound, true, 3)
+		}
+	}
+	return p.encodeGeneration(ctx, gen, start, probe, bound, forceEncode, 1)
+}
+
+// encodeGeneration is D11's failure policy for an encoded generation,
+// numbering its attempts from first (3 after a failed copy's two). The
+// encoder is the run's declared family's: h264_qsv or libx264, or in an HEVC
+// run hevc_qsv or libx265, each family detected and written off on its own
+// evidence.
+func (p *Pipeline) encodeGeneration(ctx context.Context, gen int, start uint64, probe Probe, bound ProbeBound, forceEncode bool, first int) genResult {
+	family := p.currentOutput().Family
+	engine := p.det.EngineFor(ctx, family)
+	r := p.attempt(ctx, gen, first, start, probe, bound, engine, forceEncode, nil)
 	if r.outcome != outcomeEarly {
 		return r
 	}
 	p.log.Warn("an HLS generation exited before its first segment; retrying", "generation", gen, "engine", engine)
-	r = p.attempt(ctx, gen, 2, start, probe, bound, engine, nil)
+	r = p.attempt(ctx, gen, first+1, start, probe, bound, engine, forceEncode, nil)
 	if r.outcome != outcomeEarly {
 		return r
 	}
 	if engine == EngineQSV {
 		p.log.Warn("an HLS generation failed twice on Quick Sync; trying the same input in software", "generation", gen)
-		r = p.attempt(ctx, gen, 3, start, probe, bound, EngineSoftware, func() {
+		r = p.attempt(ctx, gen, first+2, start, probe, bound, EngineSoftware, forceEncode, func() {
 			// Software got a segment out of the input Quick Sync could
 			// not. Whether that was the device is the detection encode's
 			// to say, on its own goroutine so the segmenter never waits
@@ -607,8 +759,8 @@ func (p *Pipeline) generation(ctx context.Context, gen int, start uint64, probe 
 			p.background.Add(1)
 			go func() {
 				defer p.background.Done()
-				if usable, conclusive := p.det.Recheck(ctx); conclusive && !usable {
-					p.det.MarkUnusable()
+				if usable, conclusive := p.det.RecheckFor(ctx, family); conclusive && !usable {
+					p.det.MarkUnusableFor(family)
 				}
 			}()
 		})
@@ -620,15 +772,39 @@ func (p *Pipeline) generation(ctx context.Context, gen int, start uint64, probe 
 	return r
 }
 
+// currentOutput is the run's fixed output, decided by generation 0's probe.
+func (p *Pipeline) currentOutput() Output {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return *p.output
+}
+
 // attempt is one encoder process: its spawn, its input writer, its stderr,
 // its output readers and its segmenter, joined before it returns.
-func (p *Pipeline) attempt(ctx context.Context, gen, n int, start uint64, probe Probe, bound ProbeBound, engine Engine, onFirst func()) genResult {
+func (p *Pipeline) attempt(ctx context.Context, gen, n int, start uint64, probe Probe, bound ProbeBound, engine Engine, forceEncode bool, onFirst func()) genResult {
 	p.mu.Lock()
 	out := *p.output
-	p.engine = engine
+	// No attempt's noteInit may complete a codec set with a string an earlier
+	// attempt of this generation recorded before it failed (the 4a-1a r5
+	// hand-off): the set starts empty, and the silence fills below record
+	// theirs after this.
+	if p.codecs == nil {
+		delete(p.initCodecs, gen)
+	}
 	p.mu.Unlock()
-	plan := PlanGeneration(out, probe, engine)
+	var plan Plan
+	if p.cfg.Mode == ModeAutomatic {
+		plan = PlanAutomatic(out, probe, engine, gen, forceEncode)
+	} else {
+		plan = PlanGeneration(out, probe, engine)
+	}
 	plan.Input = bound
+	p.mu.Lock()
+	p.engine = plan.Engine
+	p.mu.Unlock()
+	if p.cfg.Mode == ModeAutomatic {
+		p.logVideoDecision(gen, n, out, probe, plan, forceEncode)
+	}
 
 	silence := map[string]*silenceClock{}
 	var encoded []string
@@ -654,7 +830,7 @@ func (p *Pipeline) attempt(ctx context.Context, gen, n int, start uint64, probe 
 		p.log.Info("HLS rendition", "generation", gen, "attempt", n, "rendition", r.Name, "fill", plan.Fills[r.Name].Kind, "source", plan.Fills[r.Name].Source.ID)
 	}
 
-	spawn := Spawn{Generation: gen, Attempt: n, Engine: engine, Argv: out.Argv(plan, p.device()), Extra: out.Extra(plan)}
+	spawn := Spawn{Generation: gen, Attempt: n, Engine: plan.Engine, Argv: out.Argv(plan, p.device()), Extra: out.Extra(plan)}
 	command, argv := p.cfg.FFmpeg, spawn.Argv
 	if command == "" {
 		command = "ffmpeg"
@@ -674,6 +850,12 @@ func (p *Pipeline) attempt(ctx context.Context, gen, n int, start uint64, probe 
 	}
 
 	seg := newSegmenter(p.store, gen, encoded, silence, p.now, p.cfg.AudioWait, onFirst)
+	seg.target, seg.copied = uint64(max(out.Target, 0)), plan.VideoCopy // #nosec G115 -- a target duration in seconds, 2 to 6
+	seg.onOverlong = func() {
+		p.log.Warn("a copied HLS segment would round above the target duration; ending the generation",
+			"generation", gen, "attempt", n, "target", out.Target)
+		proc.Kill()
+	}
 	var tailMu sync.Mutex
 	var tail []string
 	stderrDone := make(chan struct{})
@@ -793,6 +975,8 @@ func (p *Pipeline) attempt(ctx context.Context, gen, n int, start uint64, probe 
 	switch {
 	case ctx.Err() != nil:
 		result.outcome = outcomeStopped
+	case seg.Overlong():
+		result.outcome = outcomeOverlong
 	case fed.end == feedBoundary:
 		result.outcome, result.boundary = outcomeBoundary, fed.boundary
 	case fed.end == feedClosed:
@@ -817,14 +1001,7 @@ func (p *Pipeline) attempt(ctx context.Context, gen, n int, start uint64, probe 
 // process's outputs, and the attempt is then classified as any process that
 // ended on its own: a death after its first segment, an early exit before it.
 func (p *Pipeline) watch(gen int, seg *segmenter, proc *ffmpeg.Process, done <-chan struct{}) {
-	stall := p.cfg.StallTimeout
-	if stall <= 0 {
-		stall = StallTimeout
-	}
-	startup := p.cfg.StartupStallTimeout
-	if startup <= 0 {
-		startup = StartupStallFactor * stall
-	}
+	stall, startup := p.watchLimits()
 	ring := p.cfg.Source.Ring()
 	ticker := time.NewTicker(stall / 10)
 	defer ticker.Stop()

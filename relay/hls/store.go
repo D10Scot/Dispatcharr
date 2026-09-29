@@ -23,7 +23,9 @@ const (
 	StoreSegments = 21
 	StoreBytes    = 64 << 20
 	LiveEdge      = 10
-	// TargetDuration is transcode mode's EXT-X-TARGETDURATION, in seconds.
+	// TargetDuration is transcode mode's EXT-X-TARGETDURATION, in seconds,
+	// and the default of a store nothing has called SetTargetDuration on.
+	// An automatic run's is its pipeline's own (Store.SetTargetDuration).
 	TargetDuration = 2
 )
 
@@ -73,6 +75,10 @@ type Store struct {
 	inits               map[initKey][]byte
 	closed              bool
 	now                 func() time.Time
+	// target is the pipeline's target duration in seconds, 0 meaning the
+	// default (TargetDuration). SetTargetDuration sets it once, before any
+	// publish.
+	target int
 }
 
 // NewStore is an empty store. now is the clock for Last-Modified (nil means
@@ -87,6 +93,33 @@ func NewStore(now func() time.Time) *Store {
 func (s *Store) notifyLocked() {
 	close(s.changed)
 	s.changed = make(chan struct{})
+}
+
+// SetTargetDuration fixes the store's target duration in seconds (4a-1d): the
+// value its media playlists carry as EXT-X-TARGETDURATION, and the scale of
+// the byte ceiling, which is StoreBytes at TargetDuration and grows with it,
+// because a copied segment at a target of 6 is three times the bytes of one at
+// 2. It is called once, when the run's output is decided, before any publish.
+// A store it was never called on behaves exactly as it always has.
+func (s *Store) SetTargetDuration(target int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.target = target
+}
+
+// targetLocked is the target duration in force.
+func (s *Store) targetLocked() int {
+	if s.target > 0 {
+		return s.target
+	}
+	return TargetDuration
+}
+
+// byteLimitLocked is the byte ceiling: StoreBytes scaled by target over the
+// default target. It stays the runaway guard the segment count is not: at 2 s
+// the 21 segments fit far below it, and at 6 s they fit up to about 12 Mb/s.
+func (s *Store) byteLimitLocked() int {
+	return StoreBytes * s.targetLocked() / TargetDuration
 }
 
 // SetInit records a generation's init segment for a rendition.
@@ -127,7 +160,7 @@ func (s *Store) publish(gen int, pdt time.Time, parts map[string]part) uint64 {
 	s.lastGen, s.published = gen, true
 	s.segs = append(s.segs, seg)
 	s.bytes += seg.bytes
-	for len(s.segs) > StoreSegments || (s.bytes > StoreBytes && len(s.segs) > 1) {
+	for len(s.segs) > StoreSegments || (s.bytes > s.byteLimitLocked() && len(s.segs) > 1) {
 		gone := s.segs[0]
 		if gone.discontinuity {
 			s.discontinuitiesGone++
@@ -227,7 +260,7 @@ func (s *Store) MediaPlaylist(rendition string) ([]byte, time.Time, bool) {
 	}
 	var b strings.Builder
 	b.WriteString("#EXTM3U\n#EXT-X-VERSION:7\n")
-	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", TargetDuration)
+	fmt.Fprintf(&b, "#EXT-X-TARGETDURATION:%d\n", s.targetLocked())
 	fmt.Fprintf(&b, "#EXT-X-MEDIA-SEQUENCE:%d\n", listed[0].seq)
 	fmt.Fprintf(&b, "#EXT-X-DISCONTINUITY-SEQUENCE:%d\n", gone)
 	b.WriteString("#EXT-X-INDEPENDENT-SEGMENTS\n")

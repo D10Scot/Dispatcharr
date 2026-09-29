@@ -173,7 +173,17 @@ type Video struct {
 
 // Complete is whether the probe saw enough of the video to decide from:
 // its geometry and its field order (R30's re-probe condition).
+//
+// HEVC is complete on its geometry alone (R28, issue #525): ffprobe's JSON
+// never prints a field_order for it, not even "unknown" (measured, ffprobe
+// 9.0.1), because HEVC signals field coding in SEI. Waiting for the key would
+// re-probe every HEVC generation at the full bound and skip one whose feed
+// ends inside the window. Its field order stays FieldUnknown, treated as
+// progressive.
 func (v Video) Complete() bool {
+	if v.Codec == "hevc" {
+		return v.Width > 0 && v.Height > 0
+	}
 	return v.Width > 0 && v.Height > 0 && v.fieldReported
 }
 

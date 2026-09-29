@@ -67,6 +67,16 @@ type segmenter struct {
 	// block.
 	onFirst func()
 
+	// The three fields below are set by the attempt after newSegmenter and
+	// before run, for a generation whose video is COPIED (4a-1d): target is
+	// the run's target duration in seconds, copied says the copy cut and the
+	// over-long check apply, and onOverlong is called once, on the
+	// segmenter's goroutine and never with the lock held, when a copied
+	// segment would round above the target. It must not block.
+	target     uint64
+	copied     bool
+	onOverlong func()
+
 	mu      sync.Mutex
 	changed chan struct{}
 	video   *track
@@ -81,6 +91,10 @@ type segmenter struct {
 	ready     []videoSegment
 	tailDone  bool
 	published int
+	// overlong is set (under mu) by the first copied span that reaches
+	// target + 0.5 s; overlongFire asks run to call onOverlong once.
+	overlong     bool
+	overlongFire bool
 }
 
 func newSegmenter(store *Store, gen int, audio []string, silence map[string]*silenceClock, now func() time.Time, audioWait time.Duration, onFirst func()) *segmenter {
@@ -171,6 +185,14 @@ func (s *segmenter) VideoFragments() int {
 	return s.video.read
 }
 
+// Overlong reports whether the generation ended because a copied segment
+// would have rounded above the target duration (RFC 8216 § 4.3.3.1).
+func (s *segmenter) Overlong() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.overlong
+}
+
 // finish marks a track's output at EOF.
 func (s *segmenter) finish(name string) {
 	s.mu.Lock()
@@ -197,7 +219,12 @@ func (s *segmenter) run() {
 		progressed, wake := s.publishLocked()
 		finished := s.video.eof && len(s.ready) == 0 && s.audioAtEOFLocked()
 		ch := s.changed
+		fire := s.overlongFire
+		s.overlongFire = false
 		s.mu.Unlock()
+		if fire && s.onOverlong != nil {
+			s.onOverlong()
+		}
 		switch {
 		case finished:
 			return
@@ -240,6 +267,11 @@ func (s *segmenter) cutLocked() {
 	for len(v.frags) > 0 {
 		f := v.frags[0]
 		v.frags = v.frags[1:]
+		if s.tailDone {
+			// The generation is over -- an over-long copy ended it -- and
+			// whatever the encoder still writes is discarded.
+			continue
+		}
 		if !s.haveV0 {
 			if !f.Sync {
 				// Nothing before the first sync sample can start a
@@ -251,21 +283,62 @@ func (s *segmenter) cutLocked() {
 			for _, clock := range s.silence {
 				clock.base = f.Start * uint64(clock.canned.Track.Timescale) / uint64(v.info.Timescale)
 			}
+			s.checkOverlongLocked()
 			continue
 		}
-		if f.Sync && f.Start >= s.v0+s.grid*s.gridTicks() {
+		if f.Sync && (f.Start >= s.v0+s.grid*s.gridTicks() || s.copyOverrunLocked(f)) {
 			s.closeLocked(f.Start)
 			s.grid = (f.Start-s.v0)/s.gridTicks() + 1
 			s.pending = []Fragment{f}
-			continue
+		} else {
+			s.pending = append(s.pending, f)
 		}
-		s.pending = append(s.pending, f)
+		s.checkOverlongLocked()
 	}
 	if v.eof && !s.tailDone {
 		s.tailDone = true
 		if len(s.pending) > 0 {
 			s.closeLocked(s.pending[len(s.pending)-1].End())
 		}
+	}
+}
+
+// spanReachesLocked reports whether the video from the pending segment's start
+// to end is at least target + 0.5 s: the length at which RFC 8216 § 4.3.3.1
+// rounds EXTINF above the target. Integer ticks:
+// 2 x (end - start) >= (2 x target + 1) x Tv.
+func (s *segmenter) spanReachesLocked(end uint64) bool {
+	target := s.target
+	if target == 0 {
+		target = TargetDuration
+	}
+	return 2*(end-s.pending[0].Start) >= (2*target+1)*uint64(s.video.info.Timescale)
+}
+
+// copyOverrunLocked is the copy cut: a copied generation closes the pending
+// segment before a sync fragment that would take it to target + 0.5 s, so a
+// source whose GOP is a little under the grid (1.92 s against a target of 2)
+// gets segments of one GOP each rather than of two. Encoded generations never
+// take it.
+func (s *segmenter) copyOverrunLocked(f Fragment) bool {
+	return s.copied && len(s.pending) > 0 && s.spanReachesLocked(f.End())
+}
+
+// checkOverlongLocked is the over-long check of a copied generation: after a
+// fragment joins pending, a span that has reached target + 0.5 s cannot be
+// published as a segment of this run's target. That happens only to a single
+// keyframe fragment longer than the target allows (the copy cut closes before
+// any that would join a shorter one), and it ends the generation: pending,
+// which holds it, is dropped and never published, no further segment is cut
+// (tailDone), and onOverlong is fired once by run. Segments already cut stay in
+// ready and publish through the normal path.
+func (s *segmenter) checkOverlongLocked() {
+	if !s.copied || s.overlong || len(s.pending) == 0 {
+		return
+	}
+	if s.spanReachesLocked(s.pending[len(s.pending)-1].End()) {
+		s.overlong, s.overlongFire, s.tailDone = true, true, true
+		s.pending = nil
 	}
 }
 

@@ -116,6 +116,13 @@ type realRun struct {
 
 func runReal(t *testing.T, sources ...[]byte) *realRun {
 	t.Helper()
+	return runRealWith(t, nil, sources...)
+}
+
+// runRealWith is runReal with a last word on the Config, for automatic mode's
+// tests (Phase 4a-1d): the mode, and a probe wrapper that records its argv.
+func runRealWith(t *testing.T, configure func(*Config), sources ...[]byte) *realRun {
+	t.Helper()
 	requireRealFFmpeg(t)
 	src := newTestSource()
 	for i, s := range sources {
@@ -126,7 +133,7 @@ func runReal(t *testing.T, sources ...[]byte) *realRun {
 	}
 	src.ring.Close()
 	r := &realRun{logs: &logBuffer{}}
-	p, err := Start(context.Background(), Config{
+	cfg := Config{
 		ChannelID:  "real",
 		Source:     src,
 		JoinBehind: time.Hour,
@@ -148,7 +155,11 @@ func runReal(t *testing.T, sources ...[]byte) *realRun {
 			r.mu.Unlock()
 			return "ffmpeg", s.Argv
 		},
-	})
+	}
+	if configure != nil {
+		configure(&cfg)
+	}
+	p, err := Start(context.Background(), cfg)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -712,5 +723,308 @@ func TestRealALongGOPIsReprobedAtTheFullBound(t *testing.T) {
 	}
 	if video, _ := r.segments(t, RenditionVideo); len(video) < 2 {
 		t.Fatalf("%d segments after the re-probe", len(video))
+	}
+}
+
+// ---- automatic mode (Phase 4a-1d), over real ffmpeg ----
+
+// automatic makes runRealWith run in automatic mode.
+func automatic(c *Config) { c.Mode = ModeAutomatic }
+
+// spawnsOf is the spawns of one generation, in order.
+func (r *realRun) spawnsOf(gen int) []Spawn {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []Spawn
+	for _, s := range r.spawns {
+		if s.Generation == gen {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// initCodec is the codec a generation's video init segment declares.
+func (r *realRun) initCodec(t *testing.T, gen int) string {
+	t.Helper()
+	data, ok := r.p.Store().Init(RenditionVideo, gen)
+	if !ok {
+		t.Fatalf("no video init for generation %d", gen)
+	}
+	track, err := ParseInit(data)
+	if err != nil {
+		t.Fatalf("the generation %d video init: %v", gen, err)
+	}
+	return track.Codec
+}
+
+// videoCODECS is the video half of the multivariant's first CODECS attribute.
+func videoCODECS(t *testing.T, mv string) string {
+	t.Helper()
+	i := strings.Index(mv, `CODECS="`)
+	if i < 0 {
+		t.Fatalf("no CODECS in the multivariant:\n%s", mv)
+	}
+	codecs, _, _ := strings.Cut(mv[i+len(`CODECS="`):], `"`)
+	video, _, _ := strings.Cut(codecs, ",")
+	return video
+}
+
+// assertSegmentsAre checks every segment but the generation's last (the
+// flushed tail) is want seconds, within one frame, and starts on a sync sample.
+func assertSegmentsAre(t *testing.T, r *realRun, want, frame float64) {
+	t.Helper()
+	video, _ := r.segments(t, RenditionVideo)
+	if len(video) < 2 {
+		t.Fatalf("%d video segments, want at least two", len(video))
+	}
+	for i, v := range video {
+		if !v.first.Sync {
+			t.Errorf("video segment %d does not start with a sync sample", v.seq)
+		}
+		if i < len(video)-1 && (v.dur < want-frame || v.dur > want+frame) {
+			t.Errorf("video segment %d is %.3f s, want %.3f s +/- one frame", v.seq, v.dur, want)
+		}
+	}
+}
+
+// R28 and issue #525: ffprobe reports field_order=unknown for the progressive
+// HEVC fixture, and automatic mode copies it, tagged hvc1, with the AAC copied
+// through the bitstream filter. The multivariant declares the family's
+// ceiling (level 4.1 at least) while the init carries the source's own string.
+func TestRealAutomaticCopiesTheHEVCFixture(t *testing.T) {
+	r := runRealWith(t, automatic, seconds(fixture(t, "hevc-aac"), 8))
+	r.ok(t)
+	probe, ok := r.p.GenerationProbe(0)
+	if !ok || probe.Video == nil || probe.Video.Field != FieldUnknown {
+		t.Fatalf("generation 0's probe = %+v: the fixture is expected to report field_order unknown (#525)", probe.Video)
+	}
+	spawns := r.spawnsOf(0)
+	if len(spawns) == 0 {
+		t.Fatalf("no generation 0 spawn:\n%s", r.logs.String())
+	}
+	argv := strings.Join(spawns[0].Argv, " ")
+	for _, want := range []string{"-c:v copy", "-tag:v hvc1", "-c:a copy -bsf:a aac_adtstoasc"} {
+		if !strings.Contains(argv, want) {
+			t.Fatalf("the argv has no %q: the HEVC fixture was not copied:\n%s\n%s", want, argv, r.logs.String())
+		}
+	}
+	if !strings.HasPrefix(r.initCodec(t, 0), "hvc1.1.") {
+		t.Fatalf("the video init's codec is %q, want hvc1.1.…", r.initCodec(t, 0))
+	}
+	declared := videoCODECS(t, r.multivariant(t))
+	fields := strings.Split(declared, ".")
+	if !strings.HasPrefix(declared, "hvc1.1.") || len(fields) < 4 || fields[3] < "L123" && len(fields[3]) == 4 {
+		t.Fatalf("the multivariant's video CODECS is %q, want hvc1.1.… at level L123 or higher", declared)
+	}
+	audio, _ := r.segments(t, RenditionAAC)
+	if len(audio) == 0 {
+		t.Fatal("no aac segments")
+	}
+	if track, err := ParseInit(mustInit(t, r, RenditionAAC, 0)); err != nil || track.Codec != "mp4a.40.2" {
+		t.Fatalf("the copied aac init's codec is %q (%v), want mp4a.40.2", track.Codec, err)
+	}
+	assertSegmentsAre(t, r, 2, 1.0/25)
+	if got := r.p.TargetDuration(); got != 2*time.Second {
+		t.Errorf("TargetDuration = %v, want 2s", got)
+	}
+	if got := r.p.Engine(); got != EngineCopy {
+		t.Errorf("Engine = %s, want copy", got)
+	}
+}
+
+func mustInit(t *testing.T, r *realRun, rendition string, gen int) []byte {
+	t.Helper()
+	data, ok := r.p.Store().Init(rendition, gen)
+	if !ok {
+		t.Fatalf("no %s init for generation %d", rendition, gen)
+	}
+	return data
+}
+
+// The interlaced fixture cannot be copied: its video is encoded, with the
+// reason logged as field_order; its AAC is copied and its AC-3 is copied as
+// in transcode.
+func TestRealAutomaticEncodesTheInterlacedFixtureAndCopiesItsAudio(t *testing.T) {
+	r := runRealWith(t, automatic, seconds(fixture(t, "h264-1080i-aac-ac3"), 6))
+	r.ok(t)
+	argv := strings.Join(r.spawnsOf(0)[0].Argv, " ")
+	if !strings.Contains(argv, "libx264") || strings.Contains(argv, "-c:v copy") {
+		t.Fatalf("the interlaced video was not encoded:\n%s", argv)
+	}
+	if !strings.Contains(argv, "-c:a copy -bsf:a aac_adtstoasc") {
+		t.Fatalf("the AAC was not copied through the bitstream filter:\n%s", argv)
+	}
+	if strings.Count(argv, "-c:a copy") != 2 {
+		t.Fatalf("want the AAC and the AC-3 copied (two `-c:a copy`):\n%s", argv)
+	}
+	if !strings.Contains(r.logs.String(), "reason=field_order") {
+		t.Fatalf("the decision's reason was not logged:\n%s", r.logs.String())
+	}
+	if got := r.p.Engine(); got != EngineSoftware {
+		t.Errorf("Engine = %s, want software", got)
+	}
+}
+
+// A 10 s-GOP source joined 3 s in has one keyframe in the 8 s window (at
+// 10.08 s), so it is encoded with the reason `keyframes`, after the quick
+// probe's incomplete video (no SPS) forced the re-probe. The probe wrapper
+// records ffprobe's argv: the second carries the full bound and its
+// read interval.
+func TestRealAutomaticEncodesTheLongGOPFixtureJoinedMidGOP(t *testing.T) {
+	requireRealFFmpeg(t)
+	data := fixture(t, "h264-gop10-aac")
+	from := len(data) * 3 / 20
+	from -= from % buffer.TSPacketSize
+	logFile := filepath.Join(t.TempDir(), "ffprobe-argv")
+	wrapper := filepath.Join(t.TempDir(), "ffprobe-wrapper.sh")
+	body := "#!/bin/sh\necho \"$@\" >> " + logFile + "\nexec ffprobe \"$@\"\n"
+	if err := os.WriteFile(wrapper, []byte(body), 0o700); err != nil { // #nosec G306 -- a test's own script must be executable
+		t.Fatal(err)
+	}
+	r := runRealWith(t, func(c *Config) { automatic(c); c.FFprobe = wrapper }, data[from:])
+	r.ok(t)
+	probes := strings.Split(strings.TrimSpace(string(readFile(t, logFile))), "\n")
+	if len(probes) != 2 {
+		t.Fatalf("ffprobe ran %d times, want the quick probe and the full re-probe:\n%v\n%s", len(probes), probes, r.logs.String())
+	}
+	if !strings.Contains(probes[1], "-analyzeduration 8000000") || !strings.Contains(probes[1], "-read_intervals %+8") {
+		t.Fatalf("the second probe is not at the full bound: %s", probes[1])
+	}
+	if !strings.Contains(r.logs.String(), "reason=keyframes") {
+		t.Fatalf("the decision's reason was not `keyframes`:\n%s", r.logs.String())
+	}
+	if got := r.p.TargetDuration(); got != 2*time.Second {
+		t.Errorf("TargetDuration = %v, want 2s for an encoded run", got)
+	}
+	if argv := strings.Join(r.spawnsOf(0)[0].Argv, " "); !strings.Contains(argv, "libx264") || strings.Contains(argv, "-c:v copy") {
+		t.Fatalf("the long-GOP video was not encoded:\n%s", argv)
+	}
+}
+
+// fourSecondGOPSource is 16 s of testsrc2 at 25 fps with a keyframe every 4 s
+// and AAC stereo, as MPEG-TS, built once by the test's own ffmpeg.
+func fourSecondGOPSource(t *testing.T) []byte {
+	t.Helper()
+	requireRealFFmpeg(t)
+	fixtureMu.Lock()
+	defer fixtureMu.Unlock()
+	if data, ok := fixtures["4s-gop"]; ok {
+		return data
+	}
+	if fixtureDir == "" {
+		dir, err := os.MkdirTemp("", "hls-fixtures-")
+		if err != nil {
+			t.Fatal(err)
+		}
+		fixtureDir = dir
+	}
+	out := filepath.Join(fixtureDir, "4s-gop.ts")
+	cmd := exec.CommandContext(t.Context(), "ffmpeg", "-hide_banner", "-loglevel", "error", // #nosec G204 -- a fixed argv
+		"-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25:duration=16",
+		"-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=16",
+		"-c:v", "libx264", "-preset", "veryfast", "-g", "100", "-keyint_min", "100", "-sc_threshold", "0", "-b:v", "1500k", "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-ac", "2", "-b:a", "128k", "-f", "mpegts", "-y", out)
+	if msg, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("building the 4 s GOP source: %v\n%s", err, msg)
+	}
+	data := readFile(t, out)
+	if len(data) <= QuickProbe.Bytes {
+		t.Fatalf("the 4 s GOP source is %d bytes, not over the quick probe's %d: the byte bound would cut the window, not the media time", len(data), QuickProbe.Bytes)
+	}
+	fixtures["4s-gop"] = data
+	return data
+}
+
+// The R37 wiring test: a 4 s GOP shows one keyframe in the quick probe's 3 s
+// window, so automatic mode re-probes at 8 s, sees two (K = 4 s), copies, and
+// its target duration is 4, in the playlist too.
+func TestRealAutomaticCopiesAFourSecondGOPAtTargetDurationFour(t *testing.T) {
+	r := runRealWith(t, automatic, fourSecondGOPSource(t))
+	r.ok(t)
+	if !strings.Contains(r.logs.String(), "re-probing at the full bound") {
+		t.Fatalf("the quick probe's single keyframe did not trigger R37's re-probe:\n%s", r.logs.String())
+	}
+	if argv := strings.Join(r.spawnsOf(0)[0].Argv, " "); !strings.Contains(argv, "-c:v copy") {
+		t.Fatalf("the 4 s GOP source was not copied:\n%s\n%s", argv, r.logs.String())
+	}
+	if got := r.p.TargetDuration(); got != 4*time.Second {
+		t.Fatalf("TargetDuration = %v, want 4s", got)
+	}
+	playlist, _, ok := r.p.Store().MediaPlaylist(RenditionVideo)
+	if !ok || !strings.Contains(string(playlist), "#EXT-X-TARGETDURATION:4\n") {
+		t.Fatalf("the media playlist does not carry TARGETDURATION 4:\n%s", playlist)
+	}
+	assertSegmentsAre(t, r, 4, 1.0/25)
+}
+
+// A run declared HEVC encodes its later, uncopyable generation into HEVC:
+// libx265 at level-idc 4.1 (no Quick Sync here), never libx264, tagged hvc1,
+// scaled and rated to the run's fixed 640x360 at 25.
+func TestRealAnHEVCRunEncodesItsMPEG2GenerationAsHEVC(t *testing.T) {
+	r := runRealWith(t, automatic, seconds(fixture(t, "hevc-aac"), 6), seconds(fixture(t, "mpeg2-576i-mp2"), 12))
+	r.ok(t)
+	spawns := r.spawnsOf(1)
+	if len(spawns) == 0 {
+		t.Fatalf("no generation 1 spawn:\n%s", r.logs.String())
+	}
+	argv := strings.Join(spawns[0].Argv, " ")
+	if !strings.Contains(argv, "libx265") || !strings.Contains(argv, "level-idc=4.1") || strings.Contains(argv, "libx264") {
+		t.Fatalf("generation 1 was not encoded as HEVC:\n%s", argv)
+	}
+	if !strings.HasPrefix(r.initCodec(t, 1), "hvc1.") {
+		t.Fatalf("generation 1's init codec is %q, want hvc1.…", r.initCodec(t, 1))
+	}
+	mv := r.multivariant(t)
+	if !strings.Contains(mv, "RESOLUTION=640x360") || !strings.Contains(mv, "FRAME-RATE=25.000") {
+		t.Fatalf("the multivariant changed with the later generation:\n%s", mv)
+	}
+	video, _ := r.segments(t, RenditionVideo)
+	checked := 0
+	firstOfGen1 := true
+	for i, v := range video {
+		if v.gen != 1 || i == len(video)-1 {
+			continue
+		}
+		if firstOfGen1 {
+			// libx265's first GOP on this source is one frame short of the
+			// 2 s grid (49 samples: the encoder's first frame is not at 0),
+			// so the seed's grid rule, which cuts only at or after the line,
+			// merges it with the next: 3.96 s. That is the segmenter's rule
+			// for every encoded generation (transcode's is unchanged), noted
+			// in the 4a-1d report; the steady state after it is what is
+			// pinned here.
+			firstOfGen1 = false
+			continue
+		}
+		checked++
+		if v.dur < 2-1.0/25 || v.dur > 2+1.0/25 {
+			t.Errorf("generation 1 segment %d is %.3f s, want 2.000 s +/- one frame", v.seq, v.dur)
+		}
+	}
+	if checked < 1 {
+		t.Fatalf("generation 1 produced no whole segments: %d video segments", len(video))
+	}
+}
+
+// An H.264 run copies its first source and encodes an interlaced later one as
+// H.264: libx264, scaled to the fixed 640x360 at the fixed 25/1, with an
+// avc1 High init.
+func TestRealAnH264CopyRunEncodesItsInterlacedGenerationAsH264(t *testing.T) {
+	r := runRealWith(t, automatic, seconds(fixture(t, "h264-eac3"), 6), seconds(fixture(t, "h264-1080i-aac-ac3"), 6))
+	r.ok(t)
+	if argv := strings.Join(r.spawnsOf(0)[0].Argv, " "); !strings.Contains(argv, "-c:v copy") {
+		t.Fatalf("generation 0 was not copied:\n%s", argv)
+	}
+	spawns := r.spawnsOf(1)
+	if len(spawns) == 0 {
+		t.Fatalf("no generation 1 spawn:\n%s", r.logs.String())
+	}
+	argv := strings.Join(spawns[0].Argv, " ")
+	if !strings.Contains(argv, "libx264") || !strings.Contains(argv, "scale=640:360") || !strings.Contains(argv, "fps=25/1") || strings.Contains(argv, "-c:v copy") {
+		t.Fatalf("generation 1 was not encoded to the fixed output:\n%s", argv)
+	}
+	if !strings.HasPrefix(r.initCodec(t, 1), "avc1.64") {
+		t.Fatalf("generation 1's init codec is %q, want avc1.64…", r.initCodec(t, 1))
 	}
 }
