@@ -6,6 +6,7 @@ import type {
   LogEntry,
   M3uAccount,
   Seeder,
+  StreamPage,
   StreamProfile,
   UpstreamClient,
   UpstreamScenario,
@@ -329,4 +330,50 @@ export function catchupTimestampWithSeconds(date: Date): string {
     `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}` +
     `:${pad(date.getUTCHours())}-${pad(date.getUTCMinutes())}-${pad(date.getUTCSeconds())}`
   );
+}
+
+/**
+ * Two channels on ONE M3U account whose default profile allows one stream
+ * (`max_streams: 1`, synced to the default profile, apps/m3u/models.py:388-424)
+ * and whose provider allows one connection (`maxConnections: 1`): Django's
+ * slot refusal, not the provider's, is what blocks the second tune, and the
+ * provider's cap confirms the first connection really closed.
+ *
+ * Never the custom account: `seed.upstreamChannel`'s streams live on the
+ * instance-wide custom M3U account, whose `max_streams` no test may change.
+ * The provider's channel ids are 1 (`a`) and 2 (`b`).
+ */
+export async function slotCappedChannels(
+  upstream: UpstreamClient,
+  seed: Seeder,
+  api: ApiClient,
+  prefix: string
+): Promise<{ a: Channel; b: Channel; scenario: UpstreamScenario }> {
+  const names = [`${prefix}-a`, `${prefix}-b`];
+  const scenario = await upstream.scenario({
+    channels: names.map((name, index) => ({
+      id: index + 1,
+      name,
+      tvgId: `${name.toLowerCase().replace(/\W+/g, '-')}.e2e`,
+      logo: null,
+      asset: 'mpeg2-576i-mp2' as const,
+    })),
+    rate: 1,
+    maxConnections: 1,
+  });
+  const account = await seed.upstreamM3UAccount(scenario, { max_streams: 1 });
+  const proxy = await lockedProfile(api, 'Proxy');
+  const page = await api.json<StreamPage>(
+    await api.get(`/api/channels/streams/?m3u_account=${account.id}`),
+    `streams ingested for ${prefix}`
+  );
+  const channels: Channel[] = [];
+  for (const name of names) {
+    const stream = page.results.find((s) => s.name === name);
+    if (!stream) {
+      throw new Error(`slotCappedChannels: no ingested stream named "${name}" on account ${account.id}`);
+    }
+    channels.push(await seed.channel({ streams: [stream.id], stream_profile_id: proxy.id }));
+  }
+  return { a: channels[0], b: channels[1], scenario };
 }

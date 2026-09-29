@@ -1,6 +1,7 @@
 import { test, expect, StreamStatusError, expectTsAligned } from '../../fixtures';
+import { enterHls, leaveHls, parseMultivariant, tokenOf } from '../../fixtures/hls';
 import type { ApiClient } from '../../fixtures';
-import { lockedProfile, newStreamClient, withDeadline } from '../streaming/helpers';
+import { lockedProfile, newStreamClient, slotCappedChannels, withDeadline } from '../streaming/helpers';
 
 /**
  * The authorize hop's 429 restoration, behaviourally (#179).
@@ -256,5 +257,50 @@ test(
       )
       .toBe('ok');
     await secondClient.close();
+  }
+);
+
+test(
+  'an HLS viewer at stream_limit 1 who leaves zaps with no 429',
+  { tag: '@contract' },
+  async ({ upstream, seed, api, request }) => {
+    test.setTimeout(240_000);
+    // R67 (Phase 4a-1c): with `terminate_on_limit_exceeded` at its default
+    // the hop stops the viewer's older stream and admits the new one whether
+    // or not it left, so the scenario could not fail. Off, a user still
+    // counted at their limit is refused 429; the leave is what removes them
+    // from the count, and the slot their leave gave back is what serves B.
+    const { a, b } = await slotCappedChannels(upstream, seed, api, seed.generatedName('limit-zap'));
+    const viewer = await seed.xcUser({ user_level: 1, stream_limit: 1 });
+
+    const row = await readUserLimitSettingsRow(api);
+    expect(
+      row.value.terminate_on_limit_exceeded,
+      'a previous run left user_limit_settings dirty'
+    ).not.toBe(false);
+    settingsRowId = row.id;
+    originalValue = row.value;
+    await api.json(
+      await api.patch(`${CORE_SETTINGS_PATH}${row.id}/`, {
+        value: { ...row.value, terminate_on_limit_exceeded: false },
+      }),
+      'flip terminate_on_limit_exceeded'
+    );
+
+    const tokens: string[] = [];
+    try {
+      const entryA = await enterHls(request, `/live/${viewer.username}/${viewer.xcPassword}/${a.id}.m3u8`);
+      tokens.push(entryA.token);
+      expect(await leaveHls(request, entryA.token)).toBe(204);
+
+      const second = await request.get(`/live/${viewer.username}/${viewer.xcPassword}/${b.id}.m3u8`, {
+        timeout: 60_000,
+      });
+      expect(second.status(), 'B is admitted: not 429, and not 503 from a slot A never gave back').toBe(200);
+      const multivariant = parseMultivariant(await second.text());
+      tokens.push(tokenOf(multivariant));
+    } finally {
+      for (const token of tokens) await leaveHls(request, token);
+    }
   }
 );
