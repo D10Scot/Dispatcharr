@@ -55,8 +55,8 @@ func TestHLSStatusFollowsTheCurrentProfileKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, ok := ch.HLSStatus(); !ok {
-		t.Fatal("HLSStatus reports no pipeline while hls:p2 is registered")
+	if _, key, ok := ch.statusEntryKey(); !ok || key != "hls:p2" {
+		t.Fatalf("with only hls:p2 registered the status reports %q ok=%t, want the lowest key hls:p2", key, ok)
 	}
 
 	// With one under the current key too, that one is the answer.
@@ -67,8 +67,8 @@ func TestHLSStatusFollowsTheCurrentProfileKey(t *testing.T) {
 	if p9 == p2 {
 		t.Fatal("two keys shared one pipeline")
 	}
-	if _, _, ok := ch.HLSStatus(); !ok {
-		t.Fatal("HLSStatus reports no pipeline while hls:p9 is registered")
+	if _, key, ok := ch.statusEntryKey(); !ok || key != "hls:p9" {
+		t.Fatalf("with hls:p2 and the current key hls:p9 registered the status reports %q ok=%t, want the current key hls:p9", key, ok)
 	}
 	release2()
 	release9()

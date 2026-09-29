@@ -701,8 +701,8 @@ Such a source is encoded, which is correct and only costs the copy (R63; § Risk
   - an HEVC-declared run (only ever Main, 8-bit, by the copy rule above, so the declared `CODECS`
     profile and bit depth stay true) uses `hevc_qsv -profile:v main -level 41` (8-bit `nv12`) with the same `-g`, `-idr_interval 0`,
     `-forced_idr 1`, `force_key_frames` and bitrate table, tagged `hvc1`; `hevc_qsv` is detected by its own one-frame encode, the first time it is needed, and written off on its own evidence (D11);
-  - without QSV, it uses `libx265 -preset ultrafast -x265-params keyint=G:min-keyint=G:scenecut=0:level-idc=4.1`
-    with the same bitrate table and `force_key_frames`, tagged `hvc1`. M1 shows `hevc_qsv` and `libx265` in the production image; the 4a-1d plan ran the `libx265` argv on ffmpeg 9.0.1 (Main, level 123, a keyframe every 2 s from an MPEG-2 576i source).
+  - without QSV, it uses `libx265 -preset ultrafast -x265-params keyint=G:min-keyint=G:scenecut=0:open-gop=0:level-idc=4.1`
+    with the same bitrate table and `force_key_frames`, tagged `hvc1`. `open-gop=0` (R88): libx265's default open GOP makes a forced keyframe a CRA with RASL frames, and a generation's first segment then came out 3.96 s under `TARGETDURATION` 2 (measured on ffmpeg 9.0.1); closed GOPs make every keyframe an IDR. M1 shows `hevc_qsv` and `libx265` in the production image; the 4a-1d plan ran the `libx265` argv on ffmpeg 9.0.1 (Main, level 123, a keyframe every 2 s from an MPEG-2 576i source).
 - **The segmenter enforces the target duration.** A copied segment of `TARGETDURATION` +
   0.5 s or longer (it would round above the target, RFC 8216 § 4.3.3.1) ends the generation **at once**, as a synthetic source boundary at the ring's head (as a
   death after the first segment is treated). It is never published, and every later generation of the run is encoded
@@ -2098,6 +2098,7 @@ Filled in as PRs merge.
     - the window's rate is video-only;
     - an over-long segment no longer discards segments cut before it.
   - **When #538's R55 paragraph lands** in § Encoder argv › Failure ("Before a generation's first video fragment the allowance is three times that"), R58 amends it to read `max(30 s, the stall timeout)` in place of "three times that". It stays 30 s at every target up to 6.
+  - **Implementation (R88):** the libx265 argv gains `open-gop=0` in § Automatic generation. Measured on ffmpeg 9.0.1: with libx265's default open GOP a forced keyframe is a CRA with RASL frames, and every libx265 generation's first segment came out `EXTINF` 3.960 under `TARGETDURATION` 2, which is an RFC 8216 § 4.3.3.1 violation and makes `EXT-X-INDEPENDENT-SEGMENTS` untrue. With `open-gop=0` no segment rounds above the target. Also (R81): ffprobe's JSON never prints `field_order` for HEVC, so an HEVC video is complete on its geometry alone (this also drops transcode's full re-probe for HEVC).
 - **2026-09-29, amended by the 4a-2 plan** (`docs/superpowers/plans/2026-09-29-phase4-4a2-browser-hls.md`,
   written against `4ed75d96`). § Browser player only:
   - hls.js's entry load timeout is raised to 65 s (the relay's 14.1 s next-source budget plus its

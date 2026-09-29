@@ -465,9 +465,14 @@ func (o Output) encoderArgs(plan Plan) []string {
 			"-tag:v", "hvc1",
 		}
 	case plan.Family == FamilyHEVC:
+		// open-gop=0 (R88): libx265's default open GOP turns a forced keyframe
+		// into a CRA with RASL frames, which the segmenter's sync test and the
+		// muxer's fragmenting see as a keyframe late, so a generation's first
+		// segment came out 3.96 s under TARGETDURATION 2 and
+		// INDEPENDENT-SEGMENTS was untrue. Closed GOPs make every keyframe an IDR.
 		return []string{
 			"-c:v", "libx265", "-preset", "ultrafast",
-			"-x265-params", "keyint=" + g + ":min-keyint=" + g + ":scenecut=0:level-idc=4.1:log-level=error",
+			"-x265-params", "keyint=" + g + ":min-keyint=" + g + ":scenecut=0:open-gop=0:level-idc=4.1:log-level=error",
 			"-b:v", b, "-maxrate", m, "-bufsize", m,
 			"-tag:v", "hvc1",
 		}

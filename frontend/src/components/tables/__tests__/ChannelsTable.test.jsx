@@ -961,9 +961,7 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       fireEvent.click(screen.getByTestId('confirm-ok'));
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
-          stopStream: false,
-        })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
       );
     });
 
@@ -991,9 +989,7 @@ describe('ChannelsTable', () => {
       fireEvent.click(screen.getByTestId('confirm-ok'));
 
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
-          stopStream: false,
-        })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
       );
       expect(requeryChannels).toHaveBeenCalled();
       expect(setSelectedTableIds).not.toHaveBeenCalled();
@@ -1017,9 +1013,7 @@ describe('ChannelsTable', () => {
       render(<ChannelsTable />);
       fireEvent.click(screen.getByTestId('header-delete-channels'));
       await waitFor(() =>
-        expect(deleteChannels).toHaveBeenCalledWith([1, 2], {
-          stopStream: false,
-        })
+        expect(deleteChannels).toHaveBeenCalledWith([1, 2], { stopStream: false })
       );
       expect(screen.queryByTestId('confirm-dialog')).not.toBeInTheDocument();
     });

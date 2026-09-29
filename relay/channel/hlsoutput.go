@@ -199,22 +199,29 @@ func (c *Channel) clearHLSFailed() {
 // The key is read through HLSProfile (c.mu) BEFORE outMu is taken, never with
 // the two held together (lock order: outMu is never nested with c.mu).
 func (c *Channel) HLSStatus() (engine string, generation int, ok bool) {
-	key := c.HLSProfile().Key()
-	c.outMu.Lock()
-	entry, running := c.hls[key]
-	if !running {
-		keys := make([]string, 0, len(c.hls))
-		for k := range c.hls {
-			keys = append(keys, k)
-		}
-		if len(keys) > 0 {
-			sort.Strings(keys)
-			entry, running = c.hls[keys[0]], true
-		}
-	}
-	c.outMu.Unlock()
-	if !running {
+	entry, _, ok := c.statusEntryKey()
+	if !ok {
 		return "", 0, false
 	}
 	return string(entry.pipeline.Engine()), entry.pipeline.Generation(), true
+}
+
+// statusEntryKey is the registry entry HLSStatus reports and its key: the one
+// under the channel's current key, else the lowest key's.
+func (c *Channel) statusEntryKey() (*hlsEntry, string, bool) {
+	key := c.HLSProfile().Key()
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+	if entry, running := c.hls[key]; running {
+		return entry, key, true
+	}
+	keys := make([]string, 0, len(c.hls))
+	for k := range c.hls {
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return nil, "", false
+	}
+	sort.Strings(keys)
+	return c.hls[keys[0]], keys[0], true
 }

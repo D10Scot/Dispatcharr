@@ -770,6 +770,19 @@ func videoCODECS(t *testing.T, mv string) string {
 	return video
 }
 
+// assertEXTINFsWithinTarget is RFC 8216 § 4.3.3.1: every EXTINF, rounded to the
+// nearest integer, is at most the playlist's TARGETDURATION (R88).
+func assertEXTINFsWithinTarget(t *testing.T, r *realRun) {
+	t.Helper()
+	target := int(r.p.TargetDuration() / time.Second)
+	video, _ := r.segments(t, RenditionVideo)
+	for _, v := range video {
+		if got := int(v.dur + 0.5); got > target {
+			t.Errorf("segment %d (generation %d) is EXTINF %.3f, which rounds to %d over TARGETDURATION %d", v.seq, v.gen, v.dur, got, target)
+		}
+	}
+}
+
 // assertSegmentsAre checks every segment but the generation's last (the
 // flushed tail) is want seconds, within one frame, and starts on a sync sample.
 func assertSegmentsAre(t *testing.T, r *realRun, want, frame float64) {
@@ -825,6 +838,7 @@ func TestRealAutomaticCopiesTheHEVCFixture(t *testing.T) {
 		t.Fatalf("the copied aac init's codec is %q (%v), want mp4a.40.2", track.Codec, err)
 	}
 	assertSegmentsAre(t, r, 2, 1.0/25)
+	assertEXTINFsWithinTarget(t, r)
 	if got := r.p.TargetDuration(); got != 2*time.Second {
 		t.Errorf("TargetDuration = %v, want 2s", got)
 	}
@@ -962,7 +976,7 @@ func TestRealAutomaticCopiesAFourSecondGOPAtTargetDurationFour(t *testing.T) {
 // libx265 at level-idc 4.1 (no Quick Sync here), never libx264, tagged hvc1,
 // scaled and rated to the run's fixed 640x360 at 25.
 func TestRealAnHEVCRunEncodesItsMPEG2GenerationAsHEVC(t *testing.T) {
-	r := runRealWith(t, automatic, seconds(fixture(t, "hevc-aac"), 6), seconds(fixture(t, "mpeg2-576i-mp2"), 12))
+	r := runRealWith(t, automatic, seconds(fixture(t, "hevc-aac"), 6), seconds(fixture(t, "mpeg2-576i-mp2"), 6))
 	r.ok(t)
 	spawns := r.spawnsOf(1)
 	if len(spawns) == 0 {
@@ -979,22 +993,11 @@ func TestRealAnHEVCRunEncodesItsMPEG2GenerationAsHEVC(t *testing.T) {
 	if !strings.Contains(mv, "RESOLUTION=640x360") || !strings.Contains(mv, "FRAME-RATE=25.000") {
 		t.Fatalf("the multivariant changed with the later generation:\n%s", mv)
 	}
+	assertEXTINFsWithinTarget(t, r)
 	video, _ := r.segments(t, RenditionVideo)
 	checked := 0
-	firstOfGen1 := true
 	for i, v := range video {
 		if v.gen != 1 || i == len(video)-1 {
-			continue
-		}
-		if firstOfGen1 {
-			// libx265's first GOP on this source is one frame short of the
-			// 2 s grid (49 samples: the encoder's first frame is not at 0),
-			// so the seed's grid rule, which cuts only at or after the line,
-			// merges it with the next: 3.96 s. That is the segmenter's rule
-			// for every encoded generation (transcode's is unchanged), noted
-			// in the 4a-1d report; the steady state after it is what is
-			// pinned here.
-			firstOfGen1 = false
 			continue
 		}
 		checked++

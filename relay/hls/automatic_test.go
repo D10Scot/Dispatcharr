@@ -309,7 +309,7 @@ func TestTheHEVCFamilyArgv(t *testing.T) {
 	tail := " -force_key_frames expr:gte(t,n_forced*2) -f mp4 -movflags frag_keyframe+delay_moov+default_base_moof+negative_cts_offsets pipe:1" +
 		" -map 0:i:0x101 -c:a copy -bsf:a aac_adtstoasc -f mp4 -movflags frag_keyframe+delay_moov+default_base_moof -frag_duration 200000 pipe:3"
 	software := prefix + in + "-vf scale=640:360:force_original_aspect_ratio=decrease,pad=640:360:(ow-iw)/2:(oh-ih)/2,fps=25/1,format=yuv420p" +
-		" -c:v libx265 -preset ultrafast -x265-params keyint=50:min-keyint=50:scenecut=0:level-idc=4.1:log-level=error -b:v 2500000 -maxrate 3000000 -bufsize 3000000 -tag:v hvc1" + tail
+		" -c:v libx265 -preset ultrafast -x265-params keyint=50:min-keyint=50:scenecut=0:open-gop=0:level-idc=4.1:log-level=error -b:v 2500000 -maxrate 3000000 -bufsize 3000000 -tag:v hvc1" + tail
 	if got := joinArgs(out.Argv(PlanAutomatic(out, mpeg2, EngineSoftware, 1, false), DefaultDevice)); got != software {
 		t.Errorf("the libx265 argv:\n got %s\nwant %s", got, software)
 	}

@@ -325,7 +325,7 @@ func TestAFailedCopyFallsBackToAnEncode(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if err := p.Store().WaitSegment(ctx); err != nil {
-		t.Fatalf("no segment: %v\n%s", err, h.logs.String())
+		t.Fatalf("no segment after two failed copy attempts: the encode fallback (attempt 3, libx264) was never made: %v\n%s", err, h.logs.String())
 	}
 	h.mu.Lock()
 	spawns := append([]Spawn(nil), h.spawns...)
