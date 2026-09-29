@@ -520,7 +520,7 @@ func needsFullProbe(p Probe, fed feedResult, mode Mode) bool {
 // probe runs one ffprobe over the bytes the generation will start from,
 // within bound.
 func (p *Pipeline) probe(ctx context.Context, gen int, start uint64, bound ProbeBound) (Probe, feedResult, error) {
-	command, argv := p.cfg.FFprobe, ProbeArgv(bound)
+	command, argv := p.cfg.FFprobe, ProbeArgvFor(bound, p.cfg.Mode)
 	if command == "" {
 		command = "ffprobe"
 	}

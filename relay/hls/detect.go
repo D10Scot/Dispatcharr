@@ -16,19 +16,27 @@ const DetectTimeout = 10 * time.Second
 
 // DetectArgv is the detection encode: one black 256x144 frame through
 // hwupload and h264_qsv to the null muxer. Exit 0 means Quick Sync is usable.
-func DetectArgv(device string) []string {
+func DetectArgv(device string) []string { return DetectArgvFor(device, "h264_qsv") }
+
+// DetectArgvFor is the same encode through the named encoder: h264_qsv, or
+// hevc_qsv for an automatic run declared HEVC (spec D11, 4a-1d). Each family
+// is detected on its own evidence.
+func DetectArgvFor(device, encoder string) []string {
 	return []string{
 		"-hide_banner", "-loglevel", "error",
 		"-init_hw_device", "qsv=hw:" + device, "-filter_hw_device", "hw",
 		"-f", "lavfi", "-i", "color=c=black:s=256x144:r=25",
 		"-frames:v", "1", "-vf", "format=nv12,hwupload",
-		"-c:v", "h264_qsv", "-f", "null", "-",
+		"-c:v", encoder, "-f", "null", "-",
 	}
 }
 
 // Detector is the process-wide answer to "is Quick Sync usable?" (D11). It
 // runs the detection encode at the first HLS attach in the process and
-// caches the answer; the pipelines of every channel share one.
+// caches the answer; the pipelines of every channel share one. Since 4a-1d it
+// keeps one answer per encoder family: h264_qsv and hevc_qsv are separate
+// encoders on the same device, each detected the first time it is needed and
+// written off only on its own evidence.
 //
 // QSV IS WRITTEN OFF FOR THE PROCESS ONLY ON EVIDENCE THAT THE DEVICE FAILED
 // (finding 5): a generation that failed twice on QSV must then succeed in
@@ -48,8 +56,13 @@ type Detector struct {
 	// run serialises detection encodes and is held across one; a waiter
 	// that gives up on it answers software without caching anything.
 	run ctxLock
-	// mu guards the answer below and is never held across a subprocess.
+	// mu guards the answers below and is never held across a subprocess.
 	mu       sync.Mutex
+	families [2]familyState
+}
+
+// familyState is one encoder family's cached answer.
+type familyState struct {
 	checked  bool
 	usable   bool
 	unusable bool
@@ -86,31 +99,36 @@ func (d *Detector) log() *slog.Logger {
 // -- says nothing about the device, so that call answers software and the
 // next caller detects again. Detection's own timeout is conclusive: a device
 // that cannot encode one frame in DetectTimeout is not usable.
-func (d *Detector) Engine(ctx context.Context) Engine {
+func (d *Detector) Engine(ctx context.Context) Engine { return d.EngineFor(ctx, FamilyH264) }
+
+// EngineFor is Engine for one encoder family: QSV when that family's cached
+// detection passed and nothing has written it off, software otherwise.
+func (d *Detector) EngineFor(ctx context.Context, family Family) Engine {
 	if err := d.run.lock(ctx); err != nil {
 		return EngineSoftware
 	}
 	defer d.run.unlock()
 	d.mu.Lock()
-	checked := d.checked
+	checked := d.families[family].checked
 	d.mu.Unlock()
 	if !checked {
-		usable, conclusive := d.detect(ctx)
+		usable, conclusive := d.detect(ctx, family)
 		if !conclusive {
 			return EngineSoftware
 		}
 		d.mu.Lock()
-		d.usable, d.checked = usable, true
+		d.families[family].usable, d.families[family].checked = usable, true
 		d.mu.Unlock()
 	}
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.usable && !d.unusable {
+	state := &d.families[family]
+	if state.usable && !state.unusable {
 		return EngineQSV
 	}
-	if !d.warned {
-		d.warned = true
-		d.log().Warn("Quick Sync is not usable; HLS encodes in software", "device", d.device())
+	if !state.warned {
+		state.warned = true
+		d.log().Warn("Quick Sync is not usable; HLS encodes in software", "device", d.device(), "family", family.String())
 	}
 	return EngineSoftware
 }
@@ -120,29 +138,40 @@ func (d *Detector) Engine(ctx context.Context) Engine {
 // first). It does not change the cached answer; MarkUnusable does, and only
 // on a conclusive failure (D11: evidence against the device).
 func (d *Detector) Recheck(ctx context.Context) (usable, conclusive bool) {
+	return d.RecheckFor(ctx, FamilyH264)
+}
+
+// RecheckFor is Recheck for one encoder family.
+func (d *Detector) RecheckFor(ctx context.Context, family Family) (usable, conclusive bool) {
 	if err := d.run.lock(ctx); err != nil {
 		return false, false
 	}
 	defer d.run.unlock()
-	return d.detect(ctx)
+	return d.detect(ctx, family)
 }
 
-// MarkUnusable writes Quick Sync off for the rest of the process.
-func (d *Detector) MarkUnusable() {
+// MarkUnusable writes Quick Sync off for the rest of the process, for the
+// H.264 family.
+func (d *Detector) MarkUnusable() { d.MarkUnusableFor(FamilyH264) }
+
+// MarkUnusableFor writes one family's encoder off. Another family's answer is
+// its own evidence and is left alone.
+func (d *Detector) MarkUnusableFor(family Family) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if !d.unusable {
-		d.log().Warn("Quick Sync failed where software succeeded, and its detection encode now fails; HLS encodes in software for the rest of the process", "device", d.device())
+	state := &d.families[family]
+	if !state.unusable {
+		d.log().Warn("Quick Sync failed where software succeeded, and its detection encode now fails; HLS encodes in software for the rest of the process", "device", d.device(), "family", family.String())
 	}
-	d.unusable = true
-	d.warned = true
+	state.unusable = true
+	state.warned = true
 }
 
 // detect is the detection encode itself: a missing device, any non-zero
 // exit, a spawn failure or the detection's own timeout all mean "not
 // usable". conclusive is false when the CALLER's context ended first, which
 // is no evidence either way.
-func (d *Detector) detect(parent context.Context) (usable, conclusive bool) {
+func (d *Detector) detect(parent context.Context, family Family) (usable, conclusive bool) {
 	if _, err := os.Stat(d.device()); err != nil {
 		return false, true
 	}
@@ -152,7 +181,7 @@ func (d *Detector) detect(parent context.Context) (usable, conclusive bool) {
 	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-	proc, err := ffmpeg.Start(ctx, d.command(), DetectArgv(d.device()))
+	proc, err := ffmpeg.Start(ctx, d.command(), DetectArgvFor(d.device(), family.qsvEncoder()))
 	if err != nil {
 		d.log().Info("the Quick Sync detection encode could not start", "error", redact.Error(err))
 		return false, parent.Err() == nil

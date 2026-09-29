@@ -3,6 +3,7 @@ package hls
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // probeJSONFor is ffprobe's -show_streams JSON, trimmed to the fields ParseProbe
@@ -179,5 +180,111 @@ func TestTheReprobeDecision(t *testing.T) {
 		if got := needsFullProbe(c.probe, feedResult{end: feedLimit}, c.mode); got != c.want {
 			t.Errorf("%s: needsFullProbe = %t, want %t", c.name, got, c.want)
 		}
+	}
+}
+
+// THE AUTOMATIC PROBE'S ARGV IS ONE LITERAL PER CASE, never the function under
+// test's own output: it adds -read_intervals (so ffprobe stops after that much
+// media instead of waiting for stdin's EOF, R77) and the packet entries to the
+// transcode probe, and transcode's stays byte for byte what it was.
+func TestTheAutomaticProbeArgvListsVideoPackets(t *testing.T) {
+	quick := "-hide_banner -loglevel error -probesize 3000000 -analyzeduration 3000000 -f mpegts -i pipe:0 -read_intervals %+3 -show_streams -show_entries packet=stream_index,pts_time,flags,size -of json"
+	if got := joinArgs(ProbeArgvFor(QuickProbe, ModeAutomatic)); got != quick {
+		t.Errorf("the quick automatic probe's argv = %q, want %q", got, quick)
+	}
+	full := "-hide_banner -loglevel error -probesize 5000000 -analyzeduration 8000000 -f mpegts -i pipe:0 -read_intervals %+8 -show_streams -show_entries packet=stream_index,pts_time,flags,size -of json"
+	if got := joinArgs(ProbeArgvFor(FullProbe, ModeAutomatic)); got != full {
+		t.Errorf("the full automatic probe's argv = %q, want %q", got, full)
+	}
+	transcode := "-hide_banner -loglevel error -probesize 3000000 -analyzeduration 3000000 -f mpegts -i pipe:0 -show_streams -of json"
+	if got := joinArgs(ProbeArgvFor(QuickProbe, ModeTranscode)); got != transcode {
+		t.Errorf("transcode's probe argv changed: %q, want %q", got, transcode)
+	}
+}
+
+const probeJSONWithPackets = `{"streams": [
+ {"index": 0, "codec_name": "hevc", "profile": "Main", "level": 123, "codec_type": "video", "width": 640, "height": 360,
+  "pix_fmt": "yuv420p", "r_frame_rate": "25/1", "id": "0x100"},
+ {"index": 1, "codec_name": "aac", "profile": "LC", "codec_type": "audio", "sample_rate": "48000", "channels": 2,
+  "id": "0x101"}],
+ "packets": [
+ {"stream_index": 0, "pts_time": "1.480000", "flags": "K__", "size": "400000"},
+ {"stream_index": 1, "pts_time": "1.500000", "flags": "K__", "size": "500000"},
+ {"stream_index": 0, "pts_time": "5.480000", "flags": "K__", "size": "300000"},
+ {"stream_index": 0, "pts_time": "9.480000", "flags": "K__", "size": "200000"},
+ {"stream_index": 0, "pts_time": "9.480000", "flags": "___", "size": "100000"},
+ {"stream_index": 0, "pts_time": "N/A", "flags": "K__", "size": "1"}
+]}`
+
+// A literal window: video key packets at 1.48, 5.48 and 9.48 s plus one non-key
+// packet at 9.48 s, 1,000,000 video bytes over an 8.0 s span, and 500,000 audio
+// bytes that count in neither total. 8 x 1,000,000 / 8.0 s is 1,000,000 b/s.
+func TestParseProbeCountsKeyframesTheirLongestIntervalAndTheRate(t *testing.T) {
+	p, err := ParseProbe([]byte(probeJSONWithPackets))
+	if err != nil {
+		t.Fatalf("ParseProbe: %v", err)
+	}
+	if p.Keyframes != 3 {
+		t.Errorf("Keyframes = %d, want 3 (the audio key packet and the packet with no pts are not counted)", p.Keyframes)
+	}
+	if p.KeyframeInterval != 4*time.Second {
+		t.Errorf("KeyframeInterval = %v, want 4s", p.KeyframeInterval)
+	}
+	if p.BitRate != 1_000_000 {
+		t.Errorf("BitRate = %d, want 1000000 (video only: the 500000 audio bytes are excluded)", p.BitRate)
+	}
+
+	// The interval is integer microseconds: a 2.1 s GOP is exactly 2100 ms,
+	// where a float difference is 2.0999999...s and would round the wrong way
+	// in targetFor.
+	two, _ := ParseProbe([]byte(`{"streams":[{"index":0,"codec_type":"video","width":2,"height":2}],"packets":[
+ {"stream_index":0,"pts_time":"0.000000","flags":"K__","size":"10"},
+ {"stream_index":0,"pts_time":"2.100000","flags":"K__","size":"10"}]}`))
+	if two.KeyframeInterval != 2100*time.Millisecond {
+		t.Errorf("KeyframeInterval = %v, want exactly 2.1s", two.KeyframeInterval)
+	}
+	// One keyframe has no interval; no video packets and no span give no rate.
+	one, _ := ParseProbe([]byte(`{"streams":[{"index":0,"codec_type":"video","width":2,"height":2}],"packets":[{"stream_index":0,"pts_time":"0.000000","flags":"K__","size":"10"}]}`))
+	if one.Keyframes != 1 || one.KeyframeInterval != 0 || one.BitRate != 0 {
+		t.Errorf("one keyframe over a zero span gave %+v, want 1, 0, 0", one)
+	}
+	// A negative pts (a B-frame before its keyframe) is read, not dropped.
+	neg, _ := ParseProbe([]byte(`{"streams":[{"index":0,"codec_type":"video","width":2,"height":2}],"packets":[
+ {"stream_index":0,"pts_time":"-0.040000","flags":"__","size":"1000"},
+ {"stream_index":0,"pts_time":"0.960000","flags":"K__","size":"1000"}]}`))
+	if neg.BitRate != 16000 {
+		t.Errorf("a window from -0.04 s to 0.96 s of 2000 bytes gave %d b/s, want 16000", neg.BitRate)
+	}
+	// A transcode probe has no packets and leaves the counts at zero.
+	plain, _ := ParseProbe([]byte(probeJSONFor1080iWithAnEmptyAC3))
+	if plain.Keyframes != 0 || plain.KeyframeInterval != 0 || plain.BitRate != 0 {
+		t.Errorf("a probe with no packets gave %+v, want zero counts", plain)
+	}
+	for value, want := range map[string]int64{"1.480000": 1_480_000, "2": 2_000_000, "0.5": 500_000, "-0.040000": -40_000, "1.2345678": 1_234_567} {
+		if got, ok := parseMicroseconds(value); !ok || got != want {
+			t.Errorf("parseMicroseconds(%q) = %d, %t; want %d", value, got, ok, want)
+		}
+	}
+	for _, value := range []string{"N/A", "", "x.5", "1.x"} {
+		if _, ok := parseMicroseconds(value); ok {
+			t.Errorf("parseMicroseconds(%q) was ok", value)
+		}
+	}
+}
+
+func TestParseProbeReadsLevelIndexAndAudioProfile(t *testing.T) {
+	p, err := ParseProbe([]byte(probeJSONWithPackets))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Video.Level != 123 || p.Video.Index != 0 {
+		t.Errorf("Video.Level, Index = %d, %d; want 123, 0", p.Video.Level, p.Video.Index)
+	}
+	if len(p.Audio) != 1 || p.Audio[0].Profile != "LC" {
+		t.Errorf("Audio = %+v, want profile LC", p.Audio)
+	}
+	unreported, _ := ParseProbe([]byte(`{"streams":[{"index":3,"codec_type":"video","level":-99,"width":2,"height":2}]}`))
+	if unreported.Video.Level != 0 || unreported.Video.Index != 3 {
+		t.Errorf("a level of -99 (unreported) gave Level %d, Index %d; want 0, 3", unreported.Video.Level, unreported.Video.Index)
 	}
 }

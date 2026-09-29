@@ -18,7 +18,34 @@ const (
 	ModeAutomatic
 )
 
-// Engine is which H.264 encoder a generation runs (spec D11).
+// Family is a video codec family: what the multivariant's CODECS declares for
+// the whole run (4a-1d, spec D12). H264 is the zero value, and the only family
+// transcode mode has.
+type Family int
+
+// The two families.
+const (
+	FamilyH264 Family = iota
+	FamilyHEVC
+)
+
+func (f Family) String() string {
+	if f == FamilyHEVC {
+		return "hevc"
+	}
+	return "h264"
+}
+
+// qsvEncoder is the family's Quick Sync encoder.
+func (f Family) qsvEncoder() string {
+	if f == FamilyHEVC {
+		return "hevc_qsv"
+	}
+	return "h264_qsv"
+}
+
+// Engine is which encoder a generation runs (spec D11): a Quick Sync or
+// software encoder for its family, or, in automatic mode, EngineCopy.
 type Engine string
 
 const (
@@ -27,6 +54,10 @@ const (
 	// EngineSoftware is libx264, the fallback whenever Quick Sync is not
 	// usable. The relay encodes in software and says so; it never refuses.
 	EngineSoftware Engine = "software"
+	// EngineCopy is a generation whose video is copied, not encoded
+	// (automatic mode, 4a-1d): no encoder, no hardware device, and the
+	// payload's hls_encoder says "copy". Its audio may still be encoded.
+	EngineCopy Engine = "copy"
 )
 
 // DefaultDevice is the render node the QSV argv and the detection encode

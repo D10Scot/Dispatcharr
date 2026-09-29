@@ -131,6 +131,10 @@ type Started struct {
 	// answer carried (2c-7), cached on the channel and refreshed by every
 	// later answer a failover receives.
 	OutputProfiles OutputProfiles
+
+	// HLSProfile is the channel's HLS Output Profile from the same answer
+	// (Phase 4a-1d), refreshed by every later non-degraded answer.
+	HLSProfile HLSProfile
 }
 
 // Attach returns the channel for id, starting it from start() if it is not
@@ -302,6 +306,7 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 			hlsRegistry: hlsRegistry{hls: map[string]*hlsEntry{}},
 		},
 		outputProfiles: started.OutputProfiles,
+		hlsProfile:     started.HLSProfile,
 		startedAt:      now(),
 		// Seeded here, not left zero, because state is assigned in this
 		// literal rather than through setState: Python writes state and

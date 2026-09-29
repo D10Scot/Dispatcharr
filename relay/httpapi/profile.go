@@ -124,6 +124,32 @@ func writeProfileFailure(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(profileNotStartedBody))
 }
 
+// The two modes next-source's hls_profile can name (core.models.HLS_MODE_*).
+const (
+	hlsModeTranscode = "transcode"
+	hlsModeAutomatic = "automatic"
+)
+
+// hlsProfileFrom converts a next-source answer's hls_profile into the
+// wire-free form the channel package holds (Phase 4a-1d). An absent key, and a
+// mode other than transcode or automatic, are the same contract mismatch and
+// give the zero value (Known false); JSON null is "no HLS profile" (Known
+// true, ID 0), the built-in re-encode.
+func hlsProfileFrom(answer *control.NextSourceAnswer) channel.HLSProfile {
+	if !answer.HLSProfilePresent {
+		return channel.HLSProfile{}
+	}
+	if answer.HLSProfile == nil {
+		return channel.HLSProfile{Known: true}
+	}
+	switch answer.HLSProfile.Mode {
+	case hlsModeTranscode, hlsModeAutomatic:
+	default:
+		return channel.HLSProfile{}
+	}
+	return channel.HLSProfile{Known: true, ID: answer.HLSProfile.ID, Mode: answer.HLSProfile.Mode}
+}
+
 // outputProfilesFrom converts a next-source answer's map into the wire-free
 // form the channel package holds. One conversion per answer, at the one place
 // the wire is read.
