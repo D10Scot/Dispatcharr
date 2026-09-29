@@ -532,10 +532,10 @@ Every oracle is a literal, never a value the code under test computes.
   - 1.92 s GOPs at `target` 2 give every segment 1.92 s, and none is over-long.
   - 4 s GOPs at `target` 4 give 4 s segments.
   - Irregular 0.5/0.5/1.2/0.4 s GOPs at `target` 2 give segments that each close on the grid or before 2.5 s.
-- `TestAnOverLongCopiedFragmentEndsTheGeneration`: segmenter unit at `target` 2, with a 2.0 s sync fragment and then a 2.5 s one, run in two variants.
+- `TestAnOverLongCopiedFragmentEndsTheGeneration`: segmenter unit at `target` 2, with a 2.0 s sync fragment and then a 2.5 s one, run in two variants. The one audio track (`aac`) is fed 200 ms fragments covering [0, 2.0 s), so the 2.0 s segment has audio. That segment becomes the generation's last once `tailDone` is set, and the seed's empty-tail rule (`relay/hls/segmenter.go:362-373`) would otherwise drop it.
   - **(a)** Each fragment arrives on its own wake.
   - **(b)** Both are queued before the segmenter's first wake.
-  - **The oracle for each.** `onOverlong` is called once. The store holds exactly one segment, the 2.000 s one, published after its audio readers reach EOF. No 2.5 s segment is ever published, and a third fragment fed afterwards is discarded.
+  - **The oracle for each.** `onOverlong` is called once. The store holds exactly one segment, the 2.000 s one, with a non-empty `aac` part, published after its audio reader reaches EOF. No 2.5 s segment is ever published, and a third fragment fed afterwards is discarded.
 - `TestAnEncodedGenerationIgnoresTheCopyCut`: the same 2.5 s fragment with `copied` false is published as the seed publishes it, as one segment, with no call. This pins Global constraint 6.
 - `TestAnOverLongCopiedSegmentRestartsTheRunEncoded` (stand-in). The probe says h264 K 2 s, so generation 0 copies. The encoder stand-in writes one 3 s fragment.
   - The generation ends as over-long.
@@ -583,7 +583,7 @@ Every oracle is a literal, never a value the code under test computes.
   - the decision is encode with reason `keyframes`;
   - the target is 2;
   - the encoder's argv contains `libx264`.
-- `TestRealAutomaticCopiesAFourSecondGOPAtTargetDurationFour` (the R37 wiring test): an in-test source, built once by ffmpeg into the test's temp directory. It is 16 s of `testsrc2` 640x360 at 25 fps, `libx264 -preset veryfast -g 100 -keyint_min 100 -sc_threshold 0 -b:v 1500k`, plus AAC stereo, as MPEG-TS: 3,400,544 bytes, measured. Measured by the planner through ffprobe 9.0.1 with this plan's argv:
+- `TestRealAutomaticCopiesAFourSecondGOPAtTargetDurationFour` (the R37 wiring test): an in-test source, built once by ffmpeg into the test's temp directory. It is 16 s of `testsrc2` 640x360 at 25 fps, `libx264 -preset veryfast -g 100 -keyint_min 100 -sc_threshold 0 -b:v 1500k`, plus AAC stereo, as MPEG-TS. The planner's build was 3,400,544 bytes and the reviewer's 3,396,220; the size varies by x264 build, so the test asserts only that it exceeds `QuickProbe.Bytes`, and the window is media-bounded either way. Measured by the planner through ffprobe 9.0.1 with this plan's argv:
   - the quick probe (`%+3`) sees one keyframe, at 1.48 s, with the video complete, so R37's fewer-than-two-keyframes re-probe runs;
   - the full probe (`%+8`) sees 1.48 and 5.48 s: K = 4 s.
 
@@ -751,6 +751,7 @@ Pre-existing flaps outside O: <none | file:block, rounds>.
 - **The ceiling `CODECS` overstates a copied low-level source** (R59). A validator may flag the mismatch between the multivariant and the init, and no Apple player is known to refuse it. The owner's AVPlayer run on an automatic channel is owed.
 - **Memory at a target of 6** is up to about 192 MiB per copied channel, and a copied source above about 26 Mb/s at TD 6 can have listed segments evicted (R62).
 - **`libx265` real-time on CI.** The HEVC-family real test encodes the 720x576 MPEG-2 fixture scaled to 640x360 at `ultrafast`. That was measured at about 25× real time locally, so CI's real-time margin is not a concern for these tests. A 1080p50 HEVC encode on the household CPU is unmeasured (Q1's scope).
+- **R75 can flip a same-source copy to an encode.** The rate check compares probe windows of a few seconds. A VBR source that fails over to itself, or reconnects, may measure above generation 0's declared peak and be encoded for that generation. That is R75 working as ruled: the declared `BANDWIDTH` stays true, at the cost of an encode.
 - **Open-GOP copies** (R76). AVPlayer played them without error, with frame counts within 2 of a closed-GOP control, both after a live join and across a discontinuity (§ Rulings, 9). The leading B-frames of a copied open-GOP segment still reference a GOP that is absent after a join or a discontinuity. So `EXT-X-INDEPENDENT-SEGMENTS` is not strictly true for such a source, and a brief visual artefact there is possible and unmeasured. HEVC CRA open GOPs were not measured.
 - **Follow-up:** bulk-editing the HLS profile across channels (spec non-goal) needs its own small PR against `ChannelBatch.jsx` and the bulk endpoint.
 

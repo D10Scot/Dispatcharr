@@ -378,7 +378,7 @@ Multivariant, for a source with AC-3 (sample; the values are illustrative):
 - An E-AC-3 source adds an `eac3` group (`CODECS` `ec-3`; Q3) and a third `EXT-X-STREAM-INF`.
 - `LANGUAGE` is emitted only when the probe reports a language tag.
 - `BANDWIDTH` is the video `maxrate` plus the audio bitrate in transcode mode. In a copied
-  rendition it is 1.25× the ring's measured rate over the probe window (the full 8 s window whenever automatic mode re-probed, R37).
+  rendition it is 1.25× the probe window's measured video rate (the full 8 s window whenever automatic mode re-probed, R37; video-only, 4a-1d plan).
 - The AAC group is listed first. Which group a given device picks is Q2 (M4: macOS and iOS chose
   AAC).
 
