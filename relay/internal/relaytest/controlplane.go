@@ -144,7 +144,25 @@ type ControlPlaneConfig struct {
 	// control plane older than Phase 2 PR 2b-2, which the relay must report
 	// as a contract mismatch rather than as "no profiles are configured".
 	OutputProfilesAbsent bool
+
+	// Slots is the slot model's capacity per m3u profile id (Phase 4a-1c),
+	// keyed by the profile a channel is on. Nil is unlimited, today's
+	// behaviour, and a profile absent from a non-nil map is unlimited too.
+	Slots map[int]int
+
+	// ProfileOf is a channel id's m3u profile. Absent is 1, the
+	// m3u_profile_id every earlier fixture sent.
+	ProfileOf map[string]int
+
+	// BlockFirst answers the first n next-source calls blocked, whatever the
+	// model says: a null source, the all-profiles-full error and a capacity
+	// object naming the channel's profile.
+	BlockFirst int
 }
+
+// allProfilesFull is apps/m3u/connection_pool.py's ALL_PROFILES_FULL, spelled
+// here so a test cannot drift from it silently.
+const allProfilesFull = "All active M3U profiles have reached maximum connection limits"
 
 // OutputProfileConfig is one entry of the fake's output_profiles map.
 type OutputProfileConfig struct {
@@ -191,6 +209,13 @@ type ControlPlane struct {
 	profiles  map[string]OutputProfileConfig
 	hasProfs  bool
 	authorize *AuthorizeDecision
+
+	// The slot model (Phase 4a-1c), under mu: which channels hold a slot on
+	// which profile, how many next-source calls were made, and the gate that
+	// holds release POSTs.
+	holders     map[int][]string
+	nextCalls   int
+	releaseGate chan struct{}
 }
 
 // AuthorizeDecision is what the fake answers POST
@@ -398,6 +423,15 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/release"):
+			// A held release waits AFTER it was recorded and BEFORE it frees
+			// its slot or answers (HoldReleases).
+			c.mu.Lock()
+			gate := c.releaseGate
+			c.mu.Unlock()
+			if gate != nil {
+				<-gate
+			}
+			c.freeSlot(channelFromAPIPath(r.URL.Path))
 			// apps/proxy/api_views.py:96-100: ReleaseResponseSerializer.
 			_ = json.NewEncoder(w).Encode(map[string]any{"released": true})
 		case strings.HasSuffix(r.URL.Path, "/events"):
@@ -408,7 +442,7 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 			_ = json.Unmarshal(body, &batch)
 			_ = json.NewEncoder(w).Encode(map[string]any{"accepted": len(batch.Events), "rejected": 0})
 		default:
-			_ = json.NewEncoder(w).Encode(c.nextSourceAnswer(cfg, body))
+			_ = json.NewEncoder(w).Encode(c.nextSourceAnswer(cfg, channelFromAPIPath(r.URL.Path), body))
 		}
 	}))
 	return c
@@ -443,13 +477,20 @@ func (c *ControlPlane) recordEvents(body []byte) {
 // exclude_stream_ids does not name and whose URL is not the current_url
 // (apps/proxy/next_source.py:242-368's own "already playing" rejection),
 // or a null source.
-func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, body []byte) map[string]any {
+func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, channelID string, body []byte) map[string]any {
 	var req struct {
 		Exclude           []int  `json:"exclude_stream_ids"`
 		CurrentURL        string `json:"current_url"`
 		IncludeAlternates bool   `json:"include_alternates"`
+		Reason            string `json:"reason"`
 	}
 	_ = json.Unmarshal(body, &req)
+	profileID := 1
+	if p, ok := cfg.ProfileOf[channelID]; ok {
+		profileID = p
+	}
+	initial := req.Reason == "initial" && len(req.Exclude) == 0 && req.CurrentURL == ""
+	blocked := c.slotDecision(cfg, channelID, profileID, initial)
 	excluded := map[int]bool{}
 	for _, id := range req.Exclude {
 		excluded[id] = true
@@ -526,7 +567,7 @@ func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, body []byte) map
 			"url":                   cand.url,
 			"user_agent":            cand.userAgent,
 			"transcode":             kind == "transcode",
-			"m3u_profile_id":        1,
+			"m3u_profile_id":        profileID,
 			"slot_reserved":         slotReserved,
 			"channel_name":          names("Test Channel"),
 			"stream_name":           names("Test Stream"),
@@ -568,6 +609,13 @@ func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, body []byte) map
 			profiles[key] = object
 		}
 		answer["output_profiles"] = profiles
+	}
+	if blocked {
+		// Django's refusal when every profile is full: a null source, the
+		// reason, and the capacity object naming what blocked the tune.
+		answer["error"] = allProfilesFull
+		answer["capacity"] = map[string]any{"blocked": true, "profile_ids": []int{profileID}}
+		return answer
 	}
 	chosen := -1
 	for i, cand := range candidates {
@@ -697,4 +745,81 @@ func channelFromURI(uri string) string {
 		return path
 	}
 	return path[idx+1:]
+}
+
+// channelFromAPIPath is the channel id out of /api/relay/channels/<id>/<verb>.
+func channelFromAPIPath(path string) string {
+	rest := strings.TrimPrefix(path, "/api/relay/channels/")
+	if idx := strings.Index(rest, "/"); idx >= 0 {
+		return rest[:idx]
+	}
+	return rest
+}
+
+// slotDecision is the slot model's verdict on one next-source call, and its
+// only writer of the holders: BlockFirst blocks the first n calls whatever
+// the model says; an initial call from a channel that holds a slot reuses it,
+// and from one that does not reserves one on its profile while the profile has
+// room, else is blocked; any other call leaves the holders alone.
+func (c *ControlPlane) slotDecision(cfg ControlPlaneConfig, channelID string, profileID int, initial bool) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.nextCalls++
+	if c.nextCalls <= cfg.BlockFirst {
+		return true
+	}
+	if !initial {
+		return false
+	}
+	for _, held := range c.holders {
+		for _, id := range held {
+			if id == channelID {
+				return false
+			}
+		}
+	}
+	if capacity, limited := cfg.Slots[profileID]; limited && len(c.holders[profileID]) >= capacity {
+		return true
+	}
+	if c.holders == nil {
+		c.holders = map[int][]string{}
+	}
+	c.holders[profileID] = append(c.holders[profileID], channelID)
+	return false
+}
+
+// freeSlot is a release POST's effect: the channel gives its slot back.
+func (c *ControlPlane) freeSlot(channelID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for profile, held := range c.holders {
+		kept := held[:0]
+		for _, id := range held {
+			if id != channelID {
+				kept = append(kept, id)
+			}
+		}
+		c.holders[profile] = kept
+	}
+}
+
+// Holders is the channel ids holding a slot on the profile, in reservation
+// order.
+func (c *ControlPlane) Holders(profile int) []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.holders[profile]...)
+}
+
+// HoldReleases makes every LATER release POST wait, after it is recorded and
+// before it frees anything or answers, until the returned open is called. open
+// is idempotent. A test registers t.Cleanup(open) AFTER building its rig, so it
+// runs first and httptest.Server.Close never waits on a held POST.
+func (c *ControlPlane) HoldReleases() (open func()) {
+	gate := make(chan struct{})
+	var once sync.Once
+	c.mu.Lock()
+	c.releaseGate = gate
+	c.mu.Unlock()
+	return func() { once.Do(func() { close(gate) }) }
 }

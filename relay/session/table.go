@@ -337,7 +337,13 @@ func (t *Table) StopPipeline(p *hls.Pipeline) []channel.StoppedClient {
 func (t *Table) stop(match func(*Session) bool) []channel.StoppedClient {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	now := t.now()
+	return t.stopLocked(match, t.now())
+}
+
+// stopLocked is stop's body, for a caller that already holds t.mu and has
+// read the clock (StopIfSilent takes its verdict and its mark in one
+// critical section).
+func (t *Table) stopLocked(match func(*Session) bool, now time.Time) []channel.StoppedClient {
 	var stopped []channel.StoppedClient
 	for _, s := range t.byID {
 		if s.state == Stopped || !match(s) {
@@ -436,6 +442,17 @@ func (t *Table) Len() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return len(t.byID)
+}
+
+// InFlight is how many requests of the session are in flight, for tests; 0
+// for an unknown sid.
+func (t *Table) InFlight(sid string) int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.byID[sid]; s != nil {
+		return s.inFlight
+	}
+	return 0
 }
 
 // settle ends an idle departure's settling: it is now resumable, and its

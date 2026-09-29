@@ -42,6 +42,16 @@ type ManagerConfig struct {
 	// channel's stop marks its sessions STOPPED. Nil means no HLS: every
 	// existing caller and test keeps working.
 	Sessions SessionEnder
+
+	// Silence is the HLS session table as ReclaimFor judges it (Phase
+	// 4a-1c). Nil means only a channel with no client at all is
+	// reclaimable, which is every existing caller and test.
+	Silence SilenceJudge
+
+	// ReclaimPicked is a test seam only: ReclaimFor runs it with m.mu held
+	// and no session-table lock held, between its pick and its re-check, so a
+	// test can land a request in exactly that window. Nil in production.
+	ReclaimPicked func(picked *Channel)
 }
 
 // Manager owns every running channel.
@@ -62,6 +72,18 @@ type Manager struct {
 	// control-plane call, which is what makes one slow control plane cost one
 	// tune rather than every tune.
 	starting map[string]chan struct{}
+
+	// releasing holds every channel that has left channels but whose provider
+	// slot has not come back yet, with when it left (Phase 4a-1c). Guarded by
+	// mu and filled only by removeLocked. A blocked tune waits on these
+	// rather than missing a slot that is about to free.
+	releasing map[*Channel]time.Time
+	// now stamps releasing entries and starts ReclaimFor's clock; cfg.Now or
+	// time.Now. Never the deadline of a wait: that is real time.
+	now func() time.Time
+	// afterRemove is an in-package test hook run by removeLocked, with m.mu
+	// held, naming the site that removed the channel.
+	afterRemove func(c *Channel, site string)
 }
 
 // NewManager builds a manager. It starts no goroutines of its own.
@@ -76,11 +98,17 @@ func NewManager(cfg ManagerConfig) *Manager {
 	if log == nil {
 		log = slog.Default()
 	}
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &Manager{
-		cfg:      cfg,
-		log:      log,
-		channels: map[string]*Channel{},
-		starting: map[string]chan struct{}{},
+		cfg:       cfg,
+		log:       log,
+		channels:  map[string]*Channel{},
+		starting:  map[string]chan struct{}{},
+		releasing: map[*Channel]time.Time{},
+		now:       now,
 	}
 }
 
@@ -228,7 +256,7 @@ func (m *Manager) claim(id string, client *Client) (existing *Channel, wait, own
 			}
 			return c, nil, nil, nil
 		}
-		delete(m.channels, id)
+		m.removeLocked(c, "claim")
 	}
 	if gate, starting := m.starting[id]; starting {
 		return nil, gate, nil, nil
@@ -254,8 +282,10 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 		onRunEnd = m.runEnded
 	}
 	c := &Channel{
-		onRunEnd: onRunEnd,
-		id:       id,
+		onRunEnd:   onRunEnd,
+		released:   make(chan struct{}),
+		onReleased: m.released,
+		id:         id,
 		ring: buffer.New(buffer.Config{
 			BudgetBytes: m.cfg.BudgetBytes,
 			ChunkBytes:  started.Tuning.ChunkBytes,
@@ -371,8 +401,35 @@ func (m *Manager) take(id string) *Channel {
 	if !running {
 		return nil
 	}
-	delete(m.channels, id)
+	m.removeLocked(c, "take")
 	return c
+}
+
+// removeLocked deletes c from the map (the caller holds m.mu and has checked
+// c is the entry) and, IN THE SAME CRITICAL SECTION, puts it into the
+// releasing set unless its release has already landed. Every map removal goes
+// through here: take, stopIfStillIdle, claim's closed-ring delete and
+// ReclaimFor, so "inserted in the same critical section as the delete" is a
+// property of the code rather than of four call sites.
+func (m *Manager) removeLocked(c *Channel, site string) {
+	delete(m.channels, c.id)
+	select {
+	case <-c.released:
+	default:
+		m.releasing[c] = m.now()
+	}
+	if m.afterRemove != nil {
+		m.afterRemove(c, site)
+	}
+}
+
+// released is the channel's onReleased: close released and forget the
+// releasing entry under one lock, so insertion and removal are ordered.
+func (m *Manager) released(c *Channel) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	close(c.released)
+	delete(m.releasing, c)
 }
 
 // StopAll tears every channel down, CONCURRENTLY, and returns once every one
@@ -528,7 +585,7 @@ func (m *Manager) stopIfStillIdle(c *Channel) {
 			return false
 		}
 		if existing, ok := m.channels[c.id]; ok && existing == c {
-			delete(m.channels, c.id)
+			m.removeLocked(c, "stopIfStillIdle")
 		}
 		return true
 	}()

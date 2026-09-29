@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -75,7 +76,16 @@ type rig struct {
 	Log *logCapture
 
 	ticks chan time.Time
+
+	// reclaimPick is ManagerConfig.ReclaimPicked, late-bound: the rig builds
+	// the manager before a test can reach it (Phase 4a-1c).
+	reclaimPick atomic.Pointer[func(*channel.Channel)]
 }
+
+// onReclaimPick installs the hook ReclaimFor runs between its pick and its
+// re-check, with the manager's lock held. Nil in every test that is not about
+// the reclaim.
+func (r *rig) onReclaimPick(f func(*channel.Channel)) { r.reclaimPick.Store(&f) }
 
 // logCapture is a log sink a test can read back safely under -race.
 type logCapture struct {
@@ -179,12 +189,19 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 	sweepCtx, stopSweeper := context.WithCancel(context.Background())
 	go sessions.Run(sweepCtx)
 	t.Cleanup(stopSweeper)
+	out := &rig{}
 	manager := channel.NewManager(channel.ManagerConfig{
 		BudgetBytes: rigBudgetBytes,
 		Events:      EventSink(emitter),
 		Release:     ReleaseVia(client, nil),
 		Log:         logger,
 		Sessions:    sessions,
+		Silence:     sessions,
+		ReclaimPicked: func(c *channel.Channel) {
+			if f := out.reclaimPick.Load(); f != nil {
+				(*f)(c)
+			}
+		},
 	})
 	// Order matters: channels stop (and release) before the emitter drains,
 	// and the emitter drains before the fake closes.
@@ -221,11 +238,10 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 	relay := httptest.NewServer(server.Handler())
 	t.Cleanup(relay.Close)
 
-	return &rig{
-		Relay: relay, Upstream: upstream, Control: controlPlane,
-		Manager: manager, Emitter: emitter, Lifecycle: lifecycle,
-		Sessions: sessions, SessionClock: clock, Log: logs, ticks: ticks,
-	}
+	out.Relay, out.Upstream, out.Control = relay, upstream, controlPlane
+	out.Manager, out.Emitter, out.Lifecycle = manager, emitter, lifecycle
+	out.Sessions, out.SessionClock, out.Log, out.ticks = sessions, clock, logs, ticks
+	return out
 }
 
 func (r *rig) tune(t *testing.T, path string, header http.Header) *http.Response {

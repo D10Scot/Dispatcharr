@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -42,7 +43,9 @@ type hlsFixture struct {
 	// attempt exit non-zero, and creating ok makes every later attempt a
 	// healthy one that produces full output.
 	fail, ok string
-	hooks    *hlsHooks
+	// gate is the file the gated modes wait for; touch it to release them.
+	gate  string
+	hooks *hlsHooks
 
 	readyWait, playlistWait time.Duration
 }
@@ -53,6 +56,11 @@ const (
 	modeNoInit   = "noinit"   // writes nothing and never exits on stdin EOF
 	modeStubborn = "stubborn" // full streams and a straggler that outlives the encoder's kill
 	modeFlaky    = "flaky"    // init-only and fails on cue, or healthy once ok exists
+
+	// Phase 4a-1c: an entry, and a long-poll, held open for as long as a test
+	// chooses, released by creating the gate file.
+	modeGatedInit     = "gatedinit"     // writes nothing until the gate exists, then healthy output
+	modeGatedSegments = "gatedsegments" // both inits, then the rest of the streams once the gate exists
 )
 
 func newHLSFixture(t *testing.T, mode string, probe []byte) *hlsFixture {
@@ -64,10 +72,25 @@ func newHLSFixture(t *testing.T, mode string, probe []byte) *hlsFixture {
 	f.fail = filepath.Join(f.dir, "fail")
 	f.ok = filepath.Join(f.dir, "ok")
 	f.write("probe.json", probe)
-	f.write("vfull.mp4", relaytest.HLSVideoStream(20, 50))
-	f.write("afull.mp4", relaytest.HLSAACStream(200))
-	f.write("vinit.mp4", relaytest.HLSVideoStream(0, 50))
-	f.write("ainit.mp4", relaytest.HLSAACStream(0))
+	f.gate = filepath.Join(f.dir, "gate")
+	vfull, afull := relaytest.HLSVideoStream(20, 50), relaytest.HLSAACStream(200)
+	vinit, ainit := relaytest.HLSVideoStream(0, 50), relaytest.HLSAACStream(0)
+	f.write("vfull.mp4", vfull)
+	f.write("afull.mp4", afull)
+	f.write("vinit.mp4", vinit)
+	f.write("ainit.mp4", ainit)
+	// The gated-segments mode writes an init, waits, then writes the rest of
+	// the full stream, so the init has to be a byte prefix of it.
+	for _, pair := range []struct {
+		name       string
+		init, full []byte
+	}{{"video", vinit, vfull}, {"audio", ainit, afull}} {
+		if !bytes.HasPrefix(pair.full, pair.init) {
+			t.Fatalf("the %s init is not a byte prefix of its full stream; the gated-segments mode cannot split it", pair.name)
+		}
+	}
+	f.write("vrest.mp4", vfull[len(vinit):])
+	f.write("arest.mp4", afull[len(ainit):])
 	return f
 }
 
@@ -103,6 +126,13 @@ func (f *hlsFixture) command(hls.Spawn) (string, []string) {
 			"--fd-file", relaytest.FDFileArg(1, f.path("vinit.mp4")),
 			"--fd-file", relaytest.FDFileArg(3, f.path("ainit.mp4")),
 			"--wait-stdin-eof")
+	case modeGatedInit:
+		return "sh", []string{"-c", `LOG=` + f.encoderLog + ` GATE=` + f.gate + ` VFULL=` + f.path("vfull.mp4") + ` AFULL=` + f.path("afull.mp4") + `; ` +
+			`echo x >> "$LOG"; while [ ! -e "$GATE" ]; do sleep 0.05; done; cat "$VFULL"; cat "$AFULL" >&3; while true; do sleep 1; done`}
+	case modeGatedSegments:
+		return "sh", []string{"-c", `LOG=` + f.encoderLog + ` GATE=` + f.gate + ` VINIT=` + f.path("vinit.mp4") + ` AINIT=` + f.path("ainit.mp4") +
+			` VREST=` + f.path("vrest.mp4") + ` AREST=` + f.path("arest.mp4") + `; ` +
+			`echo x >> "$LOG"; cat "$VINIT"; cat "$AINIT" >&3; while [ ! -e "$GATE" ]; do sleep 0.05; done; cat "$VREST"; cat "$AREST" >&3; while true; do sleep 1; done`}
 	case modeNoInit:
 		return relaytest.StandInCommand("--spawn-log", f.encoderLog, "--ignore-stdin-eof")
 	case modeStubborn:

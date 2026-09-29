@@ -1,6 +1,7 @@
 package control
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -244,5 +245,42 @@ func TestTheTimeoutsMatchPython(t *testing.T) {
 	}
 	if RetryDelay != 100*time.Millisecond {
 		t.Errorf("RetryDelay = %s, want 100ms (apps/proxy/control_plane.py:41)", RetryDelay)
+	}
+}
+
+func TestTheCapacityFieldDecodes(t *testing.T) {
+	cases := []struct {
+		name   string
+		body   string
+		wantOK bool
+		want   []int
+	}{
+		{"absent key", `{"source": null, "alternates": []}`, false, nil},
+		{"null", `{"source": null, "alternates": [], "capacity": null}`, false, nil},
+		{"blocked", `{"source": null, "alternates": [], "capacity": {"blocked": true, "profile_ids": [3, 5]}}`, true, []int{3, 5}},
+		{"not blocked", `{"source": null, "alternates": [], "capacity": {"blocked": false, "profile_ids": [3]}}`, false, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var a NextSourceAnswer
+			if err := json.Unmarshal([]byte(tc.body), &a); err != nil {
+				t.Fatalf("Unmarshal: %v", err)
+			}
+			ids, ok := a.Blocked()
+			if ok != tc.wantOK {
+				t.Fatalf("Blocked ok = %v, want %v", ok, tc.wantOK)
+			}
+			if len(ids) != len(tc.want) {
+				t.Fatalf("Blocked ids = %v, want %v", ids, tc.want)
+			}
+			for i := range ids {
+				if ids[i] != tc.want[i] {
+					t.Fatalf("Blocked ids = %v, want %v", ids, tc.want)
+				}
+			}
+			if !tc.wantOK && tc.name != "not blocked" && a.Capacity != nil {
+				t.Fatalf("Capacity = %+v, want nil for %s", a.Capacity, tc.name)
+			}
+		})
 	}
 }

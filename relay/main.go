@@ -66,6 +66,7 @@ func main() {
 		Events:   httpapi.EventSink(emitter),
 		Release:  httpapi.ReleaseVia(client, slog.Default()),
 		Sessions: sessions,
+		Silence:  sessions,
 	})
 	// ONE Lifecycle, shared by the tune path, /readyz and the drain. Two
 	// would let the probe say "ready" while the handler refused every tune.

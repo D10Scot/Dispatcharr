@@ -189,6 +189,16 @@ func (p OutputProfileRef) Args() []string {
 	return p.Argv[1:]
 }
 
+// Capacity is next-source's capacity object (Phase 4a-1c): non-nil only when
+// source is null because every profile was full. An absent key and a null one
+// both decode to nil, "not blocked" -- the field describes a failure, not a
+// setting, so unlike proxy_settings and hls_profile it is not required (spec
+// § Next-source additions).
+type Capacity struct {
+	Blocked    bool  `json:"blocked"`
+	ProfileIDs []int `json:"profile_ids"`
+}
+
 // NextSourceAnswer is the response body.
 type NextSourceAnswer struct {
 	Source     *Source  `json:"source"`
@@ -197,6 +207,10 @@ type NextSourceAnswer struct {
 	// unmarshals to the empty string. Callers test Source == nil, never this.
 	Error         string   `json:"error"`
 	ProxySettings Settings `json:"proxy_settings"`
+
+	// Capacity says which profiles blocked a tune whose source is null
+	// because every profile was full (Phase 4a-1c); nil otherwise.
+	Capacity *Capacity `json:"capacity"`
 
 	// OutputProfiles is every is_active OutputProfile, keyed by stringified
 	// id (apps/proxy/next_source.py's _with_output_profiles, 2b-2). The WHOLE
@@ -216,6 +230,15 @@ type NextSourceAnswer struct {
 	// key on its own, which is why this flag exists -- StreamProfileRef.
 	// ArgvPresent is the same shape for the same reason.
 	OutputProfilesPresent bool `json:"-"`
+}
+
+// Blocked reports the profiles that blocked a tune, when the answer says one
+// was.
+func (a *NextSourceAnswer) Blocked() ([]int, bool) {
+	if a.Capacity == nil || !a.Capacity.Blocked {
+		return nil, false
+	}
+	return a.Capacity.ProfileIDs, true
 }
 
 // UnmarshalJSON decodes the answer and records whether output_profiles was

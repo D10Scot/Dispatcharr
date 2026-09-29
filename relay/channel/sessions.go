@@ -56,6 +56,9 @@ func (c *Channel) dropHLSClients(stopped []StoppedClient) {
 			continue
 		}
 		delete(c.clients, s.ClientID)
+		if len(c.clients) == 0 {
+			c.idleSince = c.now()
+		}
 		if s.Connected {
 			disconnects = append(disconnects, *cl)
 		}
