@@ -942,7 +942,8 @@ R82-R87 settle that plan's questions):
   full duration, which would double the disk the window needs (R83).
 - **Cap.** The writer enforces `rewind_disk_cap_gb` after every batch. Eviction order: segments
   already out of the playlist (above) first; then the oldest listed segment of a lingering window;
-  then the oldest listed segment of any window, by PDT. A cap eviction unlinks at once, and a
+  then the oldest listed segment of any window, by PDT, only ever a segment already written (one
+  still queued for the writer is skipped until it is). A cap eviction unlinks at once, and a
   segment whose read is in flight is unlinked when that read ends, never under it. A window's
   newest 21 are never evicted, so the cap can be exceeded by at most 21 segments per HLS channel;
   that is logged once. The value is the most recent **initial** tune's answer (a failover answer
