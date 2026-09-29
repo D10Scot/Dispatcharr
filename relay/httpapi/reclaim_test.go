@@ -53,6 +53,9 @@ func (r *rig) tuneStatus(t *testing.T, channelID, clientID string) (int, string)
 func (r *rig) wantRefused(t *testing.T, channelID, clientID string) {
 	t.Helper()
 	status, body := r.tuneStatus(t, channelID, clientID)
+	if status == http.StatusOK {
+		t.Fatalf("the blocked tune of %s was SERVED (200): the reclaim freed a slot it must not have, by taking a channel that was still watched", channelID)
+	}
 	if status != http.StatusServiceUnavailable || !strings.Contains(body, "no source available") {
 		t.Fatalf("the blocked tune of %s answered %d %q, want 503 no source available", channelID, status, body)
 	}
