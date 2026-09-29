@@ -318,3 +318,43 @@ func TestAManagerStopMarksTheSessionsBeforeTheChannelStops(t *testing.T) {
 		t.Fatalf("the sweep left %d client entries on the stopped channel", ch.Clients())
 	}
 }
+
+// The two client transitions carry what both generators carried: the agent cut
+// at 100 characters (null when absent), the user id (null for an anonymous
+// one), and the address and id.
+func TestClientEventDetailsCutTheAgentAndNullTheAnonymousUser(t *testing.T) {
+	long := &Client{ID: "c1", IPAddress: "198.51.100.4", UserAgent: repeatByte('u', 150), UserID: "7"}
+	got := clientEventDetails(long)
+	if agent, _ := got["user_agent"].(string); len(agent) != userAgentEventLimit {
+		t.Errorf("a 150-character agent is %d characters on the event, want %d", len(agent), userAgentEventLimit)
+	}
+	if got["user_id"] != "7" || got["client_id"] != "c1" || got["client_ip"] != "198.51.100.4" {
+		t.Errorf("details = %+v", got)
+	}
+	for _, anonymous := range []string{"", "0"} {
+		got := clientEventDetails(&Client{ID: "c2", UserAgent: "", UserID: anonymous})
+		if got["user_id"] != nil || got["user_agent"] != nil {
+			t.Errorf("user id %q and no agent gave %+v, want both null", anonymous, got)
+		}
+	}
+}
+
+func repeatByte(b byte, n int) string {
+	out := make([]byte, n)
+	for i := range out {
+		out[i] = b
+	}
+	return string(out)
+}
+
+func TestEmitClientConnectRaisesTheEventWithTheClientsDetails(t *testing.T) {
+	events := &eventLog{}
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64, Events: events})
+	t.Cleanup(m.StopAll)
+	ch, _ := attachBlocking(t, m, "connect", "ts", testTuning())
+	ch.EmitClientConnect(&Client{ID: "viewer", IPAddress: "203.0.113.5", UserAgent: "Player/1", UserID: "9"})
+	got := events.of("client_connect")
+	if len(got) != 1 || got[0].ClientID != "viewer" || got[0].Details["user_agent"] != "Player/1" {
+		t.Fatalf("client_connect events = %+v", got)
+	}
+}

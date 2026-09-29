@@ -1,6 +1,7 @@
 package session
 
 import (
+	"context"
 	"slices"
 	"sync"
 	"testing"
@@ -477,4 +478,168 @@ func TestSetTDFixesTheThresholdsBeforeActivate(t *testing.T) {
 
 	// An unknown session is ignored.
 	r.table.SetTD("no-such-sid", time.Second)
+}
+
+func TestOutcomeNamesReadInFailureMessages(t *testing.T) {
+	for outcome, want := range map[Outcome]string{
+		Unknown: "Unknown", Gone: "Gone", Busy: "Busy", Resume: "Resume", Serve: "Serve", Outcome(99): "Outcome(?)",
+	} {
+		if got := outcome.String(); got != want {
+			t.Errorf("Outcome(%d).String() = %q, want %q", int(outcome), got, want)
+		}
+	}
+}
+
+// A table built with no clock and no logger uses the real clock: a session it
+// admits is served, and left, exactly as one on an injected clock.
+func TestATableWithNoConfigUsesTheRealClock(t *testing.T) {
+	table := NewTable(Config{})
+	j := &journal{}
+	owner := &fakeOwner{name: "c1", j: j}
+	s := &Session{ID: "sid-real", Owner: owner, Key: "hls", Pipeline: &hls.Pipeline{}, TD: 2 * time.Second}
+	table.Add(s, &channel.Client{ID: "a"}, Releases{Client: func() { j.add("client a") }})
+	if !table.Activate(s.ID) {
+		t.Fatal("Activate refused")
+	}
+	if l := table.Begin(s.ID); l.Outcome != Serve {
+		t.Fatalf("Begin = %v, want Serve", l.Outcome)
+	}
+	table.End(s.ID)
+	table.Leave(s.ID).Run()
+	if got := j.all(); !slices.Equal(got, []string{"disconnect a", "client a"}) {
+		t.Fatalf("the leave did %v", got)
+	}
+}
+
+// An ARRIVED session's request counts as in flight from its arrival: a GET on
+// it is served, and holds it in flight until End.
+func TestABeginOnAnArrivedSessionServesAndHoldsItInFlight(t *testing.T) {
+	r := newRig(t)
+	s := r.add(r.owner("c1"), "a", 2*time.Second)
+	if l := r.table.Begin(s.ID); l.Outcome != Serve || l.Client == nil || l.Client.ID != "a" || l.Pipeline != s.Pipeline {
+		t.Fatalf("Begin on an ARRIVED session = %+v, want Serve with its client and pipeline", l)
+	}
+	r.table.End(s.ID)
+	r.clock.Advance(time.Hour)
+	if got := r.table.Sweep(); len(got) != 0 {
+		t.Fatal("an ARRIVED session departed although its entry has not activated it")
+	}
+}
+
+func TestAStoppedSessionUnrequestedPastTheWindowIsUnknownNotGone(t *testing.T) {
+	r := newRig(t)
+	c1 := r.owner("c1")
+	s := r.active(c1, "a")
+	r.table.stopOwner(c1)
+	r.clock.Advance(ResumeWindow + time.Second)
+	if l := r.table.Begin(s.ID); l.Outcome != Unknown {
+		t.Fatalf("Begin on a STOPPED session 301 s later = %v, want Unknown (its one 410 is long past)", l.Outcome)
+	}
+	if r.table.Len() != 0 {
+		t.Fatal("the expired STOPPED session is still in the table")
+	}
+}
+
+func TestEndAndResumeFailedOnAnUnknownSessionChangeNothing(t *testing.T) {
+	r := newRig(t)
+	keep := r.active(r.owner("c1"), "a")
+	r.table.End("no-such-sid")
+	r.table.ResumeFailed("no-such-sid")
+	if r.table.Len() != 1 {
+		t.Fatalf("the table holds %d sessions after two calls on an unknown sid, want 1", r.table.Len())
+	}
+	r.table.ResumeFailed(keep.ID)
+	if r.table.Len() != 0 {
+		t.Fatal("ResumeFailed left the session in the table")
+	}
+}
+
+// StopChannel and StopPipeline are the two entry points the channel package
+// and the failure watcher call; both mark by identity.
+func TestStopChannelAndStopPipelineMarkByIdentity(t *testing.T) {
+	r := newRig(t)
+	ch := &channel.Channel{}
+	p := &hls.Pipeline{}
+
+	byChannel := &Session{ID: "sid-ch", Owner: ch, Key: "hls", Pipeline: &hls.Pipeline{}, TD: 2 * time.Second}
+	r.table.Add(byChannel, &channel.Client{ID: "on-channel"}, r.releases("on-channel"))
+	r.table.Activate(byChannel.ID)
+	byPipeline := &Session{ID: "sid-p", Owner: r.owner("other"), Key: "hls", Pipeline: p, TD: 2 * time.Second}
+	r.table.Add(byPipeline, &channel.Client{ID: "on-pipeline"}, r.releases("on-pipeline"))
+	r.table.Activate(byPipeline.ID)
+
+	got := r.table.StopChannel(ch)
+	if want := []channel.StoppedClient{{ClientID: "on-channel", Connected: true}}; !slices.Equal(got, want) {
+		t.Fatalf("StopChannel = %+v, want %+v", got, want)
+	}
+	got = r.table.StopPipeline(p)
+	if want := []channel.StoppedClient{{ClientID: "on-pipeline", Connected: true}}; !slices.Equal(got, want) {
+		t.Fatalf("StopPipeline = %+v, want %+v", got, want)
+	}
+	for _, s := range []*Session{byChannel, byPipeline} {
+		if l := r.table.Begin(s.ID); l.Outcome != Gone {
+			t.Fatalf("Begin on a stopped session = %v, want Gone", l.Outcome)
+		}
+	}
+}
+
+// A leave of a session whose releases are not held -- DEPARTED and settled, or
+// DEPARTED and still settling -- has nothing to run, and never runs them twice.
+func TestALeaveOfADepartedSessionHasNothingToRun(t *testing.T) {
+	r := newRig(t)
+	settled := r.active(r.owner("c1"), "settled")
+	r.departIdle(settled)
+	if d := r.table.Leave(settled.ID); d != nil {
+		t.Fatal("a leave of a DEPARTED session returned a departure: its releases would run twice")
+	}
+
+	settling := r.active(r.owner("c2"), "settling")
+	r.clock.Advance(IdleTimeout(settling.TD))
+	departures := r.table.Sweep()
+	if len(departures) != 1 {
+		t.Fatalf("%d departures, want 1", len(departures))
+	}
+	if d := r.table.Leave(settling.ID); d != nil {
+		t.Fatal("a leave during a settling departure returned a second departure")
+	}
+	before := len(r.j.all())
+	departures[0].Run() // the one departure runs its releases once
+	if got := r.j.all()[before:]; !slices.Equal(got, []string{"disconnect settling", "output settling", "client settling"}) {
+		t.Fatalf("the departure did %v", got)
+	}
+}
+
+func TestADepartureRunsBeforeClientBetweenTheTwoReleases(t *testing.T) {
+	r := newRig(t)
+	o := r.owner("c1")
+	s := &Session{ID: "sid-hook", Owner: o, Key: "hls", Pipeline: &hls.Pipeline{}, TD: 2 * time.Second}
+	rel := r.releases("a")
+	rel.BeforeClient = func() { r.j.add("before client a") }
+	r.table.Add(s, &channel.Client{ID: "a"}, rel)
+	r.table.Activate(s.ID)
+	r.table.Leave(s.ID).Run()
+	want := []string{"disconnect a", "output a", "before client a", "client a"}
+	if got := r.j.all(); !slices.Equal(got, want) {
+		t.Fatalf("the departure did %v, want %v", got, want)
+	}
+}
+
+// With no injected tick the sweeper builds its own one-second ticker, and it
+// returns when its context ends. (It observes no tick: the idle timeout is 12 s
+// of real time, which no test should wait for; the ticks themselves are driven
+// by TestTheSweeperDepartsOnItsTicks.)
+func TestTheSweeperWithNoInjectedTickStopsWithItsContext(t *testing.T) {
+	table := NewTable(Config{})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		table.Run(ctx)
+	}()
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Run did not return after its context ended")
+	}
 }
