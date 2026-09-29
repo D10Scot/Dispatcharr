@@ -870,6 +870,31 @@ describe('FloatingVideo', () => {
       expect(hlsInstances).toHaveLength(2);
     });
 
+    it('a re-entered session gets its full retry budget', async () => {
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest(T));
+      const fatal = {
+        type: 'networkError',
+        details: 'fragLoadError',
+        fatal: true,
+        response: { code: 500 },
+        url: ABS(T, '/video/1.m4s'),
+      };
+      for (let i = 0; i < 3; i += 1)
+        await fire(hlsInstances[0], 'error', fatal);
+      expect(hlsInstances[0].startLoad).toHaveBeenCalledTimes(3);
+
+      await fire(hlsInstances[0], 'error', forbidden(ABS(T, '/video.m3u8')));
+      await flush();
+      await fire(hlsInstances[1], 'manifestLoaded', manifest(T2));
+      await fire(hlsInstances[1], 'error', {
+        ...fatal,
+        url: ABS(T2, '/video/1.m4s'),
+      });
+
+      expect(hlsInstances[1].startLoad).toHaveBeenCalledTimes(1);
+    });
+
     it('a 410 from /hls/ is not re-entered', async () => {
       await renderHls();
       await fire(hlsInstances[0], 'manifestLoaded', manifest());
@@ -935,6 +960,8 @@ describe('FloatingVideo', () => {
       );
       // React binds its own media-event listeners on <video> at mount (bound
       // functions, "[native code]"); only the player's are plain functions.
+      // This filter would therefore miss a future player listener attached
+      // with .bind(): such a leak would not be counted here.
       const isPlayerListener = (fn) =>
         !/\[native code\]/.test(Function.prototype.toString.call(fn));
       const listeners = (spy, event) =>
