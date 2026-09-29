@@ -1000,15 +1000,17 @@ break-check therefore reddens deterministically, not one run in several thousand
   - `liveSyncDurationCount: 3`;
   - `backBufferLength: 120`, so a 60-minute window is not held in browser memory;
   - recovery on `NETWORK_ERROR` and `MEDIA_ERROR`, as the recordings path already does;
-  - `manifestLoadPolicy` and `playlistLoadPolicy` timeouts of 50 s: above the relay's 43 s entry
-    and media-playlist waits (R57), and under nginx's 60 s `/hls/` read timeout. hls.js 1.6's
-    defaults (a 20 s manifest load, a 10 s playlist first byte) are shorter than a legitimate cold
-    software start. A timed-out entry is abandoned by the relay, whose pipeline then stops at
-    refcount zero, so hls.js's own retry would start cold again (amended by the 4a-2 plan).
+  - a `manifestLoadPolicy` (entry) timeout of 65 s: the relay's next-source budget (14.1 s,
+    `tuneBudget`) plus its 43 s ready wait (R57) plus a margin, under nginx's 300 s read timeout on
+    `/proxy/ts/stream/`; and a `playlistLoadPolicy` timeout of 50 s, above the relay's 43 s
+    first-segment wait and under nginx's 60 s `/hls/` read timeout. hls.js 1.6's defaults (a 20 s
+    manifest load, a 10 s playlist first byte) are shorter than a legitimate cold software start.
+    A timed-out entry is abandoned by the relay, whose pipeline then stops at refcount zero, so
+    hls.js's own retry would start cold again (amended by the 4a-2 plan).
 
   On a 403 from `/hls/`, the player re-requests the entry URL once. A 410 (the channel stopped) is
-  not re-requested; the player says the channel stopped (amended by the 4a-2 plan, its open
-  question 1).
+  not re-requested (R68). After 4a-1c a 410 may also mean a silent session whose channel was
+  reclaimed (R66), which is equally a reason not to re-enter; the player's message names both.
 - **Native fallback.** Otherwise, if `canPlayType('application/vnd.apple.mpegurl')`, `video.src` is
   the entry URL with the JWT as `?token=` (`QueryParamJWTAuthentication`,
   `apps/proxy/authorize.py:93-97`).
@@ -1920,9 +1922,10 @@ Filled in as PRs merge.
     "does not exceed"; the orchestrator files the issue if R29's measurement is below real time.
 - **2026-09-29, amended by the 4a-2 plan** (`docs/superpowers/plans/2026-09-29-phase4-4a2-browser-hls.md`,
   written against `4ed75d96`). § Browser player only:
-  - hls.js's manifest and playlist load timeouts are raised to 50 s, above the relay's 43 s waits
-    (R57); its 1.6 defaults would abandon a legitimate cold software start.
-  - A 410 from `/hls/` is not re-requested (the plan's open question 1, written as recommended).
+  - hls.js's entry load timeout is raised to 65 s (the relay's 14.1 s next-source budget plus its
+    43 s ready wait, R57, plus a margin) and its playlist timeout to 50 s; its 1.6 defaults would
+    abandon a legitimate cold software start.
+  - A 410 from `/hls/` is not re-requested (R68).
   - The player destroys hls.js before it calls leave, and a switch waits up to 2 s for the previous
     leave before the next entry.
   - The vitest list is corrected: the five page and card tests that mock `getShowVideoUrl` do not
