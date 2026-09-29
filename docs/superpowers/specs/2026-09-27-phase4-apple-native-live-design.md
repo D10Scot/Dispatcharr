@@ -1078,9 +1078,18 @@ break-check therefore reddens deterministically, not one run in several thousand
     path does; on `/hls/` requests it is harmless;
   - `liveSyncDurationCount: 3`;
   - `backBufferLength: 120`, so a 60-minute window is not held in browser memory;
-  - recovery on `NETWORK_ERROR` and `MEDIA_ERROR`, as the recordings path already does.
+  - recovery on `NETWORK_ERROR` and `MEDIA_ERROR`, as the recordings path already does;
+  - a `manifestLoadPolicy` (entry) timeout of 65 s: the relay's next-source budget (14.1 s,
+    `tuneBudget`) plus its 43 s ready wait (R57) plus a margin, under nginx's 300 s read timeout on
+    `/proxy/ts/stream/`; and a `playlistLoadPolicy` timeout of 50 s, above the relay's 43 s
+    first-segment wait and under nginx's 60 s `/hls/` read timeout. hls.js 1.6's defaults (a 20 s
+    manifest load, a 10 s playlist first byte) are shorter than a legitimate cold software start.
+    A timed-out entry is abandoned by the relay, whose pipeline then stops at refcount zero, so
+    hls.js's own retry would start cold again (amended by the 4a-2 plan).
 
-  On a 403 from `/hls/`, the player re-requests the entry URL once.
+  On a 403 from `/hls/`, the player re-requests the entry URL once. A 410 (the channel stopped) is
+  not re-requested (R68). After 4a-1c a 410 may also mean a silent session whose channel was
+  reclaimed (R66), which is equally a reason not to re-enter; the player's message names both.
 - **Native fallback.** Otherwise, if `canPlayType('application/vnd.apple.mpegurl')`, `video.src` is
   the entry URL with the JWT as `?token=` (`QueryParamJWTAuthentication`,
   `apps/proxy/authorize.py:93-97`).
@@ -1088,6 +1097,10 @@ break-check therefore reddens deterministically, not one run in several thousand
   through a new `api.js` function (components do not call fetch). The token comes from the media
   playlist URL that hls.js loaded. On `pagehide` the same call is made with `keepalive: true`. On
   the native path the token is not observable, and the idle timeout (and D16's silence rule) covers it.
+  The player destroys hls.js **before** it calls leave, so no playlist reload lands after the
+  session has ended. On a switch, the next entry waits for the previous leave to answer, for at
+  most 2 s, so a single-slot provider sees the release before the new tune (D16's case (a))
+  (amended by the 4a-2 plan).
 - **Kept:** mpegts.js, its dependency and the web-player Output Profile preference (R18).
 - **Error text** for HLS channels no longer says "try Chrome or Edge", because Firefox plays through
   hls.js.
@@ -1096,9 +1109,11 @@ break-check therefore reddens deterministically, not one run in several thousand
   - `RecordingCardUtils.test.js:150-167` (`getShowVideoUrl` now expects `?output_format=hls`, and
     the `output_profile=5` case moves to a `buildLiveStreamUrl` test);
   - `ChannelsTable.test.jsx`;
-  - `Guide.test.jsx`, `DVR.test.jsx`, `RecordingCard.test.jsx`, `RecordingDetailsModal.test.jsx`
-    and `ProgramDetailModal.test.jsx` wherever they assert the URL;
   - the `FloatingVideo` tests.
+
+  `Guide.test.jsx`, `DVR.test.jsx`, `RecordingCard.test.jsx`, `RecordingDetailsModal.test.jsx`
+  and `ProgramDetailModal.test.jsx` do **not** change: each mocks `getShowVideoUrl` and asserts
+  no URL (the 4a-2 plan read all five at `4ed75d96`).
 
   - `StreamConnectionCard.test.jsx:800-804` is **tightened** to pin R26. Its expected URL
     changes from `expect.stringContaining('/proxy/ts/stream/ch-uuid-1')` to
@@ -1106,8 +1121,26 @@ break-check therefore reddens deterministically, not one run in several thousand
     that, `buildChannelHlsUrl`'s URL would also satisfy the test, and the R26 break-check would stay
     green.
 
-  `StreamsTable.test.jsx` and `ChannelTableStreams.test.jsx` do not change: both keep
-  `buildLiveStreamUrl` (R18).
+  - `StreamsTable.test.jsx`'s preview test is **tightened** to pin R18 (amended by the 4a-2 plan).
+    At `4ed75d96` it asserts only that `showVideo` was called, with `buildLiveStreamUrl` mocked as
+    the identity. After: the mock appends `?output_format=mpegts`, and the test asserts
+    `showVideo` receives `/proxy/ts/stream/hash-abc?output_format=mpegts`. Without that, the
+    preview break-check would redden only because the module mock lacks a `buildChannelHlsUrl`
+    export, which does not name the mechanism.
+
+  `ChannelTableStreams.test.jsx` asserts no changed behaviour; its module mock gains a
+  `buildChannelHlsUrl` export, and every assertion is unchanged (R18).
+- **Browser facts the E2E rests on** (measured by the 4a-2 plan; Appendix B of that plan).
+  - **CI's Chromium** (Playwright 1.62.1's headless shell, Chromium 151, linux/amd64) supports
+    MSE H.264 High and AAC-LC, but not AC-3 or E-AC-3. hls.js drops the `ac3` and `eac3` variants
+    at `MANIFEST_PARSED`, so the browser always plays the `aac` group. Playwright's
+    **linux/arm64** Chromium supports none of H.264 and AAC, so this E2E cannot run on an arm64
+    Linux host. Chromium 151 also answers `canPlayType('application/vnd.apple.mpegurl')` with
+    `"maybe"`, so the player tests `Hls.isSupported()` **first**, or Chromium would take the
+    native path and never leave.
+  - **Q9, prototyped:** hls.js 1.6.15 in that Chromium, paused for 30 s on a relay-shaped live
+    playlist, reloaded both media playlists every 2.0 s (15 reloads each) and fetched 31 segments
+    ahead. That matches AVPlayer (M7). The E2E records the cadence on CI, and it is not a gate.
 
 ## 4b — the server contract (only)
 
@@ -2038,6 +2071,21 @@ Filled in as PRs merge.
     - the window's rate is video-only;
     - an over-long segment no longer discards segments cut before it.
   - **When #538's R55 paragraph lands** in § Encoder argv › Failure ("Before a generation's first video fragment the allowance is three times that"), R58 amends it to read `max(30 s, the stall timeout)` in place of "three times that". It stays 30 s at every target up to 6.
+- **2026-09-29, amended by the 4a-2 plan** (`docs/superpowers/plans/2026-09-29-phase4-4a2-browser-hls.md`,
+  written against `4ed75d96`). § Browser player only:
+  - hls.js's entry load timeout is raised to 65 s (the relay's 14.1 s next-source budget plus its
+    43 s ready wait, R57, plus a margin) and its playlist timeout to 50 s; its 1.6 defaults would
+    abandon a legitimate cold software start.
+  - A 410 from `/hls/` is not re-requested (R68).
+  - The player destroys hls.js before it calls leave, and a switch waits up to 2 s for the previous
+    leave before the next entry.
+  - The vitest list is corrected: the five page and card tests that mock `getShowVideoUrl` do not
+    change, and `StreamsTable.test.jsx`'s preview test is tightened, as `StreamConnectionCard`'s
+    is, so the R18 break-check reddens on the URL rather than on a missing mock export (verified
+    at `4ed75d96`: that wrong edit fails with `No "buildChannelHlsUrl" export is defined on the
+    … mock`).
+  - The E2E's browser facts: CI Chromium's codec support, the `Hls.isSupported()`-first order
+    Chromium 151's native HLS forces, and the Q9 prototype.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
