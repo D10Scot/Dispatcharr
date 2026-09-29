@@ -66,6 +66,11 @@ class RelayChannelSerializer(serializers.Serializer):
     # Phase 4a-1b: present only while the channel runs an HLS pipeline.
     hls_encoder = serializers.CharField(required=False)
     hls_generation = serializers.IntegerField(required=False)
+    # Phase 4a-3: the live rewind window. lingering_since is present while the
+    # channel lingers with no HLS session; rewind_degraded only when true.
+    lingering_since = serializers.FloatField(required=False)
+    rewind_window_seconds = serializers.FloatField(required=False)
+    rewind_degraded = serializers.BooleanField(required=False)
     clients = RelayChannelClientSerializer(many=True, required=False)
 
 
@@ -144,6 +149,10 @@ class RelayChannelDetailSerializer(serializers.Serializer):
     stream_type = serializers.CharField(required=False)
     hls_encoder = serializers.CharField(required=False)
     hls_generation = serializers.IntegerField(required=False)
+    # Phase 4a-3, as on the list serializer.
+    lingering_since = serializers.FloatField(required=False)
+    rewind_window_seconds = serializers.FloatField(required=False)
+    rewind_degraded = serializers.BooleanField(required=False)
     clients = RelayDetailClientSerializer(many=True, required=False)
 
 

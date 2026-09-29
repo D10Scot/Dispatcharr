@@ -11,9 +11,10 @@ from apps.proxy.config import TSConfig, class_attribute_defaults
 from apps.proxy.next_source import _with_proxy_settings
 from apps.proxy.serializers import RelayProxySettingsSerializer
 
-# The seven keys CoreSettings.get_proxy_settings() stores (core/models.py:
-# 719-730). Typed here rather than imported so that a key silently
-# disappearing from that dict fails this module rather than agreeing with it.
+# The eleven keys CoreSettings.get_proxy_settings() stores (core/models.py:
+# seven, and Phase 4a-3's four rewind keys). Typed here rather than imported so
+# that a key silently disappearing from that dict fails this module rather than
+# agreeing with it.
 STORED_KEYS = {
     "buffering_timeout",
     "buffering_speed",
@@ -22,6 +23,10 @@ STORED_KEYS = {
     "channel_init_grace_period",
     "channel_client_wait_period",
     "new_client_behind_seconds",
+    "rewind_window_minutes",
+    "rewind_linger_seconds",
+    "rewind_behind_live_grace_seconds",
+    "rewind_disk_cap_gb",
 }
 
 
@@ -44,7 +49,7 @@ class EnumerationTests(TestCase):
             "field here, or the Go relay never learns the value changed.",
         )
 
-    def test_the_seven_stored_keys_are_still_declared(self):
+    def test_the_stored_keys_are_still_declared(self):
         # The other half of the same field list. Without this, deleting a
         # stored key's field would leave the test above perfectly happy.
         self.assertTrue(

@@ -15,6 +15,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
+	"github.com/D10Scot/Dispatcharr/relay/hls"
 	"github.com/D10Scot/Dispatcharr/relay/output"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 	"github.com/D10Scot/Dispatcharr/relay/session"
@@ -95,6 +96,12 @@ const (
 	settingFailoverGrace       = "FAILOVER_GRACE_PERIOD"
 	settingKeepaliveInterval   = "KEEPALIVE_INTERVAL"
 	settingMaxKeepalive        = "MAX_KEEPALIVE_DURATION"
+
+	// The rewind window's four (Phase 4a-3, spec D17).
+	settingRewindWindow    = "rewind_window_minutes"
+	settingRewindLinger    = "rewind_linger_seconds"
+	settingBehindLiveGrace = "rewind_behind_live_grace_seconds"
+	settingRewindDiskCap   = "rewind_disk_cap_gb"
 )
 
 // tuningFrom resolves the channel-start-time settings out of a next-source
@@ -168,6 +175,22 @@ func tuningFrom(s control.Settings) (channel.Tuning, int, error) {
 	if t.MaxKeepalive, err = s.Seconds(settingMaxKeepalive); err != nil {
 		return t, 0, err
 	}
+	windowMinutes, err := s.Float(settingRewindWindow)
+	if err != nil {
+		return t, 0, err
+	}
+	t.RewindWindow = time.Duration(windowMinutes * float64(time.Minute))
+	if t.RewindLinger, err = s.Seconds(settingRewindLinger); err != nil {
+		return t, 0, err
+	}
+	if t.BehindLiveGrace, err = s.Seconds(settingBehindLiveGrace); err != nil {
+		return t, 0, err
+	}
+	diskCapGB, err := s.Float(settingRewindDiskCap)
+	if err != nil {
+		return t, 0, err
+	}
+	t.RewindDiskCap = int64(diskCapGB * (1 << 30))
 	readSize, err := s.Int(settingReadSize)
 	if err != nil {
 		return t, 0, err
@@ -251,7 +274,7 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		}
 
 		ch, release, err := deps.Channels.Attach(id, client, func() (channel.Started, error) {
-			return startTune(r.Context(), tuneDeps{control: deps.Control, probe: deps.Probe, log: log, proxyReason: proxyReason, reclaim: func(ids []int) channel.Reclaim {
+			return startTune(r.Context(), tuneDeps{control: deps.Control, probe: deps.Probe, log: log, proxyReason: proxyReason, rewind: deps.HLS.Rewind, reclaim: func(ids []int) channel.Reclaim {
 				return deps.Channels.ReclaimFor(ids, tuneBudget)
 			}}, id, viaProxy)
 		})
@@ -693,6 +716,10 @@ type tuneDeps struct {
 	// for one already releasing its slot. Nil means none; the retry still
 	// runs. The failover path holds none (spec: "failover never reclaims").
 	reclaim func(profileIDs []int) channel.Reclaim
+	// rewind is the process-wide rewind store (Phase 4a-3): an initial tune
+	// sets its disk cap from the answer's settings. Nil when the relay keeps no
+	// windows.
+	rewind *hls.Rewind
 }
 
 // startTune asks the control plane for a source and builds the channel's
@@ -749,6 +776,9 @@ func startTune(parent context.Context, deps tuneDeps, id string, viaProxy bool) 
 	tuning, readSize, err := tuningFrom(answer.ProxySettings)
 	if err != nil {
 		return channel.Started{}, err
+	}
+	if deps.rewind != nil {
+		deps.rewind.SetCap(tuning.RewindDiskCap)
 	}
 	// The user agent the Python relay would use: the answer's, or
 	// DEFAULT_USER_AGENT when blank (input/manager.py:73's

@@ -29,6 +29,22 @@ vi.mock('../../../../constants.js', () => ({
       advanced: true,
       description: 'Advanced grace period',
     },
+    rewind_window_minutes: {
+      label: 'Rewind Window (minutes)',
+      description: 'Rewind window',
+    },
+    rewind_linger_seconds: {
+      label: 'Rewind Linger (seconds)',
+      description: 'Rewind linger',
+    },
+    rewind_behind_live_grace_seconds: {
+      label: 'Behind-Live Grace (seconds)',
+      description: 'Behind-live grace',
+    },
+    rewind_disk_cap_gb: {
+      label: 'Rewind Disk Cap (GB)',
+      description: 'Rewind disk cap',
+    },
   },
 }));
 
@@ -196,6 +212,21 @@ describe('ProxySettingsForm', () => {
       expect(
         screen.getByTestId('number-input-Buffering Speed')
       ).toBeInTheDocument();
+    });
+
+    it('renders the four rewind settings as NumberInputs with their bounds', () => {
+      render(<ProxySettingsForm active={true} />);
+      const bounds = {
+        'Rewind Window (minutes)': { min: '0', max: '120' },
+        'Rewind Linger (seconds)': { min: '0', max: '3600' },
+        'Behind-Live Grace (seconds)': { min: '0', max: '300' },
+        'Rewind Disk Cap (GB)': { min: '1', max: '10000' },
+      };
+      for (const [label, { min, max }] of Object.entries(bounds)) {
+        const input = screen.getByTestId(`number-input-${label}`);
+        expect(input).toHaveAttribute('min', min);
+        expect(input).toHaveAttribute('max', max);
+      }
     });
 
     it('renders TextInput for redis_url', () => {

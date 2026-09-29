@@ -123,47 +123,51 @@ type localManagerPayload struct {
 // source_bitrate, which the serializer also declared and nothing in either
 // relay ever wrote, was removed from the serializer by the same fix.
 type detailPayload struct {
-	ChannelID      string                `json:"channel_id"`
-	State          *string               `json:"state"`
-	URL            string                `json:"url"`
-	StreamProfile  string                `json:"stream_profile"`
-	StartedAt      float64               `json:"started_at"`
-	Owner          string                `json:"owner"`
-	BufferIndex    uint64                `json:"buffer_index"`
-	ChannelName    string                `json:"channel_name,omitempty"`
-	StreamID       *int                  `json:"stream_id,omitempty"`
-	StreamName     string                `json:"stream_name,omitempty"`
-	M3UProfileID   *int                  `json:"m3u_profile_id,omitempty"`
-	M3UProfileName string                `json:"m3u_profile_name,omitempty"`
-	StateChangedAt float64               `json:"state_changed_at"`
-	StateDuration  float64               `json:"state_duration"`
-	Uptime         float64               `json:"uptime"`
-	TotalBytes     *uint64               `json:"total_bytes,omitempty"`
-	TotalData      string                `json:"total_data,omitempty"`
-	AvgBitrateKbps *float64              `json:"avg_bitrate_kbps,omitempty"`
-	AvgBitrate     string                `json:"avg_bitrate,omitempty"`
-	ClientCount    int                   `json:"client_count"`
-	BufferStats    bufferStatsPayload    `json:"buffer_stats"`
-	LocalManager   localManagerPayload   `json:"local_manager"`
-	VideoCodec     string                `json:"video_codec,omitempty"`
-	Resolution     string                `json:"resolution,omitempty"`
-	Width          string                `json:"width,omitempty"`
-	Height         string                `json:"height,omitempty"`
-	VideoBitrate   string                `json:"video_bitrate,omitempty"`
-	SourceFPS      string                `json:"source_fps,omitempty"`
-	PixelFormat    string                `json:"pixel_format,omitempty"`
-	AudioCodec     string                `json:"audio_codec,omitempty"`
-	SampleRate     string                `json:"sample_rate,omitempty"`
-	AudioChannels  string                `json:"audio_channels,omitempty"`
-	AudioBitrate   string                `json:"audio_bitrate,omitempty"`
-	FFmpegSpeed    *float64              `json:"ffmpeg_speed,omitempty"`
-	FFmpegFPS      string                `json:"ffmpeg_fps,omitempty"`
-	ActualFPS      string                `json:"actual_fps,omitempty"`
-	FFmpegBitrate  string                `json:"ffmpeg_bitrate,omitempty"`
-	StreamType     string                `json:"stream_type,omitempty"`
-	HLSEncoder     string                `json:"hls_encoder,omitempty"`
-	HLSGeneration  *int                  `json:"hls_generation,omitempty"`
-	Clients        []detailClientPayload `json:"clients"`
+	ChannelID      string              `json:"channel_id"`
+	State          *string             `json:"state"`
+	URL            string              `json:"url"`
+	StreamProfile  string              `json:"stream_profile"`
+	StartedAt      float64             `json:"started_at"`
+	Owner          string              `json:"owner"`
+	BufferIndex    uint64              `json:"buffer_index"`
+	ChannelName    string              `json:"channel_name,omitempty"`
+	StreamID       *int                `json:"stream_id,omitempty"`
+	StreamName     string              `json:"stream_name,omitempty"`
+	M3UProfileID   *int                `json:"m3u_profile_id,omitempty"`
+	M3UProfileName string              `json:"m3u_profile_name,omitempty"`
+	StateChangedAt float64             `json:"state_changed_at"`
+	StateDuration  float64             `json:"state_duration"`
+	Uptime         float64             `json:"uptime"`
+	TotalBytes     *uint64             `json:"total_bytes,omitempty"`
+	TotalData      string              `json:"total_data,omitempty"`
+	AvgBitrateKbps *float64            `json:"avg_bitrate_kbps,omitempty"`
+	AvgBitrate     string              `json:"avg_bitrate,omitempty"`
+	ClientCount    int                 `json:"client_count"`
+	BufferStats    bufferStatsPayload  `json:"buffer_stats"`
+	LocalManager   localManagerPayload `json:"local_manager"`
+	VideoCodec     string              `json:"video_codec,omitempty"`
+	Resolution     string              `json:"resolution,omitempty"`
+	Width          string              `json:"width,omitempty"`
+	Height         string              `json:"height,omitempty"`
+	VideoBitrate   string              `json:"video_bitrate,omitempty"`
+	SourceFPS      string              `json:"source_fps,omitempty"`
+	PixelFormat    string              `json:"pixel_format,omitempty"`
+	AudioCodec     string              `json:"audio_codec,omitempty"`
+	SampleRate     string              `json:"sample_rate,omitempty"`
+	AudioChannels  string              `json:"audio_channels,omitempty"`
+	AudioBitrate   string              `json:"audio_bitrate,omitempty"`
+	FFmpegSpeed    *float64            `json:"ffmpeg_speed,omitempty"`
+	FFmpegFPS      string              `json:"ffmpeg_fps,omitempty"`
+	ActualFPS      string              `json:"actual_fps,omitempty"`
+	FFmpegBitrate  string              `json:"ffmpeg_bitrate,omitempty"`
+	StreamType     string              `json:"stream_type,omitempty"`
+	HLSEncoder     string              `json:"hls_encoder,omitempty"`
+	HLSGeneration  *int                `json:"hls_generation,omitempty"`
+	// The rewind window's three, as on the list endpoint (Phase 4a-3).
+	LingeringSince      *float64              `json:"lingering_since,omitempty"`
+	RewindWindowSeconds *float64              `json:"rewind_window_seconds,omitempty"`
+	RewindDegraded      bool                  `json:"rewind_degraded,omitempty"`
+	Clients             []detailClientPayload `json:"clients"`
 }
 
 // statePayload is RelayChannelStateSerializer: the two-field answer to
@@ -349,6 +353,7 @@ func describeChannelDetail(c *channel.Channel, at time.Time) detailPayload {
 		out.StreamType = *stats.StreamType
 	}
 	out.HLSEncoder, out.HLSGeneration = hlsFields(c)
+	out.LingeringSince, out.RewindWindowSeconds, out.RewindDegraded = rewindFields(c)
 	return out
 }
 

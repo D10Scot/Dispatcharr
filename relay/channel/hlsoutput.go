@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strconv"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/hls"
 )
@@ -39,6 +41,18 @@ type hlsEntry struct {
 	refs     int
 }
 
+// lingerState is a channel's one lingering HLS pipeline (spec D15): the last
+// session of a pipeline ended, and the pipeline keeps encoding, holding the
+// channel, so a zap back keeps the rewind window.
+type lingerState struct {
+	key      string
+	pipeline *hls.Pipeline
+	// since is when the last session ended.
+	since time.Time
+	// stop cancels the linger's timer.
+	stop func() bool
+}
+
 // hlsRegistry is the HLS half of the output registry: its own map, typed
 // *hls.Pipeline, under the same outMu as outputs -- outputEntry.pipeline is an
 // *output.Pipeline and stays so. It is embedded in outputRegistry, so its
@@ -51,6 +65,10 @@ type hlsRegistry struct {
 	// pipeline cannot inherit a dead one's state; the next real source
 	// boundary clears it and starts nothing.
 	hlsFailed error
+	// linger is the channel's one lingering HLS pipeline (Phase 4a-3, spec
+	// D15), or nil. It is WRITTEN only under outMu and READ anywhere without a
+	// lock, so reading it under m.mu or c.mu adds no lock-order edge.
+	linger atomic.Pointer[lingerState]
 	// outputsStopped is set by stopOutputs in the same critical section that
 	// clears the maps, and both HLS attaches refuse once it is set. The ring's
 	// closing is not the test: stopOutputs runs BEFORE the ring closes.
@@ -98,6 +116,7 @@ func (c *Channel) AttachHLS(key string, start func(src hls.Source) (*hls.Pipelin
 	}
 	if entry, running := c.hls[key]; running {
 		entry.refs++
+		c.endLingerLocked(entry.pipeline)
 		return entry.pipeline, false, c.hlsRelease(key, entry.pipeline), nil
 	}
 	p, err = start(c)
@@ -131,27 +150,131 @@ func (c *Channel) AttachHLSExisting(key string, p *hls.Pipeline) (release func()
 	default:
 	}
 	entry.refs++
+	c.endLingerLocked(p)
 	return c.hlsRelease(key, p), true
 }
 
-// hlsRelease is the release func for one attachment to p.
+// hlsRelease is the release func for one attachment to p. At zero sessions the
+// pipeline lingers when it is eligible (lingerEligible), and otherwise stops.
 func (c *Channel) hlsRelease(key string, p *hls.Pipeline) func() {
 	return sync.OnceFunc(func() {
 		var stopping *hls.Pipeline
+		var lingering *lingerState
 		c.outMu.Lock()
 		if entry, running := c.hls[key]; running && entry.pipeline == p {
 			entry.refs--
 			if entry.refs <= 0 {
-				delete(c.hls, key)
-				stopping = p
+				if c.lingerEligibleLocked(p) {
+					lingering = c.startLingerLocked(key, p)
+				} else {
+					delete(c.hls, key)
+					stopping = p
+				}
 			}
 		}
 		c.outMu.Unlock()
+		if lingering != nil {
+			c.log.Info("the last HLS session ended; the channel lingers for its rewind window",
+				"channel", c.id, "key", key, "linger", c.tuning.RewindLinger)
+		}
 		if stopping != nil {
 			c.log.Info("no HLS sessions remain, stopping the HLS output", "channel", c.id, "key", key)
 			go stopping.Stop()
 		}
 	})
+}
+
+// lingerEligibleLocked is whether a pipeline whose last session just ended
+// lingers (Decision 12): the rewind window and the linger are both on, the
+// pipeline is ready and has not ended, the channel's outputs are not stopped and
+// no other pipeline of the channel lingers already. So a leave, an admin client
+// stop or stream-limit termination and an idle departure all linger, while a
+// pipeline whose sessions went STOPPED (their releases are discarded) and one
+// that never served its multivariant never do. Called with outMu held.
+func (c *Channel) lingerEligibleLocked(p *hls.Pipeline) bool {
+	if c.tuning.RewindWindow <= 0 || c.tuning.RewindLinger <= 0 || c.outputsStopped || c.linger.Load() != nil {
+		return false
+	}
+	select {
+	case <-p.Done():
+		return false
+	default:
+	}
+	return p.IsReady()
+}
+
+// startLingerLocked keeps p registered with no session and arms the linger's
+// timer. Called with outMu held.
+func (c *Channel) startLingerLocked(key string, p *hls.Pipeline) *lingerState {
+	ls := &lingerState{key: key, pipeline: p, since: c.now()}
+	ls.stop = c.schedule(c.tuning.RewindLinger, func() { c.endLinger(ls) })
+	c.linger.Store(ls)
+	p.SetLingering(true)
+	return ls
+}
+
+// endLingerLocked ends a linger on p because a session attached to it (or the
+// pipeline is going): the timer is stopped and the hold released. Called with
+// outMu held; a no-op when p is not the lingering pipeline.
+func (c *Channel) endLingerLocked(p *hls.Pipeline) {
+	ls := c.linger.Load()
+	if ls == nil || ls.pipeline != p {
+		return
+	}
+	ls.stop()
+	c.linger.Store(nil)
+	p.SetLingering(false)
+	c.log.Info("an HLS session arrived; the linger ends", "channel", c.id, "key", ls.key)
+}
+
+// endLinger is the linger timer's own end: the pipeline stops and the manager
+// is asked its idle question, off every lock. A linger that already ended
+// (a new session, a failure, the channel's stop) finds itself no longer the
+// channel's and does nothing.
+func (c *Channel) endLinger(ls *lingerState) {
+	var stopping *hls.Pipeline
+	c.outMu.Lock()
+	if c.linger.Load() != ls {
+		c.outMu.Unlock()
+		return
+	}
+	c.linger.Store(nil)
+	ls.pipeline.SetLingering(false)
+	if entry, running := c.hls[ls.key]; running && entry.pipeline == ls.pipeline && entry.refs == 0 {
+		delete(c.hls, ls.key)
+		stopping = ls.pipeline
+	}
+	c.outMu.Unlock()
+	c.log.Info("the linger ended", "channel", c.id, "key", ls.key)
+	if stopping != nil {
+		go stopping.Stop()
+	}
+	if c.onIdle != nil {
+		c.onIdle(c)
+	}
+}
+
+// Lingering is when the channel's HLS pipeline began lingering, and whether it
+// is.
+func (c *Channel) Lingering() (since time.Time, ok bool) {
+	if ls := c.linger.Load(); ls != nil {
+		return ls.since, true
+	}
+	return time.Time{}, false
+}
+
+// lingerHeld is whether the channel is held by a linger: the hold the
+// manager's idle decision honours before any channel_shutdown_delay countdown
+// starts. It is not a client, and no client count or list includes it.
+func (c *Channel) lingerHeld() bool { return c.linger.Load() != nil }
+
+// schedule runs f after d: through the manager's injectable AfterFunc, or
+// time.AfterFunc for a channel built without one. stop cancels it.
+func (c *Channel) schedule(d time.Duration, f func()) (stop func() bool) {
+	if c.afterFunc != nil {
+		return c.afterFunc(d, f)
+	}
+	return time.AfterFunc(d, f).Stop
 }
 
 // FailHLS marks the channel (err non-nil) and unregisters p, but ONLY while p
@@ -169,9 +292,19 @@ func (c *Channel) FailHLS(key string, p *hls.Pipeline, err error) {
 	defer c.outMu.Unlock()
 	if entry, running := c.hls[key]; running && entry.pipeline == p {
 		delete(c.hls, key)
+		c.endLingerQuietLocked(p)
 		if err != nil {
 			c.hlsFailed = err
 		}
+	}
+}
+
+// endLingerQuietLocked ends a linger on p that is going away, with no log line
+// of a session's arrival. Called with outMu held.
+func (c *Channel) endLingerQuietLocked(p *hls.Pipeline) {
+	if ls := c.linger.Load(); ls != nil && ls.pipeline == p {
+		ls.stop()
+		c.linger.Store(nil)
 	}
 }
 
@@ -224,4 +357,26 @@ func (c *Channel) statusEntryKey() (*hlsEntry, string, bool) {
 	}
 	sort.Strings(keys)
 	return c.hls[keys[0]], keys[0], true
+}
+
+// HLSPipeline is the pipeline HLSStatus reports, under the same key. The rig
+// tests reach a channel's store through it.
+func (c *Channel) HLSPipeline() (*hls.Pipeline, bool) {
+	entry, _, ok := c.statusEntryKey()
+	if !ok {
+		return nil, false
+	}
+	return entry.pipeline, true
+}
+
+// RewindStatus is when the channel began lingering (zero while it is not) and
+// the rewind window of the pipeline HLSStatus reports; ok is false with no
+// pipeline.
+func (c *Channel) RewindStatus() (lingeringSince time.Time, window hls.WindowStatus, ok bool) {
+	entry, _, ok := c.statusEntryKey()
+	if !ok {
+		return time.Time{}, hls.WindowStatus{}, false
+	}
+	since, _ := c.Lingering()
+	return since, entry.pipeline.Store().WindowStatus(), true
 }

@@ -195,6 +195,28 @@ describe('StreamConnectionCardUtils', () => {
     });
   });
 
+  describe('getLingeringLabel', () => {
+    it('names the time in the given format', () => {
+      const mockTime = new Date('2024-01-01T10:00:00');
+      dateTimeUtils.initializeTime.mockReturnValue(mockTime);
+      dateTimeUtils.format.mockReturnValue('01/01/2024 10:00');
+
+      const label = StreamConnectionCardUtils.getLingeringLabel(
+        1704103200,
+        'MM/DD/YYYY HH:mm'
+      );
+
+      expect(dateTimeUtils.initializeTime).toHaveBeenCalledWith(1704103200000);
+      expect(dateTimeUtils.format).toHaveBeenCalledWith(
+        mockTime,
+        'MM/DD/YYYY HH:mm'
+      );
+      expect(label).toBe(
+        'No viewers since 01/01/2024 10:00; the rewind window is kept for a quick return'
+      );
+    });
+  });
+
   describe('durationAccessor', () => {
     it('should compute duration from connected_at', () => {
       dateTimeUtils.toFriendlyDuration.mockReturnValue('2h 30m');

@@ -100,9 +100,9 @@ export default defineConfig({
       // process's cumulative speed= to cross a threshold. 300s is the same
       // ceiling `streaming` uses and is not generous here.
       timeout: 300_000,
-      // One worker, unlike its siblings: three specs in this directory
+      // One worker, unlike its siblings: four specs in this directory
       // mutate container-global state for the duration of their run, and
-      // this project's serialisation is what keeps all three safe.
+      // this project's serialisation is what keeps all four safe.
       //
       // `failover-buffering.spec.ts` mutates the global `proxy_settings` row
       // (raising `buffering_speed`). That is only safe because every other
@@ -124,7 +124,7 @@ export default defineConfig({
       // `proxy_settings` above, wider blast radius: while it is flipped,
       // *every* channel in the container answers a session-less catch-up or
       // live request with a 302 to the provider instead of proxying it. The
-      // single worker is what makes that safe. Three specs in this
+      // single worker is what makes that safe. Four specs in this
       // directory now depend on it; do not raise `workers` back to 2
       // without confirming none of them still needs serialising.
       //
@@ -147,9 +147,14 @@ export default defineConfig({
       // channel as a `stream_limit`-bound user would race the flipped
       // setting.
       //
+      // `hls-linger.spec.ts` mutates `proxy_settings` again, but only
+      // `rewind_linger_seconds` (20 s for its run): a channel snapshots it at
+      // start, so only a channel started during that run lingers 20 s
+      // instead of 300 s, and the single worker is what keeps that to its own.
+      //
       // Note what the single worker does NOT protect: a run that dies
-      // between any of the three specs' writes and their restore leaves
-      // the container mutated for every later project too. All three guard
+      // between any of the four specs' writes and their restore leaves
+      // the container mutated for every later project too. All four guard
       // their own next run with an up-front assertion, and that guard
       // protects the test itself — not the specs that would run before it.
       workers: 1,

@@ -46,6 +46,7 @@ import {
   getLogoUrl,
   getM3uAccountsMap,
   getSelectedStream,
+  getLingeringLabel,
   getStartDate,
   getStreamOptions,
   getStreamsByIds,
@@ -694,6 +695,25 @@ const StreamConnectionCard = ({
             <Tooltip label="Audio channel configuration">
               <Badge size="sm" variant="light" color="pink">
                 {channel.audio_channels}
+              </Badge>
+            </Tooltip>
+          )}
+          {channel.lingering_since && (
+            <Tooltip
+              label={getLingeringLabel(
+                channel.lingering_since,
+                fullDateTimeFormat
+              )}
+            >
+              <Badge size="sm" variant="light" color="gray">
+                LINGERING
+              </Badge>
+            </Tooltip>
+          )}
+          {channel.rewind_degraded && (
+            <Tooltip label="The rewind window could not be written to disk; live playback is unaffected">
+              <Badge size="sm" variant="light" color="red">
+                REWIND DEGRADED
               </Badge>
             </Tooltip>
           )}

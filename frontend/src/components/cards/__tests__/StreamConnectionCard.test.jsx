@@ -51,6 +51,7 @@ vi.mock('../../../utils/cards/StreamConnectionCardUtils.js', () => ({
   getLogoUrl: vi.fn(() => null),
   getM3uAccountsMap: vi.fn(() => ({})),
   getSelectedStream: vi.fn(() => null),
+  getLingeringLabel: vi.fn(() => 'No viewers since 10:00'),
   getStartDate: vi.fn(() => 'Jan 1 2024 10:00 AM'),
   getStreamOptions: vi.fn(() => []),
   getStreamsByIds: vi.fn(() => Promise.resolve([])),
@@ -467,6 +468,48 @@ describe('StreamConnectionCard', () => {
       const badges = screen.getAllByTestId('badge');
       const speedBadge = badges.find((b) => b.textContent === '0.50x');
       expect(speedBadge).toHaveAttribute('data-color', 'red');
+    });
+  });
+
+  // ── Rewind window badges (Phase 4a-3) ──────────────────────────────────────
+
+  describe('rewind window badges', () => {
+    it('shows a LINGERING badge while the channel lingers', () => {
+      render(
+        <StreamConnectionCard
+          {...defaultProps({
+            channel: makeChannel({ lingering_since: 1704103200 }),
+          })}
+        />
+      );
+      const badge = screen.getByText('LINGERING');
+      expect(badge).toHaveAttribute('data-color', 'gray');
+      expect(badge.parentElement).toHaveAttribute(
+        'data-tooltip',
+        'No viewers since 10:00'
+      );
+    });
+
+    it('shows no LINGERING badge otherwise', () => {
+      render(<StreamConnectionCard {...defaultProps()} />);
+      expect(screen.queryByText('LINGERING')).not.toBeInTheDocument();
+      expect(screen.queryByText('REWIND DEGRADED')).not.toBeInTheDocument();
+    });
+
+    it('flags a degraded rewind window', () => {
+      render(
+        <StreamConnectionCard
+          {...defaultProps({
+            channel: makeChannel({ rewind_degraded: true }),
+          })}
+        />
+      );
+      const badge = screen.getByText('REWIND DEGRADED');
+      expect(badge).toHaveAttribute('data-color', 'red');
+      expect(badge.parentElement).toHaveAttribute(
+        'data-tooltip',
+        'The rewind window could not be written to disk; live playback is unaffected'
+      );
     });
   });
 

@@ -257,14 +257,16 @@
 # scripts/check_floor_raise.sh (go-tests.yml) requires them and caps the new missing at
 # their sum. --gate and --write-floor ignore both and never hash them.
 shape=go-race-per-package/v1
-statements=6585
-missing=691
-percent=89.51
+statements=7223
+missing=705
+percent=90.24
 measured=2026-09-29
 runs=12
 packages=40d4ba02d7d3
 package_count=12
 gomod=92baf312d30d
+raise_from=691
+raise_listed=14
 # PROVENANCE (Phase 4a-1d, R21/R34/R80 -- measured in CI at 9c5ba13b on
 # migration/phase4-4a1d-automatic-profile, 2026-09-29). `missing` below is the
 # WORST of 12 rounds of go-tests.yml (runs 36576424248 to 36585496303): the gate
@@ -276,3 +278,16 @@ gomod=92baf312d30d
 # line changed in the hlsKey -> key rename), on 377 added statements, 98.7%
 # covered. 4a-1c's gains (its census landed 2 under its cap) cover that O, so
 # 691 stays. 4a-1c's raise_from/raise_listed are removed, as its note asked.
+# PROVENANCE (Phase 4a-3, R21/R52/R80 -- measured in CI on
+# migration/phase4-4a3-rewind-window, 2026-09-29: round 1 at 3db862ab, rounds
+# 2-12 at 7694b5dd, whose diff from 3db862ab is docs only). `missing` is the
+# WORST of 12 rounds of go-tests.yml (runs 36586871738, 36587971283,
+# 36588811135, 36589898089, 36590993104, 36592077727, 36593153354,
+# 36593979207, 36594806432, 36595620672, 36596425641, 36597220410): the gate
+# read 703-705 (704, 704, 705, 705, 703, 704, 704, 704, 703, 704, 703, 703),
+# max=705, over 7,223 linked statements in every round (90.24% at the floor).
+# THE RAISE IS DECLARED: raise_from=691, raise_listed=14, cap 705. O = 14 by the
+# start-line rule, one block: relay/main.go 68-76, the rewind wiring in main()
+# (uncovered in all 12 rounds, by construction: nothing tests main). relay/
+# session/silence.go is 0 uncovered in every round. Additions: 652 statements
+# (638 net linked, plus the 14 of main.go's block), 97.9% covered.

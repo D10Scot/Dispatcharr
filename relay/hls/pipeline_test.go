@@ -1158,3 +1158,95 @@ func TestAnEncoderThatWritesNothingPastTheStartupAllowanceIsKilled(t *testing.T)
 	}
 	p.Stop()
 }
+
+// Phase 4a-3: a pipeline given a rewind store and a depth writes its segments
+// under its own run directory and removes the directory when it stops.
+func TestAPipelineWithADepthKeepsItsWindowOnDiskAndRemovesItOnStop(t *testing.T) {
+	h := newHarness(t)
+	video := file(t, "v.mp4", videoStream(0, 5, 50))
+	rw := NewRewind(RewindConfig{Root: t.TempDir(), BootID: "boot", Log: h.logs.logger()})
+	t.Cleanup(rw.Close)
+	p := h.startWith(probeVideoOnly, func(c *Config) {
+		c.Rewind, c.WindowDepth = rw, time.Hour
+	}, func(Spawn) []string {
+		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--wait-stdin-eof"}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := p.Ready(ctx); err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if err := p.Store().WaitDurable(ctx, 2); err != nil {
+		t.Fatalf("the window never reached segment 2: %v\n%s", err, h.logs.String())
+	}
+	runDir := filepath.Join(rw.BootDir(), "test", "1")
+	for _, name := range []string{"video", "aac"} {
+		for _, file := range []string{"init.mp4", "0.m4s", "2.m4s"} {
+			if _, err := os.Stat(filepath.Join(runDir, "0", name, file)); err != nil {
+				t.Errorf("the window lacks %s/%s: %v", name, file, err)
+			}
+		}
+	}
+	p.Stop()
+	if err := rw.Sync(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(runDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the run directory survived the pipeline's stop: %v", err)
+	}
+}
+
+func TestIsReadyOnlyOnceTheInitsExist(t *testing.T) {
+	h := newHarness(t)
+	video := file(t, "v.mp4", videoStream(0, 2, 50))
+	gate := make(chan struct{})
+	p := h.start(probeVideoOnly, nil, func(Spawn) []string {
+		<-gate
+		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--wait-stdin-eof"}
+	})
+	if p.IsReady() {
+		t.Fatalf("a pipeline whose encoder has not started answered ready")
+	}
+	close(gate)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := p.Ready(ctx); err != nil {
+		t.Fatalf("Ready: %v", err)
+	}
+	if !p.IsReady() {
+		t.Fatalf("a pipeline with its inits answered not ready")
+	}
+	failed := newHarness(t).start(probeAudioOnly, nil, func(Spawn) []string { return nil })
+	if err := failed.Ready(ctx); !errors.Is(err, ErrNoVideo) {
+		t.Fatalf("Ready = %v, want ErrNoVideo", err)
+	}
+	if failed.IsReady() {
+		t.Fatalf("a pipeline that failed before Ready answered ready")
+	}
+}
+
+// The pipeline forwards its channel's linger to the store's window, which the
+// disk cap's eviction order reads.
+func TestAPipelineForwardsItsLingerToItsWindow(t *testing.T) {
+	h := newHarness(t)
+	rw := NewRewind(RewindConfig{Root: t.TempDir(), BootID: "boot", Log: h.logs.logger()})
+	t.Cleanup(rw.Close)
+	p := h.startWith(probeVideoOnly, func(c *Config) {
+		c.Rewind, c.WindowDepth = rw, time.Hour
+	}, func(Spawn) []string { return nil })
+	lingering := func() bool {
+		s := p.Store()
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		return s.window.lingering.Load()
+	}
+	p.SetLingering(true)
+	if !lingering() {
+		t.Fatal("SetLingering(true) did not reach the window")
+	}
+	p.SetLingering(false)
+	if lingering() {
+		t.Fatal("SetLingering(false) did not reach the window")
+	}
+	NewStore(nil).SetLingering(true) // a store with no window: a no-op, not a panic
+}

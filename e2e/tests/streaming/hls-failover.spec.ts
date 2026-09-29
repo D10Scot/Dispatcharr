@@ -1,6 +1,6 @@
 import { test, expect, readChannelStatus } from '../../fixtures';
 import { enterHls, leaveHls, parseMediaPlaylist, waitForSegments } from '../../fixtures/hls';
-import { lockedProfile } from './helpers';
+import { lockedProfile, stopChannels } from './helpers';
 
 /**
  * A failover under a live HLS session (Phase 4a-1b, spec D10, parity-matrix
@@ -114,6 +114,7 @@ test(
       );
     } finally {
       await leaveHls(request, entry.token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );

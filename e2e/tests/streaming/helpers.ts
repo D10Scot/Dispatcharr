@@ -377,3 +377,19 @@ export async function slotCappedChannels(
   }
   return { a: channels[0], b: channels[1], scenario };
 }
+
+/**
+ * Stop each channel a test tuned, so a lingering HLS pipeline never encodes
+ * behind the next test (Phase 4a-3): with the window on, the last leave keeps a
+ * channel running for `rewind_linger_seconds` (300 s by default), and on a CI
+ * runner already near real time for 1080i that would slow the next test. A 404
+ * is fine: the channel had already stopped.
+ */
+export async function stopChannels(api: ApiClient, ...uuids: string[]): Promise<void> {
+  for (const uuid of uuids) {
+    const response = await api.post(`/proxy/ts/stop/${uuid}`, {});
+    if (!response.ok() && response.status() !== 404) {
+      console.warn(`stopChannels: stopping ${uuid} answered ${response.status()}`);
+    }
+  }
+}

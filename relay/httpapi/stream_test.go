@@ -77,9 +77,63 @@ type rig struct {
 
 	ticks chan time.Time
 
+	// Timers is the channels' AfterFunc (Phase 4a-3): it records every timer
+	// (the linger's end, a shutdown-delay countdown) and fires one only when a
+	// test says so. Rewind is the rewind store withRewind installed, or nil.
+	Timers *rigTimers
+	Rewind *hls.Rewind
+
 	// reclaimPick is ManagerConfig.ReclaimPicked, late-bound: the rig builds
 	// the manager before a test can reach it (Phase 4a-1c).
 	reclaimPick atomic.Pointer[func(*channel.Channel)]
+}
+
+// rigTimers is ManagerConfig.AfterFunc: nothing fires on its own.
+type rigTimers struct {
+	mu     sync.Mutex
+	timers []*rigTimer
+}
+
+type rigTimer struct {
+	d       time.Duration
+	f       func()
+	stopped bool
+	fired   bool
+}
+
+func (rt *rigTimers) afterFunc(d time.Duration, f func()) func() bool {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	t := &rigTimer{d: d, f: f}
+	rt.timers = append(rt.timers, t)
+	return func() bool {
+		rt.mu.Lock()
+		defer rt.mu.Unlock()
+		was := !t.stopped && !t.fired
+		t.stopped = true
+		return was
+	}
+}
+
+// Pending are the timers neither stopped nor fired, oldest first.
+func (rt *rigTimers) Pending() []*rigTimer {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	var out []*rigTimer
+	for _, t := range rt.timers {
+		if !t.stopped && !t.fired {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// Fire runs the timer's function on the caller's goroutine.
+func (rt *rigTimers) Fire(t *rigTimer) {
+	rt.mu.Lock()
+	t.fired = true
+	rt.mu.Unlock()
+	t.f()
 }
 
 // onReclaimPick installs the hook ReclaimFor runs between its pick and its
@@ -144,6 +198,16 @@ func (r *rig) tick(t *testing.T) {
 // positional parameter, so every existing call site is unchanged.
 type rigOption func(*StreamDeps)
 
+// withRewind gives the relay a rewind store on a temporary root over fs (Phase
+// 4a-3). Without it no channel keeps a window, so every playlist assertion
+// written before 4a-3 stays on the live edge.
+func withRewind(t *testing.T, fs hls.FS) rigOption {
+	t.Helper()
+	rewind := hls.NewRewind(hls.RewindConfig{Root: t.TempDir(), FS: fs, BootID: "boot", Log: slog.New(slog.NewTextHandler(io.Discard, nil))})
+	t.Cleanup(rewind.Close)
+	return func(d *StreamDeps) { d.HLS.Rewind = rewind }
+}
+
 // withRemux makes an fMP4 tune spawn the stand-in instead of ffmpeg.
 func withRemux(remux output.Remux) rigOption {
 	return func(d *StreamDeps) { d.Remux = remux }
@@ -189,8 +253,9 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 	sweepCtx, stopSweeper := context.WithCancel(context.Background())
 	go sessions.Run(sweepCtx)
 	t.Cleanup(stopSweeper)
-	out := &rig{}
+	out := &rig{Timers: &rigTimers{}}
 	manager := channel.NewManager(channel.ManagerConfig{
+		AfterFunc:   out.Timers.afterFunc,
 		BudgetBytes: rigBudgetBytes,
 		Events:      EventSink(emitter),
 		Release:     ReleaseVia(client, nil),
@@ -226,6 +291,7 @@ func newRigWithClient(t *testing.T, cp relaytest.ControlPlaneConfig, up relaytes
 	for _, opt := range opts {
 		opt(&stream)
 	}
+	out.Rewind = stream.HLS.Rewind
 	server := New(Config{
 		DevRoutes: true,
 		Stream:    stream,
@@ -434,6 +500,7 @@ func TestEveryProxySettingThisRelayReadsIsRequired(t *testing.T) {
 		settingConnectionTimeout, settingHealthCheckInterval, settingInitGracePeriod, settingMaxRetries,
 		settingRetryWindow, settingStableThreshold, settingMaxStreamSwitches, settingStreamTimeout,
 		settingFailoverGrace, settingKeepaliveInterval, settingMaxKeepalive,
+		settingRewindWindow, settingRewindLinger, settingBehindLiveGrace, settingRewindDiskCap,
 	} {
 		t.Run(key, func(t *testing.T) {
 			settings := relaytest.EffectiveProxySettings()

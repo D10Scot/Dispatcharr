@@ -9,7 +9,7 @@ import {
   topLevelBoxes,
   waitForSegments,
 } from '../../fixtures/hls';
-import { lockedProfile } from './helpers';
+import { lockedProfile, stopChannels } from './helpers';
 
 /**
  * The multivariant and media playlists the live HLS output serves (Phase 4a-1b,
@@ -84,6 +84,7 @@ test(
         }
       } finally {
         await leaveHls(request, entry.token);
+        await stopChannels(api, channel.uuid);
       }
     }
   }
@@ -169,6 +170,7 @@ test(
       for (const segment of aac.segments) expect(segment.uri).toBe(`aac/${segment.seq}.m4s`);
     } finally {
       await leaveHls(request, entry.token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );

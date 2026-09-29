@@ -63,6 +63,10 @@ describe('ProxySettingsFormUtils', () => {
         channel_init_grace_period: 60,
         channel_client_wait_period: 5,
         new_client_behind_seconds: 5,
+        rewind_window_minutes: 60,
+        rewind_linger_seconds: 300,
+        rewind_behind_live_grace_seconds: 10,
+        rewind_disk_cap_gb: 16,
       });
     });
 
@@ -84,6 +88,10 @@ describe('ProxySettingsFormUtils', () => {
       expect(typeof result.channel_init_grace_period).toBe('number');
       expect(typeof result.channel_client_wait_period).toBe('number');
       expect(typeof result.new_client_behind_seconds).toBe('number');
+      expect(typeof result.rewind_window_minutes).toBe('number');
+      expect(typeof result.rewind_linger_seconds).toBe('number');
+      expect(typeof result.rewind_behind_live_grace_seconds).toBe('number');
+      expect(typeof result.rewind_disk_cap_gb).toBe('number');
     });
   });
 });

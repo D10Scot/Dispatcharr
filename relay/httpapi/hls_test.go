@@ -54,6 +54,7 @@ type hlsFixture struct {
 
 const (
 	modeGood     = "good"     // full streams, then waits for its stdin's EOF
+	modeLong     = "long"     // as good with 30 video fragments (Phase 4a-3: more than the store's 21 in memory)
 	modeInitOnly = "initonly" // both inits and no fragment at all
 	modeNoInit   = "noinit"   // writes nothing and never exits on stdin EOF
 	modeStubborn = "stubborn" // full streams and a straggler that outlives the encoder's kill
@@ -92,6 +93,8 @@ func newHLSFixture(t *testing.T, mode string, probe []byte) *hlsFixture {
 			t.Fatalf("the %s init is not a byte prefix of its full stream; the gated-segments mode cannot split it", pair.name)
 		}
 	}
+	f.write("vlong.mp4", relaytest.HLSVideoStream(30, 50))
+	f.write("along.mp4", relaytest.HLSAACStream(300))
 	f.write("vrest.mp4", vfull[len(vinit):])
 	f.write("arest.mp4", afull[len(ainit):])
 	return f
@@ -123,6 +126,11 @@ func (f *hlsFixture) command(hls.Spawn) (string, []string) {
 		return relaytest.StandInCommand("--spawn-log", f.encoderLog,
 			"--fd-file", relaytest.FDFileArg(1, f.path("vfull.mp4")),
 			"--fd-file", relaytest.FDFileArg(3, f.path("afull.mp4")),
+			"--wait-stdin-eof")
+	case modeLong:
+		return relaytest.StandInCommand("--spawn-log", f.encoderLog,
+			"--fd-file", relaytest.FDFileArg(1, f.path("vlong.mp4")),
+			"--fd-file", relaytest.FDFileArg(3, f.path("along.mp4")),
 			"--wait-stdin-eof")
 	case modeInitOnly:
 		return relaytest.StandInCommand("--spawn-log", f.encoderLog,

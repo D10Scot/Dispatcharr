@@ -29,6 +29,7 @@ func detailGoldenPayload() detailPayload {
 	kbps := 2_665.3034666666666
 	speed := 1.02
 	hlsGeneration := 3
+	lingeringSince, rewindSeconds := 1_789_000_027.5, 3600.0
 	profileID := 7
 	bytesSent := int64(9_999_888)
 	avgRate := 341.2
@@ -98,6 +99,10 @@ func detailGoldenPayload() detailPayload {
 		StreamType:    "mpegts",
 		HLSEncoder:    "software",
 		HLSGeneration: &hlsGeneration,
+
+		LingeringSince:      &lingeringSince,
+		RewindWindowSeconds: &rewindSeconds,
+		RewindDegraded:      true,
 		Clients: []detailClientPayload{
 			{
 				ClientID:        "client_1789000000000_1234",
@@ -291,17 +296,21 @@ func mustDecodeDetail(t *testing.T, payload any) map[string]any {
 
 // The HLS pair (Phase 4a-1b) is optional in the same way: with no HLS
 // pipeline the two keys vanish, and they render when set.
+//
+// The rewind window's three (Phase 4a-3) are optional in the same way.
 func TestTheDetailPayloadOmitsTheHLSFieldsWithoutAPipeline(t *testing.T) {
 	payload := detailGoldenPayload()
 	payload.HLSEncoder = ""
 	payload.HLSGeneration = nil
+	payload.LingeringSince, payload.RewindWindowSeconds, payload.RewindDegraded = nil, nil, false
 	decoded := mustDecodeDetail(t, payload)
-	for _, key := range []string{"hls_encoder", "hls_generation"} {
+	keys := []string{"hls_encoder", "hls_generation", "lingering_since", "rewind_window_seconds", "rewind_degraded"}
+	for _, key := range keys {
 		if _, present := decoded[key]; present {
 			t.Errorf("an unset %q still renders, as %v", key, decoded[key])
 		}
 	}
-	for _, key := range []string{"hls_encoder", "hls_generation"} {
+	for _, key := range keys {
 		if _, present := mustDecodeDetail(t, detailGoldenPayload())[key]; !present {
 			t.Errorf("the populated detail payload is missing %q", key)
 		}

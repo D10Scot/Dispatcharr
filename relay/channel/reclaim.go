@@ -191,11 +191,24 @@ func waitReleased(c *Channel, deadline time.Time) bool {
 
 // reclaimable is the pick's verdict (spec D16), called with m.mu held. It
 // takes c.mu and then the judge's lock one after the other, never nested.
-// 4a-3 adds its lingering clause HERE.
+//
+// A channel with no client is reclaimable from when it went idle, unless a
+// session of it is behind live and inside its grace (Phase 4a-3, ruling R82):
+// the judge answers that for the empty list, and its answer is the channel's,
+// lingering or in a channel_shutdown_delay countdown alike. A lingering
+// channel with a TS or fMP4 client has a client, so it takes the branch below
+// and is never reclaimed.
 func (m *Manager) reclaimable(c *Channel) (since time.Time, ok bool) {
 	ids, idleSince := c.clientState()
 	if len(ids) == 0 {
-		return idleSince, true
+		if m.cfg.Silence == nil {
+			return idleSince, true
+		}
+		silentSince, ok := m.cfg.Silence.Silent(c, nil)
+		if !ok {
+			return time.Time{}, false
+		}
+		return later(idleSince, silentSince), true
 	}
 	if m.cfg.Silence == nil {
 		return time.Time{}, false
@@ -206,8 +219,9 @@ func (m *Manager) reclaimable(c *Channel) (since time.Time, ok bool) {
 // reclaimLocked is the re-check and the mark (spec § Slot reclaim, (b) 3),
 // called with m.mu held: c.mu read-held across the judge's own lock, so no
 // client can join (addClient needs c.mu) and no request can begin (Begin
-// needs st.mu) between the verdict and the STOPPED mark. 4a-3 adds its
-// lingering clause HERE, in step with reclaimable.
+// needs st.mu) between the verdict and the STOPPED mark. Its judge call with
+// an empty id list is what honours 4a-3's behind-live grace for a channel with
+// no client, in step with reclaimable, so it needed no clause of its own.
 func (m *Manager) reclaimLocked(c *Channel) ([]StoppedClient, bool) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -216,4 +230,12 @@ func (m *Manager) reclaimLocked(c *Channel) ([]StoppedClient, bool) {
 		return nil, len(ids) == 0
 	}
 	return m.cfg.Silence.StopIfSilent(c, ids)
+}
+
+// later is the later of two times.
+func later(a, b time.Time) time.Time {
+	if b.After(a) {
+		return b
+	}
+	return a
 }

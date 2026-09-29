@@ -30,3 +30,10 @@ func IdleTimeout(td time.Duration) time.Duration {
 // the end of the session's last request: 4 s at TD 2, well inside M7's 2 s
 // reload cadence for a paused AVPlayer, and 12 s at TD 6.
 func SilentAfter(td time.Duration) time.Duration { return 2 * td }
+
+// BehindLiveAfter is how far behind the newest segment a served media segment
+// must be for its session to count as behind live: 5 x TARGETDURATION, 10 s at
+// TD 2 (spec § Presence thresholds, Phase 4a-3). A viewer that far back is
+// watching the rewind window, and stopping without a leave holds its channel
+// for the behind-live grace. Behind live is STRICTLY more than this.
+func BehindLiveAfter(td time.Duration) time.Duration { return 5 * td }

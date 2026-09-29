@@ -990,6 +990,11 @@ class ProxySettingsBackfillsMissingKeysTests(TestCase):
                 # stored row, supplied only by the merge's code-level
                 # default.
                 "new_client_behind_seconds": 5,
+                # Phase 4a-3's four, back-filled the same way.
+                "rewind_window_minutes": 60,
+                "rewind_linger_seconds": 300,
+                "rewind_behind_live_grace_seconds": 10,
+                "rewind_disk_cap_gb": 16,
             },
         )
 

@@ -1,6 +1,6 @@
 import { test, expect, parseM3u, readChannelStatus, xcQuery } from '../../fixtures';
 import { MEDIA_SESSION_TOKEN_RE, enterHls, leaveHls } from '../../fixtures/hls';
-import { lockedProfile } from './helpers';
+import { lockedProfile, stopChannels } from './helpers';
 
 /**
  * The live HLS output's entry (Phase 4a-1b, spec D2/D3/D13/D19), through
@@ -59,6 +59,7 @@ test(
       expect(hlsClients, 'the channel lists one hls client per session').toHaveLength(3);
     } finally {
       for (const token of tokens) await leaveHls(request, token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );
@@ -86,6 +87,7 @@ test(
       expect(opens.length, "the provider's log shows the relay's own connection").toBeGreaterThanOrEqual(1);
     } finally {
       await leaveHls(request, entry.token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );
@@ -136,7 +138,7 @@ test(
         available: true,
         segment_seconds: 2,
         session_leave: true,
-        rewind_window: { available: false, depth_seconds: 0 },
+        rewind_window: { available: true, depth_seconds: 3600 },
       },
     });
   }

@@ -48,6 +48,12 @@ type ManagerConfig struct {
 	// reclaimable, which is every existing caller and test.
 	Silence SilenceJudge
 
+	// AfterFunc schedules the linger's end and the shutdown-delay countdown
+	// (Phase 4a-3): f runs after d, and the returned stop cancels it, as
+	// time.AfterFunc does. Nil means time.AfterFunc; tests inject a fake they
+	// fire by hand.
+	AfterFunc func(d time.Duration, f func()) (stop func() bool)
+
 	// ReclaimPicked is a test seam only: ReclaimFor runs it with m.mu held
 	// and no session-table lock held, between its pick and its re-check, so a
 	// test can land a request in exactly that window. Nil in production.
@@ -286,6 +292,8 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 		onRunEnd = m.runEnded
 	}
 	c := &Channel{
+		afterFunc:  m.cfg.AfterFunc,
+		onIdle:     m.StopIfIdle,
 		onRunEnd:   onRunEnd,
 		released:   make(chan struct{}),
 		onReleased: m.released,
@@ -490,12 +498,20 @@ func (m *Manager) release(c *Channel, clientID string) {
 
 // stopWhenIdle is release's decision once the channel has no client: stop it
 // at once, or after its ShutdownDelay, re-checking the count when it acts.
+//
+// A lingering HLS pipeline holds the channel (Phase 4a-3): nothing is armed
+// while the hold lasts, so a channel_shutdown_delay countdown starts only when
+// the client count and the hold are both zero. The linger's own end asks this
+// question again.
 func (m *Manager) stopWhenIdle(c *Channel) {
+	if c.lingerHeld() {
+		return
+	}
 	if c.tuning.ShutdownDelay <= 0 {
 		m.stopIfStillIdle(c)
 		return
 	}
-	time.AfterFunc(c.tuning.ShutdownDelay, func() {
+	c.schedule(c.tuning.ShutdownDelay, func() {
 		m.stopIfStillIdle(c)
 	})
 }
@@ -586,7 +602,7 @@ func (m *Manager) stopIfStillIdle(c *Channel) {
 	stop := func() bool {
 		m.mu.Lock()
 		defer m.mu.Unlock()
-		if c.Clients() != 0 {
+		if c.Clients() != 0 || c.lingerHeld() {
 			return false
 		}
 		if existing, ok := m.channels[c.id]; ok && existing == c {

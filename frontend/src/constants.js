@@ -69,6 +69,26 @@ export const PROXY_SETTINGS_OPTIONS = {
     description:
       'Seconds of received buffer to start behind live when a new client connects (0 = start at live). Note: this is chunk receive time, not video duration.',
   },
+  rewind_window_minutes: {
+    label: 'Rewind Window (minutes)',
+    description:
+      "How far back viewers of a channel played over HLS can rewind, kept on disk from the channel's first HLS viewer. 0 turns the window off; at most 120.",
+  },
+  rewind_linger_seconds: {
+    label: 'Rewind Linger (seconds)',
+    description:
+      'How long a channel keeps running after its last HLS viewer leaves, so switching back keeps the rewind window. 0 stops it at once. A lingering channel gives its provider connection to a new tune that needs one.',
+  },
+  rewind_behind_live_grace_seconds: {
+    label: 'Behind-Live Grace (seconds)',
+    description:
+      'When a viewer watching behind live stops without leaving, how long its channel is kept before a new tune may take its provider connection.',
+  },
+  rewind_disk_cap_gb: {
+    label: 'Rewind Disk Cap (GB)',
+    description:
+      'The most disk the rewind windows of all channels may use together; the oldest segments go first.',
+  },
 };
 
 export const USER_LIMITS_OPTIONS = {

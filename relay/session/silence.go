@@ -30,41 +30,69 @@ func (t *Table) StopIfSilent(c *channel.Channel, clientIDs []string) ([]channel.
 	return t.stopLocked(func(s *Session) bool { return s.Owner == Owner(c) }, now), true
 }
 
+// silentFrom is when a session becomes silent: STRICTLY after its last
+// request ended plus SilentAfter(TD), and, while it is behind live, plus the
+// channel's behind-live grace (Phase 4a-3, ruling R82: the grace runs from the
+// session's silence point, so an explicit leave, which removes the session,
+// has none).
+func silentFrom(s *Session) time.Time {
+	at := s.lastEnd.Add(SilentAfter(s.TD))
+	if s.behindLive {
+		at = at.Add(s.Grace)
+	}
+	return at
+}
+
 // silentLocked is the predicate, over an Owner so the package's own tests
 // drive it with a fake owner (the stopOwner idiom).
 //
 // Every id in clientIDs must be the client of a session of o that is silent:
 // ACTIVE with nothing in flight and STRICTLY more than SilentAfter(TD) since
-// its last request ended, or DEPARTED and still settling (its idle departure
-// is in the middle of dropping the client). Anything else -- a request in
-// flight, a session heard from recently, an ARRIVED entry, a DEPARTED session
-// that is not settling (a resume between its attach and its commit), a
-// STOPPED one, or an id no session of o holds (a TS or fMP4 client) -- is not
-// silent, and answers (zero, false) at once.
+// its last request ended (plus the grace, for a behind-live session), or
+// DEPARTED, still settling (its idle departure is in the middle of dropping the
+// client) and past the same point. Anything else -- a request in flight, a
+// session heard from recently, an ARRIVED entry, a DEPARTED session that is not
+// settling (a resume between its attach and its commit), a STOPPED one, or an id
+// no session of o holds (a TS or fMP4 client) -- is not silent, and answers
+// (zero, false) at once.
+//
+// A behind-live DEPARTED session of o that is inside its grace holds the owner
+// unreclaimable whether or not clientIDs lists it: an idle-departed viewer
+// leaves no client behind, so an empty list must still ask. An owner with no
+// such session answers (zero, true) for an empty list, as it always did.
 func (t *Table) silentLocked(o Owner, clientIDs []string, now time.Time) (time.Time, bool) {
-	if len(clientIDs) == 0 {
-		return time.Time{}, true
-	}
 	want := make(map[string]bool, len(clientIDs))
 	for _, id := range clientIDs {
 		want[id] = false
 	}
 	var since time.Time
 	for _, s := range t.byID {
-		if s.Owner != o || s.client == nil {
+		if s.Owner != o {
+			continue
+		}
+		at := silentFrom(s)
+		if s.state == Departed && s.behindLive {
+			if !now.After(at) {
+				return time.Time{}, false
+			}
+			if at.After(since) {
+				since = at
+			}
+		}
+		if s.client == nil {
 			continue
 		}
 		if _, listed := want[s.client.ID]; !listed {
 			continue
 		}
 		switch {
-		case s.state == Active && s.inFlight == 0 && now.Sub(s.lastEnd) > SilentAfter(s.TD):
-		case s.state == Departed && s.settling:
+		case s.state == Active && s.inFlight == 0 && now.After(at):
+		case s.state == Departed && s.settling && now.After(at):
 		default:
 			return time.Time{}, false
 		}
 		want[s.client.ID] = true
-		if at := s.lastEnd.Add(SilentAfter(s.TD)); at.After(since) {
+		if at.After(since) {
 			since = at
 		}
 	}

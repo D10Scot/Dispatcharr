@@ -27,10 +27,26 @@ class MinoCapabilitiesTests(TestCase):
                     "available": True,
                     "segment_seconds": 2,
                     "session_leave": True,
-                    "rewind_window": {"available": False, "depth_seconds": 0},
+                    "rewind_window": {"available": True, "depth_seconds": 3600},
                 },
             },
         )
+
+    def test_the_rewind_window_follows_its_setting(self):
+        from core.models import PROXY_SETTINGS_KEY
+
+        self.addCleanup(CoreSettings.invalidate_group_cache, PROXY_SETTINGS_KEY)
+        for minutes, want in (
+            (0, {"available": False, "depth_seconds": 0}),
+            (90, {"available": True, "depth_seconds": 5400}),
+        ):
+            row = CoreSettings.objects.update_or_create(
+                key=PROXY_SETTINGS_KEY,
+                defaults={"name": "Proxy Settings", "value": {"rewind_window_minutes": minutes}},
+            )[0]
+            row.save()  # post_save invalidates the group cache
+            body = self.client.get(self.url).json()
+            self.assertEqual(body["live_hls"]["rewind_window"], want, minutes)
 
     def test_a_stale_bearer_header_is_not_a_401(self):
         # A Mino app build with an expired token must still read a document

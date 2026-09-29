@@ -747,6 +747,12 @@ class CoreSettings(models.Model):
             "channel_init_grace_period": 60,
             "channel_client_wait_period": 5,
             "new_client_behind_seconds": 5,
+            # Phase 4a-3 (spec D17): the live rewind window. No migration: the
+            # back-fill above is the mechanism.
+            "rewind_window_minutes": 60,
+            "rewind_linger_seconds": 300,
+            "rewind_behind_live_grace_seconds": 10,
+            "rewind_disk_cap_gb": 16,
         }
         return {**defaults, **cls._get_group(PROXY_SETTINGS_KEY, defaults)}
 

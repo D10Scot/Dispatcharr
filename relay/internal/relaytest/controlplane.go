@@ -33,6 +33,15 @@ func EffectiveProxySettings() map[string]any {
 		"channel_init_grace_period":  60,
 		"channel_client_wait_period": 5,
 		"new_client_behind_seconds":  5,
+		// Phase 4a-3's four (core/models.py get_proxy_settings). The linger is
+		// 0 here and not Django's 300 on purpose: every rig test written before
+		// 4a-3 pins a last leave that STOPS its channel, and 4a-1c's case-(a)
+		// oracle needs the channel in the releasing set rather than lingering.
+		// The tests about the linger opt in with settings of their own.
+		"rewind_window_minutes":            60,
+		"rewind_linger_seconds":            0,
+		"rewind_behind_live_grace_seconds": 10,
+		"rewind_disk_cap_gb":               16,
 		// TSConfig's class-attribute defaults, the half A1.4 adds.
 		"BUFFER_CHUNK_SIZE":           255868,                     // apps/proxy/config.py:15, 188 * 1361
 		"DEFAULT_USER_AGENT":          "VLC/3.0.20 LibVLC/3.0.20", // :6

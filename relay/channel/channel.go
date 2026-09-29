@@ -175,6 +175,12 @@ type Channel struct {
 	// because the stderr reader's buffering switch counts against it too.
 	switches int
 
+	// afterFunc is the manager's injectable timer (nil: time.AfterFunc) and
+	// onIdle its idle question, asked when a linger ends (Phase 4a-3); both
+	// set by Manager.publish and read-only after.
+	afterFunc func(d time.Duration, f func()) (stop func() bool)
+	onIdle    func(*Channel)
+
 	// onRunEnd is the manager's run-ended hook (Phase 4a-1b), nil when the
 	// manager has no session table. Set at publish, before run starts, and
 	// never touched again.
@@ -790,9 +796,11 @@ func (c *Channel) Released() <-chan struct{} { return c.released }
 // active half of Python's promotion (apps/proxy/live_proxy/services/
 // channel_service.py:204-240's promote_channel_when_buffer_ready): "clients"
 // is not a separate condition to check here the way it is there, because a
-// channel in this manager never exists without at least one attached client
-// -- Manager.publish always installs the first client before starting this
-// goroutine (manager.go's own doc comment on publish). No parity-matrix row
+// channel is published with its first client (Manager.publish installs it
+// before starting this goroutine). It can afterwards run with none, during a
+// channel_shutdown_delay countdown and, since Phase 4a-3, while an HLS
+// pipeline lingers; neither affects this goroutine, which waits only on the
+// first chunk, and a lingering channel is already active. No parity-matrix row
 // pins this transition yet; it is one to add when a later PR builds the
 // status routes that expose `state`.
 //

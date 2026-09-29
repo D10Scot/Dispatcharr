@@ -1,6 +1,6 @@
 import { test, expect, readChannelStatus } from '../../fixtures';
 import { enterHls, initSummary, leaveHls, waitForSegments } from '../../fixtures/hls';
-import { lockedProfile } from './helpers';
+import { lockedProfile, stopChannels } from './helpers';
 
 /**
  * The automatic HLS profile (Phase 4a-1d, spec D12, § Automatic generation): a
@@ -47,6 +47,7 @@ test(
       expect(status.hls_encoder, 'the video is copied, not encoded').toBe('copy');
     } finally {
       await leaveHls(request, entry.token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );
@@ -89,6 +90,7 @@ test(
       expect(status.hls_encoder).toBe('copy');
     } finally {
       await leaveHls(request, entry.token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );
@@ -120,6 +122,7 @@ test(
       expect(status.hls_encoder).toBe('software');
     } finally {
       await leaveHls(request, entry.token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );

@@ -698,6 +698,7 @@ class MinoCapabilitiesView(APIView):
 
         if not network_access_allowed(request, "XC_API"):
             return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        rewind_minutes = int(CoreSettings.get_proxy_settings()["rewind_window_minutes"])
         return Response(
             MinoCapabilitiesSerializer(
                 {
@@ -708,8 +709,10 @@ class MinoCapabilitiesView(APIView):
                         "available": True,
                         "segment_seconds": 2,
                         "session_leave": True,
-                        # 4a-3 fills this in.
-                        "rewind_window": {"available": False, "depth_seconds": 0},
+                        "rewind_window": {
+                            "available": rewind_minutes > 0,
+                            "depth_seconds": rewind_minutes * 60,
+                        },
                     },
                 }
             ).data

@@ -71,6 +71,12 @@ type Events interface {
 	Close()
 }
 
+// Rewind is the on-disk rewind store's half (Phase 4a-3).
+type Rewind interface {
+	// RemoveBoot stops the store's writer and deletes this boot's directory.
+	RemoveBoot()
+}
+
 // Gate is the lifecycle flag: what makes new tunes stop being accepted and
 // /readyz start answering 503.
 type Gate interface {
@@ -85,6 +91,9 @@ type Deps struct {
 	Channels Channels
 	Server   Server
 	Events   Events
+	// Rewind removes the rewind windows once the channels have stopped (Phase
+	// 4a-3, R10: a window is lost on drain by design). Nil is skipped.
+	Rewind Rewind
 
 	Log *slog.Logger
 	Now func() time.Time
@@ -115,6 +124,9 @@ type Deps struct {
 //     http.Server.Shutdown waits for in-flight requests.
 //  4. Shut the server down. By now the handlers have returned, so this
 //     closes the listener and the idle connections and returns at once.
+//     4b. Remove the rewind windows (Phase 4a-3). After step 3, because a
+//     stopped channel closes its pipelines' windows and the writer removes
+//     each; this deletes what is left, best effort, inside the same deadline.
 //  5. Flush the emitter. LAST, because steps 3 and 4 are what RAISE the
 //     events this flush exists to deliver -- one channel_stop per channel
 //     and one client_disconnect per TS viewer.
@@ -189,6 +201,11 @@ func Run(d Deps) time.Duration {
 			log.Warn("the HTTP server did not shut down inside the drain budget", "error", err) // credential-logging: ok - http.Server.Shutdown returns the context's own error
 		}
 		cancel()
+	}
+
+	// 4b. The rewind windows.
+	if d.Rewind != nil {
+		waitFor(log, "the rewind directory to be removed", teardownDeadline.Sub(now()), d.Rewind.RemoveBoot)
 	}
 
 	// 5. Flush the events raised by steps 3 and 4.

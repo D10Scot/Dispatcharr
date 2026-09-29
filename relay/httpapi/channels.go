@@ -128,6 +128,13 @@ type channelPayload struct {
 	HLSEncoder    string `json:"hls_encoder,omitempty"`
 	HLSGeneration *int   `json:"hls_generation,omitempty"`
 
+	// The rewind window's three (Phase 4a-3): while the channel lingers with no
+	// HLS session, the span of the video playlist the pipeline lists, and
+	// whether its window stopped persisting.
+	LingeringSince      *float64 `json:"lingering_since,omitempty"`
+	RewindWindowSeconds *float64 `json:"rewind_window_seconds,omitempty"`
+	RewindDegraded      bool     `json:"rewind_degraded,omitempty"`
+
 	// Clients is ALWAYS PRESENT, never omitted: channel_status.py:587 assigns
 	// it on every path, so an empty channel renders "clients": [] and not an
 	// absent key. Never nil here for the same reason.
@@ -272,6 +279,7 @@ func describeChannel(c *channel.Channel, limit int, at time.Time) channelPayload
 		out.StreamType = *stats.StreamType
 	}
 	out.HLSEncoder, out.HLSGeneration = hlsFields(c)
+	out.LingeringSince, out.RewindWindowSeconds, out.RewindDegraded = rewindFields(c)
 
 	for i, cl := range clients {
 		if limit >= 0 && i >= limit {
