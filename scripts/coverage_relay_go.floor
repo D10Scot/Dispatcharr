@@ -131,6 +131,34 @@
 # the next, which is itself the evidence that the gap is not a constant. The
 # correct response stays "measure in CI".
 #
+# PROVENANCE (Phase 4a-1b, R21/R27/R34/R52/R80 -- measured in CI at
+# 9e5ca5444563775b352f6a1702cc7eb0d9bb2d65 on migration/phase4-4a1b-live-hls,
+# 2026-09-29). `missing` below is the WORST of 12 rounds of go-tests.yml's own
+# build + coverage jobs (run ids 36574522741, 36575322687, 36576130112,
+# 36576942956, 36577766747, 36578598197, 36579442106, 36580282892,
+# 36581111929, 36581946606, 36583012696, 36583831267), in order:
+#   684 687 685 687 685 686 686 686 687 687 687 686
+# max=687 (round 2, unchanged for the eleven rounds after it)  min=684
+# spread=3  n=12, over 6,073 linked statements (88.69% at the floor).
+# 589 -> 687 is the linking PR's own two amounts: H = 88, relay/hls's uncovered
+# statements re-measured as the per-file census maximum (box 8, detect 1,
+# fragment 3, init 31, pipeline 24, reader 1, segmenter 6, silence 14), and O =
+# 51, the PR's own new or changed uncovered statements by the start-line rule
+# (channel/hlsoutput.go 3, control/mediasession.go 1, httpapi/hls.go 32,
+# httpapi/stream.go 2, main.go 12, session/table.go 1), which are 92.6% covered on
+# 685 added statements. The cap is 589 + 88 + 51 = 728; the census maximum lands
+# 41 under it (ruling R52).
+#
+# PROVENANCE (Phase 4a-1c, R21/R52/R80 -- measured in CI at
+# 1fb18a3f on migration/phase4-4a1c-slot-reclaim, 2026-09-29). `missing` below
+# is the WORST of 12 rounds of go-tests.yml's own build + coverage jobs (run
+# ids in the PR body): the gate read 688-691, max=691, over 6,266 linked
+# statements (88.97% at the floor). 687 -> 691 is the PR's own O = 6, the
+# uncovered statements of its new or changed code by the start-line rule
+# (relay/channel/reclaim.go 6 of 104), which are 96.9% covered on 193 added
+# statements. The cap is 687 + 6 = 693; the census maximum lands 2 under it
+# (rulings R52, R80).
+#
 # THE THRESHOLD. D7 requires >=80% on the live path, transferring to Go at
 # >=80%. The ceiling is statements - ceil(0.8 * statements) = 739; `missing`
 # is 589, so the margin is 150 statements and coverage at the floor is 84.06%.
@@ -200,11 +228,11 @@
 #   - its body lists those statements per file, block by block, read off a CI
 #     coverage artifact with the awk command above;
 #   - its statement coverage on its own additions is >= 85%;
-#   - it ran the >=12-round CI census of steps 1-2, and the census maximum
-#     does not exceed the old `missing` plus exactly the listed count (ruling
-#     R52: the old floor can carry slack below its own worst draw, so a
-#     correct census may land under that sum, never over it); the new
-#     `missing` is the old one plus exactly the listed count;
+#   - it ran the >=12-round CI census of steps 1-2, and the new `missing` is
+#     the CENSUS MAXIMUM, which does not exceed the old `missing` plus the
+#     listed count (rulings R52, R80: the old floor can carry slack below its
+#     own worst draw, so a correct census may land under that sum, never over
+#     it -- 4a-1b's 687 against a cap of 728);
 #   - the reviewer checked the listing against the artifact.
 # A draw above the floor that the listing does not explain is still a finding,
 # and still gets a re-measurement PR of its own, never a bump.
@@ -224,12 +252,22 @@
 # rule above. Phase 4a-1a is the first PR
 # under this rule: it adds relay/hls unlinked (4a-1b links it) and lists its
 # own additions to the linked packages.
+# A PR that raises `missing` under ruling R21 also adds two lines below, `raise_from=<the
+# base floor's missing>` and `raise_listed=<the uncovered statements its body lists>`;
+# scripts/check_floor_raise.sh (go-tests.yml) requires them and caps the new missing at
+# their sum. --gate and --write-floor ignore both and never hash them.
 shape=go-race-per-package/v1
-statements=3696
-missing=589
-percent=84.06
-measured=2026-09-16
+statements=6266
+missing=691
+percent=88.97
+measured=2026-09-29
 runs=12
 packages=40d4ba02d7d3
 package_count=12
 gomod=92baf312d30d
+# A raise under R21, declared for the CI guard that refuses an unexplained one
+# (R91): the base `missing` and the listed amount, O 6 (the start-line rule),
+# so 691 <= 687 + 6 = 693. Remove both when the next re-measurement moves
+# `missing` without a raise.
+raise_from=687
+raise_listed=6
