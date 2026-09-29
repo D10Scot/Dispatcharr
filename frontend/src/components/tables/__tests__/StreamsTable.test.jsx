@@ -32,7 +32,8 @@ vi.mock('../../../utils/notificationUtils.js', () => ({
 }));
 
 vi.mock('../../../utils/components/FloatingVideoUtils.js', () => ({
-  buildLiveStreamUrl: vi.fn((path) => path),
+  buildLiveStreamUrl: vi.fn((path) => `${path}?output_format=mpegts`),
+  buildChannelHlsUrl: vi.fn((path) => `${path}?output_format=hls`),
 }));
 
 vi.mock('../../../utils/forms/ChannelUtils.js', () => ({
@@ -237,6 +238,7 @@ import useLocalStorage from '../../../hooks/useLocalStorage';
 import { useNavigate } from 'react-router-dom';
 import { useTable } from '../CustomTable';
 import * as StreamsTableUtils from '../../../utils/tables/StreamsTableUtils.js';
+import { buildLiveStreamUrl } from '../../../utils/components/FloatingVideoUtils.js';
 import StreamsTable from '../StreamsTable';
 
 // ── Factories ──────────────────────────────────────────────────────────────────
@@ -828,6 +830,14 @@ describe('StreamsTable', () => {
       const { getByText } = render(actionsCell({ cell, row }));
       fireEvent.click(getByText('Preview Stream'));
       expect(mockShowVideo).toHaveBeenCalled();
+      expect(mockShowVideo).toHaveBeenCalledWith(
+        '/proxy/ts/stream/hash-abc?output_format=mpegts',
+        'live',
+        expect.objectContaining({ name: 'My Stream' })
+      );
+      expect(buildLiveStreamUrl).toHaveBeenCalledWith(
+        '/proxy/ts/stream/hash-abc'
+      );
     });
   });
 });

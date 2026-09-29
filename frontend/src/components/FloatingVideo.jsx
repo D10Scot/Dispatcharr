@@ -3,17 +3,24 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import Draggable from 'react-draggable';
 import useVideoStore from '../store/useVideoStore';
 import useAuthStore from '../store/auth';
+import API from '../api';
 import mpegts from 'mpegts.js';
 import Hls from 'hls.js';
 import { CloseButton, Flex, Loader, Text, Box } from '@mantine/core';
 import {
+  HLS_LEAVE_WAIT_MS,
   applyConstraints,
+  buildLiveHlsConfig,
   calculateNewDimensions,
   getClientCoordinates,
+  getHlsLivePlayerErrorMessage,
   getLivePlayerErrorMessage,
   getVODPlayerErrorMessage,
   getPlayerPrefs,
+  hlsSessionUrlOf,
+  isChannelHlsUrl,
   savePlayerPrefs,
+  withAccessTokenParam,
 } from '../utils/components/FloatingVideoUtils.js';
 
 // Native <video src> cannot send Authorization headers. Append ?token= at playback
@@ -136,6 +143,8 @@ export default function FloatingVideo() {
 
   const videoRef = useRef(null);
   const playerRef = useRef(null);
+  // The previous HLS player's leave (a promise), so a switch can wait for it.
+  const pendingLeaveRef = useRef(null);
   const videoContainerRef = useRef(null);
   const resizeStateRef = useRef(null);
   const overlayTimeoutRef = useRef(null);
@@ -554,6 +563,237 @@ export default function FloatingVideo() {
     }
   };
 
+  // Initialize the live channel player over HLS: hls.js where MSE exists, the
+  // browser's own HLS otherwise (Phase 4 spec D18). Each media session ends with
+  // DELETE /hls/<token> when the player closes, switches or the page goes away.
+  const initializeHlsLivePlayer = () => {
+    const video = videoRef.current;
+    if (!video || !streamUrl) return;
+
+    setIsLoading(true);
+    setLoadError(null);
+    setShowControls(false);
+
+    const { volume: savedVolume, muted: savedMuted } = getPlayerPrefs();
+    if (typeof savedVolume === 'number') video.volume = savedVolume;
+    if (typeof savedMuted === 'boolean') video.muted = savedMuted;
+
+    const entryUrl = new URL(streamUrl, window.location.origin).href;
+
+    // State per player object. `sessionUrl` and `left` describe the CURRENT
+    // media session: each hls.js instance's MANIFEST_LOADED replaces both.
+    let closed = false;
+    let sessionUrl = null;
+    let left = false;
+    let hls = null;
+    let reentered = false;
+    let networkRetries = 0;
+    let mediaRecovered = false;
+
+    const showAutoplayBlocked = () =>
+      setLoadError('Auto-play was prevented. Click play to start.');
+    const playVideo = () => {
+      try {
+        Promise.resolve(video.play()).catch(showAutoplayBlocked);
+      } catch {
+        showAutoplayBlocked();
+      }
+    };
+
+    const onPlaying = () => setIsLoading(false);
+    const onCanPlay = () => {
+      setIsLoading(false);
+      playVideo();
+    };
+    // The page is going away (or into the back-forward cache): leave now.
+    const onPageHide = () => {
+      if (sessionUrl && !left) {
+        left = true;
+        API.leaveHlsSession(sessionUrl, { keepalive: true });
+      }
+    };
+
+    const player = {
+      pause: () => video.pause(),
+      destroy: () => {
+        if (closed) return;
+        closed = true;
+        window.removeEventListener('pagehide', onPageHide);
+        video.removeEventListener('playing', onPlaying);
+        video.removeEventListener('canplay', onCanPlay);
+        // Destroy first, so an in-flight playlist reload is not answered 403 by
+        // the session the leave is about to end and reported as an error.
+        try {
+          hls?.destroy();
+        } catch {
+          // ignore
+        }
+        if (sessionUrl && !left) {
+          left = true;
+          pendingLeaveRef.current = API.leaveHlsSession(sessionUrl);
+        }
+      },
+    };
+    // Set before any await, so a close or switch during the wait cancels this init.
+    playerRef.current = player;
+    window.addEventListener('pagehide', onPageHide);
+
+    const isHlsPath = (url) => {
+      try {
+        return new URL(url, window.location.origin).pathname.startsWith(
+          '/hls/'
+        );
+      } catch {
+        return false;
+      }
+    };
+
+    const startInstance = () => {
+      const instance = new Hls(
+        buildLiveHlsConfig(() => useAuthStore.getState().accessToken)
+      );
+      hls = instance;
+      let disarmed = false;
+      const inactive = () => disarmed || closed;
+
+      instance.on(Hls.Events.MANIFEST_LOADED, (_evt, data) => {
+        if (inactive()) return;
+        // Before hls.js filters variants by codec, so even a multivariant every
+        // variant of which the browser refuses still yields its session.
+        for (const entry of [
+          ...(data?.levels ?? []),
+          ...(data?.audioTracks ?? []),
+        ]) {
+          const url = hlsSessionUrlOf(entry?.url);
+          if (url) {
+            sessionUrl = url;
+            left = false;
+            return;
+          }
+        }
+      });
+
+      instance.on(Hls.Events.MANIFEST_PARSED, () => {
+        if (inactive()) return;
+        playVideo();
+      });
+
+      instance.on(Hls.Events.ERROR, (_evt, data) => {
+        if (inactive()) return;
+
+        const status = data?.response?.code;
+        const errorUrl = data?.url ?? data?.response?.url ?? data?.frag?.url;
+        if ((status === 403 || status === 410) && isHlsPath(errorUrl)) {
+          // The session is gone either way: no leave for it. Disarm this
+          // instance synchronously so its later events are ignored.
+          disarmed = true;
+          left = true;
+          try {
+            instance.destroy();
+          } catch {
+            // ignore
+          }
+          if (status === 410) {
+            setIsLoading(false);
+            setLoadError(
+              getHlsLivePlayerErrorMessage({ channelStopped: true })
+            );
+          } else if (reentered) {
+            setIsLoading(false);
+            setLoadError(getHlsLivePlayerErrorMessage({ sessionEnded: true }));
+          } else {
+            reentered = true;
+            reenter();
+          }
+          return;
+        }
+
+        if (!data?.fatal) return;
+        const details = data.details;
+        const isManifest =
+          typeof details === 'string' && details.startsWith('manifest');
+        if (!isManifest && data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+          if (networkRetries < 3) {
+            networkRetries += 1;
+            try {
+              instance.startLoad();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+        } else if (!isManifest && data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+          if (!mediaRecovered) {
+            mediaRecovered = true;
+            try {
+              instance.recoverMediaError();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+        }
+        console.error('HLS fatal error:', data.type, details, status);
+        setIsLoading(false);
+        setLoadError(getHlsLivePlayerErrorMessage({ status, details }));
+      });
+
+      instance.on(Hls.Events.MEDIA_ATTACHED, () => {
+        if (inactive()) return;
+        instance.loadSource(entryUrl);
+      });
+      instance.attachMedia(video);
+    };
+
+    // A 403 from /hls/ re-enters once, with a refreshed JWT: the entry is the one
+    // request that needs it, and a long session's may have expired.
+    const reenter = async () => {
+      setIsLoading(true);
+      await API.getAuthToken();
+      if (closed) return;
+      startInstance();
+    };
+
+    if (Hls.isSupported()) {
+      (async () => {
+        const pending = pendingLeaveRef.current;
+        if (pending) {
+          let timer;
+          const timeout = new Promise((resolve) => {
+            timer = setTimeout(resolve, HLS_LEAVE_WAIT_MS);
+          });
+          await Promise.race([pending, timeout]);
+          clearTimeout(timer);
+          if (pendingLeaveRef.current === pending) {
+            pendingLeaveRef.current = null;
+          }
+        }
+        if (closed) return;
+        // Refreshes an access token that expired while the page sat idle.
+        await API.getAuthToken();
+        if (closed) return;
+        video.addEventListener('playing', onPlaying);
+        try {
+          startInstance();
+        } catch (error) {
+          setIsLoading(false);
+          setLoadError(`HLS initialization error: ${error.message}`);
+        }
+      })();
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      // No leave here: the token is not observable through the native player.
+      video.addEventListener('canplay', onCanPlay);
+      video.src = withAccessTokenParam(
+        entryUrl,
+        useAuthStore.getState().accessToken
+      );
+      video.load();
+    } else {
+      setIsLoading(false);
+      setLoadError("This browser can't play live channels.");
+    }
+  };
+
   useEffect(() => {
     if (!isVisible || !streamUrl) {
       safeDestroyPlayer();
@@ -566,6 +806,8 @@ export default function FloatingVideo() {
     // Initialize the appropriate player based on content type
     if (contentType === 'vod') {
       initializeVODPlayer();
+    } else if (isChannelHlsUrl(streamUrl)) {
+      initializeHlsLivePlayer();
     } else {
       initializeLivePlayer();
     }
@@ -942,6 +1184,7 @@ export default function FloatingVideo() {
     >
       <div
         ref={videoContainerRef}
+        data-testid="floating-video"
         style={{
           position: 'fixed',
           top: 0,
@@ -986,6 +1229,7 @@ export default function FloatingVideo() {
             <Box style={{ flex: 1 }} />
           )}
           <CloseButton
+            data-testid="floating-video-close"
             onClick={handleClose}
             onTouchEnd={handleClose}
             onMouseDown={(e) => e.stopPropagation()}

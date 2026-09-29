@@ -2,7 +2,7 @@ import API from '../../api.js';
 import useChannelsStore from '../../store/channels.jsx';
 import defaultLogo from '../../images/logo.png';
 import { formatSeasonEpisode } from '../guideUtils.js';
-import { buildLiveStreamUrl } from '../components/FloatingVideoUtils.js';
+import { buildChannelHlsUrl } from '../components/FloatingVideoUtils.js';
 
 export const removeRecording = (id) => {
   // Optimistically remove immediately from UI
@@ -64,7 +64,7 @@ export const getShowVideoUrl = (channel, env_mode) => {
   if (env_mode === 'dev') {
     url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
   }
-  return buildLiveStreamUrl(url);
+  return buildChannelHlsUrl(url);
 };
 
 export const runComSkip = async (recording) => {

@@ -1,6 +1,17 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  act,
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+} from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import FloatingVideo from '../FloatingVideo';
+import {
+  HLS_LEAVE_WAIT_MS,
+  HLS_RELAY_TUNE_BUDGET_MS,
+  HLS_RELAY_WAIT_MS,
+} from '../../utils/components/FloatingVideoUtils.js';
 import useVideoStore from '../../store/useVideoStore';
 
 // Mock the video store
@@ -20,11 +31,13 @@ vi.mock('mpegts.js', () => ({
   },
 }));
 
-const mockHlsInstance = {
-  attachMedia: vi.fn(),
-  loadSource: vi.fn(),
-  destroy: vi.fn(),
-  on: vi.fn(),
+// Every hls.js instance the component constructs, each with its own spies and
+// the handlers it registered; fireHls calls those handlers.
+let hlsInstances = [];
+const fireHls = (instance, event, data) => {
+  for (const handler of instance.handlers[event] ?? []) {
+    handler(event, data);
+  }
 };
 
 let capturedHlsConfig = null;
@@ -37,6 +50,8 @@ vi.mock('hls.js', () => ({
     static Events = {
       ERROR: 'error',
       MEDIA_ATTACHED: 'media_attached',
+      MANIFEST_LOADED: 'manifestLoaded',
+      MANIFEST_PARSED: 'manifestParsed',
     };
 
     static ErrorTypes = {
@@ -49,8 +64,24 @@ vi.mock('hls.js', () => ({
         throw new Error('Illegal hls.js config');
       }
       capturedHlsConfig = config;
-      Object.assign(this, mockHlsInstance);
+      this.attachMedia = vi.fn();
+      this.loadSource = vi.fn();
+      this.destroy = vi.fn();
+      this.startLoad = vi.fn();
+      this.recoverMediaError = vi.fn();
+      this.handlers = {};
+      this.on = vi.fn((event, handler) => {
+        (this.handlers[event] ??= []).push(handler);
+      });
+      hlsInstances.push(this);
     }
+  },
+}));
+
+vi.mock('../../api', () => ({
+  default: {
+    leaveHlsSession: vi.fn(() => Promise.resolve(true)),
+    getAuthToken: vi.fn(() => Promise.resolve('fresh-token')),
   },
 }));
 
@@ -63,6 +94,7 @@ vi.mock('../../store/auth', () => ({
 // Import the mocked module after mocking
 const mpegts = (await import('mpegts.js')).default;
 const Hls = (await import('hls.js')).default;
+const API = (await import('../../api')).default;
 
 // Mock react-draggable
 vi.mock('react-draggable', () => ({
@@ -95,7 +127,9 @@ describe('FloatingVideo', () => {
   beforeEach(async () => {
     vi.clearAllMocks();
     capturedHlsConfig = null;
+    hlsInstances = [];
     forceHlsInitError = false;
+    Hls.isSupported.mockReturnValue(true);
 
     // Mock HTMLVideoElement methods
     HTMLVideoElement.prototype.load = vi.fn();
@@ -571,6 +605,367 @@ describe('FloatingVideo', () => {
 
       // Should have 4 resize handles plus video element
       expect(handles.length).toBeGreaterThanOrEqual(4);
+    });
+  });
+
+  describe('Live channel over HLS', () => {
+    const T = 'v1.' + 'A'.repeat(22) + '.' + 'B'.repeat(43);
+    const T2 = 'v1.' + 'C'.repeat(22) + '.' + 'D'.repeat(43);
+    const CH1 = '/proxy/ts/stream/ch-1?output_format=hls';
+    const CH1_ABS = 'http://localhost:3000' + CH1;
+    const ABS = (token, rest) => `http://localhost:3000/hls/${token}${rest}`;
+    const manifest = (token = T) => ({
+      levels: [{ url: ABS(token, '/video.m3u8') }],
+      audioTracks: [],
+    });
+    const sessionEnded = 'The playback session ended.';
+
+    const setStream = (streamUrl) =>
+      useVideoStore.mockImplementation((selector) => {
+        const state = {
+          isVisible: true,
+          streamUrl,
+          contentType: 'live',
+          metadata: null,
+          hideVideo: mockHideVideo,
+        };
+        return selector ? selector(state) : state;
+      });
+    const flush = () => act(async () => {});
+    const fire = (instance, event, data) =>
+      act(async () => fireHls(instance, event, data));
+    const renderHls = async (streamUrl = CH1) => {
+      setStream(streamUrl);
+      const utils = render(<FloatingVideo />);
+      await flush();
+      return utils;
+    };
+    const closePlayer = () =>
+      fireEvent.click(screen.getByTestId('close-button'));
+    let originalCanPlayType;
+
+    beforeEach(() => {
+      originalCanPlayType = HTMLVideoElement.prototype.canPlayType;
+      API.leaveHlsSession.mockReset();
+      API.leaveHlsSession.mockResolvedValue(true);
+      API.getAuthToken.mockClear();
+    });
+
+    afterEach(() => {
+      HTMLVideoElement.prototype.canPlayType = originalCanPlayType;
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it('plays a channel HLS URL through hls.js, not mpegts.js', async () => {
+      await renderHls();
+
+      expect(hlsInstances).toHaveLength(1);
+      expect(mpegts.createPlayer).not.toHaveBeenCalled();
+      await fire(hlsInstances[0], 'media_attached');
+      expect(hlsInstances[0].loadSource).toHaveBeenCalledWith(CH1_ABS);
+    });
+
+    it('uses the live HLS config', async () => {
+      await renderHls();
+
+      expect(capturedHlsConfig.backBufferLength).toBe(120);
+      expect(
+        capturedHlsConfig.manifestLoadPolicy?.default?.maxLoadTimeMs ?? 0,
+        'the entry timeout must cover the relay tune budget plus its ready wait'
+      ).toBeGreaterThan(HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS);
+    });
+
+    it('closing the player destroys hls.js, then leaves the session', async () => {
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+
+      closePlayer();
+
+      expect(API.leaveHlsSession).toHaveBeenCalledTimes(1);
+      expect(API.leaveHlsSession.mock.calls[0]).toEqual([ABS(T, '')]);
+      expect(hlsInstances[0].destroy.mock.invocationCallOrder[0]).toBeLessThan(
+        API.leaveHlsSession.mock.invocationCallOrder[0]
+      );
+    });
+
+    it('sends no leave before the manifest names a session', async () => {
+      await renderHls();
+
+      closePlayer();
+
+      expect(API.leaveHlsSession).not.toHaveBeenCalled();
+    });
+
+    it('a switch waits for the previous leave before the next entry', async () => {
+      const { rerender } = await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+      let resolveLeave;
+      API.leaveHlsSession.mockReturnValueOnce(
+        new Promise((resolve) => {
+          resolveLeave = resolve;
+        })
+      );
+
+      setStream('/proxy/ts/stream/ch-2?output_format=hls');
+      rerender(<FloatingVideo />);
+      await flush();
+      expect(hlsInstances).toHaveLength(1);
+
+      resolveLeave(true);
+      await flush();
+      expect(hlsInstances).toHaveLength(2);
+      await fire(hlsInstances[1], 'media_attached');
+      expect(hlsInstances[1].loadSource).toHaveBeenCalledWith(
+        'http://localhost:3000/proxy/ts/stream/ch-2?output_format=hls'
+      );
+    });
+
+    it('a leave that never answers delays the next entry by at most HLS_LEAVE_WAIT_MS', async () => {
+      const { rerender } = await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+      API.leaveHlsSession.mockReturnValueOnce(new Promise(() => {}));
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+
+      setStream('/proxy/ts/stream/ch-2?output_format=hls');
+      rerender(<FloatingVideo />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(HLS_LEAVE_WAIT_MS - 1);
+      });
+      expect(hlsInstances).toHaveLength(1);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1);
+      });
+      expect(hlsInstances).toHaveLength(2);
+    });
+
+    it('prefers hls.js over native HLS', async () => {
+      HTMLVideoElement.prototype.canPlayType = vi.fn(() => 'maybe');
+      Hls.isSupported.mockReturnValue(true);
+      const { container } = await renderHls();
+
+      expect(hlsInstances).toHaveLength(1);
+      expect(container.querySelector('video').src).not.toContain(
+        'output_format=hls'
+      );
+    });
+
+    it('pagehide leaves with keepalive, once', async () => {
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+
+      window.dispatchEvent(new Event('pagehide'));
+      expect(API.leaveHlsSession).toHaveBeenCalledTimes(1);
+      expect(API.leaveHlsSession).toHaveBeenCalledWith(ABS(T, ''), {
+        keepalive: true,
+      });
+
+      closePlayer();
+      expect(API.leaveHlsSession).toHaveBeenCalledTimes(1);
+    });
+
+    const forbidden = (url, code = 403) => ({
+      type: 'networkError',
+      details: 'levelLoadError',
+      fatal: false,
+      response: { code },
+      url,
+    });
+
+    it('a 403 from /hls/ re-enters once, then shows that the session ended', async () => {
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+
+      // Disarmed and destroyed synchronously, before any flush.
+      act(() => {
+        fireHls(hlsInstances[0], 'error', forbidden(ABS(T, '/video.m3u8')));
+      });
+      expect(hlsInstances[0].destroy).toHaveBeenCalled();
+      await flush();
+
+      expect(hlsInstances).toHaveLength(2);
+      await fire(hlsInstances[1], 'media_attached');
+      expect(hlsInstances[1].loadSource).toHaveBeenCalledWith(CH1_ABS);
+      expect(API.getAuthToken).toHaveBeenCalledTimes(2);
+      expect(API.getAuthToken.mock.invocationCallOrder[1]).toBeLessThan(
+        hlsInstances[1].attachMedia.mock.invocationCallOrder[0]
+      );
+
+      await fire(hlsInstances[1], 'error', forbidden(ABS(T, '/video.m3u8')));
+      await flush();
+      expect(hlsInstances).toHaveLength(2);
+      expect(screen.getByText(sessionEnded)).toBeInTheDocument();
+    });
+
+    it('two 403s from one expired session re-enter exactly once', async () => {
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+
+      act(() => {
+        fireHls(hlsInstances[0], 'error', forbidden(ABS(T, '/video.m3u8')));
+        fireHls(hlsInstances[0], 'error', {
+          ...forbidden(ABS(T, '/aac.m3u8')),
+          details: 'audioTrackLoadError',
+        });
+      });
+      await flush();
+
+      expect(hlsInstances).toHaveLength(2);
+      expect(screen.queryByText(sessionEnded)).not.toBeInTheDocument();
+    });
+
+    it('after a re-entry, closing leaves the new session', async () => {
+      const addSpy = vi.spyOn(window, 'addEventListener');
+      const removeSpy = vi.spyOn(window, 'removeEventListener');
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest(T));
+      await fire(hlsInstances[0], 'error', forbidden(ABS(T, '/video.m3u8')));
+      await flush();
+      await fire(hlsInstances[1], 'manifestLoaded', manifest(T2));
+
+      closePlayer();
+
+      expect(API.leaveHlsSession).toHaveBeenCalledTimes(1);
+      expect(API.leaveHlsSession).toHaveBeenCalledWith(ABS(T2, ''));
+      // Structural: one pagehide listener for the whole player, removed once
+      // by the very reference it was added with.
+      const added = addSpy.mock.calls.filter((c) => c[0] === 'pagehide');
+      const removed = removeSpy.mock.calls.filter((c) => c[0] === 'pagehide');
+      expect(added).toHaveLength(1);
+      expect(removed).toHaveLength(1);
+      expect(removed[0][1]).toBe(added[0][1]);
+    });
+
+    it('a close during the re-entry builds no new instance', async () => {
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+
+      act(() => {
+        fireHls(hlsInstances[0], 'error', forbidden(ABS(T, '/video.m3u8')));
+      });
+      closePlayer();
+      await flush();
+
+      expect(hlsInstances).toHaveLength(1);
+      expect(hlsInstances[0].destroy).toHaveBeenCalled();
+      expect(API.leaveHlsSession).not.toHaveBeenCalled();
+    });
+
+    it('a 403 on a segment re-enters too', async () => {
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+
+      act(() => {
+        fireHls(hlsInstances[0], 'error', {
+          type: 'networkError',
+          details: 'fragLoadError',
+          fatal: false,
+          response: { code: 403, url: ABS(T, '/aac/12.m4s') },
+          frag: { url: ABS(T, '/aac/12.m4s') },
+        });
+      });
+      await flush();
+
+      expect(hlsInstances).toHaveLength(2);
+    });
+
+    it('a 410 from /hls/ is not re-entered', async () => {
+      await renderHls();
+      await fire(hlsInstances[0], 'manifestLoaded', manifest());
+
+      await fire(
+        hlsInstances[0],
+        'error',
+        forbidden(ABS(T, '/video.m3u8'), 410)
+      );
+      await flush();
+
+      expect(hlsInstances).toHaveLength(1);
+      expect(
+        screen.getByText('The channel stopped, or this idle session was ended.')
+      ).toBeInTheDocument();
+    });
+
+    it('a manifest refusal shows its message and does not recover', async () => {
+      await renderHls();
+
+      await fire(hlsInstances[0], 'error', {
+        type: 'networkError',
+        details: 'manifestLoadError',
+        fatal: true,
+        response: { code: 429 },
+        url: CH1_ABS,
+      });
+
+      expect(hlsInstances[0].startLoad).not.toHaveBeenCalled();
+      expect(
+        screen.getByText(
+          'Stream limit reached. Close another stream and try again.'
+        )
+      ).toBeInTheDocument();
+    });
+
+    it('falls back to native HLS with the access token in the query', async () => {
+      Hls.isSupported.mockReturnValue(false);
+      HTMLVideoElement.prototype.canPlayType = vi.fn(() => 'maybe');
+      const { container } = await renderHls();
+
+      expect(hlsInstances).toHaveLength(0);
+      expect(container.querySelector('video').src).toBe(
+        'http://localhost:3000/proxy/ts/stream/ch-1?output_format=hls&token=test-token'
+      );
+    });
+
+    it('says so when neither exists', async () => {
+      Hls.isSupported.mockReturnValue(false);
+      HTMLVideoElement.prototype.canPlayType = vi.fn(() => '');
+      await renderHls();
+
+      expect(
+        screen.getByText("This browser can't play live channels.")
+      ).toBeInTheDocument();
+    });
+
+    it('switching leaves no video-element listener behind', async () => {
+      const addSpy = vi.spyOn(HTMLVideoElement.prototype, 'addEventListener');
+      const removeSpy = vi.spyOn(
+        HTMLVideoElement.prototype,
+        'removeEventListener'
+      );
+      // React binds its own media-event listeners on <video> at mount (bound
+      // functions, "[native code]"); only the player's are plain functions.
+      const isPlayerListener = (fn) =>
+        !/\[native code\]/.test(Function.prototype.toString.call(fn));
+      const listeners = (spy, event) =>
+        spy.mock.calls
+          .filter((c) => c[0] === event && isPlayerListener(c[1]))
+          .map((c) => c[1]);
+      const zapThrough = async (event) => {
+        const { rerender, unmount } = await renderHls(
+          '/proxy/ts/stream/ch-1?output_format=hls'
+        );
+        for (const n of [2, 3, 4]) {
+          setStream(`/proxy/ts/stream/ch-${n}?output_format=hls`);
+          rerender(<FloatingVideo />);
+          await flush();
+        }
+        const added = listeners(addSpy, event);
+        const removed = listeners(removeSpy, event);
+        const live = added.filter((fn) => !removed.includes(fn));
+        expect(added.length).toBeGreaterThanOrEqual(4);
+        expect(live).toHaveLength(1);
+        expect(live[0]).toBe(added[added.length - 1]);
+        unmount();
+      };
+
+      await zapThrough('playing');
+
+      addSpy.mockClear();
+      removeSpy.mockClear();
+      Hls.isSupported.mockReturnValue(false);
+      HTMLVideoElement.prototype.canPlayType = vi.fn(() => 'maybe');
+      await zapThrough('canplay');
     });
   });
 });

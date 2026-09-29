@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   getLivePlayerErrorMessage,
   getVODPlayerErrorMessage,
@@ -8,6 +8,15 @@ import {
   PLAYER_PREFS_KEY,
   getPlayerPrefs,
   savePlayerPrefs,
+  buildLiveStreamUrl,
+  buildChannelHlsUrl,
+  isChannelHlsUrl,
+  hlsSessionUrlOf,
+  withAccessTokenParam,
+  buildLiveHlsConfig,
+  getHlsLivePlayerErrorMessage,
+  HLS_RELAY_WAIT_MS,
+  HLS_RELAY_TUNE_BUDGET_MS,
 } from '../FloatingVideoUtils';
 
 describe('FloatingVideoUtils', () => {
@@ -436,6 +445,211 @@ describe('FloatingVideoUtils', () => {
     it('should use PLAYER_PREFS_KEY as the storage key', () => {
       savePlayerPrefs({ volume: 0.7 });
       expect(localStorage.getItem(PLAYER_PREFS_KEY)).not.toBeNull();
+    });
+  });
+});
+
+describe('FloatingVideoUtils: live channels over HLS', () => {
+  const T = 'v1.' + 'A'.repeat(22) + '.' + 'B'.repeat(43);
+
+  beforeEach(() => localStorage.clear());
+  afterEach(() => localStorage.clear());
+
+  describe('buildLiveStreamUrl', () => {
+    it('forces mpegts output', () => {
+      expect(buildLiveStreamUrl('/proxy/ts/stream/h')).toBe(
+        '/proxy/ts/stream/h?output_format=mpegts'
+      );
+    });
+
+    it('appends the web-player Output Profile preference', () => {
+      localStorage.setItem(
+        'dispatcharr-player-prefs',
+        '{"webPlayerOutputProfileId":5}'
+      );
+      expect(buildLiveStreamUrl('/proxy/ts/stream/channel-123')).toBe(
+        '/proxy/ts/stream/channel-123?output_format=mpegts&output_profile=5'
+      );
+    });
+  });
+
+  describe('buildChannelHlsUrl', () => {
+    it('requests the hls output format', () => {
+      expect(buildChannelHlsUrl('/proxy/ts/stream/u')).toBe(
+        '/proxy/ts/stream/u?output_format=hls'
+      );
+    });
+
+    it('ignores the web-player Output Profile preference (R18)', () => {
+      localStorage.setItem(
+        'dispatcharr-player-prefs',
+        '{"webPlayerOutputProfileId":5}'
+      );
+      const url = buildChannelHlsUrl('/proxy/ts/stream/u');
+      expect(url).toBe('/proxy/ts/stream/u?output_format=hls');
+      expect(url).not.toContain('output_profile');
+    });
+  });
+
+  describe('isChannelHlsUrl', () => {
+    it.each([
+      '/proxy/ts/stream/u?output_format=hls',
+      'http://h:5656/proxy/ts/stream/u?output_format=hls',
+    ])('is true for %s', (url) => {
+      expect(isChannelHlsUrl(url)).toBe(true);
+    });
+
+    it.each([
+      '/proxy/ts/stream/u?output_format=mpegts',
+      '/api/channels/recordings/7/hls/index.m3u8',
+      'http://example.com/stream.ts',
+      null,
+      '',
+    ])('is false for %s', (url) => {
+      expect(isChannelHlsUrl(url)).toBe(false);
+    });
+  });
+
+  describe('hlsSessionUrlOf', () => {
+    it('keeps the origin of an absolute playlist URL', () => {
+      expect(
+        hlsSessionUrlOf('http://localhost:3000/hls/' + T + '/video.m3u8')
+      ).toBe('http://localhost:3000/hls/' + T);
+    });
+
+    it("uses the playlist's own origin, not the page's", () => {
+      expect(hlsSessionUrlOf('http://h:5656/hls/' + T + '/video.m3u8')).toBe(
+        'http://h:5656/hls/' + T
+      );
+    });
+
+    it('resolves a path against the page origin', () => {
+      expect(hlsSessionUrlOf('/hls/' + T + '/aac/12.m4s')).toBe(
+        window.location.origin + '/hls/' + T
+      );
+    });
+
+    it('rejects a malformed token and other paths', () => {
+      const short = 'v1.' + 'A'.repeat(22) + '.' + 'B'.repeat(42);
+      expect(hlsSessionUrlOf('/hls/' + short + '/video.m3u8')).toBeNull();
+      expect(
+        hlsSessionUrlOf('/api/channels/recordings/7/hls/index.m3u8')
+      ).toBeNull();
+      expect(hlsSessionUrlOf('/proxy/ts/stream/u')).toBeNull();
+    });
+  });
+
+  describe('withAccessTokenParam', () => {
+    it('sets token and keeps other parameters', () => {
+      expect(
+        withAccessTokenParam(
+          'http://h/proxy/ts/stream/u?output_format=hls',
+          'tok'
+        )
+      ).toBe('http://h/proxy/ts/stream/u?output_format=hls&token=tok');
+    });
+
+    it('returns the URL unchanged without a token', () => {
+      expect(withAccessTokenParam('http://h/x?a=1', null)).toBe(
+        'http://h/x?a=1'
+      );
+    });
+  });
+
+  describe('buildLiveHlsConfig', () => {
+    const config = buildLiveHlsConfig(() => null);
+
+    it('sets the live playback options', () => {
+      expect(config.backBufferLength).toBe(120);
+      expect(config.lowLatencyMode).toBe(false);
+      expect(config.liveSyncDurationCount).toBe(3);
+    });
+
+    it('bounds the entry timeout by the relay and by nginx', () => {
+      const entry = config.manifestLoadPolicy.default;
+      expect(entry.maxLoadTimeMs).toBeGreaterThan(
+        HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS
+      );
+      expect(entry.maxLoadTimeMs).toBeLessThan(300_000);
+      expect(entry.timeoutRetry).toBeNull();
+    });
+
+    it('bounds the playlist timeouts by the relay and by nginx', () => {
+      const playlist = config.playlistLoadPolicy.default;
+      for (const ms of [
+        playlist.maxTimeToFirstByteMs,
+        playlist.maxLoadTimeMs,
+      ]) {
+        expect(ms).toBeGreaterThan(HLS_RELAY_WAIT_MS);
+        expect(ms).toBeLessThan(60_000);
+      }
+    });
+
+    it('mirrors the relay bounds as literals', () => {
+      expect(HLS_RELAY_WAIT_MS).toBe(43000);
+      expect(HLS_RELAY_TUNE_BUDGET_MS).toBe(14100);
+    });
+
+    it('xhrSetup reads the access token on every request', () => {
+      const getter = vi.fn().mockReturnValueOnce('a').mockReturnValueOnce('b');
+      const { xhrSetup } = buildLiveHlsConfig(getter);
+      const x1 = { setRequestHeader: vi.fn() };
+      const x2 = { setRequestHeader: vi.fn() };
+      xhrSetup(x1);
+      xhrSetup(x2);
+      expect(x1.setRequestHeader).toHaveBeenCalledWith(
+        'Authorization',
+        'Bearer a'
+      );
+      expect(x2.setRequestHeader).toHaveBeenCalledWith(
+        'Authorization',
+        'Bearer b'
+      );
+
+      const none = { setRequestHeader: vi.fn() };
+      buildLiveHlsConfig(() => null).xhrSetup(none);
+      expect(none.setRequestHeader).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('getHlsLivePlayerErrorMessage', () => {
+    const rows = [
+      [
+        { channelStopped: true },
+        'The channel stopped, or this idle session was ended.',
+      ],
+      [{ sessionEnded: true }, 'The playback session ended.'],
+      [{ status: 401 }, 'You are not allowed to watch this channel.'],
+      [{ status: 403 }, 'You are not allowed to watch this channel.'],
+      [{ status: 404 }, 'Channel not found.'],
+      [
+        { status: 429 },
+        'Stream limit reached. Close another stream and try again.',
+      ],
+      [{ status: 502 }, "The channel's source is unavailable."],
+      [{ status: 503 }, 'The channel is not ready yet. Try again in a moment.'],
+      [
+        { details: 'manifestIncompatibleCodecsError' },
+        "This channel's video or audio format can't be played in this browser.",
+      ],
+      [
+        { details: 'bufferIncompatibleCodecsError' },
+        "This channel's video or audio format can't be played in this browser.",
+      ],
+      [{ details: 'fragParsingError' }, 'Playback error: fragParsingError'],
+      [{}, 'Playback error: unknown'],
+    ];
+
+    it.each(rows)('maps %j', (input, message) => {
+      expect(getHlsLivePlayerErrorMessage(input)).toBe(message);
+    });
+
+    it('never names a browser', () => {
+      for (const [input] of rows) {
+        const message = getHlsLivePlayerErrorMessage(input);
+        expect(message).not.toMatch(/chrome/i);
+        expect(message).not.toMatch(/edge/i);
+      }
     });
   });
 });
