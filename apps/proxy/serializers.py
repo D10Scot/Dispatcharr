@@ -244,6 +244,13 @@ class OutputProfileRefSerializer(serializers.Serializer):
     )
 
 
+class HLSProfileRefSerializer(serializers.Serializer):
+    # Phase 4a-1d (spec D12): the channel's HLS Output Profile. The relay
+    # builds the argv itself from a probe, so only the id and the mode travel.
+    id = serializers.IntegerField()
+    mode = serializers.ChoiceField(choices=["transcode", "automatic"])
+
+
 class NextSourceCapacitySerializer(serializers.Serializer):
     # Phase 4a-1c. Present (non-null) only on the all-profiles-full refusal.
     blocked = serializers.BooleanField()
@@ -267,6 +274,10 @@ class NextSourceResponseSerializer(serializers.Serializer):
     # channel and ask once more. Null on every answer but the all-profiles-full
     # refusal; the relay does not require it.
     capacity = NextSourceCapacitySerializer(allow_null=True)
+    # Phase 4a-1d: null when the channel has no HLS profile, the profile is
+    # inactive, or the answer is for a stream preview or the 404. An absent
+    # key is a contract mismatch the relay answers an HLS entry 502 for.
+    hls_profile = HLSProfileRefSerializer(allow_null=True)
 
 
 class ReleaseRequestSerializer(serializers.Serializer):

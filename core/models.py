@@ -166,6 +166,10 @@ class StreamProfile(models.Model):
         return part
 
 
+HLS_MODE_TRANSCODE = "transcode"
+HLS_MODE_AUTOMATIC = "automatic"
+
+
 class OutputProfile(models.Model):
     """
     Defines a pre-delivery transcode step applied to a channel's TS stream.
@@ -177,6 +181,11 @@ class OutputProfile(models.Model):
 
     Example parameters for a 720p transcode:
         -i pipe:0 -c:v libx264 -b:v 2000k -vf scale=-2:720 -c:a copy -f mpegts pipe:1
+
+    A row with a non-blank ``hls_mode`` is an HLS profile. The relay builds its
+    argv from a probe (spec D12), so its ``command``/``parameters`` are
+    placeholders. It is chosen per channel, never per client, and excluded from
+    every other consumer.
     """
 
     name = models.CharField(max_length=255, unique=True, help_text="Display name for this output profile")
@@ -192,6 +201,17 @@ class OutputProfile(models.Model):
     )
     is_active = models.BooleanField(
         default=True, help_text="Whether this profile is available for use"
+    )
+    hls_mode = models.CharField(
+        max_length=16,
+        blank=True,
+        default="",
+        choices=[
+            ("", "Not HLS"),
+            (HLS_MODE_TRANSCODE, "HLS re-encode"),
+            (HLS_MODE_AUTOMATIC, "HLS automatic"),
+        ],
+        help_text="Non-blank marks an HLS profile, built by the relay rather than from parameters",
     )
 
     def __str__(self):

@@ -367,6 +367,15 @@ class Channel(models.Model):
         related_name="channels",
     )
 
+    hls_output_profile = models.ForeignKey(
+        "core.OutputProfile",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="hls_channels",
+        help_text="HLS Output Profile for this channel (null: the built-in re-encode).",
+    )
+
     uuid = models.UUIDField(
         default=uuid.uuid4, editable=False, unique=True, db_index=True
     )

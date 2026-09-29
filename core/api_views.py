@@ -8,6 +8,7 @@ from rest_framework import viewsets, status
 from rest_framework.response import Response
 from rest_framework.views import APIView
 from rest_framework.permissions import IsAuthenticated, AllowAny
+from rest_framework.exceptions import PermissionDenied
 from rest_framework.decorators import api_view, permission_classes, action
 from drf_spectacular.utils import extend_schema
 from .models import (
@@ -87,6 +88,20 @@ class OutputProfileViewSet(viewsets.ModelViewSet):
             return [perm() for perm in permission_classes_by_action[self.action]]
         except KeyError:
             return [Authenticated()]
+
+    def _refuse_hls_row(self, instance):
+        if instance.hls_mode:
+            raise PermissionDenied(
+                detail="HLS output profiles are built by the relay and cannot be changed."
+            )
+
+    def perform_update(self, serializer):
+        self._refuse_hls_row(serializer.instance)
+        super().perform_update(serializer)
+
+    def perform_destroy(self, instance):
+        self._refuse_hls_row(instance)
+        super().perform_destroy(instance)
 
 
 class CoreSettingsViewSet(viewsets.ModelViewSet):
