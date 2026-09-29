@@ -378,7 +378,7 @@ Multivariant, for a source with AC-3 (sample; the values are illustrative):
 - An E-AC-3 source adds an `eac3` group (`CODECS` `ec-3`; Q3) and a third `EXT-X-STREAM-INF`.
 - `LANGUAGE` is emitted only when the probe reports a language tag.
 - `BANDWIDTH` is the video `maxrate` plus the audio bitrate in transcode mode. In a copied
-  rendition it is 1.25× the ring's measured rate over the probe window (the full 8 s window whenever automatic mode re-probed, R37).
+  rendition it is 1.25× the probe window's measured video rate (the full 8 s window whenever automatic mode re-probed, R37; video-only, 4a-1d plan).
 - The AAC group is listed first. Which group a given device picks is Q2 (M4: macOS and iOS chose
   AAC).
 
@@ -427,7 +427,8 @@ because that field describes a failure rather than a setting.
 
 All are optional fields, preserved by `apps/proxy/relay_serializers.py`:
 
-- `hls_encoder` (4a-1b): `"qsv"` or `"software"`, present while an HLS pipeline runs.
+- `hls_encoder` (4a-1b): `"qsv"` or `"software"`, present while an HLS pipeline runs; `"copy"`
+  while the current generation copies its video (4a-1d).
 - `hls_generation` (4a-1b): an int.
 - `lingering_since` (4a-3): a float Unix time, present while lingering.
 - `rewind_window_seconds` (4a-3): a float.
@@ -642,15 +643,54 @@ window. Only a probe that read its whole bound and still failed ends the output.
 feed ended because the channel's ring closed is a stop, at every generation (R40): the channel is
 ending.
 
-**Automatic generation (4a-1d).** The rules are applied per rendition, from the probe:
+**Automatic generation (4a-1d).** The rules are applied per rendition, from the probe. Amended by the
+4a-1d plan: the copy conditions below are the whole rule; the rows the plan added are marked.
 
 | Source | Automatic does |
 |---|---|
-| video H.264, or HEVC **Main profile, 8-bit** (`yuv420p`), progressive, with ≥ 2 keyframes in the probe window and a maximum keyframe interval K ≤ 6 s (automatic mode re-probes at the full 8 s / 5 MB bound whenever the 3 s probe saw fewer than 2 keyframes, R37, so K up to 6 s stays observable) | copies it (`-c:v copy`, with HEVC tagged `hvc1`). `TARGETDURATION` = max(2, ⌈K⌉). The segmenter cuts at the first keyframe at or after 2 s. |
-| any other video: interlaced, MPEG-2, HEVC Main10 or any other profile or bit depth, K > 6 s, or fewer than 2 keyframes seen | runs the transcode chain above (H.264) |
-| audio AAC | copies it into the `aac` rendition |
-| audio MP2, MP3 or anything else qualifying | encodes AAC 160 kb/s stereo |
+| video H.264 (profile Constrained Baseline, Baseline, Main or High; 8-bit `yuv420p`/`yuvj420p`, 4a-1d plan), or HEVC **Main profile, 8-bit** (`yuv420p`), progressive (a `field_order` of `unknown` is progressive, R28, issue #525), with ≥ 2 keyframes in the probe window and a maximum keyframe interval K ≤ 6 s (automatic mode re-probes at the full 8 s / 5 MB bound whenever the 3 s probe saw fewer than 2 keyframes, R37), no larger than 1920×1080 and no faster than 60 frames a second (4a-1d plan: the output's geometry and rate are the source's, never scaled) | copies it (`-c:v copy`, with HEVC tagged `hvc1`). `TARGETDURATION` = max(2, ⌈K − 0.1 s⌉) (4a-1d plan: RFC 8216 § 4.3.3.1 rounds `EXTINF`, so a 2.002 s GOP keeps a target of 2 and every K keeps at least 0.4 s below `TARGETDURATION` + 0.5 s). The segmenter closes a segment before a keyframe fragment once the 2 s grid is reached, **or** when that fragment would take the segment to `TARGETDURATION` + 0.5 s or beyond (4a-1d plan: "the first keyframe at or after 2 s" alone lets a segment reach 2 s + K). |
+| any other video: interlaced, MPEG-2, HEVC Main10 or any other profile or bit depth, H.264 High 10 or 4:2:2, K > 6 s, fewer than 2 keyframes seen, or larger than 1920×1080 or faster than 60 frames a second | runs the transcode chain above (H.264) |
+| audio AAC-LC, stereo (4a-1d plan: the `aac` rendition declares `CHANNELS="2"` and `mp4a.40.2`) | copies it into the `aac` rendition, with `-bsf:a aac_adtstoasc` (measured, ffmpeg 9.0.1: an ADTS stream copied into MP4 otherwise fails with "Malformed AAC bitstream") |
+| audio AAC of any other profile or layout, MP2, MP3 or anything else qualifying | encodes AAC 160 kb/s stereo |
 | audio AC-3 / E-AC-3 | handles it as in transcode |
+
+**A later generation copies** only when the rule above holds for its own probe **and** it matches the run's fixed output (4a-1d plan; R60, R75):
+- its video is the declared family;
+- its width, height and frame rate equal the run's fixed output;
+- its K is no longer than the run's `TARGETDURATION` allows;
+- its level is no higher than the declared one;
+- its probe window's video rate fits the bandwidth the multivariant already declared (1.25 × the rate within the declared peak, the rate within the declared average).
+
+Otherwise it is encoded into the declared family. A run whose first generation was encoded may copy later, on the same conditions.
+
+**A copy that fails to start is encoded** (R74). If a copy generation's two attempts both exit before their first segment, the same input is encoded into the declared family under the ordinary encode policy (D11's retry and its Quick Sync → software step). The channel's HLS failure mark is set only if that encode fails as well.
+
+**The probe in automatic mode** is changed in five ways (4a-1d plan).
+- **Arguments.** It adds `-show_entries packet=stream_index,pts_time,flags,size` to `-show_streams`, and `-read_intervals %+<the bound's seconds>` (`%+3`, and `%+8` for the re-probe; R77). This is one ffprobe, measured to keep every stream field.
+- **Why `-read_intervals`.** Without it, listing packets makes ffprobe wait for stdin's EOF: 6.2 s against 0.13 s on a running channel, measured. With it, ffprobe stops after that much media.
+- **What it reads.** The keyframe count and K come from the first video stream's key packets. The probe window's video rate comes from that stream's packet sizes; audio is excluded, because the multivariant adds each group's audio rate itself.
+- **Size.** The JSON is about 240 bytes a packet.
+- **Transcode** mode's probe argv is unchanged.
+
+The full bound is 5 MB **or** 8 s of media, so:
+- above about 5 Mb/s the window is shorter than 8 s, and a K near 6 s can go unseen;
+- at any rate, two keyframes of a K-second GOP fall in the window only when the first falls in its first 8 − K seconds.
+
+Such a source is encoded, which is correct and only costs the copy (R63; § Risks). ffprobe's `K` flag also marks an open GOP's non-IDR I-frames, and no packet field tells them apart. Copy is not restricted to closed GOPs: AVPlayer played copied open-GOP segments after a join and across a discontinuity, as § Risks records (R76).
+
+**The multivariant in automatic mode** (4a-1d plan, answering § 4a-1d's `CODECS` question).
+- The video `CODECS` is the declared family's **ceiling**. It is read from the first complete
+  generation's init, as in transcode (R41). Its level is then raised to the higher of that level and
+  the family's encode level: 4.2 for H.264 (`-level 42`), 4.1 for HEVC (`-level 41` on `hevc_qsv`,
+  `level-idc=4.1` on `libx265`). An H.264 profile is raised to High (`avc1.64…`).
+- So a copied Main@3.0 generation is declared `avc1.64002a`, and a copied HEVC Main@3.1
+  generation is declared `hvc1.1.6.L123.…`. Every generation of the run, copied or encoded, is then
+  decodable at the declared profile and level.
+- A later generation above the declared level is encoded, never copied (above). The init segments
+  still carry each generation's own string.
+- `BANDWIDTH` is the higher of transcode's figure and 1.25 × the probe window's measured rate plus the
+  group's audio rate; `AVERAGE-BANDWIDTH` is the higher of transcode's and the measured rate plus it.
+- The channel payload's `hls_encoder` is `"copy"` while the current generation copies its video.
 
 **Two run-level rules for automatic** (finding 8). Both are reasoning, not measured behaviour;
 4a-1d pins them with fixtures.
@@ -659,14 +699,25 @@ ending.
   a source boundary) that cannot copy is encoded **into the declared family**:
   - an H.264-declared run uses the transcode chain above;
   - an HEVC-declared run (only ever Main, 8-bit, by the copy rule above, so the declared `CODECS`
-    profile and bit depth stay true) uses `hevc_qsv -profile:v main` (8-bit `nv12`) with the same `-g`, `-idr_interval 0`,
-    `-forced_idr 1` and `force_key_frames`;
-  - without QSV, it uses `libx265 -preset ultrafast -x265-params keyint=G:min-keyint=G:scenecut=0`,
-    tagged `hvc1`. M1 shows `hevc_qsv` and `libx265` in the production image.
-- **The segmenter enforces the target duration.** A copied segment longer than `TARGETDURATION` +
-  0.5 s ends the generation **at once**, as a synthetic source boundary at the ring's head (as a
-  death after the first segment is treated), and every later generation of the run is encoded
-  into the declared family. It counts toward the 3-in-60 s restart bound.
+    profile and bit depth stay true) uses `hevc_qsv -profile:v main -level 41` (8-bit `nv12`) with the same `-g`, `-idr_interval 0`,
+    `-forced_idr 1`, `force_key_frames` and bitrate table, tagged `hvc1`; `hevc_qsv` is detected by its own one-frame encode, the first time it is needed, and written off on its own evidence (D11);
+  - without QSV, it uses `libx265 -preset ultrafast -x265-params keyint=G:min-keyint=G:scenecut=0:level-idc=4.1`
+    with the same bitrate table and `force_key_frames`, tagged `hvc1`. M1 shows `hevc_qsv` and `libx265` in the production image; the 4a-1d plan ran the `libx265` argv on ffmpeg 9.0.1 (Main, level 123, a keyframe every 2 s from an MPEG-2 576i source).
+- **The segmenter enforces the target duration.** A copied segment of `TARGETDURATION` +
+  0.5 s or longer (it would round above the target, RFC 8216 § 4.3.3.1) ends the generation **at once**, as a synthetic source boundary at the ring's head (as a
+  death after the first segment is treated). It is never published, and every later generation of the run is encoded
+  into the declared family. Segments already cut before it are published normally. It counts toward the 3-in-60 s restart bound.
+- **Every threshold measured in target durations is the pipeline's own** (R42, 4a-1d plan). The
+  stall timeout is `max(10 s, 5 × TARGETDURATION)`, 30 s at 6. Its startup allowance before a
+  generation's first video fragment is `max(30 s, the stall timeout)`, not three times it: before the
+  first fragment the wait is an encoder's cold start, whose GOP is 2 s in every mode, or a copy's
+  first closed GOP, which is at most 2 × K = 12 s of media, and three times 30 s would push the
+  entry's wait (43 s) past nginx's 60 s `proxy_read_timeout` on `/hls/`. So the waits stay 43 s at
+  every target. The presence thresholds (§ Presence thresholds) take the session's pipeline's
+  target, set once the first generation's inits exist. The store's byte ceiling scales with the
+  target (64 MiB at 2, 192 MiB at 6), which keeps RFC 8216 § 6.2.2's 21 segments of a copied
+  source up to about 12 Mb/s at a target of 6, and the ten listed ones up to about 26 Mb/s; above
+  that it is the runaway guard it already is (computed, not measured).
 
 ## Presence and lifecycle (4a-1b, extended by 4a-3)
 
@@ -870,6 +921,56 @@ table says is STOPPED never holds a client entry.
   - That is small beside the 6-8 Mb/s video on a LAN. Compression is a follow-up if Q4 shows
     reload time matters.
 
+*Amended by the 4a-3 plan* (`docs/superpowers/plans/2026-09-29-phase4-4a3-rewind-window.md`; rulings
+R82-R87 settle that plan's questions):
+
+- **Layout** gains a run component: `/data/cache/rewind/<boot-id>/<channel>/<run>/<gen>/<rendition>/<seq>.m4s`,
+  `<run>` a per-process counter for the pipeline (R85). A channel can run two pipelines within one
+  boot (one stops at its last session with the linger off, a later viewer starts another), and
+  both would otherwise number their generations and sequences from 0 in one directory. `<channel>`
+  is the relay's channel id when it matches `^[A-Za-z0-9_-]{1,64}$`, and `x` plus the first 16 hex
+  characters of its SHA-256 otherwise. A pipeline's `<run>` directory is removed when the pipeline
+  stops, once no read of it is in flight.
+- **The boot directory** is made on first use and retried at every window open, never only at
+  start-up: a `relay` role container may start before the `api` container's
+  `03-init-dispatcharr.sh` has chowned the shared `/data/cache/rewind`, and one failed `mkdir` at
+  start must not cost the window for the process's life. The start-up removal of every other boot
+  directory runs on a goroutine of its own, off the path to `ListenAndServe`.
+- **Writes** are made by one process-wide writer goroutine, never on the segmenter's goroutine and
+  never under a channel, pipeline or store lock. `publish` only queues a segment for it. A segment
+  queued and not yet written keeps its bytes in memory even after it leaves the newest 21, so
+  nothing is lost to a slow disk; a window whose queue reaches `StoreSegments` unwritten segments
+  (42 s of backlog at a target of 2) is degraded exactly as a write error degrades it.
+- **Depth** removes a segment from the playlist once its PDT is more than `rewind_window_minutes`
+  older than the newest, and **unlinks it `(StoreSegments − LiveEdge)` target durations later**
+  (22 s at a target of 2), during which it stays fetchable by URL: RFC 8216 § 6.2.2's retention,
+  taken at the live-edge playlist's reload arithmetic that R44 used, not at the window playlist's
+  full duration, which would double the disk the window needs (R83).
+- **Cap.** The writer enforces `rewind_disk_cap_gb` after every batch. Eviction order: segments
+  already out of the playlist (above) first; then the oldest listed segment of a lingering window;
+  then the oldest listed segment of any window, by PDT, only ever a segment already written (one
+  still queued for the writer is skipped until it is). A cap eviction unlinks at once, and a
+  segment whose read is in flight is unlinked when that read ends, never under it. A window's
+  newest 21 are never evicted, so the cap can be exceeded by at most 21 segments per HLS channel;
+  that is logged once. The value is the most recent **initial** tune's answer (a failover answer
+  does not re-read settings).
+- **Disk errors** (and a full queue) stop that pipeline's window persisting for the rest of the
+  **pipeline's** run: a later pipeline on the same channel tries the disk again. An unpersisted
+  segment leaves the playlist when it leaves the newest 10, while memory keeps it fetchable until it
+  leaves the newest 21 (RFC 8216 § 6.2.2, as at the live edge), and everything older leaves the
+  playlist with it; so the playlist becomes the live edge (10, as with the window off) at most
+  10 target durations (20 s at a target of 2) after the first unpersisted segment. Segments already
+  on disk that a playlist stopped listing stay fetchable for the retention above.
+- **Reads.** A segment on disk is read by the request's own goroutine after the store has pinned
+  it; the pin covers the read, so an eviction or the depth sweep never unlinks a file a request is
+  reading. A stopped pipeline's directory is removed only once no read of it is pinned, and the
+  writer marks the window as being removed in the same step, after which no new disk read of it
+  starts. The newest 21 are served from memory.
+- **Arithmetic, measured by the plan.** Rendering a 1,800-entry media playlist with six-digit
+  sequence numbers takes about 0.54 ms and 148 KB (Go 1.27, Apple M4 Pro), not the 126 KB above.
+  The store renders each rendition's playlist once per change and serves the same bytes to every
+  reload until the next.
+
 ### Playlists and seeking
 
 - Media playlists list every segment in the window, with no `EXT-X-PLAYLIST-TYPE`, so a joining
@@ -879,6 +980,11 @@ table says is STOPPED never holds a client entry.
 - Programme markers and "restart programme" are EPG start times mapped to dates, available when
   the start is inside the window.
 - Whether a 1,800-entry live playlist behaves well on Apple TV is Q4.
+
+*Amended by the 4a-3 plan:* with `rewind_window_minutes` at 0, the media playlist is the 10-segment
+live edge exactly as in 4a-1b. With the window on, it lists every segment from the pipeline's first
+still in the window, so a playlist fetched early in a pipeline's life starts at media sequence 0.
+Q4 (a 1,800-entry playlist on Apple TV) is the owner's measurement and does not gate 4a-3 (R45).
 
 ### Linger, reclaimability and the grace
 
@@ -901,21 +1007,72 @@ table says is STOPPED never holds a client entry.
     grace protects only viewers that depart without a leave, such as third-party apps or a
     backgrounded app.
 
+*Amended by the 4a-3 plan* (rulings R82 and R84; D15's summary in § Decisions is read through this):
+
+- **Behind live** is decided per served media segment, when it is served: the segment's PDT more
+  than 5 × TD older than the newest segment's at that moment (§ Presence thresholds). The latest
+  served segment decides; a playlist, init or refused request moves nothing. Evaluated at the
+  departure instead, every idle viewer would be behind live, because the idle timeout alone is 6 × TD.
+- **The grace runs from the session's silence point, not from the linger's start** (R82). A
+  session that stops without a leave is treated as departed for slot yield once it has been silent
+  for 2 × TD (D16, R24), and that is when a slot could first be taken from it. So a behind-live
+  session is **silent** only after 2 × TD **plus** `rewind_behind_live_grace_seconds` since its last
+  request ended (14 s at the defaults), and after its idle departure it keeps its channel
+  unreclaimable until that same moment. Anchored at the linger's start (the idle departure, 12 s
+  after the last request), a behind-live session would be reclaimable through the silence rule at
+  4 s, with no grace at all, and the grace would protect nothing.
+- **Any session of the channel that departed idle while behind live** holds its grace, not only
+  the last one to end: the grace lives in the session table beside the departed session, which
+  stays resumable for 300 s anyway. An explicit leave and an admin client stop or stream-limit
+  termination remove their session, so they carry no grace (R25).
+- **The grace applies to every zero-client channel**, lingering or held by a
+  `channel_shutdown_delay` countdown, since both are reclaimable through the same zero-client path.
+- **Which ends linger** (R84): the last session ending by a leave, by an admin client stop or
+  stream-limit termination, or by an idle departure. An entry that never served its multivariant
+  never leaves a lingering pipeline: a pipeline that has not become ready, or has ended, stops at
+  its last release as in 4a-1b.
+- **One linger per channel.** A second HLS pipeline of the same channel (4a-1d's per-channel
+  profile, changed mid-run) that reaches zero sessions while another lingers stops at once.
+- **Timers.** The linger is a timer the channel holds; a new session or a resume stops it, and a
+  timer that fires for a linger already ended does nothing. Tests inject the timer.
+
 ### Slot yield
 
 4a-3 adds "a lingering window past its grace" to D16's reclaimable set. 4a-1c's mechanism is
 otherwise unchanged.
+
+*Amended by the 4a-3 plan:* 4a-1c's reclaimable predicate already takes a channel with no client,
+so a lingering window needs no clause of its own there. What 4a-3 adds is the grace, in both halves
+of the reclaim: the silence judge counts a behind-live session silent only after its grace, and a
+channel with no client is reclaimable only when the judge finds no departed behind-live session of
+it still within its grace (`Manager.reclaimable`'s zero-client branch now asks the judge;
+`reclaimLocked`'s re-check already does). The re-check marks the lingering channel's departed
+sessions STOPPED in the same critical section, so a resume after the pick answers 410.
 
 ## Slot reclaim (4a-1c)
 
 1. **Django.** `resolve_initial_source`'s maxed-out branch computes `profile_ids`. For each of the
    channel's (or stream's) active profiles:
    - when `profile_has_capacity_for_selection` is false, it takes that profile;
-   - when `pool_has_capacity_for_profile` is false, it adds every active profile sharing that
+   - *(superseded by the amendment below, R64 and R72)* when `pool_has_capacity_for_profile` is
+     false, it adds every active profile sharing that
      profile's credential counter (`_credential_counter_key`, `apps/m3u/connection_pool.py:138`).
 
    It returns `capacity: {blocked: true, profile_ids}`. This is **advisory and read-only**: the
    reservation itself is still the slot script's atomic step on the retry.
+
+   *Amended by the 4a-1c plan* (rulings R64, R65 and R72): a profile full on its own counter
+   (`profile_has_capacity_for_selection` false) contributes only itself. A profile whose own
+   counter has room but whose credential counter is full (`group_has_capacity_for_profile` false:
+   the slot script's `credential_full` refusal) contributes every credential sibling, itself
+   included. Stopping a sibling's channel cannot unblock a profile full on its own counter, and a
+   profile full only on its own counter blocks nothing its siblings hold. The siblings are every
+   profile whose reserve counts
+   against that same counter (`credential_reservation`), active or not: a profile deactivated
+   while a channel plays on it still holds the counter. The profiles walked are the ones
+   `get_stream()` tries, in `Channel.blocking_profile_ids()` and `Stream.blocking_profile_ids()`
+   beside it; `capacity` is added only to the all-profiles-full refusal, whose reason string
+   becomes the shared constant `ALL_PROFILES_FULL` (`apps/m3u/connection_pool.py`).
 2. **Relay** (`startTune`, initial tunes only; failover never reclaims). On `source: null` with
    `capacity.blocked`, it calls `Manager.ReclaimFor(profileIDs)`. That function holds `m.mu`, the
    mutex `claim()` holds, for one decision:
@@ -929,6 +1086,18 @@ otherwise unchanged.
      1. **Pick.** It counts the TS and fMP4 clients under `c.mu`, and evaluates the channel's HLS
         sessions under `st.mu`, releasing each lock after reading. It picks the channel that has
         been reclaimable (D16) longest.
+
+        *Amended by the 4a-1c plan*, stating the predicate over the registry: a channel is
+        reclaimable when **every client in its registry** is the client of one of its HLS
+        sessions that is ACTIVE with nothing in flight and more than 2 × TD since its last
+        request ended, or DEPARTED and still settling (its idle departure is dropping it). A
+        registered client with no session (a TS or fMP4 client, an entry not yet added to the
+        table, a leave or admin stop in progress), or whose session is ARRIVED, or DEPARTED and
+        not settling (a resume between its `AttachExisting` and its commit), makes the channel
+        not reclaimable. A channel with no client at all is reclaimable (D16's
+        `channel_shutdown_delay` case). "Longest" orders by the latest `lastEnd + 2 × TD` among
+        the matched sessions or, with no client, by when the channel lost its last one; ties
+        break by channel id.
      2. **Test hook.** It calls the optional hook, with `m.mu` held and `st.mu` not held.
      3. **Re-check and mark.** It takes `c.mu` and then `st.mu` (the lock order in § Presence
         › Locks), re-evaluates the channel, and, if it is still reclaimable, marks every one of its
@@ -943,7 +1112,9 @@ otherwise unchanged.
      release may have completed between Django's blocked answer and this call (finding 3).
 
    `released` is a new signal, closed after `releaseSlot` returns (`relay/channel/channel.go:445`,
-   `:697-702`). The channel leaves the releasing set when `released` closes, under `m.mu`.
+   `:697-702`). The channel leaves the releasing set when `released` closes, under `m.mu`. (The
+   4a-1c plan: the manager closes `released` and deletes the entry in one `m.mu` critical
+   section, so the conditional insertion below and the removal are ordered by the lock.)
    **Insertion is conditional.** Each stop path inserts the channel only if `released` is still
    open, checked under `m.mu` in the same critical section as the map delete (a `select` on
    `released` with a `default`). The close handler removes the entry under `m.mu` too. So an
@@ -1005,9 +1176,18 @@ break-check therefore reddens deterministically, not one run in several thousand
     path does; on `/hls/` requests it is harmless;
   - `liveSyncDurationCount: 3`;
   - `backBufferLength: 120`, so a 60-minute window is not held in browser memory;
-  - recovery on `NETWORK_ERROR` and `MEDIA_ERROR`, as the recordings path already does.
+  - recovery on `NETWORK_ERROR` and `MEDIA_ERROR`, as the recordings path already does;
+  - a `manifestLoadPolicy` (entry) timeout of 65 s: the relay's next-source budget (14.1 s,
+    `tuneBudget`) plus its 43 s ready wait (R57) plus a margin, under nginx's 300 s read timeout on
+    `/proxy/ts/stream/`; and a `playlistLoadPolicy` timeout of 50 s, above the relay's 43 s
+    first-segment wait and under nginx's 60 s `/hls/` read timeout. hls.js 1.6's defaults (a 20 s
+    manifest load, a 10 s playlist first byte) are shorter than a legitimate cold software start.
+    A timed-out entry is abandoned by the relay, whose pipeline then stops at refcount zero, so
+    hls.js's own retry would start cold again (amended by the 4a-2 plan).
 
-  On a 403 from `/hls/`, the player re-requests the entry URL once.
+  On a 403 from `/hls/`, the player re-requests the entry URL once. A 410 (the channel stopped) is
+  not re-requested (R68). After 4a-1c a 410 may also mean a silent session whose channel was
+  reclaimed (R66), which is equally a reason not to re-enter; the player's message names both.
 - **Native fallback.** Otherwise, if `canPlayType('application/vnd.apple.mpegurl')`, `video.src` is
   the entry URL with the JWT as `?token=` (`QueryParamJWTAuthentication`,
   `apps/proxy/authorize.py:93-97`).
@@ -1015,6 +1195,10 @@ break-check therefore reddens deterministically, not one run in several thousand
   through a new `api.js` function (components do not call fetch). The token comes from the media
   playlist URL that hls.js loaded. On `pagehide` the same call is made with `keepalive: true`. On
   the native path the token is not observable, and the idle timeout (and D16's silence rule) covers it.
+  The player destroys hls.js **before** it calls leave, so no playlist reload lands after the
+  session has ended. On a switch, the next entry waits for the previous leave to answer, for at
+  most 2 s, so a single-slot provider sees the release before the new tune (D16's case (a))
+  (amended by the 4a-2 plan).
 - **Kept:** mpegts.js, its dependency and the web-player Output Profile preference (R18).
 - **Error text** for HLS channels no longer says "try Chrome or Edge", because Firefox plays through
   hls.js.
@@ -1023,9 +1207,11 @@ break-check therefore reddens deterministically, not one run in several thousand
   - `RecordingCardUtils.test.js:150-167` (`getShowVideoUrl` now expects `?output_format=hls`, and
     the `output_profile=5` case moves to a `buildLiveStreamUrl` test);
   - `ChannelsTable.test.jsx`;
-  - `Guide.test.jsx`, `DVR.test.jsx`, `RecordingCard.test.jsx`, `RecordingDetailsModal.test.jsx`
-    and `ProgramDetailModal.test.jsx` wherever they assert the URL;
   - the `FloatingVideo` tests.
+
+  `Guide.test.jsx`, `DVR.test.jsx`, `RecordingCard.test.jsx`, `RecordingDetailsModal.test.jsx`
+  and `ProgramDetailModal.test.jsx` do **not** change: each mocks `getShowVideoUrl` and asserts
+  no URL (the 4a-2 plan read all five at `4ed75d96`).
 
   - `StreamConnectionCard.test.jsx:800-804` is **tightened** to pin R26. Its expected URL
     changes from `expect.stringContaining('/proxy/ts/stream/ch-uuid-1')` to
@@ -1033,8 +1219,26 @@ break-check therefore reddens deterministically, not one run in several thousand
     that, `buildChannelHlsUrl`'s URL would also satisfy the test, and the R26 break-check would stay
     green.
 
-  `StreamsTable.test.jsx` and `ChannelTableStreams.test.jsx` do not change: both keep
-  `buildLiveStreamUrl` (R18).
+  - `StreamsTable.test.jsx`'s preview test is **tightened** to pin R18 (amended by the 4a-2 plan).
+    At `4ed75d96` it asserts only that `showVideo` was called, with `buildLiveStreamUrl` mocked as
+    the identity. After: the mock appends `?output_format=mpegts`, and the test asserts
+    `showVideo` receives `/proxy/ts/stream/hash-abc?output_format=mpegts`. Without that, the
+    preview break-check would redden only because the module mock lacks a `buildChannelHlsUrl`
+    export, which does not name the mechanism.
+
+  `ChannelTableStreams.test.jsx` asserts no changed behaviour; its module mock gains a
+  `buildChannelHlsUrl` export, and every assertion is unchanged (R18).
+- **Browser facts the E2E rests on** (measured by the 4a-2 plan; Appendix B of that plan).
+  - **CI's Chromium** (Playwright 1.62.1's headless shell, Chromium 151, linux/amd64) supports
+    MSE H.264 High and AAC-LC, but not AC-3 or E-AC-3. hls.js drops the `ac3` and `eac3` variants
+    at `MANIFEST_PARSED`, so the browser always plays the `aac` group. Playwright's
+    **linux/arm64** Chromium supports none of H.264 and AAC, so this E2E cannot run on an arm64
+    Linux host. Chromium 151 also answers `canPlayType('application/vnd.apple.mpegurl')` with
+    `"maybe"`, so the player tests `Hls.isSupported()` **first**, or Chromium would take the
+    native path and never leave.
+  - **Q9, prototyped:** hls.js 1.6.15 in that Chromium, paused for 30 s on a relay-shaped live
+    playlist, reloaded both media playlists every 2.0 s (15 reloads each) and fetched 31 segments
+    ahead. That matches AVPlayer (M7). The E2E records the cadence on CI, and it is not a gate.
 
 ## 4b — the server contract (only)
 
@@ -1203,6 +1407,12 @@ The behaviours, by owning PR:
       tune B: B plays.
     - Tune A with a session that keeps reloading: B gets 503.
     - A limit-1 user tunes A, calls leave, tunes B: no 429.
+
+      *Amended by the 4a-1c plan (R67):* this scenario runs in
+      `streaming-failover/stream-limit-429.spec.ts`, not the `streaming` project. With
+      `terminate_on_limit_exceeded` at its default the hop admits B whether or not A left, so the
+      scenario pins nothing unless that instance-wide setting is off, and that write is allowed
+      only in a serialised project already allowlisted for it.
   - **4a-2's** hls.js playback runs in the `frontend` project (Chromium): `currentTime` advances
     on a live channel, a `DELETE /hls/…` is observed when the player closes, and the playlist
     reload cadence while paused is recorded (Q9).
@@ -1505,6 +1715,17 @@ PR description draft:
     generation differ in level (for example `hvc1…L120` against `L123`). Since R41 the string is
     read from the first generation that writes a complete set of inits, not from generation 0's
     probe; in transcode every generation's string is the same (4a-1a plan review, round 4).
+    **Answered by the 4a-1d plan:** the family's ceiling (§ Automatic generation › The multivariant
+    in automatic mode), and each attempt of a generation starts with no codec recorded by an
+    earlier attempt, so a failed Quick Sync attempt's string never mixes with its retry's.
+  - The startup allowance and the entry's waits at a target of 6 (R42, R55, R57): the allowance is
+    `max(30 s, the stall timeout)`, and the waits stay 43 s (§ Automatic generation).
+  - The `hls_profile` key is required on every next-source answer, as `output_profiles` is: an
+    answer without it is a contract mismatch that answers an HLS entry 502, and a TS tune is not
+    affected (4a-1d plan). A non-degraded failover answer refreshes the channel's choice, as it
+    refreshes `output_profiles`; entries after it use the new profile.
+  - Issue #525 (R28) is closed by 4a-1d's implementation PR, which lands the copy rule's
+    `unknown`-is-progressive row.
 - **Tests.**
   - Migrations forward and back.
   - A per-rendition decision table against the 4a-0 assets.
@@ -1513,13 +1734,20 @@ PR description draft:
     generation at once, and the next generation is encoded.
   - Presence at TD = 6 (finding 6): a reclaim-predicate row with sessions reloading every 6 s is
     not silent. The idle sweep does not depart it within 36 s.
+  - A copy that fails to start falls back to an encode, and the output fails only if that fails
+    too (R74). A later copy whose probe-window rate exceeds the declared bandwidth is encoded (R75).
   - Each exclusion: the HDHR resolver ignores an HLS row, and the HDHR select omits it.
-  - E2E: an automatic channel on the H.264 asset serves copied video with the source's `CODECS`.
+  - E2E: an automatic channel on the H.264 asset serves copied video: `hls_encoder` is `"copy"`,
+    and its init segment carries the source's own `avc1` string, while the multivariant declares
+    the family ceiling `avc1.64002a` (4a-1d plan; the spec's "with the source's `CODECS`" predates
+    the ceiling). The HEVC asset is declared `hvc1`, and the 10 s-GOP asset is encoded.
 - **Break-checks.**
   - Copy interlaced video. The decision test reddens, naming `field_order`.
   - Encode the HEVC run's second generation as H.264. The declared-family test reddens.
   - Let a copied segment exceed target + 0.5 s. The segmenter test reddens.
   - Hard-code the silence threshold at 4 s. The TD = 6 predicate row reddens.
+  - Treat `field_order=unknown` as interlaced. The HEVC decision row and the real HEVC copy test
+    redden (R28, #525).
 - **Gates.** The Python Gate 2 isolated run (`next_source.py`, `authorize.py`), and the Go census
   with its R21 listing.
 - **Stopping point.** Yes.
@@ -1601,6 +1829,32 @@ PR description draft:
 > capped by `rewind_disk_cap_gb`, and a disk error degrades the window, never the live output.
 > Spec D14-D17. AVPlayer seek gate: <output>.
 
+*Amended by the 4a-3 plan* (`docs/superpowers/plans/2026-09-29-phase4-4a3-rewind-window.md`):
+
+- **Settings bounds** (D17 names defaults only). `rewind_window_minutes` 0-120,
+  `rewind_linger_seconds` 0-3600, `rewind_behind_live_grace_seconds` 0-300 and
+  `rewind_disk_cap_gb` 1-10000, all integers, validated by `core.serializers.ProxySettingsSerializer`
+  and back-filled by `get_proxy_settings` (no migration). The relay reads all four on every tune
+  (a missing key fails the tune, A1.4).
+- **The capability document** reports `rewind_window: {available: rewind_window_minutes > 0,
+  depth_seconds: rewind_window_minutes × 60}`.
+- **E2E, as planned.** "A playlist spanning more than the 10 live-edge segments under a short
+  configured depth" becomes: at the default depth, a playlist that lists media sequence 0 after more
+  than 21 segments, whose segment 0 is then fetched (so it is served from disk); the depth sweep
+  itself is pinned in Go with an injected clock, since the shortest configurable depth is a minute
+  of encode per run (R86). The linger scenario sets `rewind_linger_seconds` to 20 s in
+  `streaming-failover` (the global-settings allowlist), because the 300 s default is not an E2E
+  wait. The grace scenario waits past the idle timeout by construction: the grace ends 14 s after
+  the last request, and R24's rule is about zaps. Every existing E2E that opens an HLS session stops
+  its channel when it ends, so a 300 s linger never runs an encode behind the next test (R87).
+- **Break-checks.** The four above keep their oracles in Go (a channel with a TS client never
+  reclaimed; the last session's end lingers; the grace holds a silent behind-live session; a leave
+  has none); each E2E half is waived under R79, since each wrong edit reddens a gated Go test. The
+  plan adds its own (§ Break-checks there).
+- **The manual gate** follows R45: the implementer's own AVPlayer run on macOS 27 and the iOS 27
+  Simulator, with a `seek(to: Date)` into the window, in the PR body. The Apple TV run and Q4 are
+  owed by the owner and do not gate.
+
 ## Open questions that need a measurement
 
 | # | Question | Who, where | What decides |
@@ -1662,6 +1916,11 @@ PR description draft:
   behind real time by the stall's length until the next generation. That moves programme markers
   (4a-3) by the same amount. A reconnect starts a new generation and re-anchors. Measuring the
   drift on real channels is a 4a-3 E2E observation, not a gate.
+- **Automatic mode's copy** (4a-1d plan; R59, R62, R63, R76).
+  - **K observability.** A source whose keyframe interval the probe cannot observe is encoded. That happens above about 5 Mb/s, or when the phase is unlucky: about 1/3 of probes at K = 6. A boundary re-probe adds up to 8 s of media to that failover gap.
+  - **Open GOPs.** A copied open-GOP source makes `EXT-X-INDEPENDENT-SEGMENTS` not strictly true: the leading B-frames reference a GOP absent after a join or a discontinuity. AVPlayer on macOS 27 and the iOS 27 Simulator played such segments without error, with frame counts within 2 of a closed-GOP control. Visual artefacts, and HEVC CRA, were not measured.
+  - **The ceiling `CODECS`** overstates a copied low-level source's needs.
+  - **Memory.** At a target of 6 a copied channel's store can hold up to 192 MiB, and above about 26 Mb/s the byte ceiling can evict a listed segment.
 - **Disk.** 3.1-3.4 GB per channel-hour of writes on whatever backs `/data`. On an SD card or a slow
   NAS that is wear and latency. The cap bounds space, not wear.
 - **The failover gap** (M6: 8.9 s on the prototype host) is longer than a TS client sees today.
@@ -1914,6 +2173,83 @@ Filled in as PRs merge.
   with its re-probe"), so the derivation is `QuickProbe.Analyze + FullProbe.Analyze + the R55
   startup allowance (30 s) + a 2 s margin`. R56's 40 s left the quick probe out. Still under nginx's
   60 s `proxy_read_timeout` on `/hls/`. `TestTheEntryWaitsOutALegitimateColdStart` holds the relation.
+
+- **2026-09-29, amended by the 4a-1c plan** (`docs/superpowers/plans/2026-09-29-phase4-4a1c-slot-reclaim.md`;
+  rulings R64-R67 and R72, 2026-09-29).
+  - **§ Slot reclaim, step 1 (R64, R72, R65).** A profile full on its own counter contributes only
+    itself; one whose own counter has room and whose credential counter is full contributes its
+    credential siblings, which are every profile sharing the counter, active or not. The walk lives in
+    `Channel.blocking_profile_ids()`/`Stream.blocking_profile_ids()` beside `get_stream()`, and
+    `capacity` is added only to the all-profiles-full refusal (`ALL_PROFILES_FULL`).
+  - **§ Slot reclaim, step 2 (b) › Pick.** The reclaimable predicate is stated over the registry:
+    every registered client must be a silent HLS session's (or a settling departure's); a resume
+    between its attach and its commit, an ARRIVED entry and any client with no session keep the
+    channel (R66). "Longest" is defined, with a tie-break.
+  - **§ Testing and gates › E2E (R67).** The limit-1 zap scenario runs in `streaming-failover`
+    with `terminate_on_limit_exceeded` off.
+  - **§ Slot reclaim, `released`.** The manager closes `released` and deletes the releasing entry
+    in one `m.mu` critical section.
+
+- **2026-09-29, amended by the 4a-1d plan** (`docs/superpowers/plans/2026-09-29-phase4-4a1d-automatic-profile.md`;
+  seed `4ed75d96`, #538's reviewed head). § Automatic generation and § 4a-1d only, plus one payload line.
+  - **The copy rule** names what it had left implicit: H.264's profiles and 8-bit 4:2:0, the
+    1920×1080 and 60 fps ceilings (a copy is never scaled), AAC copied only as LC stereo with
+    `aac_adtstoasc`, and when a later generation may copy.
+  - **`TARGETDURATION` = max(2, ⌈K − 0.1 s⌉)**, and the copy segmenter also closes before a keyframe
+    that would take a segment to the target + 0.5 s; a segment reaching that ends the generation
+    (RFC 8216 § 4.3.3.1's rounding, where "longer than the target + 0.5 s" let a 2.5 s segment
+    stand under a target of 2).
+  - **The automatic probe** lists the video packets for the keyframe count, K and the window's rate.
+  - **`CODECS`** (§ 4a-1d's open item): the family ceiling, and a per-attempt codec reset.
+  - **R42**: every target-duration threshold is the pipeline's; the startup allowance is
+    `max(30 s, the stall timeout)`, so the entry's 43 s waits (R57) hold at a target of 6 and stay
+    under nginx's 60 s.
+  - **The HEVC encode** pins level 4.1, takes the bitrate table, and has its own Quick Sync detection.
+  - **`hls_profile`** is required as `output_profiles` is, and refreshed by a non-degraded failover.
+  - **`hls_encoder`** gains `"copy"`.
+  - **The store's byte ceiling** scales with the target.
+  - **Round 1 of the plan's review** (reviewed at `b00d073f`; rulings R58-R63 on the plan's questions and R74-R77 on its findings):
+    - a copy that fails to start is encoded (R74);
+    - a later copy must fit the declared bandwidth (R75);
+    - open-GOP copies are measured and recorded under § Risks (R76);
+    - the automatic probe carries `-read_intervals` (R77);
+    - the window's rate is video-only;
+    - an over-long segment no longer discards segments cut before it.
+  - **When #538's R55 paragraph lands** in § Encoder argv › Failure ("Before a generation's first video fragment the allowance is three times that"), R58 amends it to read `max(30 s, the stall timeout)` in place of "three times that". It stays 30 s at every target up to 6.
+- **2026-09-29, amended by the 4a-2 plan** (`docs/superpowers/plans/2026-09-29-phase4-4a2-browser-hls.md`,
+  written against `4ed75d96`). § Browser player only:
+  - hls.js's entry load timeout is raised to 65 s (the relay's 14.1 s next-source budget plus its
+    43 s ready wait, R57, plus a margin) and its playlist timeout to 50 s; its 1.6 defaults would
+    abandon a legitimate cold software start.
+  - A 410 from `/hls/` is not re-requested (R68).
+  - The player destroys hls.js before it calls leave, and a switch waits up to 2 s for the previous
+    leave before the next entry.
+  - The vitest list is corrected: the five page and card tests that mock `getShowVideoUrl` do not
+    change, and `StreamsTable.test.jsx`'s preview test is tightened, as `StreamConnectionCard`'s
+    is, so the R18 break-check reddens on the URL rather than on a missing mock export (verified
+    at `4ed75d96`: that wrong edit fails with `No "buildChannelHlsUrl" export is defined on the
+    … mock`).
+  - The E2E's browser facts: CI Chromium's codec support, the `Hls.isSupported()`-first order
+    Chromium 151's native HLS forces, and the Q9 prototype.
+- **2026-09-29, amended by the 4a-3 plan** (`docs/superpowers/plans/2026-09-29-phase4-4a3-rewind-window.md`,
+  written against the 4a-1c implementation at `40dd2e0c`). § The live rewind window and § 4a-3 only:
+  - the layout gains a per-pipeline `<run>` directory; the boot directory is retried at every
+    window open; the start-up sweep runs off the path to `ListenAndServe`;
+  - writes go through one process-wide writer goroutine, never under a lock; a writer queue a
+    whole store behind degrades the window as a write error does;
+  - a segment leaving the window by depth stays fetchable for 22 s (at a target of 2) before it is
+    unlinked (R83); the cap evicts out-of-playlist segments, then lingering windows', then the
+    oldest, never a window's newest 21, and never a file under a read;
+  - a degraded window's unpersisted segments leave the playlist at the newest 10, and the playlist
+    becomes the live edge within 20 s; the shutdown-delay countdown starts only once the linger ends;
+  - the playlist renders once per change, measured at 0.54 ms and 148 KB for 1,800 entries;
+  - the behind-live grace runs from the session's silence point (2 × TD after its last request),
+    holds for any idle-departed behind-live session and for any zero-client channel, and is decided
+    per served segment (R82); D15's one-line summary is read through § Linger as amended;
+  - an admin client stop lingers with no grace (R84); an unready or ended pipeline never lingers;
+    one linger per channel;
+  - the settings' bounds, the capability document's two fields, the E2E as planned (R86, R87),
+    the R79 waivers and the R45 manual gate.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
