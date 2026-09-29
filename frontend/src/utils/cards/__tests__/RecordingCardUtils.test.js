@@ -148,14 +148,14 @@ describe('RecordingCardUtils', () => {
   });
 
   describe('getShowVideoUrl', () => {
-    it('returns proxy URL with mpegts output format for channel', () => {
+    it('returns the channel HLS entry URL', () => {
       const channel = { uuid: 'channel-123' };
       const result = getShowVideoUrl(channel, 'production');
 
-      expect(result).toBe('/proxy/ts/stream/channel-123?output_format=mpegts');
+      expect(result).toBe('/proxy/ts/stream/channel-123?output_format=hls');
     });
 
-    it('includes output_profile when set in player prefs', () => {
+    it('ignores the web-player Output Profile preference (R18)', () => {
       localStorage.setItem(
         'dispatcharr-player-prefs',
         JSON.stringify({ webPlayerOutputProfileId: 5 })
@@ -163,9 +163,7 @@ describe('RecordingCardUtils', () => {
       const channel = { uuid: 'channel-123' };
       const result = getShowVideoUrl(channel, 'production');
 
-      expect(result).toBe(
-        '/proxy/ts/stream/channel-123?output_format=mpegts&output_profile=5'
-      );
+      expect(result).toBe('/proxy/ts/stream/channel-123?output_format=hls');
     });
 
     it('prepends dev server URL in dev mode with output params', () => {
@@ -173,7 +171,7 @@ describe('RecordingCardUtils', () => {
       const result = getShowVideoUrl(channel, 'dev');
 
       expect(result).toMatch(
-        /^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123\?output_format=mpegts$/
+        /^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123\?output_format=hls$/
       );
     });
   });

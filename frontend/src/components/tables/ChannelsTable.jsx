@@ -44,7 +44,7 @@ import {
   listOverriddenFields,
   requeryChannels,
 } from '../../utils/forms/ChannelUtils.js';
-import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
+import { buildChannelHlsUrl } from '../../utils/components/FloatingVideoUtils.js';
 import { selectableOutputProfiles } from '../../utils/outputProfiles.js';
 import {
   ActionIcon,
@@ -664,7 +664,7 @@ const ChannelsTable = ({ onReady }) => {
     (channel) => {
       if (!channel || !channel.uuid) return;
       const path = `/proxy/ts/stream/${channel.uuid}`;
-      const uri = buildLiveStreamUrl(path);
+      const uri = buildChannelHlsUrl(path);
       let url = `${window.location.protocol}//${window.location.host}${uri}`;
       if (env_mode == 'dev') {
         url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;

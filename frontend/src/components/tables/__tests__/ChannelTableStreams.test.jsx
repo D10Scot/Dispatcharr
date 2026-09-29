@@ -23,6 +23,7 @@ vi.mock('../../../utils', () => ({
 
 vi.mock('../../../utils/components/FloatingVideoUtils.js', () => ({
   buildLiveStreamUrl: vi.fn((path) => `${path}?output_format=mpegts`),
+  buildChannelHlsUrl: vi.fn((path) => `${path}?output_format=hls`),
 }));
 
 vi.mock('../../../utils/tables/ChannelTableStreamsUtils.js', () => ({

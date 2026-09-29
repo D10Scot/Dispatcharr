@@ -798,7 +798,9 @@ describe('StreamConnectionCard', () => {
 
       await waitFor(() => {
         expect(showVideo).toHaveBeenCalledWith(
-          expect.stringContaining('/proxy/ts/stream/ch-uuid-1'),
+          expect.stringMatching(
+            /\/proxy\/ts\/stream\/ch-uuid-1\?output_format=mpegts/
+          ),
           'live',
           expect.objectContaining({ name: 'Test Channel' })
         );

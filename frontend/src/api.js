@@ -94,6 +94,28 @@ export default class API {
   }
 
   /**
+   * End a live HLS media session: DELETE /hls/<token> (Phase 4 spec D5, § Session
+   * resources). `sessionUrl` is `<origin>/hls/<token>` from hlsSessionUrlOf, never
+   * built from `host`, because the session lives on the origin the entry was
+   * answered from. Sends no Authorization header (the relay authorises /hls/ by
+   * the token alone, and a pagehide call cannot wait for a token refresh). Never
+   * throws and never shows a notification: resolves true on 2xx, false otherwise,
+   * logging only the status.
+   */
+  static async leaveHlsSession(sessionUrl, { keepalive = false } = {}) {
+    try {
+      await request(sessionUrl, { method: 'DELETE', auth: false, keepalive });
+      return true;
+    } catch (error) {
+      console.warn(
+        'Leaving the HLS session failed',
+        error?.status ?? 'network error'
+      );
+      return false;
+    }
+  }
+
+  /**
    * Fetch all pages for a paginated endpoint when you already know totalCount.
    * Builds page calls from totalCount and pageSize and aggregates all results.
    * - endpoint: path like "/api/channels/channels/"

@@ -56,6 +56,7 @@ vi.mock('../../../utils/forms/ChannelUtils.js', () => ({
 }));
 vi.mock('../../../utils/components/FloatingVideoUtils.js', () => ({
   buildLiveStreamUrl: vi.fn((path) => path),
+  buildChannelHlsUrl: vi.fn((path) => path),
 }));
 vi.mock('../../../utils/tables/ChannelsTableUtils.js', () => ({
   buildEPGUrl: vi.fn(() => 'http://localhost/output/epg'),
@@ -440,7 +441,10 @@ import {
 } from '../../../utils/tables/ChannelsTableUtils.js';
 import { requeryChannels } from '../../../utils/forms/ChannelUtils.js';
 import { copyToClipboard } from '../../../utils';
-import { buildLiveStreamUrl } from '../../../utils/components/FloatingVideoUtils.js';
+import {
+  buildChannelHlsUrl,
+  buildLiveStreamUrl,
+} from '../../../utils/components/FloatingVideoUtils.js';
 import { USER_LEVELS } from '../../../constants';
 import ChannelsTable from '../ChannelsTable';
 
@@ -1029,8 +1033,8 @@ describe('ChannelsTable', () => {
       vi.mocked(useVideoStore).mockImplementation((sel) =>
         sel({ showVideo: showVideoMock })
       );
-      vi.mocked(buildLiveStreamUrl).mockReturnValue(
-        '/proxy/ts/stream/uuid-abc'
+      vi.mocked(buildChannelHlsUrl).mockReturnValue(
+        '/proxy/ts/stream/uuid-abc?output_format=hls'
       );
       render(<ChannelsTable />);
       const col = getActionsCol();
@@ -1038,8 +1042,12 @@ describe('ChannelsTable', () => {
         col.cell({ row: { original: channel }, table: tableInstance })
       );
       fireEvent.click(getByTestId('icon-circle-play').closest('button'));
+      expect(buildChannelHlsUrl).toHaveBeenCalledWith(
+        '/proxy/ts/stream/uuid-abc'
+      );
+      expect(buildLiveStreamUrl).not.toHaveBeenCalled();
       expect(showVideoMock).toHaveBeenCalledWith(
-        expect.stringContaining('uuid-abc'),
+        expect.stringContaining('/proxy/ts/stream/uuid-abc?output_format=hls'),
         'live',
         expect.objectContaining({ name: 'ESPN' })
       );
