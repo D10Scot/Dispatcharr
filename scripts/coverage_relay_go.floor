@@ -257,14 +257,22 @@
 # scripts/check_floor_raise.sh (go-tests.yml) requires them and caps the new missing at
 # their sum. --gate and --write-floor ignore both and never hash them.
 shape=go-race-per-package/v1
-statements=6266
+statements=6585
 missing=691
-percent=88.97
+percent=89.51
 measured=2026-09-29
 runs=12
 packages=40d4ba02d7d3
 package_count=12
 gomod=92baf312d30d
-# Phase 4a-1d (R21, R34): 12-round CI census at 9c5ba13b, gate 687-691, max 691;
-# O=0 and 319 additions at 100%, so `missing` is unchanged and carries no raise
-# declaration (4a-1c's raise_from/raise_listed are removed, as its note above asked).
+# PROVENANCE (Phase 4a-1d, R21/R34/R80 -- measured in CI at 9c5ba13b on
+# migration/phase4-4a1d-automatic-profile, 2026-09-29). `missing` below is the
+# WORST of 12 rounds of go-tests.yml (runs 36576424248 to 36585496303): the gate
+# read 687-691 (689, 690, 688, 690, 691, 689, 687, 689, 690, 688, 689, 689),
+# max=691 (round 5, held for the next 7), over 6,585 linked statements in every
+# round (89.51% at the floor), spread 4. MISSING IS UNCHANGED and no raise is
+# declared: the PR's own O = 5 by the start-line rule (relay/httpapi/hls.go
+# 343-348, the unreachable "multivariant could not be rendered" arm, whose first
+# line changed in the hlsKey -> key rename), on 377 added statements, 98.7%
+# covered. 4a-1c's gains (its census landed 2 under its cap) cover that O, so
+# 691 stays. 4a-1c's raise_from/raise_listed are removed, as its note asked.
