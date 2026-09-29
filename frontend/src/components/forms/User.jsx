@@ -37,6 +37,7 @@ import {
   userToFormValues,
 } from '../../utils/forms/UserUtils.js';
 import { generateSecurePassword } from '../../utils/securePassword';
+import { selectableOutputProfiles } from '../../utils/outputProfiles';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -349,7 +350,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                   searchable
                   placeholder="No transcoding"
                   disabled={!isAdmin}
-                  data={outputProfiles
+                  data={selectableOutputProfiles(outputProfiles)
                     .filter((p) => p.is_active)
                     .map((p) => ({ value: `${p.id}`, label: p.name }))}
                   {...form.getInputProps('output_profile')}

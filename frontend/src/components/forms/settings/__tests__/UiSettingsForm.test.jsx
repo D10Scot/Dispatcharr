@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import UiSettingsForm from '../UiSettingsForm';
+import useOutputProfilesStore from '../../../../store/outputProfiles.jsx';
 
 // ── Store mocks ────────────────────────────────────────────────────────────────
 vi.mock('../../../../store/settings.jsx', () => ({ default: vi.fn() }));
@@ -141,6 +142,34 @@ describe('UiSettingsForm', () => {
   // ── Rendering ──────────────────────────────────────────────────────────────
 
   describe('rendering', () => {
+    it('omits HLS profiles from the web player select', () => {
+      setupMocks();
+      useOutputProfilesStore.setState({
+        profiles: [
+          {
+            id: 1,
+            name: 'Web Player (AAC Audio)',
+            is_active: true,
+            hls_mode: '',
+          },
+          {
+            id: 2,
+            name: 'HLS (Automatic)',
+            is_active: true,
+            hls_mode: 'automatic',
+          },
+        ],
+      });
+      try {
+        render(<UiSettingsForm />);
+        const select = screen.getByTestId('select-web-player-output-profile');
+        const labels = Array.from(select.options).map((o) => o.textContent);
+        expect(labels).toEqual(['Web Player (AAC Audio)']);
+      } finally {
+        useOutputProfilesStore.setState({ profiles: [] });
+      }
+    });
+
     it('renders the Table Size select', () => {
       setupMocks();
       render(<UiSettingsForm />);

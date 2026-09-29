@@ -142,6 +142,7 @@ describe('ChannelUtils', () => {
         channel_number: 501,
         channel_group_id: '2',
         stream_profile_id: '3',
+        hls_output_profile_id: '0',
         tvg_id: 'hbo.us',
         tvc_guide_stationid: 'hbo-station',
         epg_data_id: 'epg-1',
@@ -150,6 +151,19 @@ describe('ChannelUtils', () => {
         is_adult: false,
         hidden_from_output: false,
       });
+    });
+
+    it('carries the HLS output profile as a string, "0" when unset', () => {
+      const set = getChannelFormDefaultValues(
+        makeChannel({ hls_output_profile_id: 7 }),
+        makeChannelGroups()
+      );
+      expect(set.hls_output_profile_id).toBe('7');
+      const unset = getChannelFormDefaultValues(
+        makeChannel({ hls_output_profile_id: null }),
+        makeChannelGroups()
+      );
+      expect(unset.hls_output_profile_id).toBe('0');
     });
 
     it('falls back to first channelGroup key when channel has no channel_group_id', () => {
@@ -239,6 +253,7 @@ describe('ChannelUtils', () => {
         channel_number: '',
         channel_group_id: '1',
         stream_profile_id: '0',
+        hls_output_profile_id: '0',
         tvg_id: '',
         tvc_guide_stationid: '',
         epg_data_id: '',
@@ -278,6 +293,26 @@ describe('ChannelUtils', () => {
         tvc_guide_stationid: 'y',
       });
       expect(result.stream_profile_id).toBe('5');
+    });
+
+    it('converts "0" and empty hls_output_profile_id to null, keeps a real id', () => {
+      const base = {
+        stream_profile_id: '1',
+        tvg_id: 'x',
+        tvc_guide_stationid: 'y',
+      };
+      expect(
+        getFormattedValues({ ...base, hls_output_profile_id: '0' })
+          .hls_output_profile_id
+      ).toBeNull();
+      expect(
+        getFormattedValues({ ...base, hls_output_profile_id: '' })
+          .hls_output_profile_id
+      ).toBeNull();
+      expect(
+        getFormattedValues({ ...base, hls_output_profile_id: '7' })
+          .hls_output_profile_id
+      ).toBe('7');
     });
 
     it('converts empty tvg_id to null', () => {
@@ -361,6 +396,26 @@ describe('ChannelUtils', () => {
     beforeEach(() => {
       API.setChannelEPG.mockResolvedValue(undefined);
       API.updateChannel.mockResolvedValue(undefined);
+    });
+
+    describe('when the channel is auto-created', () => {
+      it('sends hls_output_profile_id beside hidden_from_output, as a direct field', async () => {
+        const channel = makeChannel({ auto_created: true });
+        await handleEpgUpdate(
+          channel,
+          makeValues(),
+          makeFormattedValues({
+            hidden_from_output: true,
+            hls_output_profile_id: '7',
+          }),
+          []
+        );
+        expect(API.updateChannel).toHaveBeenCalledTimes(1);
+        const payload = API.updateChannel.mock.calls[0][0];
+        expect(payload.id).toBe(channel.id);
+        expect(payload.hidden_from_output).toBe(true);
+        expect(payload.hls_output_profile_id).toBe('7');
+      });
     });
 
     describe('when epg_data_id has changed', () => {
@@ -480,6 +535,11 @@ describe('ChannelUtils', () => {
   describe('normalizeFieldValue', () => {
     it('returns null for empty string', () => {
       expect(normalizeFieldValue('name', '')).toBeNull();
+    });
+
+    it('treats hls_output_profile_id like stream_profile_id: "0" is null, an id is numeric', () => {
+      expect(normalizeFieldValue('hls_output_profile_id', '0')).toBeNull();
+      expect(normalizeFieldValue('hls_output_profile_id', '7')).toBe(7);
     });
 
     it('returns null for null', () => {

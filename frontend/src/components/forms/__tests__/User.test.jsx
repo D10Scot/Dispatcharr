@@ -109,10 +109,14 @@ vi.mock('@mantine/core', () => ({
       <input type="password" disabled={disabled} />
     </div>
   ),
-  Select: ({ label, disabled }) => (
+  Select: ({ label, disabled, data }) => (
     <div>
       <label>{label}</label>
-      <select disabled={disabled} />
+      <select
+        disabled={disabled}
+        data-testid={`select-${label}`}
+        data-options={JSON.stringify(data ?? [])}
+      />
     </div>
   ),
   Stack: ({ children }) => <div>{children}</div>,
@@ -310,6 +314,34 @@ describe('User', () => {
       expect(
         screen.queryByText('Output Format Override')
       ).not.toBeInTheDocument();
+    });
+
+    it('offers no HLS output profile', () => {
+      setupMocks({
+        authUser: makeAdminUser(),
+        outputProfiles: [
+          { id: 1, name: 'AC3 Audio', is_active: true, hls_mode: '' },
+          {
+            id: 2,
+            name: 'HLS (Automatic)',
+            is_active: true,
+            hls_mode: 'automatic',
+          },
+        ],
+      });
+      render(
+        <User
+          isOpen={true}
+          onClose={vi.fn()}
+          user={makeRegularUser({ id: 2 })}
+        />
+      );
+      const options = JSON.parse(
+        screen
+          .getByTestId('select-Output Profile Override')
+          .getAttribute('data-options')
+      );
+      expect(options.map((o) => o.label)).toEqual(['AC3 Audio']);
     });
 
     it('shows Output Profile Override for admin', () => {

@@ -20,6 +20,7 @@ import React, {
 import { showNotification } from '../../../utils/notificationUtils.js';
 import { Select, Switch, Stack } from '@mantine/core';
 import { saveTimeZoneSetting } from '../../../utils/forms/settings/UiSettingsFormUtils.js';
+import { selectableOutputProfiles } from '../../../utils/outputProfiles.js';
 
 const UiSettingsForm = React.memo(() => {
   const settings = useSettingsStore((s) => s.settings);
@@ -180,7 +181,7 @@ const UiSettingsForm = React.memo(() => {
         placeholder="None"
         value={webPlayerProfileId ? String(webPlayerProfileId) : null}
         onChange={(val) => onUISettingsChange('web-player-profile', val)}
-        data={outputProfiles.map((p) => ({
+        data={selectableOutputProfiles(outputProfiles).map((p) => ({
           value: String(p.id),
           label: p.name,
         }))}

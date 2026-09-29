@@ -291,6 +291,26 @@ describe('StreamSettingsForm', () => {
       expect(screen.getByTestId('default_stream_profile')).toBeInTheDocument();
     });
 
+    it('omits HLS profiles from the HDHR output profile select', () => {
+      setupMocks({
+        outputProfiles: [
+          { id: 1, name: 'AC3 Audio', is_active: true, hls_mode: '' },
+          {
+            id: 2,
+            name: 'HLS (Automatic)',
+            is_active: true,
+            hls_mode: 'automatic',
+          },
+        ],
+      });
+      render(<StreamSettingsForm active={true} />);
+      const select = screen
+        .getByText('HDHR Default Output Profile')
+        .parentElement.querySelector('select');
+      const labels = Array.from(select.options).map((o) => o.textContent);
+      expect(labels).toEqual(['AC3 Audio']);
+    });
+
     it('renders the M3U Hash Key multiselect', () => {
       render(<StreamSettingsForm active={true} />);
       expect(screen.getByTestId('m3u_hash_key')).toBeInTheDocument();
