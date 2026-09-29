@@ -319,9 +319,24 @@ export class Seeder {
       ...opts.channel,
       streams: streams.map((s) => s.id),
       stream_profile_id: opts.streamProfileId ?? null,
+      hls_output_profile_id: opts.hlsOutputProfileId ?? null,
     });
 
     return { channel, streams };
+  }
+
+  /**
+   * The seeded locked HLS Output Profile with this name ("HLS (Re-encode)" or
+   * "HLS (Automatic)", Phase 4a-1d), by a filter over the list. Never a count.
+   */
+  async hlsOutputProfileByName(name: string): Promise<{ id: number; name: string; hls_mode: string }> {
+    const page = await this.api.json<
+      { results?: { id: number; name: string; hls_mode: string }[] } | { id: number; name: string; hls_mode: string }[]
+    >(await this.api.get('/api/core/outputprofiles/'), 'output profiles');
+    const all = Array.isArray(page) ? page : (page.results ?? []);
+    const found = all.find((p) => p.name === name && p.hls_mode !== '');
+    if (!found) throw new Error(`the locked HLS output profile "${name}" should ship with the migration`);
+    return found;
   }
 
   // Mirrors UpstreamClient.streamUrl() in upstream.ts exactly. Duplicated

@@ -213,6 +213,55 @@ export interface InitSummary {
   hasEdts: boolean;
   /** The movie-extends default sample duration (trex), for fragments that leave it implicit. */
   defaultSampleDuration: number;
+  /**
+   * The video track's RFC 6381 codec string, read from the sample entry's
+   * `avcC` (`avc1.` plus the profile, constraint and level bytes in hex) or
+   * `hvcC` (`hvc1.<space+profile>.<compat>.<tier+level>.<constraints>`);
+   * empty for a track that is neither.
+   */
+  codec: string;
+}
+
+/** The sample entry inside a track's stsd: `moov/trak/mdia/minf/stbl/stsd/<entry>`. */
+function sampleEntry(buffer: Buffer, mdia: Box): Box | undefined {
+  const minf = child(buffer, mdia, 'minf');
+  const stbl = minf ? child(buffer, minf, 'stbl') : undefined;
+  const stsd = stbl ? child(buffer, stbl, 'stsd') : undefined;
+  if (!stsd) return undefined;
+  // stsd is a FullBox (4) plus an entry count (4) after its 8-byte header.
+  return readBoxes(buffer, stsd.offset + 16, stsd.offset + stsd.size)[0];
+}
+
+function videoCodec(buffer: Buffer, mdia: Box): string {
+  const entry = sampleEntry(buffer, mdia);
+  if (!entry) return '';
+  // A VisualSampleEntry: 8-byte box header, 78 bytes of fixed fields, then child boxes.
+  const avcC = child(buffer, entry, 'avcC', 86);
+  if (avcC) {
+    const hex = (i: number) => buffer.readUInt8(avcC.offset + 8 + i).toString(16).padStart(2, '0');
+    return `${entry.type === 'avc3' ? 'avc3' : 'avc1'}.${hex(1)}${hex(2)}${hex(3)}`;
+  }
+  const hvcC = child(buffer, entry, 'hvcC', 86);
+  if (hvcC) {
+    const at = hvcC.offset + 8;
+    const b1 = buffer.readUInt8(at + 1);
+    const space = ['', 'A', 'B', 'C'][b1 >> 6];
+    const profile = b1 & 0x1f;
+    // The 32 profile-compatibility flags, bit-reversed, as hex without leading zeros.
+    let compat = buffer.readUInt32BE(at + 2);
+    let reversed = 0;
+    for (let i = 0; i < 32; i++) {
+      reversed = (reversed << 1) | (compat & 1);
+      compat >>>= 1;
+    }
+    const tier = (b1 & 0x20) === 0 ? 'L' : 'H';
+    const level = buffer.readUInt8(at + 12);
+    const constraints = [...buffer.subarray(at + 6, at + 12)];
+    while (constraints.length > 0 && constraints[constraints.length - 1] === 0) constraints.pop();
+    const tail = constraints.map((c) => `.${c.toString(16).toUpperCase()}`).join('');
+    return `hvc1.${space}${profile}.${(reversed >>> 0).toString(16).toUpperCase()}.${tier}${level}${tail}`;
+  }
+  return '';
 }
 
 export function initSummary(buffer: Buffer): InitSummary {
@@ -239,6 +288,7 @@ export function initSummary(buffer: Buffer): InitSummary {
     trackId,
     hasEdts: child(buffer, trak, 'edts') !== undefined,
     defaultSampleDuration,
+    codec: handler === 'vide' ? videoCodec(buffer, mdia) : '',
   };
 }
 

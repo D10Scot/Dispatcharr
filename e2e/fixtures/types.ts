@@ -79,6 +79,8 @@ export type Channel = {
    */
   streams: number[];
   stream_profile_id: number | null;
+  /** Phase 4a-1d: FK `SET_NULL` to an HLS Output Profile; null is the built-in re-encode. */
+  hls_output_profile_id: number | null;
   logo_id: number | null;
   epg_data_id: number | null;
   tvg_id: string | null;
@@ -512,9 +514,10 @@ export type ChannelStatus = {
   /**
    * Phase 4a-1b: present only while the channel runs an HLS pipeline.
    * `hls_encoder` is `'qsv'` or `'software'` once the first generation has
-   * chosen its engine; `hls_generation` is the current generation number.
+   * chosen its engine, or `'copy'` (Phase 4a-1d) while an automatic run copies
+   * its video; `hls_generation` is the current generation number.
    */
-  hls_encoder?: 'qsv' | 'software';
+  hls_encoder?: 'qsv' | 'software' | 'copy';
   hls_generation?: number;
 };
 
@@ -608,6 +611,8 @@ export type ChannelOverrides = {
   channel_group_id?: number;
   epg_data_id?: number | null;
   stream_profile_id?: number | null;
+  /** Phase 4a-1d: must name an HLS Output Profile (`hls_mode` non-blank), else 400. */
+  hls_output_profile_id?: number | null;
   logo_id?: number | null;
   streams?: number[];
   tvg_id?: string | null;
@@ -825,6 +830,8 @@ export type StreamOverrides = {
 export type UpstreamChannelOptions = {
   channelIds: number[];
   streamProfileId?: number | null;
+  /** Phase 4a-1d: the channel's HLS Output Profile id (an `hls_mode` row). */
+  hlsOutputProfileId?: number | null;
   // Narrowed: `upstreamChannel()` spreads `...channel` first and then
   // unconditionally assigns its own `streams` and `stream_profile_id`
   // afterwards, so a caller-supplied value for either would be silently

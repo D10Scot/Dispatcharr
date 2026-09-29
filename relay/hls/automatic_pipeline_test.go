@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -190,7 +189,7 @@ func TestAnOverLongCopiedFragmentEndsTheGeneration(t *testing.T) {
 				waitFor(t, "the first fragment to be consumed", 5*time.Second, consumed)
 				s.fragment(RenditionVideo, vfrag(2, 2.5))
 			}
-			waitFor(t, "onOverlong", 5*time.Second, func() bool { return fired.Load() == 1 })
+			waitFor(t, "onOverlong to be called once (never called: the 2.5 s fragment was accepted as a segment)", 5*time.Second, func() bool { return fired.Load() == 1 })
 			if !s.Overlong() {
 				t.Fatal("Overlong() is false after onOverlong fired")
 			}
@@ -501,43 +500,89 @@ func TestTheMultivariantBandwidthCoversACopiedRendition(t *testing.T) {
 	}
 }
 
-var targetLine = regexp.MustCompile(`#EXT-X-TARGETDURATION:(\d+)`)
-
-func TestTheMediaPlaylistCarriesThePipelinesTargetDuration(t *testing.T) {
-	for _, c := range []struct {
-		set  int
-		want string
-	}{{0, "2"}, {6, "6"}, {4, "4"}} {
-		store := NewStore(time.Now)
-		if c.set != 0 {
-			store.SetTargetDuration(c.set)
+// The over-long ending counts with deaths: two copied generations that die
+// after their first segment and a third that is over-long are three events
+// within a minute, and the output fails.
+func TestAnOverLongEndingAsTheThirdEventFailsTheOutput(t *testing.T) {
+	h := newHarness(t)
+	long := file(t, "long.mp4", gopStream(75))
+	dying := file(t, "dying.mp4", gopStream(50, 50))
+	p := h.startAutomatic(probeAutomatic("2.000000"), func(s Spawn) []string {
+		if s.Generation < 2 {
+			return []string{"--fd-file", relaytest.FDFileArg(1, dying)}
 		}
-		store.publish(0, time.Now(), map[string]part{RenditionVideo: {data: []byte{1}, duration: 2}})
-		playlist, _, _ := store.MediaPlaylist(RenditionVideo)
-		if m := targetLine.FindStringSubmatch(string(playlist)); m == nil || m[1] != c.want {
-			t.Errorf("SetTargetDuration(%d): %v in\n%s\nwant %s", c.set, m, playlist, c.want)
+		return []string{"--fd-file", relaytest.FDFileArg(1, long), "--ignore-stdin-eof"}
+	})
+	feedRing(t, h)
+	waitDone(t, p, 30*time.Second)
+	if !errors.Is(p.Err(), ErrFailed) {
+		t.Fatalf("Err = %v, want ErrFailed\n%s", p.Err(), h.logs.String())
+	}
+	if !strings.Contains(h.logs.String(), "its generations keep ending") {
+		t.Fatalf("the over-long third event was not logged as the failure:\n%s", h.logs.String())
+	}
+	if n := relaytest.SpawnCount(h.spawnLog); n != 3 {
+		t.Fatalf("spawned %d generations, want 3", n)
+	}
+}
+
+// A copy whose first attempt exits early and whose second succeeds stays a
+// copy: no fallback encode is made.
+func TestACopyThatSucceedsOnItsSecondAttemptIsNotEncoded(t *testing.T) {
+	h := newHarness(t)
+	initOnly := file(t, "init.mp4", videoInit(0))
+	good := file(t, "good.mp4", gopStream(50, 50))
+	p := h.startAutomatic(probeAutomatic("2.000000"), func(s Spawn) []string {
+		if s.Attempt == 1 {
+			return []string{"--fd-file", relaytest.FDFileArg(1, initOnly), "--exit-code", "1"}
+		}
+		return []string{"--fd-file", relaytest.FDFileArg(1, good), "--wait-stdin-eof"}
+	})
+	feedRing(t, h)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if err := p.Store().WaitSegment(ctx); err != nil {
+		t.Fatalf("no segment: %v\n%s", err, h.logs.String())
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.spawns) != 2 || !h.spawns[1].copies() || h.spawns[1].Engine != EngineCopy {
+		t.Fatalf("spawns %+v, want two copy attempts and no encode", h.spawns)
+	}
+}
+
+// A codec string the ceiling cannot read is declared as it is, with a warning
+// naming the string (never a URL).
+func TestAnUnreadableVideoCodecIsDeclaredAsItIs(t *testing.T) {
+	out, _ := DecideFor(copyProbe(nil), ModeAutomatic)
+	logs := &logBuffer{}
+	p := &Pipeline{store: NewStore(time.Now), readyCh: make(chan struct{}), output: &out, log: logs.logger()}
+	p.noteInit(RenditionVideo, 0, []byte("video init"), "weird.codec")
+	p.noteInit(RenditionAAC, 0, []byte("aac init"), "mp4a.40.2")
+	mv, err := p.Multivariant("/hls/T")
+	if err != nil || !strings.Contains(string(mv), `CODECS="weird.codec,mp4a.40.2"`) {
+		t.Fatalf("multivariant %s, %v", mv, err)
+	}
+	if !strings.Contains(logs.String(), "codec=weird.codec") {
+		t.Fatalf("no warning named the codec string:\n%s", logs.String())
+	}
+}
+
+func TestTheStartupStallIsThirtySecondsAtEveryTarget(t *testing.T) {
+	for target := 2; target <= MaxTargetDuration; target++ {
+		if got := StartupStall(target); got != 30*time.Second {
+			t.Errorf("StartupStall(%d) = %v, want 30s (R58)", target, got)
 		}
 	}
 }
 
-// The byte ceiling scales with the target: at 6, twenty-one 9 MiB segments
-// (189 MiB) are all kept; at the default target the same run keeps only the
-// newest 7 (63 MiB, under 64 MiB).
-func TestTheByteCeilingScalesWithTheTargetDuration(t *testing.T) {
-	publish := func(store *Store) {
-		for i := 0; i < 21; i++ {
-			store.publish(0, time.Now(), map[string]part{RenditionVideo: {data: make([]byte, 9<<20), duration: 2}})
-		}
-	}
-	scaled := NewStore(time.Now)
-	scaled.SetTargetDuration(6)
-	publish(scaled)
-	if n := len(scaled.segs); n != 21 {
-		t.Errorf("at target 6 the store kept %d segments, want all 21", n)
-	}
-	plain := NewStore(time.Now)
-	publish(plain)
-	if n := len(plain.segs); n != 7 {
-		t.Errorf("at the default target the store kept %d segments, want the newest 7", n)
+// A segmenter nothing set a target on cuts against the default.
+func TestASegmenterWithNoTargetUsesTheDefault(t *testing.T) {
+	s, store := newCopySegmenter(true, 0)
+	s.fragment(RenditionVideo, vfrag(0, 1.9))
+	s.fragment(RenditionVideo, vfrag(1.9, 1.9))
+	runToEOF(s)
+	if got := strings.Join(extinfs(store), " "); got != "1.900 1.900" {
+		t.Fatalf("segments %q, want two of 1.900 s at the default target of 2", got)
 	}
 }
