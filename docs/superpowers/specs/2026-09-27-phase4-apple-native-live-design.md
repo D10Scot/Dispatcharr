@@ -648,18 +648,29 @@ ending.
 | audio AAC of any other profile or layout, MP2, MP3 or anything else qualifying | encodes AAC 160 kb/s stereo |
 | audio AC-3 / E-AC-3 | handles it as in transcode |
 
-**A later generation copies** only when the rule above holds for its own probe **and** its video is
-the declared family, its width, height and frame rate equal the run's fixed output, its K is no
-longer than the run's `TARGETDURATION` allows, and its level is no higher than the declared one
-(4a-1d plan). Otherwise it is encoded into the declared family. A run whose first generation was
-encoded may copy later, on the same conditions.
+**A later generation copies** only when the rule above holds for its own probe **and** it matches the run's fixed output (4a-1d plan; R60, R75):
+- its video is the declared family;
+- its width, height and frame rate equal the run's fixed output;
+- its K is no longer than the run's `TARGETDURATION` allows;
+- its level is no higher than the declared one;
+- its probe window's video rate fits the bandwidth the multivariant already declared (1.25 × the rate within the declared peak, the rate within the declared average).
 
-**The probe in automatic mode** adds `-show_entries packet=stream_index,pts_time,flags,size` to
-`-show_streams` (4a-1d plan; one ffprobe, measured to keep every stream field): the keyframe count
-and K come from the first video stream's key packets, and the probe window's rate from the packet
-sizes. Transcode mode's probe argv is unchanged. The full bound is 5 MB **or** 8 s, so above
-about 5 Mb/s the window is shorter than 8 s and a K near 6 s can go unseen; that source is encoded,
-which is correct and only costs the copy (§ Risks).
+Otherwise it is encoded into the declared family. A run whose first generation was encoded may copy later, on the same conditions.
+
+**A copy that fails to start is encoded** (R74). If a copy generation's two attempts both exit before their first segment, the same input is encoded into the declared family under the ordinary encode policy (D11's retry and its Quick Sync → software step). The channel's HLS failure mark is set only if that encode fails as well.
+
+**The probe in automatic mode** is changed in five ways (4a-1d plan).
+- **Arguments.** It adds `-show_entries packet=stream_index,pts_time,flags,size` to `-show_streams`, and `-read_intervals %+<the bound's seconds>` (`%+3`, and `%+8` for the re-probe; R77). This is one ffprobe, measured to keep every stream field.
+- **Why `-read_intervals`.** Without it, listing packets makes ffprobe wait for stdin's EOF: 6.2 s against 0.13 s on a running channel, measured. With it, ffprobe stops after that much media.
+- **What it reads.** The keyframe count and K come from the first video stream's key packets. The probe window's video rate comes from that stream's packet sizes; audio is excluded, because the multivariant adds each group's audio rate itself.
+- **Size.** The JSON is about 240 bytes a packet.
+- **Transcode** mode's probe argv is unchanged.
+
+The full bound is 5 MB **or** 8 s of media, so:
+- above about 5 Mb/s the window is shorter than 8 s, and a K near 6 s can go unseen;
+- at any rate, two keyframes of a K-second GOP fall in the window only when the first falls in its first 8 − K seconds.
+
+Such a source is encoded, which is correct and only costs the copy (R63; § Risks). ffprobe's `K` flag also marks an open GOP's non-IDR I-frames, and no packet field tells them apart. Copy is not restricted to closed GOPs: AVPlayer played copied open-GOP segments after a join and across a discontinuity, as § Risks records (R76).
 
 **The multivariant in automatic mode** (4a-1d plan, answering § 4a-1d's `CODECS` question).
 - The video `CODECS` is the declared family's **ceiling**. It is read from the first complete
@@ -688,8 +699,8 @@ which is correct and only costs the copy (§ Risks).
     with the same bitrate table and `force_key_frames`, tagged `hvc1`. M1 shows `hevc_qsv` and `libx265` in the production image; the 4a-1d plan ran the `libx265` argv on ffmpeg 9.0.1 (Main, level 123, a keyframe every 2 s from an MPEG-2 576i source).
 - **The segmenter enforces the target duration.** A copied segment of `TARGETDURATION` +
   0.5 s or longer (it would round above the target, RFC 8216 § 4.3.3.1) ends the generation **at once**, as a synthetic source boundary at the ring's head (as a
-  death after the first segment is treated), is never published, and every later generation of the run is encoded
-  into the declared family. It counts toward the 3-in-60 s restart bound.
+  death after the first segment is treated). It is never published, and every later generation of the run is encoded
+  into the declared family. Segments already cut before it are published normally. It counts toward the 3-in-60 s restart bound.
 - **Every threshold measured in target durations is the pipeline's own** (R42, 4a-1d plan). The
   stall timeout is `max(10 s, 5 × TARGETDURATION)`, 30 s at 6. Its startup allowance before a
   generation's first video fragment is `max(30 s, the stall timeout)`, not three times it: before the
@@ -1558,6 +1569,8 @@ PR description draft:
     generation at once, and the next generation is encoded.
   - Presence at TD = 6 (finding 6): a reclaim-predicate row with sessions reloading every 6 s is
     not silent. The idle sweep does not depart it within 36 s.
+  - A copy that fails to start falls back to an encode, and the output fails only if that fails
+    too (R74). A later copy whose probe-window rate exceeds the declared bandwidth is encoded (R75).
   - Each exclusion: the HDHR resolver ignores an HLS row, and the HDHR select omits it.
   - E2E: an automatic channel on the H.264 asset serves copied video: `hls_encoder` is `"copy"`,
     and its init segment carries the source's own `avc1` string, while the multivariant declares
@@ -1712,6 +1725,11 @@ PR description draft:
   behind real time by the stall's length until the next generation. That moves programme markers
   (4a-3) by the same amount. A reconnect starts a new generation and re-anchors. Measuring the
   drift on real channels is a 4a-3 E2E observation, not a gate.
+- **Automatic mode's copy** (4a-1d plan; R59, R62, R63, R76).
+  - **K observability.** A source whose keyframe interval the probe cannot observe is encoded. That happens above about 5 Mb/s, or when the phase is unlucky: about 1/3 of probes at K = 6. A boundary re-probe adds up to 8 s of media to that failover gap.
+  - **Open GOPs.** A copied open-GOP source makes `EXT-X-INDEPENDENT-SEGMENTS` not strictly true: the leading B-frames reference a GOP absent after a join or a discontinuity. AVPlayer on macOS 27 and the iOS 27 Simulator played such segments without error, with frame counts within 2 of a closed-GOP control. Visual artefacts, and HEVC CRA, were not measured.
+  - **The ceiling `CODECS`** overstates a copied low-level source's needs.
+  - **Memory.** At a target of 6 a copied channel's store can hold up to 192 MiB, and above about 26 Mb/s the byte ceiling can evict a listed segment.
 - **Disk.** 3.1-3.4 GB per channel-hour of writes on whatever backs `/data`. On an SD card or a slow
   NAS that is wear and latency. The cap bounds space, not wear.
 - **The failover gap** (M6: 8.9 s on the prototype host) is longer than a TS client sees today.
@@ -1962,6 +1980,14 @@ Filled in as PRs merge.
   - **`hls_profile`** is required as `output_profiles` is, and refreshed by a non-degraded failover.
   - **`hls_encoder`** gains `"copy"`.
   - **The store's byte ceiling** scales with the target.
+  - **Round 1 of the plan's review** (reviewed at `b00d073f`; rulings R58-R63 on the plan's questions and R74-R77 on its findings):
+    - a copy that fails to start is encoded (R74);
+    - a later copy must fit the declared bandwidth (R75);
+    - open-GOP copies are measured and recorded under § Risks (R76);
+    - the automatic probe carries `-read_intervals` (R77);
+    - the window's rate is video-only;
+    - an over-long segment no longer discards segments cut before it.
+  - **When #538's R55 paragraph lands** in § Encoder argv › Failure ("Before a generation's first video fragment the allowance is three times that"), R58 amends it to read `max(30 s, the stall timeout)` in place of "three times that". It stays 30 s at every target up to 6.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
