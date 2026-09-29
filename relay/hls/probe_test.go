@@ -288,3 +288,39 @@ func TestParseProbeReadsLevelIndexAndAudioProfile(t *testing.T) {
 		t.Errorf("a level of -99 (unreported) gave Level %d, Index %d; want 0, 3", unreported.Video.Level, unreported.Video.Index)
 	}
 }
+
+// R81 (issue #525): ffprobe 9.0.1's JSON for the hevc-aac fixture, captured
+// as printed, carries NO field_order key at all for the HEVC stream. The probe
+// is complete on its geometry, its field order is FieldUnknown (treated as
+// progressive), and it is not deinterlaced. The exception is HEVC's alone.
+const probeJSONHEVCFixture = `{"streams": [{"index": 0, "codec_name": "hevc", "profile": "Main", "codec_type": "video", "width": 640, "height": 360, "pix_fmt": "yuv420p", "level": 63, "id": "0x400", "r_frame_rate": "25/1", "avg_frame_rate": "25/1"}, {"index": 1, "codec_name": "aac", "profile": "LC", "codec_type": "audio", "id": "0x401", "r_frame_rate": "0/0", "avg_frame_rate": "0/0", "sample_rate": "48000", "channels": 2}]}`
+
+func TestAnHEVCProbeWithNoFieldOrderIsCompleteAndProgressive(t *testing.T) {
+	p, err := ParseProbe([]byte(probeJSONHEVCFixture))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.Video.Complete() {
+		t.Fatal("an HEVC probe with geometry and no field_order key is incomplete: every HEVC generation would re-probe")
+	}
+	if p.Video.Field != FieldUnknown {
+		t.Fatalf("Field = %v, want FieldUnknown", p.Video.Field)
+	}
+	o, _ := Decide(p)
+	if PlanGeneration(o, p, EngineSoftware).Deinterlace {
+		t.Fatal("an HEVC probe with no field_order was deinterlaced")
+	}
+	if needsFullProbe(p, feedResult{end: feedLimit}, ModeTranscode) {
+		t.Fatal("a complete HEVC probe asked for a re-probe")
+	}
+
+	// The exception is scoped to HEVC: the same JSON as H.264 is still
+	// incomplete, because ffprobe omits the key until it has decoded a frame.
+	h264, _ := ParseProbe([]byte(strings.Replace(probeJSONHEVCFixture, `"hevc"`, `"h264"`, 1)))
+	if h264.Video.Complete() {
+		t.Fatal("an H.264 probe with no field_order was judged complete")
+	}
+	if !needsFullProbe(h264, feedResult{end: feedLimit}, ModeTranscode) {
+		t.Fatal("an H.264 probe with no field_order did not ask for a re-probe")
+	}
+}
