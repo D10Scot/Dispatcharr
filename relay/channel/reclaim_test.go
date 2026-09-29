@@ -391,7 +391,7 @@ func TestAStaleReleasingEntryIsIgnored(t *testing.T) {
 	}
 	advance(time.Second + 300*time.Millisecond + time.Second) // past StopWait + wait
 
-	b, _ := attachOnProfile(t, m, "B", "cb", 1, testTuning())
+	attachOnProfile(t, m, "B", "cb", 1, testTuning())
 	judge.silent["B"] = now().Add(-time.Minute)
 
 	got := m.ReclaimFor([]int{1}, 300*time.Millisecond)
@@ -401,7 +401,6 @@ func TestAStaleReleasingEntryIsIgnored(t *testing.T) {
 	if releasingHas(m, a) {
 		t.Fatal("the stale releasing entry was not dropped")
 	}
-	_ = b
 }
 
 // The spec's four-path assertion, deterministically: afterRemove runs inside
@@ -469,11 +468,10 @@ func TestEveryMapRemovalInsertsIntoTheReleasingSet(t *testing.T) {
 		rel := newReleaser(true)
 		m := reclaimManager(t, rel, newFakeJudge(), nil)
 		removals := install(m)
-		ended := endedByItself(t, m, "A")
+		endedByItself(t, m, "A")
 		// The release is held at the gate, so it cannot land before claim.
 		attachOnProfile(t, m, "A", "cb", 1, testTuning())
 		check(t, removals(), "claim", true)
-		_ = ended
 	})
 
 	t.Run("reclaim", func(t *testing.T) {

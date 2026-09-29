@@ -82,8 +82,11 @@ class NextSourceCapacityTests(RelayApiTestCase):
         real_walk = Channel.blocking_profile_ids
         before = {}
 
+        def keyspace():
+            return {"strings": dict(self.redis._strings), "hashes": {k: dict(v) for k, v in self.redis._hashes.items()}}
+
         def recording_walk(channel):
-            before.update(self.redis._strings)
+            before.update(keyspace())
             result = real_walk(channel)
             calls.append(result)
             return result
@@ -100,7 +103,7 @@ class NextSourceCapacityTests(RelayApiTestCase):
         # The blocking walk is read-only: the keyspace (slot_version:* keys
         # included) the refusal left is exactly the keyspace after the walk.
         self.assertEqual(len(calls), 1)
-        self.assertEqual(before, self.redis._strings)
+        self.assertEqual(before, keyspace())
 
     def test_credential_siblings_are_named(self):
         channel, one, two, group = self._pooled_channel(number=1)
