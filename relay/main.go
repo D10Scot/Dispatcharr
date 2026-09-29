@@ -5,6 +5,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"log"
 	"log/slog"
@@ -20,7 +21,9 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/config"
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/drain"
+	"github.com/D10Scot/Dispatcharr/relay/hls"
 	"github.com/D10Scot/Dispatcharr/relay/httpapi"
+	"github.com/D10Scot/Dispatcharr/relay/session"
 )
 
 func main() {
@@ -54,9 +57,15 @@ func main() {
 	// once for the whole process as control_plane.py's module flag does.
 	client := &control.Client{Secret: cfg.Secret}
 	emitter := control.NewEmitter(client, slog.Default())
+	// The HLS session table (Phase 4a-1b) and its sweeper: process-wide, tied
+	// to no channel or pipeline, and started before the first tune so a
+	// session that outlives its channel is still swept.
+	sessions := session.NewTable(session.Config{Log: slog.Default()})
+	go sessions.Run(context.Background())
 	channels := channel.NewManager(channel.ManagerConfig{
-		Events:  httpapi.EventSink(emitter),
-		Release: httpapi.ReleaseVia(client, slog.Default()),
+		Events:   httpapi.EventSink(emitter),
+		Release:  httpapi.ReleaseVia(client, slog.Default()),
+		Sessions: sessions,
 	})
 	// ONE Lifecycle, shared by the tune path, /readyz and the drain. Two
 	// would let the probe say "ready" while the handler refused every tune.
@@ -70,8 +79,15 @@ func main() {
 				Channels:  channels,
 				Control:   client,
 				Lifecycle: lifecycle,
+				Sessions:  sessions,
+				// One detector and one silence cache for the process: every
+				// channel's HLS pipeline shares the one Quick Sync detection.
+				HLS: httpapi.HLSDeps{
+					Detector: &hls.Detector{Log: slog.Default()},
+					Silence:  &hls.SilenceCache{Log: slog.Default()},
+				},
 			},
-			Control: httpapi.ControlDeps{Secret: cfg.Secret, Channels: channels},
+			Control: httpapi.ControlDeps{Secret: cfg.Secret, Channels: channels, Sessions: sessions},
 			Health:  httpapi.HealthDeps{Channels: channels, Lifecycle: lifecycle},
 		}).Handler(),
 

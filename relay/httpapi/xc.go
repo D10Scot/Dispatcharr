@@ -31,7 +31,8 @@ var XCStreamIDPattern = regexp.MustCompile(`\A\d+(?:\.[A-Za-z0-9]+)?\z`)
 //
 // The extension is the ONE thing the path contributes, and it contributes it
 // to the output format rather than to the channel: `.mp4` forces fMP4 and
-// `.ts` forces MPEG-TS (:873-878), overriding whatever the hop resolved.
+// `.ts` forces MPEG-TS (:873-878), overriding whatever the hop resolved --
+// and, since Phase 4a-1b, `.m3u8` forces HLS, which views.py never had.
 // authorize_stream's resolve_output_format takes a `force` parameter and the
 // hop never passes it, "because the hop authorizes a URI and the override is
 // a property of the view's call" (apps/proxy/authorize.py:236-246) -- so the
@@ -67,6 +68,9 @@ func xcForcedFormat(id string) string {
 		return output.FormatFMP4
 	case ".ts":
 		return OutputFormatMPEGTS
+	case ".m3u8":
+		// Phase 4a-1b: the Xtream HLS form, /live/<u>/<p>/<id>.m3u8.
+		return OutputFormatHLS
 	}
 	return ""
 }

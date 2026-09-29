@@ -69,6 +69,16 @@ func New(cfg Config) *Server {
 		// beat three wildcards.
 		s.mux.Handle("GET /live/{username}/{password}/{channelID}", XCHandler(cfg.Stream))
 		s.mux.Handle("GET /{username}/{password}/{channelID}", XCHandler(cfg.Stream))
+		// The HLS session resources (Phase 4a-1b), authorized by the media-
+		// session token in the path alone: nginx runs no authorize hop on
+		// this prefix. `GET /hls/{token}/{file}` has a literal first segment,
+		// so it is strictly more specific than the bare XC root above and
+		// net/http prefers it without a registration conflict; a user
+		// literally named "hls" on that root reaches this route and gets 403
+		// (spec D3 records the cost).
+		s.mux.Handle("GET /hls/{token}/{file}", HLSHandler(cfg.Stream))
+		s.mux.Handle("GET /hls/{token}/{rendition}/{file}", HLSHandler(cfg.Stream))
+		s.mux.Handle("DELETE /hls/{token}", HLSLeaveHandler(cfg.Stream))
 		// Gated with the rest: nginx routes nothing to this process until
 		// stage 2d, and Django still calls the Python relay's copy of these
 		// routes. All five of § The contract's Django-to-relay table are here

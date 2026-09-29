@@ -43,6 +43,7 @@ func goldenPayload() channelListPayload {
 	sourceFPS := 25.0
 	speed := 1.02
 	healthy := true
+	hlsGeneration := 3
 
 	return channelListPayload{
 		Count: 2,
@@ -72,6 +73,8 @@ func goldenPayload() channelListPayload {
 				AudioCodec:     "aac",
 				AudioChannels:  "stereo",
 				StreamType:     "mpegts",
+				HLSEncoder:     "software",
+				HLSGeneration:  &hlsGeneration,
 				Clients: []clientPayload{
 					{
 						ClientID:        "client_1789000000000_1234",
@@ -175,6 +178,7 @@ func TestEveryOptionalFieldIsAbsentRatherThanNull(t *testing.T) {
 		"total_bytes", "avg_bitrate_kbps", "avg_bitrate", "healthy",
 		"video_codec", "resolution", "source_fps", "ffmpeg_speed",
 		"audio_codec", "audio_channels", "stream_type",
+		"hls_encoder", "hls_generation",
 	} {
 		if _, present := minimal[key]; present {
 			t.Errorf("a channel with no %s still carries the key, as %v: DRF declares it "+
@@ -267,7 +271,16 @@ func TestTheLiveEndpointProducesTheGoldensKeySet(t *testing.T) {
 	}
 	_ = json.Unmarshal(encoded, &golden)
 
-	if got, want := keysOf(live.Channels[0]), keysOf(golden.Channels[0]); !reflect.DeepEqual(got, want) {
+	// A TS-only transcode tune runs no HLS pipeline, so the live channel has
+	// neither HLS key; TestTheChannelPayloadCarriesTheHLSEncoderAndGeneration
+	// pins the two keys on a channel that does.
+	wantKeys := map[string]any{}
+	for key, value := range golden.Channels[0] {
+		if key != "hls_encoder" && key != "hls_generation" {
+			wantKeys[key] = value
+		}
+	}
+	if got, want := keysOf(live.Channels[0]), keysOf(wantKeys); !reflect.DeepEqual(got, want) {
 		t.Fatalf("the live payload's keys are\n  %v\nand the golden's populated channel's are\n  %v\n"+
 			"-- the handler and the shape this endpoint promises have diverged", got, want)
 	}

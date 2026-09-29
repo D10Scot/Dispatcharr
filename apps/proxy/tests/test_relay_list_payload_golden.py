@@ -97,6 +97,8 @@ def fixture():
                 "audio_codec": "aac",
                 "audio_channels": "stereo",
                 "stream_type": "mpegts",
+                "hls_encoder": "software",
+                "hls_generation": 3,
                 "clients": [
                     {
                         "client_id": "client_1789000000000_1234",

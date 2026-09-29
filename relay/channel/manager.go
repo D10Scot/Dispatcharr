@@ -37,6 +37,11 @@ type ManagerConfig struct {
 	// channel (Channel.releaseSlot). Nil means no control plane to tell,
 	// which only a test wants.
 	Release func(id string, info SourceInfo)
+
+	// Sessions is the HLS session table (Phase 4a-1b), through which a
+	// channel's stop marks its sessions STOPPED. Nil means no HLS: every
+	// existing caller and test keeps working.
+	Sessions SessionEnder
 }
 
 // Manager owns every running channel.
@@ -244,20 +249,28 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 	if events == nil {
 		events = discardEvents{}
 	}
+	var onRunEnd func(*Channel)
+	if m.cfg.Sessions != nil {
+		onRunEnd = m.runEnded
+	}
 	c := &Channel{
-		id: id,
+		onRunEnd: onRunEnd,
+		id:       id,
 		ring: buffer.New(buffer.Config{
 			BudgetBytes: m.cfg.BudgetBytes,
 			ChunkBytes:  started.Tuning.ChunkBytes,
 			Retention:   started.Tuning.Retention,
 			Now:         m.cfg.Now,
 		}),
-		log:            m.log,
-		tuning:         started.Tuning,
-		source:         started.Info,
-		channelName:    started.Info.ChannelName,
-		budgetBytes:    m.cfg.BudgetBytes,
-		outputRegistry: outputRegistry{outputs: map[string]*outputEntry{}},
+		log:         m.log,
+		tuning:      started.Tuning,
+		source:      started.Info,
+		channelName: started.Info.ChannelName,
+		budgetBytes: m.cfg.BudgetBytes,
+		outputRegistry: outputRegistry{
+			outputs:     map[string]*outputEntry{},
+			hlsRegistry: hlsRegistry{hls: map[string]*hlsEntry{}},
+		},
 		outputProfiles: started.OutputProfiles,
 		startedAt:      now(),
 		// Seeded here, not left zero, because state is assigned in this
@@ -329,9 +342,25 @@ func (m *Manager) Stop(id string) bool {
 	if c == nil {
 		return false
 	}
+	// BEFORE c.stop, hence before stopOutputs and the ring's close: an HLS
+	// session's owner sweeps its sessions first, so a viewer's next request
+	// is a 410 rather than a frozen playlist. The run-ended hook sweeps again
+	// after the ring has closed, and that second sweep is load-bearing (see
+	// runEnded).
+	m.endSessions(c)
 	c.setState(StateStopping, nil)
 	c.stop(m.cfg.StopWait)
 	return true
+}
+
+// endSessions marks c's HLS sessions STOPPED and drops the client entries
+// they held. It takes the table's mutex and then c.mu, one after the other,
+// never nested, and it is safe to call with neither m.mu nor c.mu held.
+func (m *Manager) endSessions(c *Channel) {
+	if m.cfg.Sessions == nil {
+		return
+	}
+	c.dropHLSClients(m.cfg.Sessions.StopChannel(c))
 }
 
 // take removes a channel from the map and returns it, or nil.
@@ -394,6 +423,12 @@ func (m *Manager) release(c *Channel, clientID string) {
 	if remaining := c.dropClient(clientID); remaining > 0 {
 		return
 	}
+	m.stopWhenIdle(c)
+}
+
+// stopWhenIdle is release's decision once the channel has no client: stop it
+// at once, or after its ShutdownDelay, re-checking the count when it acts.
+func (m *Manager) stopWhenIdle(c *Channel) {
 	if c.tuning.ShutdownDelay <= 0 {
 		m.stopIfStillIdle(c)
 		return
@@ -401,6 +436,57 @@ func (m *Manager) release(c *Channel, clientID string) {
 	time.AfterFunc(c.tuning.ShutdownDelay, func() {
 		m.stopIfStillIdle(c)
 	})
+}
+
+// StopIfIdle is release's idle decision without the drop, for a caller that
+// has already removed a client entry by other means (an HLS session's stop):
+// a channel that still has a client is left alone; one with none is stopped
+// at once or after ShutdownDelay, exactly as the last client's release would.
+func (m *Manager) StopIfIdle(c *Channel) {
+	if c.Clients() > 0 {
+		return
+	}
+	m.stopWhenIdle(c)
+}
+
+// EndHLSSessions drops the client entries of sessions the table has marked
+// STOPPED and then asks the idle question the last client's release would
+// have. Called only off the channel's own goroutines: the run-ended hook's
+// goroutine and the HLS failure watcher.
+func (m *Manager) EndHLSSessions(c *Channel, stopped []StoppedClient) {
+	c.dropHLSClients(stopped)
+	m.StopIfIdle(c)
+}
+
+// runEnded is the channel's run-ended hook: its source goroutine has returned,
+// the ring is closed and its outputs are stopped. It fires on EVERY run's
+// end, Manager.Stop's included, and that is load-bearing: Stop sweeps the
+// sessions before it stops the channel, so an entry whose AttachHLS succeeded
+// before the stop can still add its session after that sweep and activate on
+// an already-ready pipeline. This sweep, after the ring closed, is what marks
+// that session STOPPED. Usually it finds nothing.
+func (m *Manager) runEnded(c *Channel) {
+	stopped := m.cfg.Sessions.StopChannel(c)
+	if len(stopped) > 0 {
+		m.EndHLSSessions(c, stopped)
+	}
+}
+
+// AttachExisting registers client against c only while c is still the running
+// channel under its id and its ring is open: a resume of an HLS session. It
+// never starts a channel and never waits on a start in progress -- a channel
+// that stopped, is starting again or has been replaced by a different one
+// under the same id answers ErrChannelAbsent.
+func (m *Manager) AttachExisting(c *Channel, client *Client) (func(), error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if running, ok := m.channels[c.id]; !ok || running != c || c.ring.Closed() {
+		return nil, ErrChannelAbsent
+	}
+	if !c.addClient(client) {
+		return nil, ErrDuplicateClient
+	}
+	return func() { m.release(c, client.ID) }, nil
 }
 
 // stopIfStillIdle re-checks c's client count and, if it is still zero,
@@ -449,6 +535,7 @@ func (m *Manager) stopIfStillIdle(c *Channel) {
 	if !stop {
 		return
 	}
+	m.endSessions(c)
 	c.setState(StateStopping, nil)
 	c.stop(m.cfg.StopWait)
 }

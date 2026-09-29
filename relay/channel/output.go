@@ -221,8 +221,21 @@ func (c *Channel) stopOutputs() {
 		entries = append(entries, entry)
 		delete(c.outputs, format)
 	}
+	// Phase 4a-1b: the HLS pipelines go in the same critical section, and the
+	// flag that makes both HLS attaches refuse is set in it: this runs BEFORE
+	// the ring closes (run's deferred calls), so a ring check would pass in
+	// the window and register a pipeline no stopOutputs will ever stop.
+	hlsEntries := make([]*hlsEntry, 0, len(c.hls))
+	for key, entry := range c.hls {
+		hlsEntries = append(hlsEntries, entry)
+		delete(c.hls, key)
+	}
+	c.outputsStopped = true
 	c.outMu.Unlock()
 	for _, entry := range entries {
+		entry.pipeline.Stop()
+	}
+	for _, entry := range hlsEntries {
 		entry.pipeline.Stop()
 	}
 }
@@ -232,6 +245,8 @@ func (c *Channel) stopOutputs() {
 type outputRegistry struct {
 	outMu   sync.Mutex
 	outputs map[string]*outputEntry
+	// hlsRegistry is Phase 4a-1b's (hlsoutput.go), under the same mutex.
+	hlsRegistry
 }
 
 // OutputFormats is every format this channel currently runs a pipeline for, for

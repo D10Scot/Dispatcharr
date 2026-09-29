@@ -28,6 +28,7 @@ func detailGoldenPayload() detailPayload {
 	total := uint64(9_999_888)
 	kbps := 2_665.3034666666666
 	speed := 1.02
+	hlsGeneration := 3
 	profileID := 7
 	bytesSent := int64(9_999_888)
 	avgRate := 341.2
@@ -95,6 +96,8 @@ func detailGoldenPayload() detailPayload {
 		ActualFPS:     "24.5",
 		FFmpegBitrate: "4200.0",
 		StreamType:    "mpegts",
+		HLSEncoder:    "software",
+		HLSGeneration: &hlsGeneration,
 		Clients: []detailClientPayload{
 			{
 				ClientID:        "client_1789000000000_1234",
@@ -284,4 +287,23 @@ func mustDecodeDetail(t *testing.T, payload any) map[string]any {
 		t.Fatalf("decoding: %v", err)
 	}
 	return decoded
+}
+
+// The HLS pair (Phase 4a-1b) is optional in the same way: with no HLS
+// pipeline the two keys vanish, and they render when set.
+func TestTheDetailPayloadOmitsTheHLSFieldsWithoutAPipeline(t *testing.T) {
+	payload := detailGoldenPayload()
+	payload.HLSEncoder = ""
+	payload.HLSGeneration = nil
+	decoded := mustDecodeDetail(t, payload)
+	for _, key := range []string{"hls_encoder", "hls_generation"} {
+		if _, present := decoded[key]; present {
+			t.Errorf("an unset %q still renders, as %v", key, decoded[key])
+		}
+	}
+	for _, key := range []string{"hls_encoder", "hls_generation"} {
+		if _, present := mustDecodeDetail(t, detailGoldenPayload())[key]; !present {
+			t.Errorf("the populated detail payload is missing %q", key)
+		}
+	}
 }

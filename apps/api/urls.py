@@ -18,6 +18,8 @@ urlpatterns = [
     path('backups/', include(('apps.backups.api_urls', 'backups'), namespace='backups')),
     path('connect/', include(('apps.connect.api_urls', 'connect'), namespace='connect')),
     path('relay/', include(('apps.proxy.api_urls', 'relay'), namespace='relay')),
+    # Phase 4a-1b: the Mino app's capability document (R15: named for the product).
+    path('mino/', include(('core.mino_api_urls', 'mino'), namespace='mino')),
     # path('output/', include(('apps.output.api_urls', 'output'), namespace='output')),
     #path('player/', include(('apps.player.api_urls', 'player'), namespace='player')),
     #path('settings/', include(('apps.settings.api_urls', 'settings'), namespace='settings')),

@@ -440,15 +440,14 @@ func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
 		value  string
 		status int
 	}{
-		// 2c-6 SERVES fmp4, so this row moved to a format NEITHER relay has.
-		// `hls` is the honest choice: apps/proxy/hls_proxy/ was 1,216 lines,
-		// 0% covered and routed nowhere (fix plan J-1 deleted it), and
-		// _OUTPUT_FORMAT_MANAGERS (server.py:1352-1353) registers only fmp4 --
-		// so Python's own resolved format can never be this and the refusal is
-		// what both implementations do. Before 2c-6 this row said "fmp4"; a
-		// row that still did would now be asserting the opposite of what this
-		// PR ships.
-		{"an output format it does not serve", "X-Relay-Output-Format", "hls", http.StatusNotImplemented},
+		// 2c-6 SERVES fmp4, so this row moved to a format NEITHER relay has,
+		// and Phase 4a-1b SERVES hls, so it moved again: `dash` is a format
+		// neither relay ever had, so the refusal is what both would do. (Before
+		// 4a-1b this row said "hls", which apps/proxy/hls_proxy/ -- deleted by
+		// fix plan J-1 -- never actually served either; before 2c-6 it said
+		// "fmp4". A row that still named a served format would be asserting the
+		// opposite of what its PR ships.)
+		{"an output format it does not serve", "X-Relay-Output-Format", "dash", http.StatusNotImplemented},
 		// 2c-7 SERVES Output Profiles, so 2c-6's two profile rows are GONE and
 		// neither is replaced by a 501: the bare-profile row is now
 		// TestTwoClientsOnOneOutputProfileShareOneTranscode's subject, and the

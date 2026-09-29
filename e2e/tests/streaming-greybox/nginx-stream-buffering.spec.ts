@@ -122,6 +122,15 @@ function parseLocationBlocks(config: string): LocationBlock[] {
  * the server block declares -- and a config that pastes the working uwsgi
  * block and changes only _pass passes every other assertion here while
  * reporting nginx's own address as every viewer's ip_address.
+ *
+ * Phase 4a-1b adds a third kind of location, pinned by the fifth test: the
+ * HLS session resources under `^~ /hls/`. They are Go-bound and unbuffered
+ * like the byte-path locations, but run NO hop, like `^~ /proxy/relay/`:
+ * the media-session token in the path is their whole authorization, which
+ * the relay verifies (Phase 4 spec D3, ruling R13). So `/hls/` joins neither
+ * `PROXY_BOUND_TARGETS` (the first test filters by its own list, so both
+ * halves stay exact) nor `RELAY_BOUND_TARGETS` (the second requires the hop
+ * on every member).
  */
 
 /**
@@ -473,8 +482,9 @@ test(
     }
 
     // The proxy_pass twin, new at 2d-3 and asserted for the same reason.
-    // ^~ /proxy/relay/ is the only location that includes it, and the fourth
-    // test below asserts that it does; this asserts the file's contents.
+    // ^~ /proxy/relay/ and (since Phase 4a-1b) ^~ /hls/ are the locations that
+    // include it, and the fourth and fifth tests below assert that they do;
+    // this asserts the file's contents.
     const proxyParamsFile = stdout.match(
       /# configuration file \/etc\/nginx\/dispatcharr_api_params_proxy\.conf:\n([\s\S]*?)(?=\n# configuration file |\n*$)/
     );
@@ -573,5 +583,84 @@ test(
       'the relay control API does not set proxy_connect_timeout 60s; without it, it silently ' +
         "inherits the server block's proxy_connect_timeout 75 (set for an unrelated location)"
     ).toBe(true);
+  }
+);
+
+/**
+ * The HLS session resources (Phase 4a-1b, Phase 4 spec D3): media
+ * playlists, init and media segments under `/hls/<token>/...`, and
+ * `DELETE /hls/<token>`. A list rather than a bare string so the set
+ * assertion below fails on a lost or duplicated block, as the first test's
+ * do.
+ */
+const TOKEN_BOUND_TARGETS = ['/hls/'];
+
+test(
+  'the HLS session resources reach the relay unbuffered and run no authorize hop',
+  { tag: '@contract' },
+  async () => {
+    const { stdout } = await execFileAsync('docker', ['exec', CONTAINER_NAME, 'nginx', '-T']);
+    const blocks = parseLocationBlocks(stdout);
+    const found = blocks.filter((b) => TOKEN_BOUND_TARGETS.includes(b.target));
+    expect(
+      found.map((b) => b.target).sort(),
+      `expected the token-bound location(s) ${TOKEN_BOUND_TARGETS.join(', ')} in nginx -T's ` +
+        `output; found blocks: ${blocks.map((b) => b.header).join(', ')}`
+    ).toEqual([...TOKEN_BOUND_TARGETS].sort());
+
+    for (const block of found) {
+      const has = (re: RegExp) => block.body.some((line) => re.test(line));
+      const body = block.body.join('\n');
+
+      // Relay-bound, by the same literal group as the byte-path locations.
+      expect(
+        has(/^\s*proxy_pass\s+http:\/\/relay_go\s*;/),
+        `location "${block.header}" must proxy_pass to relay_go:\n${body}`
+      ).toBe(true);
+
+      // A media segment runs to megabytes; buffered, nginx would spool it.
+      expect(
+        has(/^\s*proxy_buffering\s+off\s*;/),
+        `location "${block.header}" does not set proxy_buffering off:\n${body}`
+      ).toBe(true);
+
+      // The token is the whole gate (R13): the hop must not sit in front of
+      // it, or every segment asks Django -- and a URI that names no channel
+      // would 404 in authorize_stream() anyway.
+      expect(
+        has(/^\s*auth_request\s+\//),
+        `location "${block.header}" must not run the authorize subrequest:\n${body}`
+      ).toBe(false);
+
+      // A player fetches these as an ordinary client; `internal;` would 404
+      // every one of them.
+      expect(
+        has(/^\s*internal\s*;/),
+        `location "${block.header}" must not be internal:\n${body}`
+      ).toBe(false);
+
+      // A client-supplied X-Relay-* or trust marker never reaches the relay.
+      expect(
+        has(/dispatcharr_api_params_proxy\.conf\s*;/),
+        `location "${block.header}" must blank the trust params:\n${body}`
+      ).toBe(true);
+
+      expect(
+        has(/^\s*proxy_http_version\s+1\.1\s*;/),
+        `location "${block.header}" does not set proxy_http_version 1.1:\n${body}`
+      ).toBe(true);
+
+      // Above the relay's own 43 s waits (R57) (the entry's init wait, a media
+      // playlist's first-segment wait), and the byte-path locations' own
+      // connect budget rather than the server block's inherited 75.
+      expect(
+        has(/^\s*proxy_read_timeout\s+60s\s*;/),
+        `location "${block.header}" does not set proxy_read_timeout 60s:\n${body}`
+      ).toBe(true);
+      expect(
+        has(/^\s*proxy_connect_timeout\s+60s\s*;/),
+        `location "${block.header}" does not set proxy_connect_timeout 60s:\n${body}`
+      ).toBe(true);
+    }
   }
 );

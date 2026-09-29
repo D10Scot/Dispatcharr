@@ -70,7 +70,7 @@ func TestAnXCTuneServesTheHopsChannelAndAuthorizesOnce(t *testing.T) {
 }
 
 // The extension overrides the output format the hop resolved, and only the
-// two extensions views.py:872-878 names do.
+// two extensions views.py:872-878 names do (and, since Phase 4a-1b, .m3u8).
 //
 // FOUR ROWS, and the third and fourth are what make it able to fail: a
 // relay that ignored the extension would pass a test that only checked
@@ -86,8 +86,10 @@ func TestTheXCExtensionOverridesTheHopsOutputFormat(t *testing.T) {
 		{"12345.ts", output.FormatFMP4, OutputFormatMPEGTS, http.StatusOK},
 		// No extension: the hop's own answer stands.
 		{"12345", output.FormatFMP4, output.FormatFMP4, http.StatusOK},
-		// An extension that is neither leaves it standing too.
-		{"12345.m3u8", OutputFormatMPEGTS, OutputFormatMPEGTS, http.StatusOK},
+		// An extension that is none of the three leaves it standing too.
+		// (".m3u8" was this row until Phase 4a-1b, which makes it force HLS;
+		// TestAnXCM3U8URLForcesHLSOnBothRoots pins that.)
+		{"12345.flv", OutputFormatMPEGTS, OutputFormatMPEGTS, http.StatusOK},
 	} {
 		t.Run(tc.id, func(t *testing.T) {
 			r := fanRig(t, relaytest.Config{Rate: 4}, nil,

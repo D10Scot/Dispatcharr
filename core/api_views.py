@@ -500,7 +500,7 @@ def get_system_events(request):
 # System Notifications API
 # ─────────────────────────────
 from .models import SystemNotification, NotificationDismissal
-from .serializers import SystemNotificationSerializer, NotificationDismissalSerializer
+from .serializers import SystemNotificationSerializer, NotificationDismissalSerializer, MinoCapabilitiesSerializer
 from django.utils import timezone as dj_timezone
 
 
@@ -660,3 +660,42 @@ class SystemNotificationViewSet(viewsets.ModelViewSet):
             'unread_count': unread_count
         })
 
+
+
+# ─────────────────────────────
+# Mino capability document (Phase 4a-1b, spec D19)
+# ─────────────────────────────
+class MinoCapabilitiesView(APIView):
+    """GET /api/mino/capabilities/: what this server offers the Mino app.
+
+    Anonymous on purpose (`AllowAny`), and with NO authenticators, so a stale
+    Bearer header from an app build never turns a public document into a 401.
+    It sits behind the same network ACL as the Xtream API (`XC_API`).
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes = []
+
+    @extend_schema(responses=MinoCapabilitiesSerializer)
+    def get(self, request):
+        from version import __version__
+        from dispatcharr.utils import network_access_allowed
+
+        if not network_access_allowed(request, "XC_API"):
+            return Response({"error": "Forbidden"}, status=status.HTTP_403_FORBIDDEN)
+        return Response(
+            MinoCapabilitiesSerializer(
+                {
+                    "product": "mino",
+                    "api_version": 1,
+                    "server_version": __version__,
+                    "live_hls": {
+                        "available": True,
+                        "segment_seconds": 2,
+                        "session_leave": True,
+                        # 4a-3 fills this in.
+                        "rewind_window": {"available": False, "depth_seconds": 0},
+                    },
+                }
+            ).data
+        )

@@ -228,7 +228,11 @@ def generate_m3u(request, profile_name=None, user=None):
         xc_qs = {}
         if output_profile_id:
             xc_qs['output_profile'] = output_profile_id
-        if output_format_param:
+        # Phase 4a-1b: an HLS request is spelled by the URL's .m3u8 extension
+        # on the XC live root, not by a query parameter; output_profile is
+        # kept (the relay ignores it on an HLS tune).
+        xc_hls = (output_format_param or '').lower() in ('m3u8', 'hls')
+        if output_format_param and not xc_hls:
             xc_qs['output_format'] = output_format_param
         xc_qs_suffix = f"?{urlencode(xc_qs)}" if xc_qs else ""
     else:
@@ -315,7 +319,8 @@ def generate_m3u(request, profile_name=None, user=None):
 
         # Determine the stream URL based on request type
         if is_xc_request:
-            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_qs_suffix}"
+            xc_ext = '.m3u8' if xc_hls else ''
+            stream_url = f"{_base_url}/live/{xc_username}/{xc_password}/{channel.id}{xc_ext}{xc_qs_suffix}"
         elif use_direct_urls:
             # Try to get the first stream's direct URL
             all_streams = channel.streams.all()
@@ -415,7 +420,7 @@ def xc_get_user(request):
 
 def _xc_allowed_output_formats(user):
     """Return the list of allowed output formats for the XC API user_info response."""
-    return ['ts', 'mp4']
+    return ['ts', 'mp4', 'm3u8']
 
 
 def _build_xc_server_info(request, hostname, port):

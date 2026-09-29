@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1070,4 +1071,90 @@ func TestAnEmptyAudioFragmentNeverStartsBeforeItsSpan(t *testing.T) {
 	if f.Start != 192004 {
 		t.Fatalf("the empty fragment starts at %d audio ticks, want 192004: its span starts at 192003.75, and a truncated tfdt starts it before its span", f.Start)
 	}
+}
+
+// feedRing keeps the channel's ring advancing until the test ends.
+func feedRing(t *testing.T, h *standInHarness) {
+	t.Helper()
+	stop := make(chan struct{})
+	t.Cleanup(func() { close(stop) })
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case <-time.After(20 * time.Millisecond):
+				_, _ = h.src.ring.Write(chunkOf('a'))
+			}
+		}
+	}()
+}
+
+// delayedEncoder is a shell "encoder" that writes nothing for delay and then
+// the whole stream, and stays alive: the stand-in has no "first fragment
+// later" flag.
+func delayedEncoder(stream, delay string) func(*Config) {
+	return func(c *Config) {
+		c.Command = func(Spawn) (string, []string) {
+			return "sh", []string{"-c", "sleep " + delay + "; cat " + stream + "; while true; do sleep 1; done"}
+		}
+	}
+}
+
+// Ruling R55: before its first video fragment a generation gets three times
+// the stall timeout. A cold software encode is fed at real time and needs a
+// lookahead and a GOP before it writes anything; killing it at the plain
+// timeout (measured: a cold 1080i attempt at 10 s) throws away a healthy tune.
+func TestASlowFirstFragmentIsNotKilledAsAStall(t *testing.T) {
+	h := newHarness(t)
+	stream := file(t, "v.mp4", videoStream(0, 2, 50))
+	feedRing(t, h)
+	// Stall 300 ms, so the startup allowance is 900 ms; the first bytes come at
+	// 600 ms: past the stall timeout, inside the allowance, with the ring
+	// advancing throughout.
+	p := h.startWith(probeVideoOnly, func(c *Config) {
+		c.StallTimeout = 300 * time.Millisecond
+		delayedEncoder(stream, "0.6")(c)
+	}, func(Spawn) []string { return nil })
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := p.Ready(ctx); err != nil {
+		t.Fatalf("Ready: %v\n%s", err, h.logs.String())
+	}
+	if strings.Contains(h.logs.String(), "stalled encoder") {
+		t.Fatalf("a slow first fragment inside the startup allowance was killed as a stall:\n%s", h.logs.String())
+	}
+	p.Stop()
+}
+
+// And the allowance is finite: an encoder that writes nothing past it is still
+// killed, and not before it.
+func TestAnEncoderThatWritesNothingPastTheStartupAllowanceIsKilled(t *testing.T) {
+	h := newHarness(t)
+	feedRing(t, h)
+	var spawnedAt atomic.Int64 // the first attempt's spawn, in unix nanoseconds
+	started := time.Now()
+	p := h.startWith(probeVideoOnly, func(c *Config) {
+		c.StallTimeout = 300 * time.Millisecond
+		c.Command = func(Spawn) (string, []string) {
+			spawnedAt.CompareAndSwap(0, time.Now().UnixNano())
+			return "sh", []string{"-c", "while true; do sleep 1; done"}
+		}
+	}, func(Spawn) []string { return nil })
+	var killedAfter time.Duration
+	for killedAfter == 0 {
+		if strings.Contains(h.logs.String(), "killing it as a stalled encoder") {
+			killedAfter = time.Since(time.Unix(0, spawnedAt.Load()))
+		}
+		if time.Since(started) > 15*time.Second {
+			t.Fatalf("an encoder that wrote nothing was never killed:\n%s", h.logs.String())
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	// 3 x 300 ms of the ring advancing, and the watchdog samples every 30 ms:
+	// never earlier than 850 ms after the spawn.
+	if killedAfter < 850*time.Millisecond {
+		t.Fatalf("killed %v after the spawn: before the 900 ms startup allowance", killedAfter)
+	}
+	p.Stop()
 }

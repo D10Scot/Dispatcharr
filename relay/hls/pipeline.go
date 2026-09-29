@@ -35,7 +35,18 @@ const (
 // Stop. The ring is the measure of "input advancing", not the bytes fed to
 // the encoder, because a wedged encoder that stops reading its stdin stops
 // the feed too.
+//
+// BEFORE A GENERATION'S FIRST VIDEO FRAGMENT the allowance is
+// StartupStallFactor x StallTimeout (ruling R55): a cold software encode of an
+// interlaced 1080 source is fed at the provider's real-time rate and needs its
+// deinterlacer's lookahead and a full GOP before it can write anything, and
+// the first attempt of a cold tune was measured killed at 10 s with nothing
+// wrong with it. After the first fragment the plain StallTimeout applies.
 const StallTimeout = max(10*time.Second, 5*TargetDuration*time.Second)
+
+// StartupStallFactor scales StallTimeout into the allowance a generation gets
+// before its first video fragment (ruling R55): 30 s at TARGETDURATION 2.
+const StartupStallFactor = 3
 
 // stopJoinWait bounds Stop's wait for the pipeline to wind down: the exit
 // grace, the reap budget and a margin.
@@ -87,6 +98,10 @@ type Config struct {
 	ExitGrace    time.Duration
 	AudioWait    time.Duration
 	StallTimeout time.Duration
+	// StartupStallTimeout is the watchdog's allowance before a generation's
+	// first video fragment (R55); zero means StartupStallFactor x the stall
+	// timeout in force.
+	StartupStallTimeout time.Duration
 	// Command maps a Spawn to the command and argv actually run. Nil runs
 	// FFmpeg with the built argv; the stand-in tests replace it.
 	Command func(Spawn) (string, []string)
@@ -103,8 +118,8 @@ type Config struct {
 // and the Store its segmenter publishes into. It is started by Start and runs
 // until Stop, the channel's ring closing, or ErrFailed.
 //
-// IT IS INERT IN 4a-1a. Nothing in the relay constructs one: 4a-1b's HLS
-// entry path attaches it through Channel.AttachOutput and serves its Store.
+// 4a-1b's HLS entry path attaches it through Channel.AttachHLS and serves its
+// Store under /hls/.
 type Pipeline struct {
 	cfg    Config
 	log    *slog.Logger
@@ -791,7 +806,9 @@ func (p *Pipeline) attempt(ctx context.Context, gen, n int, start uint64, probe 
 }
 
 // watch is the stall watchdog (R33): it kills the generation when no new
-// video fragment has arrived for StallTimeout of the ring ADVANCING. The
+// video fragment has arrived for StallTimeout of the ring ADVANCING -- or, while
+// the generation has written no video fragment yet, for the longer startup
+// allowance (R55: StartupStallFactor x StallTimeout). The
 // clock starts at the first ring advance after the latest fragment, and
 // stops again whenever the ring has not moved for half the timeout, so an
 // upstream in dead air -- which starves the encoder of input, and is the
@@ -803,6 +820,10 @@ func (p *Pipeline) watch(gen int, seg *segmenter, proc *ffmpeg.Process, done <-c
 	stall := p.cfg.StallTimeout
 	if stall <= 0 {
 		stall = StallTimeout
+	}
+	startup := p.cfg.StartupStallTimeout
+	if startup <= 0 {
+		startup = StartupStallFactor * stall
 	}
 	ring := p.cfg.Source.Ring()
 	ticker := time.NewTicker(stall / 10)
@@ -829,7 +850,11 @@ func (p *Pipeline) watch(gen int, seg *segmenter, proc *ffmpeg.Process, done <-c
 		} else if now.Sub(moved) >= stall/2 {
 			advancing = time.Time{}
 		}
-		if !advancing.IsZero() && now.Sub(advancing) >= stall {
+		limit := stall
+		if frags == 0 {
+			limit = startup
+		}
+		if !advancing.IsZero() && now.Sub(advancing) >= limit {
 			p.log.Warn("an HLS generation wrote no video while its input advanced; killing it as a stalled encoder",
 				"generation", gen, "stalled_for", now.Sub(advancing).Round(time.Millisecond))
 			proc.Kill()
