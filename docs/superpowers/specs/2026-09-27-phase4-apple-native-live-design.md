@@ -956,11 +956,25 @@ otherwise unchanged.
 1. **Django.** `resolve_initial_source`'s maxed-out branch computes `profile_ids`. For each of the
    channel's (or stream's) active profiles:
    - when `profile_has_capacity_for_selection` is false, it takes that profile;
-   - when `pool_has_capacity_for_profile` is false, it adds every active profile sharing that
+   - *(superseded by the amendment below, R64 and R72)* when `pool_has_capacity_for_profile` is
+     false, it adds every active profile sharing that
      profile's credential counter (`_credential_counter_key`, `apps/m3u/connection_pool.py:138`).
 
    It returns `capacity: {blocked: true, profile_ids}`. This is **advisory and read-only**: the
    reservation itself is still the slot script's atomic step on the retry.
+
+   *Amended by the 4a-1c plan* (rulings R64, R65 and R72): a profile full on its own counter
+   (`profile_has_capacity_for_selection` false) contributes only itself. A profile whose own
+   counter has room but whose credential counter is full (`group_has_capacity_for_profile` false:
+   the slot script's `credential_full` refusal) contributes every credential sibling, itself
+   included. Stopping a sibling's channel cannot unblock a profile full on its own counter, and a
+   profile full only on its own counter blocks nothing its siblings hold. The siblings are every
+   profile whose reserve counts
+   against that same counter (`credential_reservation`), active or not: a profile deactivated
+   while a channel plays on it still holds the counter. The profiles walked are the ones
+   `get_stream()` tries, in `Channel.blocking_profile_ids()` and `Stream.blocking_profile_ids()`
+   beside it; `capacity` is added only to the all-profiles-full refusal, whose reason string
+   becomes the shared constant `ALL_PROFILES_FULL` (`apps/m3u/connection_pool.py`).
 2. **Relay** (`startTune`, initial tunes only; failover never reclaims). On `source: null` with
    `capacity.blocked`, it calls `Manager.ReclaimFor(profileIDs)`. That function holds `m.mu`, the
    mutex `claim()` holds, for one decision:
@@ -974,6 +988,18 @@ otherwise unchanged.
      1. **Pick.** It counts the TS and fMP4 clients under `c.mu`, and evaluates the channel's HLS
         sessions under `st.mu`, releasing each lock after reading. It picks the channel that has
         been reclaimable (D16) longest.
+
+        *Amended by the 4a-1c plan*, stating the predicate over the registry: a channel is
+        reclaimable when **every client in its registry** is the client of one of its HLS
+        sessions that is ACTIVE with nothing in flight and more than 2 × TD since its last
+        request ended, or DEPARTED and still settling (its idle departure is dropping it). A
+        registered client with no session (a TS or fMP4 client, an entry not yet added to the
+        table, a leave or admin stop in progress), or whose session is ARRIVED, or DEPARTED and
+        not settling (a resume between its `AttachExisting` and its commit), makes the channel
+        not reclaimable. A channel with no client at all is reclaimable (D16's
+        `channel_shutdown_delay` case). "Longest" orders by the latest `lastEnd + 2 × TD` among
+        the matched sessions or, with no client, by when the channel lost its last one; ties
+        break by channel id.
      2. **Test hook.** It calls the optional hook, with `m.mu` held and `st.mu` not held.
      3. **Re-check and mark.** It takes `c.mu` and then `st.mu` (the lock order in § Presence
         › Locks), re-evaluates the channel, and, if it is still reclaimable, marks every one of its
@@ -988,7 +1014,9 @@ otherwise unchanged.
      release may have completed between Django's blocked answer and this call (finding 3).
 
    `released` is a new signal, closed after `releaseSlot` returns (`relay/channel/channel.go:445`,
-   `:697-702`). The channel leaves the releasing set when `released` closes, under `m.mu`.
+   `:697-702`). The channel leaves the releasing set when `released` closes, under `m.mu`. (The
+   4a-1c plan: the manager closes `released` and deletes the entry in one `m.mu` critical
+   section, so the conditional insertion below and the removal are ordered by the lock.)
    **Insertion is conditional.** Each stop path inserts the channel only if `released` is still
    open, checked under `m.mu` in the same critical section as the map delete (a `select` on
    `released` with a `default`). The close handler removes the entry under `m.mu` too. So an
@@ -1248,6 +1276,12 @@ The behaviours, by owning PR:
       tune B: B plays.
     - Tune A with a session that keeps reloading: B gets 503.
     - A limit-1 user tunes A, calls leave, tunes B: no 429.
+
+      *Amended by the 4a-1c plan (R67):* this scenario runs in
+      `streaming-failover/stream-limit-429.spec.ts`, not the `streaming` project. With
+      `terminate_on_limit_exceeded` at its default the hop admits B whether or not A left, so the
+      scenario pins nothing unless that instance-wide setting is off, and that write is allowed
+      only in a serialised project already allowlisted for it.
   - **4a-2's** hls.js playback runs in the `frontend` project (Chromium): `currentTime` advances
     on a live channel, a `DELETE /hls/…` is observed when the player closes, and the playlist
     reload cadence while paused is recorded (Q9).
@@ -1961,6 +1995,22 @@ Filled in as PRs merge.
   - **R52 and R53** bind the 4a-1b implementation, not this text: the Go floor becomes
     `589 + H + O`, every census round at or under it, and the floor header's R21 sentence reads
     "does not exceed"; the orchestrator files the issue if R29's measurement is below real time.
+
+- **2026-09-29, amended by the 4a-1c plan** (`docs/superpowers/plans/2026-09-29-phase4-4a1c-slot-reclaim.md`;
+  rulings R64-R67 and R72, 2026-09-29).
+  - **§ Slot reclaim, step 1 (R64, R72, R65).** A profile full on its own counter contributes only
+    itself; one whose own counter has room and whose credential counter is full contributes its
+    credential siblings, which are every profile sharing the counter, active or not. The walk lives in
+    `Channel.blocking_profile_ids()`/`Stream.blocking_profile_ids()` beside `get_stream()`, and
+    `capacity` is added only to the all-profiles-full refusal (`ALL_PROFILES_FULL`).
+  - **§ Slot reclaim, step 2 (b) › Pick.** The reclaimable predicate is stated over the registry:
+    every registered client must be a silent HLS session's (or a settling departure's); a resume
+    between its attach and its commit, an ARRIVED entry and any client with no session keep the
+    channel (R66). "Longest" is defined, with a tie-break.
+  - **§ Testing and gates › E2E (R67).** The limit-1 zap scenario runs in `streaming-failover`
+    with `terminate_on_limit_exceeded` off.
+  - **§ Slot reclaim, `released`.** The manager closes `released` and deletes the releasing entry
+    in one `m.mu` critical section.
 
 - **2026-09-29, amended by the 4a-1d plan** (`docs/superpowers/plans/2026-09-29-phase4-4a1d-automatic-profile.md`;
   seed `4ed75d96`, #538's reviewed head). § Automatic generation and § 4a-1d only, plus one payload line.
