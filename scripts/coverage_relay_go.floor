@@ -149,6 +149,16 @@
 # 685 added statements. The cap is 589 + 88 + 51 = 728; the census maximum lands
 # 41 under it (ruling R52).
 #
+# PROVENANCE (Phase 4a-1c, R21/R52/R80 -- measured in CI at
+# 1fb18a3f on migration/phase4-4a1c-slot-reclaim, 2026-09-29). `missing` below
+# is the WORST of 12 rounds of go-tests.yml's own build + coverage jobs (run
+# ids in the PR body): the gate read 688-691, max=691, over 6,266 linked
+# statements (88.97% at the floor). 687 -> 691 is the PR's own O = 6, the
+# uncovered statements of its new or changed code by the start-line rule
+# (relay/channel/reclaim.go 6 of 104), which are 96.9% covered on 193 added
+# statements. The cap is 687 + 6 = 693; the census maximum lands 2 under it
+# (rulings R52, R80).
+#
 # THE THRESHOLD. D7 requires >=80% on the live path, transferring to Go at
 # >=80%. The ceiling is statements - ceil(0.8 * statements) = 739; `missing`
 # is 589, so the margin is 150 statements and coverage at the floor is 84.06%.
@@ -247,17 +257,17 @@
 # scripts/check_floor_raise.sh (go-tests.yml) requires them and caps the new missing at
 # their sum. --gate and --write-floor ignore both and never hash them.
 shape=go-race-per-package/v1
-statements=6073
-missing=687
-percent=88.69
+statements=6266
+missing=691
+percent=88.97
 measured=2026-09-29
 runs=12
 packages=40d4ba02d7d3
 package_count=12
 gomod=92baf312d30d
-# A raise under R21/R27/R34, declared for the CI guard that refuses an unexplained
-# one (R91): the base `missing` and the listed amount, H 88 (relay/hls) + O 51
-# (the start-line rule), so 687 <= 589 + 139 = 728. Remove both when the next
-# re-measurement moves `missing` without a raise.
-raise_from=589
-raise_listed=139
+# A raise under R21, declared for the CI guard that refuses an unexplained one
+# (R91): the base `missing` and the listed amount, O 6 (the start-line rule),
+# so 691 <= 687 + 6 = 693. Remove both when the next re-measurement moves
+# `missing` without a raise.
+raise_from=687
+raise_listed=6
