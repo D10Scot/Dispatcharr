@@ -244,6 +244,12 @@ class OutputProfileRefSerializer(serializers.Serializer):
     )
 
 
+class NextSourceCapacitySerializer(serializers.Serializer):
+    # Phase 4a-1c. Present (non-null) only on the all-profiles-full refusal.
+    blocked = serializers.BooleanField()
+    profile_ids = serializers.ListField(child=serializers.IntegerField())
+
+
 class NextSourceResponseSerializer(serializers.Serializer):
     source = SourceSerializer(allow_null=True)
     alternates = SourceSerializer(many=True)
@@ -257,6 +263,10 @@ class NextSourceResponseSerializer(serializers.Serializer):
     # DictField of a nested serializer, so the value shape is still in
     # the OpenAPI schema and a Go client can generate against it.
     output_profiles = serializers.DictField(child=OutputProfileRefSerializer())
+    # Phase 4a-1c: what blocked the tune, so the relay can reclaim an unwatched
+    # channel and ask once more. Null on every answer but the all-profiles-full
+    # refusal; the relay does not require it.
+    capacity = NextSourceCapacitySerializer(allow_null=True)
 
 
 class ReleaseRequestSerializer(serializers.Serializer):

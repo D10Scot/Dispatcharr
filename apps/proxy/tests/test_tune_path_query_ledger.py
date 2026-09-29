@@ -39,6 +39,8 @@ from django.db import connection
 from django.test import SimpleTestCase
 from django.test.utils import CaptureQueriesContext
 
+from apps.m3u.connection_pool import profile_connections_key
+from apps.m3u.models import M3UAccountProfile
 from apps.proxy import relay_client
 from apps.proxy.config import BaseConfig, TSConfig
 from apps.proxy.tests.test_next_source_api import RelayApiTestCase
@@ -90,6 +92,28 @@ LEDGER = {
         (S, "dispatcharr_channels_channelstream"): 1,
         (S, "dispatcharr_channels_stream"): 1,
         (S, "m3u_m3uaccountprofile"): 1,
+    },
+    # The refusal, Phase 4a-1c: the fixture channel's profile is full, so
+    # get_stream() refuses and _refusal adds `capacity`. The fixture has two
+    # streams on one account, which is why the account and profile reads come
+    # in pairs. Measured cold at 53d1df18 plus this PR's Django half.
+    "next_source_blocked": {
+        # _with_proxy_settings, and _with_output_profiles, as every answer.
+        (S, "core_coresettings", "proxy_settings"): 1,
+        (S, "core_outputprofile"): 1,
+        # get_stream_object, once from next_source_view and once from
+        # resolve_initial_source (the tune's first-tune drive has the same two).
+        (S, "dispatcharr_channels_channel"): 2,
+        # Channel.get_stream()'s `self.streams.exists()`.
+        (S, "dispatcharr_channels_channelstream"): 1,
+        # get_stream()'s ordered streams query (1) and Channel.blocking_profile_ids()'s
+        # own walk of the same streams (1): the new read.
+        (S, "dispatcharr_channels_stream"): 2,
+        # stream.m3u_account and the account's profile query, once per stream
+        # (two streams): two of each by get_stream() and two of each by
+        # blocking_profile_ids(), which is the new read.
+        (S, "m3u_m3uaccount"): 4,
+        (S, "m3u_m3uaccountprofile"): 4,
     },
     # POST /api/relay/channels/<uuid>/release, once per channel stop.
     "release": {
@@ -224,6 +248,17 @@ class TunePathQueryLedgerTests(RelayApiTestCase):
     def test_a_reused_assignment_next_source_runs_no_query_outside_its_ledger(self):
         self._observe(self._next_source)
         self._assert_ledger("next_source_reuse", self._observe(self._next_source))
+
+    def test_a_blocked_next_source_runs_no_query_outside_its_ledger(self):
+        # The fixture channel's only account profile is full on its own
+        # counter, so get_stream() refuses and next-source answers with the
+        # capacity object (Phase 4a-1c): the blocking walk's reads are what
+        # this drive pins, which the static BOUNDARY_MODULES pin cannot see
+        # (they live in apps/channels/models.py and apps/m3u/connection_pool.py).
+        M3UAccountProfile.objects.filter(pk=self.m3u_profile.pk).update(max_streams=1)
+        self.redis._strings[profile_connections_key(self.m3u_profile.id)] = 1
+        observed = self._observe(self._next_source)
+        self._assert_ledger("next_source_blocked", observed)
 
     def test_release_runs_no_query_outside_its_ledger(self):
         self._observe(self._next_source)

@@ -16,7 +16,12 @@ logger = logging.getLogger(__name__)
 
 # If you have an M3UAccount model in apps.m3u, you can still import it:
 from apps.m3u.models import M3UAccount
-from apps.m3u.connection_pool import reserve_profile_slot, release_profile_slot
+from apps.m3u.connection_pool import (
+    ALL_PROFILES_FULL,
+    blocking_profile_ids,
+    reserve_profile_slot,
+    release_profile_slot,
+)
 
 
 # Add fallback functions if Redis isn't available
@@ -253,7 +258,20 @@ class Stream(models.Model):
                 redis_client.set(RedisKeys.stream_profile(self.id), profile.id)
                 return self.id, profile.id, None, True
 
-        return None, None, "All active M3U profiles have reached maximum connection limits", False
+        return None, None, ALL_PROFILES_FULL, False
+
+    def blocking_profile_ids(self):
+        """The profiles that blocked get_stream() (Phase 4 spec § Slot reclaim).
+
+        Mirrors Stream.get_stream()'s walk: the account's profiles, default
+        first, skipping inactive ones and a missing default. Held to
+        get_stream() by test_blocking_profiles_walk_the_profiles_get_stream_tries.
+        """
+        m3u_profiles = self.m3u_account.profiles.all()
+        default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
+        profiles = [default_profile] + [obj for obj in m3u_profiles if not obj.is_default]
+        profiles = [p for p in profiles if p is not None and p.is_active]
+        return blocking_profile_ids(profiles, RedisClient.get_client())
 
     def release_stream(self):
         """
@@ -653,13 +671,40 @@ class Channel(models.Model):
 
         # No available streams - determine specific reason
         if has_streams_but_maxed_out:
-            error_reason = "All active M3U profiles have reached maximum connection limits"
+            error_reason = ALL_PROFILES_FULL
         elif has_active_profiles:
             error_reason = "No compatible active profile found for any assigned stream"
         else:
             error_reason = "No active profiles found for any assigned stream"
 
         return None, None, error_reason, False
+
+    def blocking_profile_ids(self):
+        """The profiles that blocked get_stream() (Phase 4 spec § Slot reclaim).
+
+        Mirrors the walk get_stream() makes, in the same order and with the same
+        skips (streams in order; an account that is missing or inactive; an
+        account with no active default profile; that account's active profiles),
+        and hands it to the read-only capacity check. Held to get_stream() by
+        test_blocking_profiles_walk_the_profiles_get_stream_tries.
+        """
+        profiles = []
+        seen = set()
+        for stream in self.streams.all().order_by("channelstream__order"):
+            m3u_account = stream.m3u_account
+            if not m3u_account or m3u_account.is_active == False:
+                continue
+            m3u_profiles = m3u_account.profiles.filter(is_active=True)
+            default_profile = next((obj for obj in m3u_profiles if obj.is_default), None)
+            if not default_profile:
+                continue
+            for profile in [default_profile] + [
+                obj for obj in m3u_profiles if not obj.is_default
+            ]:
+                if profile.id not in seen:
+                    seen.add(profile.id)
+                    profiles.append(profile)
+        return blocking_profile_ids(profiles, RedisClient.get_client())
 
     def release_stream(self):
         """

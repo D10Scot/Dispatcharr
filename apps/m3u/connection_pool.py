@@ -182,6 +182,44 @@ def pool_has_capacity_for_profile(profile, redis_client) -> bool:
     )
 
 
+# The reason both get_stream()s give when every profile they tried was full
+# (apps/channels/models.py). next-source adds `capacity` to exactly this refusal.
+ALL_PROFILES_FULL = "All active M3U profiles have reached maximum connection limits"
+
+
+def credential_sibling_profile_ids(profile) -> list[int]:
+    """Every profile whose reserve counts against `profile`'s credential counter,
+    `profile` included and active or not; [] when it has none (no ServerGroup,
+    max_streams 0, or no fingerprint: credential_reservation's (None, 0))."""
+    key, _cap = credential_reservation(profile)
+    if key is None:
+        return []
+    from apps.m3u.models import M3UAccountProfile
+
+    group = get_enforced_server_group_for_profile(profile)
+    candidates = M3UAccountProfile.objects.filter(
+        m3u_account__server_group=group
+    ).select_related("m3u_account")
+    return sorted(p.id for p in candidates if credential_reservation(p)[0] == key)
+
+
+def blocking_profile_ids(profiles, redis_client) -> list[int]:
+    """Read-only: of `profiles`, each one full on its own counter
+    (not profile_has_capacity_for_selection) names itself alone; each one
+    whose own counter has room but whose credential counter is full
+    (not group_has_capacity_for_profile: the credential_full refusal, R72)
+    names every credential sibling, itself included. Sorted ascending, no
+    duplicates. Writes nothing."""
+    named: set[int] = set()
+    for profile in profiles:
+        if not profile_has_capacity_for_selection(profile, redis_client):
+            named.add(profile.id)
+        elif not group_has_capacity_for_profile(profile, redis_client):
+            named.update(credential_sibling_profile_ids(profile))
+            named.add(profile.id)
+    return sorted(named)
+
+
 def profile_available_for_channel_switch(
     profile, redis_client, *, channel_already_on_profile: bool
 ) -> bool:
