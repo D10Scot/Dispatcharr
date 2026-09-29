@@ -251,7 +251,9 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		}
 
 		ch, release, err := deps.Channels.Attach(id, client, func() (channel.Started, error) {
-			return startTune(r.Context(), tuneDeps{control: deps.Control, probe: deps.Probe, log: log, proxyReason: proxyReason}, id, viaProxy)
+			return startTune(r.Context(), tuneDeps{control: deps.Control, probe: deps.Probe, log: log, proxyReason: proxyReason, reclaim: func(ids []int) channel.Reclaim {
+				return deps.Channels.ReclaimFor(ids, tuneBudget)
+			}}, id, viaProxy)
 		})
 		if err != nil {
 			var redirect *redirectAnswer
@@ -686,6 +688,11 @@ type tuneDeps struct {
 	// Proxy: "an internal principal" (the DVR) or "an HLS output". Empty reads
 	// as the first, which is what every caller before Phase 4a-1b was.
 	proxyReason string
+	// reclaim is a blocked tune's one reclaim (Phase 4a-1c): it takes back a
+	// channel nobody is watching on the profiles next-source named, or waits
+	// for one already releasing its slot. Nil means none; the retry still
+	// runs. The failover path holds none (spec: "failover never reclaims").
+	reclaim func(profileIDs []int) channel.Reclaim
 }
 
 // startTune asks the control plane for a source and builds the channel's
@@ -697,19 +704,46 @@ func startTune(parent context.Context, deps tuneDeps, id string, viaProxy bool) 
 	defer cancel()
 	client := deps.control
 
-	answer, err := client.NextSource(ctx, id, control.NextSourceRequest{
+	request := control.NextSourceRequest{
 		ExcludeStreamIDs: []int{},
 		Reason:           "initial",
 		// generate_stream_url asks for the alternates on the initial call
 		// (url_utils.py:55-58) and caches them for the degraded fallback and
 		// the Redirect fall-through; 2c-2 did not ask, having neither.
 		IncludeAlternates: true,
-	})
+	}
+	answer, err := client.NextSource(ctx, id, request)
 	if err != nil {
 		return channel.Started{}, err
 	}
 	if answer.Source == nil {
-		return channel.Started{}, ErrNoSource
+		profileIDs, blocked := answer.Blocked()
+		if !blocked {
+			return channel.Started{}, ErrNoSource
+		}
+		// Phase 4a-1c, spec § Slot reclaim: every profile was full. Take back
+		// one channel nobody is watching (or wait for one already releasing
+		// its slot) and ask ONCE more, whatever the reclaim found: a second
+		// refusal is the 503 it always was. The retry gets a fresh budget,
+		// because the reclaim may have spent the first, and it is the context
+		// the rest of the tune runs on.
+		var reclaimed channel.Reclaim
+		if deps.reclaim != nil {
+			reclaimed = deps.reclaim(profileIDs)
+		}
+		deps.log.Info("a blocked tune asked once more",
+			"channel", id, "profile_ids", profileIDs,
+			"reclaim", reclaimed.Case.String(), "reclaimed_channel", reclaimed.Channel, "released", reclaimed.Released)
+		retryCtx, cancelRetry := context.WithTimeout(context.WithoutCancel(parent), tuneBudget)
+		defer cancelRetry()
+		ctx = retryCtx
+		answer, err = client.NextSource(ctx, id, request)
+		if err != nil {
+			return channel.Started{}, err
+		}
+		if answer.Source == nil {
+			return channel.Started{}, ErrNoSource
+		}
 	}
 
 	tuning, readSize, err := tuningFrom(answer.ProxySettings)

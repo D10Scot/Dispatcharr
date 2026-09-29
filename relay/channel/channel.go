@@ -176,6 +176,19 @@ type Channel struct {
 	// never touched again.
 	onRunEnd func(*Channel)
 
+	// released is closed once the channel's provider slot has been given back
+	// (Phase 4a-1c), and onReleased is the manager's hook that closes it
+	// together with the releasing-set delete. Both are set by publish, the
+	// only caller of run; a channel built without publish has a nil released,
+	// which every reader treats as never released.
+	released   chan struct{}
+	onReleased func(*Channel)
+
+	// idleSince is when the registry last became empty, under mu: the
+	// channel clock's time, zeroed by addClient. What "reclaimable longest"
+	// orders a channel with no client by.
+	idleSince time.Time
+
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -248,6 +261,7 @@ func (c *Channel) addClient(cl *Client) bool {
 	cl.meter = newClientMeter(cl.ConnectedAt)
 	cl.stop = make(chan struct{})
 	c.clients[cl.ID] = cl
+	c.idleSince = time.Time{}
 	return true
 }
 
@@ -288,7 +302,27 @@ func (c *Channel) dropClient(id string) int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.clients, id)
+	if len(c.clients) == 0 {
+		c.idleSince = c.now()
+	}
 	return len(c.clients)
+}
+
+// clientIDsLocked is the registry's client ids, for a caller that holds c.mu.
+func (c *Channel) clientIDsLocked() []string {
+	ids := make([]string, 0, len(c.clients))
+	for id := range c.clients {
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// clientState is the registry's client ids and when the registry last became
+// empty, taken under one read of c.mu.
+func (c *Channel) clientState() ([]string, time.Time) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.clientIDsLocked(), c.idleSince
 }
 
 // ClientSnapshot is every attached client, oldest connection first and ties
@@ -457,7 +491,7 @@ type attachable interface{ attach(*Channel) }
 // mechanisms for one property means deleting either one changes no test,
 // because the other covers for it silently.
 func (c *Channel) run(ctx context.Context, first Source) {
-	defer c.releaseSlot()
+	defer c.finishRelease()
 	defer close(c.done)
 	// Phase 4a-1b: the run-ended self-stop, declared right after close(done)
 	// so it runs just BEFORE it -- after the ring has closed and the outputs
@@ -726,6 +760,17 @@ func (c *Channel) releaseSlot() {
 	}
 	c.release(c.id, c.Source())
 }
+
+// finishRelease is releaseSlot, then the signal ReclaimFor waits on. The
+// manager closes released and forgets the releasing entry in one m.mu
+// critical section (Phase 4a-1c).
+func (c *Channel) finishRelease() {
+	c.releaseSlot()
+	c.onReleased(c) // set by publish, which is the only caller of run
+}
+
+// Released is closed once the channel's provider slot has been given back.
+func (c *Channel) Released() <-chan struct{} { return c.released }
 
 // promoteOnFirstChunk moves a channel out of waiting_for_clients the moment
 // its first chunk is published, mirroring the waiting_for_clients + data ->

@@ -23,3 +23,10 @@ const (
 func IdleTimeout(td time.Duration) time.Duration {
 	return max(minIdleTimeout, 6*td)
 }
+
+// SilentAfter is how long an ACTIVE session may go with nothing in flight
+// before a blocked tune may take its channel back: 2 x TARGETDURATION (spec
+// § Presence thresholds, D16). Silent is STRICTLY MORE than this, measured from
+// the end of the session's last request: 4 s at TD 2, well inside M7's 2 s
+// reload cadence for a paused AVPlayer, and 12 s at TD 6.
+func SilentAfter(td time.Duration) time.Duration { return 2 * td }

@@ -24,6 +24,7 @@ from django.shortcuts import get_object_or_404
 
 from apps.channels.models import Channel, Stream
 from apps.m3u.connection_pool import (
+    ALL_PROFILES_FULL,
     get_profile_connection_count,
     profile_available_for_channel_switch,
 )
@@ -595,6 +596,18 @@ def get_alternate_streams(channel_id: str, current_stream_id: Optional[int] = No
         close_old_connections()
 
 
+def _refusal(obj, error_reason):
+    """get_stream()'s refusal as a next-source answer. When every profile was
+    full it carries `capacity` (Phase 4 spec § Slot reclaim): the profiles that
+    blocked the tune, so the relay can take back a channel nobody is watching on
+    one of them and ask once more. Advisory and read-only: the reservation is
+    still the slot script's, on that retry."""
+    answer = {"source": None, "error": error_reason}
+    if error_reason == ALL_PROFILES_FULL:
+        answer["capacity"] = {"blocked": True, "profile_ids": obj.blocking_profile_ids()}
+    return answer
+
+
 def resolve_initial_source(identifier, *, locked_ffmpeg_profile=_UNRESOLVED_FFMPEG_PROFILE):
     """
     Resolve the source a channel or previewed stream should play right now.
@@ -632,7 +645,7 @@ def resolve_initial_source(identifier, *, locked_ffmpeg_profile=_UNRESOLVED_FFMP
             stream_id, profile_id, error_reason, slot_reserved = stream.get_stream()
             if not stream_id or not profile_id:
                 logger.error(f"No profile available for stream {stream.id}: {error_reason}")
-                return {"source": None, "error": error_reason}
+                return _refusal(stream, error_reason)
 
             try:
                 m3u_profile = M3UAccountProfile.objects.select_related(
@@ -689,7 +702,7 @@ def resolve_initial_source(identifier, *, locked_ffmpeg_profile=_UNRESOLVED_FFMP
 
         if not stream_id or not profile_id:
             logger.error(f"No stream available for channel {identifier}: {error_reason}")
-            return {"source": None, "error": error_reason}
+            return _refusal(channel, error_reason)
 
         # get_stream() allocated a connection slot - ensure it's released on any error
         try:
