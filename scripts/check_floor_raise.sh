@@ -18,7 +18,9 @@ OLD="$1"
 FLOOR="$2"
 
 field() { grep -E "^$1=" "$FLOOR" | head -1 | cut -d= -f2- || true; }
-is_int() { [[ "$1" =~ ^[0-9]+$ ]]; }
+# No leading zeros (bash arithmetic would read them as octal) and at most nine
+# digits, so the sum below cannot overflow.
+is_int() { [[ "$1" =~ ^(0|[1-9][0-9]{0,8})$ ]]; }
 
 NEW="$(field missing)"
 if ! is_int "$OLD" || ! is_int "$NEW"; then

@@ -125,7 +125,7 @@ jobs:
           # already covers. That is the load-bearing half -- a corpus outside
           # `^relay/` would stop triggering this workflow at all, and `Go
           # result` would stay green through its not-required branch.
-          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|scripts/coverage_relay_go\.|\.github/workflows/go-tests\.yml$)'
+          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|scripts/check_floor_raise\.sh$|scripts/tests/test_check_floor_raise\.sh$|scripts/coverage_relay_go\.|\.github/workflows/go-tests\.yml$)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else

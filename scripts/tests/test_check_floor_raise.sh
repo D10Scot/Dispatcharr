@@ -25,9 +25,16 @@ expect 0 "rise exactly at cap"           589 'missing=736\nraise_from=589\nraise
 expect 1 "no declaration"                589 'missing=687\n' "must be declared"
 expect 1 "stale raise_from"              589 'missing=687\nraise_from=500\nraise_listed=200\n' "stale"
 expect 1 "rise over the cap"             589 'missing=737\nraise_from=589\nraise_listed=147\n' "exceeds"
-expect 1 "raise_listed zero"             589 'missing=687\nraise_from=589\nraise_listed=0\n' "raise_listed"
+expect 1 "raise_listed zero"             589 'missing=687\nraise_from=589\nraise_listed=0\n' "positive integer"
 expect 1 "raise_listed not an integer"   589 'missing=687\nraise_from=589\nraise_listed=9x\n' "raise_listed"
 expect 1 "raise_from missing"            589 'missing=687\nraise_listed=147\n' "raise_from"
 expect 1 "head missing= garbage"         589 'missing=<MAX>\n' "not a decimal"
+expect 1 "key only in a comment"         589 'missing=700\n# raise_from=589\n# raise_listed=147\n' "must be declared"
+expect 1 "duplicate missing, higher first" 589 'missing=9000\nmissing=589\n' "must be declared"
+expect 0 "duplicate raise_listed, first wins" 589 'missing=700\nraise_from=589\nraise_listed=147\nraise_listed=1\n'
+expect 1 "duplicate raise_listed, first is small" 589 'missing=700\nraise_from=589\nraise_listed=1\nraise_listed=147\n' "exceeds"
+expect 1 "raise_from leading zero"        589 'missing=687\nraise_from=0589\nraise_listed=147\n' "raise_from"
+expect 1 "raise_listed leading zero"      589 'missing=687\nraise_from=589\nraise_listed=0147\n' "positive integer"
+expect 1 "raise_listed overflow"          589 'missing=687\nraise_from=589\nraise_listed=99999999999999999999\n' "positive integer"
 
 exit "$fail"
