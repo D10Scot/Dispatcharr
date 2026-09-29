@@ -911,10 +911,13 @@ otherwise unchanged.
    It returns `capacity: {blocked: true, profile_ids}`. This is **advisory and read-only**: the
    reservation itself is still the slot script's atomic step on the retry.
 
-   *Amended by the 4a-1c plan* (open questions 1 and 2): the siblings are added when the
-   profile's **credential** check fails (`group_has_capacity_for_profile`, the `credential_full`
-   refusal), not whenever `pool_has_capacity_for_profile` does, because a profile full only on its
-   own counter blocks nothing its siblings hold. They are every profile whose reserve counts
+   *Amended by the 4a-1c plan* (rulings R64, R65 and R72): a profile full on its own counter
+   (`profile_has_capacity_for_selection` false) contributes only itself. A profile whose own
+   counter has room but whose credential counter is full (`group_has_capacity_for_profile` false:
+   the slot script's `credential_full` refusal) contributes every credential sibling, itself
+   included. Stopping a sibling's channel cannot unblock a profile full on its own counter, and a
+   profile full only on its own counter blocks nothing its siblings hold. The siblings are every
+   profile whose reserve counts
    against that same counter (`credential_reservation`), active or not: a profile deactivated
    while a channel plays on it still holds the counter. The profiles walked are the ones
    `get_stream()` tries, in `Channel.blocking_profile_ids()` and `Stream.blocking_profile_ids()`
@@ -1221,6 +1224,12 @@ The behaviours, by owning PR:
       tune B: B plays.
     - Tune A with a session that keeps reloading: B gets 503.
     - A limit-1 user tunes A, calls leave, tunes B: no 429.
+
+      *Amended by the 4a-1c plan (R67):* this scenario runs in
+      `streaming-failover/stream-limit-429.spec.ts`, not the `streaming` project. With
+      `terminate_on_limit_exceeded` at its default the hop admits B whether or not A left, so the
+      scenario pins nothing unless that instance-wide setting is off, and that write is allowed
+      only in a serialised project already allowlisted for it.
   - **4a-2's** hls.js playback runs in the `frontend` project (Chromium): `currentTime` advances
     on a live channel, a `DELETE /hls/…` is observed when the player closes, and the playlist
     reload cadence while paused is recorded (Q9).
@@ -1913,16 +1922,18 @@ Filled in as PRs merge.
     "does not exceed"; the orchestrator files the issue if R29's measurement is below real time.
 
 - **2026-09-29, amended by the 4a-1c plan** (`docs/superpowers/plans/2026-09-29-phase4-4a1c-slot-reclaim.md`;
-  pending the orchestrator's ruling on that plan's open questions 1 and 2).
-  - **§ Slot reclaim, step 1.** The credential siblings are added on the credential check's
-    failure (`group_has_capacity_for_profile`), not on `pool_has_capacity_for_profile`'s, and are
-    every profile sharing the counter, active or not. The walk lives in
+  rulings R64-R67 and R72, 2026-09-29).
+  - **§ Slot reclaim, step 1 (R64, R72, R65).** A profile full on its own counter contributes only
+    itself; one whose own counter has room and whose credential counter is full contributes its
+    credential siblings, which are every profile sharing the counter, active or not. The walk lives in
     `Channel.blocking_profile_ids()`/`Stream.blocking_profile_ids()` beside `get_stream()`, and
     `capacity` is added only to the all-profiles-full refusal (`ALL_PROFILES_FULL`).
   - **§ Slot reclaim, step 2 (b) › Pick.** The reclaimable predicate is stated over the registry:
     every registered client must be a silent HLS session's (or a settling departure's); a resume
     between its attach and its commit, an ARRIVED entry and any client with no session keep the
-    channel. "Longest" is defined, with a tie-break.
+    channel (R66). "Longest" is defined, with a tie-break.
+  - **§ Testing and gates › E2E (R67).** The limit-1 zap scenario runs in `streaming-failover`
+    with `terminate_on_limit_exceeded` off.
   - **§ Slot reclaim, `released`.** The manager closes `released` and deletes the releasing entry
     in one `m.mu` critical section.
 
