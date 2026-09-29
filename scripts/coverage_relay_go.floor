@@ -250,3 +250,9 @@ runs=12
 packages=40d4ba02d7d3
 package_count=12
 gomod=92baf312d30d
+# A raise under R21/R27/R34, declared for the CI guard that refuses an unexplained
+# one (R91): the base `missing` and the listed amount, H 88 (relay/hls) + O 51
+# (the start-line rule), so 687 <= 589 + 139 = 728. Remove both when the next
+# re-measurement moves `missing` without a raise.
+raise_from=589
+raise_listed=139
