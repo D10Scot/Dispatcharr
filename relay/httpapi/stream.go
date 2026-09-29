@@ -805,6 +805,7 @@ func startTune(parent context.Context, deps tuneDeps, id string, viaProxy bool) 
 		Tuning:         tuning,
 		Info:           infoFrom(answer.Source),
 		OutputProfiles: outputProfilesFrom(answer),
+		HLSProfile:     hlsProfileFrom(answer),
 		Resolver: &resolver{
 			control:    client,
 			id:         id,

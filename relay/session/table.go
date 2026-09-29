@@ -49,12 +49,17 @@ type Releases struct {
 
 // Session is one viewer's media session.
 type Session struct {
-	// Immutable after Add.
+	// Immutable after Add, except TD.
 	ID       string // the sid, never logged
 	Owner    Owner
-	Key      string // the channel's HLS output key; "hls" in 4a-1b
+	Key      string // the channel's HLS output key: "hls", or "hls:p<id>" for an HLS profile
 	Pipeline *hls.Pipeline
-	TD       time.Duration // hls.TargetDuration * time.Second in 4a-1b
+	// TD is the session's pipeline's target duration, which every presence
+	// threshold scales. Add sets it to hls.TargetDuration seconds and the
+	// entry then fixes it with SetTD once the pipeline's first generation has
+	// decided its own; it is fixed before Activate, and no threshold reads it
+	// while the entry request is in flight.
+	TD time.Duration
 
 	// Under Table.mu.
 	client     *channel.Client // the current registry entry's client; replaced on resume
@@ -114,6 +119,21 @@ func (t *Table) Add(s *Session, client *channel.Client, r Releases) {
 	s.lastEnd = t.now()
 	s.releases = &r
 	t.byID[s.ID] = s
+}
+
+// SetTD fixes an ARRIVED session's target duration from its pipeline (Phase
+// 4a-1d, R42): 2 s in transcode, up to 6 s for a copied automatic run. It is
+// called once, after the pipeline is ready and before Activate. An ARRIVED
+// session always holds its entry request in flight, so no idle or silence
+// threshold reads TD until then, and the write is under the same lock the
+// thresholds read it under. It is a no-op for anything but an ARRIVED session,
+// so a late call can never move a live one's thresholds.
+func (t *Table) SetTD(sid string, td time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.byID[sid]; s != nil && s.state == Arrived {
+		s.TD = td
+	}
 }
 
 // Activate moves ARRIVED to ACTIVE once the multivariant is about to be

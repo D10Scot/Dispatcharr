@@ -344,6 +344,7 @@ vi.mock('@mantine/core', async () => ({
 import ChannelForm from '../Channel';
 import useChannelsStore from '../../../store/channels';
 import useStreamProfilesStore from '../../../store/streamProfiles';
+import useOutputProfilesStore from '../../../store/outputProfiles';
 import useEPGsStore from '../../../store/epgs';
 import useLogosStore from '../../../store/logos';
 import { useChannelLogoSelection } from '../../../hooks/useSmartLogos';
@@ -597,6 +598,40 @@ describe('ChannelForm', () => {
       expect(select).toBeInTheDocument();
       expect(screen.getByText('HD Profile')).toBeInTheDocument();
       expect(screen.getByText('SD Profile')).toBeInTheDocument();
+    });
+
+    it('offers only HLS profiles and the built-in re-encode in the HLS output select', () => {
+      setupMocks();
+      useOutputProfilesStore.setState({
+        profiles: [
+          { id: 1, name: 'AC3 Audio', is_active: true, hls_mode: '' },
+          {
+            id: 2,
+            name: 'HLS (Re-encode)',
+            is_active: true,
+            hls_mode: 'transcode',
+          },
+          {
+            id: 3,
+            name: 'HLS (Automatic)',
+            is_active: true,
+            hls_mode: 'automatic',
+          },
+          { id: 4, name: 'HLS Off', is_active: false, hls_mode: 'automatic' },
+        ],
+      });
+      try {
+        render(<ChannelForm {...defaultProps()} />);
+        const select = screen.getByTestId('select-hls_output_profile_id');
+        const labels = Array.from(select.options).map((o) => o.textContent);
+        expect(labels).toEqual([
+          '(built-in re-encode)',
+          'HLS (Re-encode)',
+          'HLS (Automatic)',
+        ]);
+      } finally {
+        useOutputProfilesStore.setState({ profiles: [] });
+      }
     });
 
     it('renders the LazyLogo component', () => {
@@ -1030,6 +1065,20 @@ describe('ChannelForm', () => {
       fireEvent.click(screen.getByText('Submit'));
       await waitFor(() => {
         expect(ChannelUtils.addChannel).toHaveBeenCalled();
+      });
+    });
+
+    it('submits hls_output_profile_id with the rest of the form', async () => {
+      vi.mocked(ChannelUtils.addChannel).mockResolvedValue(undefined);
+      setupMocks({
+        formOverrides: { watchValues: { hls_output_profile_id: '7' } },
+      });
+      render(<ChannelForm {...defaultProps()} />);
+      fireEvent.click(screen.getByText('Submit'));
+      await waitFor(() => {
+        expect(ChannelUtils.addChannel).toHaveBeenCalledWith(
+          expect.objectContaining({ hls_output_profile_id: '7' })
+        );
       });
     });
 

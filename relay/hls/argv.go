@@ -18,7 +18,34 @@ const (
 	ModeAutomatic
 )
 
-// Engine is which H.264 encoder a generation runs (spec D11).
+// Family is a video codec family: what the multivariant's CODECS declares for
+// the whole run (4a-1d, spec D12). H264 is the zero value, and the only family
+// transcode mode has.
+type Family int
+
+// The two families.
+const (
+	FamilyH264 Family = iota
+	FamilyHEVC
+)
+
+func (f Family) String() string {
+	if f == FamilyHEVC {
+		return "hevc"
+	}
+	return "h264"
+}
+
+// qsvEncoder is the family's Quick Sync encoder.
+func (f Family) qsvEncoder() string {
+	if f == FamilyHEVC {
+		return "hevc_qsv"
+	}
+	return "h264_qsv"
+}
+
+// Engine is which encoder a generation runs (spec D11): a Quick Sync or
+// software encoder for its family, or, in automatic mode, EngineCopy.
 type Engine string
 
 const (
@@ -27,6 +54,10 @@ const (
 	// EngineSoftware is libx264, the fallback whenever Quick Sync is not
 	// usable. The relay encodes in software and says so; it never refuses.
 	EngineSoftware Engine = "software"
+	// EngineCopy is a generation whose video is copied, not encoded
+	// (automatic mode, 4a-1d): no encoder, no hardware device, and the
+	// payload's hls_encoder says "copy". Its audio may still be encoded.
+	EngineCopy Engine = "copy"
 )
 
 // DefaultDevice is the render node the QSV argv and the detection encode
@@ -87,6 +118,28 @@ type Output struct {
 	// Audio is the declared audio renditions, in audioOrder. AAC is always
 	// declared.
 	Audio []Rendition
+
+	// The fields below are automatic mode's (4a-1d, DecideFor); transcode
+	// fills Target 2 and the rates from the table above.
+
+	// Family is the run's declared video family, H.264 unless generation 0
+	// was copied HEVC. A later generation that cannot be copied is encoded
+	// into it.
+	Family Family
+	// Target is the run's EXT-X-TARGETDURATION in seconds: 2 in transcode,
+	// max(2, ceil(K - 0.1 s)) for a copied generation 0.
+	Target int
+	// Level is the declared video level: H.264 42 or HEVC 123 at least, the
+	// copied source's own when higher. A later source above it is encoded.
+	Level int
+	// PeakRate and AverageRate are the bandwidth the multivariant declares
+	// for the video: max(VideoMaxrate, 1.25 x the probe window's rate) and
+	// max(VideoBitrate, that rate). Zero (a hand-built Output) means
+	// VideoMaxrate and VideoBitrate alone.
+	PeakRate, AverageRate int
+	// Automatic marks an automatic run: the multivariant's video CODECS is
+	// the family's ceiling (declaredVideoCodec).
+	Automatic bool
 }
 
 // Declared reports the named audio rendition's declaration.
@@ -245,7 +298,13 @@ type Fill struct {
 type Plan struct {
 	Engine      Engine
 	Deinterlace bool
-	Fills       map[string]Fill
+	// VideoCopy is a generation whose video is copied (automatic mode): no
+	// hardware device, no filter, `-c:v copy`.
+	VideoCopy bool
+	// Family is the encode family when the video is encoded: H.264 (the zero
+	// value) or HEVC.
+	Family Family
+	Fills  map[string]Fill
 	// Input is the encoder's own input analysis bound: the bound the
 	// generation's probe succeeded with (R30), QuickProbe when zero.
 	Input ProbeBound
@@ -339,7 +398,7 @@ const audioFragment = "200000"
 // could keep the process alive after its stdin closes (D10, M8).
 func (o Output) Argv(plan Plan, device string) []string {
 	a := []string{"-hide_banner", "-loglevel", "warning", "-nostats"}
-	if plan.Engine == EngineQSV {
+	if plan.Engine == EngineQSV && !plan.VideoCopy {
 		a = append(a, "-init_hw_device", "qsv=hw:"+device, "-filter_hw_device", "hw")
 	}
 	in := plan.Input
@@ -354,28 +413,25 @@ func (o Output) Argv(plan Plan, device string) []string {
 		"-probesize", strconv.Itoa(in.Bytes), "-analyzeduration", in.microseconds(),
 		"-f", "mpegts", "-i", "pipe:0",
 		"-map", "0:v:0",
-		"-vf", o.filter(plan),
 	)
-	g := strconv.Itoa(o.GOP)
-	b, m := strconv.Itoa(o.VideoBitrate), strconv.Itoa(o.VideoMaxrate)
-	if plan.Engine == EngineQSV {
-		a = append(a,
-			"-c:v", "h264_qsv", "-preset", "veryfast", "-profile:v", "high", "-level", "42",
-			"-b:v", b, "-maxrate", m, "-bufsize", m,
-			"-g", g, "-idr_interval", "0", "-forced_idr", "1",
-		)
+	if plan.VideoCopy {
+		// A copied video is the source's own packets in fragmented MP4:
+		// nothing to scale or pad and no keyframes to force (its own are the
+		// segment cuts). HEVC is tagged hvc1, which AVPlayer requires; the
+		// source's own tag would be hev1.
+		a = append(a, "-c:v", "copy")
+		if plan.Family == FamilyHEVC {
+			a = append(a, "-tag:v", "hvc1")
+		}
+		a = append(a, "-f", "mp4", "-movflags", videoFragFlags, "pipe:1")
 	} else {
+		a = append(a, "-vf", o.filter(plan))
+		a = append(a, o.encoderArgs(plan)...)
 		a = append(a,
-			"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
-			"-profile:v", "high", "-level:v", "4.2",
-			"-b:v", b, "-maxrate", m, "-bufsize", m,
-			"-g", g, "-keyint_min", g, "-sc_threshold", "0",
+			"-force_key_frames", "expr:gte(t,n_forced*2)",
+			"-f", "mp4", "-movflags", videoFragFlags, "pipe:1",
 		)
 	}
-	a = append(a,
-		"-force_key_frames", "expr:gte(t,n_forced*2)",
-		"-f", "mp4", "-movflags", videoFragFlags, "pipe:1",
-	)
 	for _, name := range audioOrder {
 		r, declared := o.Declared(name)
 		fill, planned := plan.Fills[name]
@@ -390,6 +446,50 @@ func (o Output) Argv(plan Plan, device string) []string {
 		)
 	}
 	return a
+}
+
+// encoderArgs is the video encoder's arguments: H.264 on Quick Sync or
+// libx264 (transcode's, byte for byte), or, for an automatic run declared
+// HEVC (4a-1d), hevc_qsv or libx265 with the same bitrate table and GOP.
+func (o Output) encoderArgs(plan Plan) []string {
+	g := strconv.Itoa(o.GOP)
+	b, m := strconv.Itoa(o.VideoBitrate), strconv.Itoa(o.VideoMaxrate)
+	switch {
+	case plan.Family == FamilyHEVC && plan.Engine == EngineQSV:
+		// -level 41 is oneVPL's MFX_LEVEL_HEVC_41, as -level 42 is
+		// MFX_LEVEL_AVC_42 on h264_qsv. Unrun on Quick Sync (Q1).
+		return []string{
+			"-c:v", "hevc_qsv", "-preset", "veryfast", "-profile:v", "main", "-level", "41",
+			"-b:v", b, "-maxrate", m, "-bufsize", m,
+			"-g", g, "-idr_interval", "0", "-forced_idr", "1",
+			"-tag:v", "hvc1",
+		}
+	case plan.Family == FamilyHEVC:
+		// open-gop=0 (R88): libx265's default open GOP turns a forced keyframe
+		// into a CRA with RASL frames. In decode time that CRA's keyframe lands
+		// early (1.96 s, one frame before the 2 s grid line), so the segmenter
+		// merged it into the next segment and a generation's first segment came
+		// out 3.96 s under TARGETDURATION 2, and INDEPENDENT-SEGMENTS was
+		// untrue. Closed GOPs make every keyframe an IDR.
+		return []string{
+			"-c:v", "libx265", "-preset", "ultrafast",
+			"-x265-params", "keyint=" + g + ":min-keyint=" + g + ":scenecut=0:open-gop=0:level-idc=4.1:log-level=error",
+			"-b:v", b, "-maxrate", m, "-bufsize", m,
+			"-tag:v", "hvc1",
+		}
+	case plan.Engine == EngineQSV:
+		return []string{
+			"-c:v", "h264_qsv", "-preset", "veryfast", "-profile:v", "high", "-level", "42",
+			"-b:v", b, "-maxrate", m, "-bufsize", m,
+			"-g", g, "-idr_interval", "0", "-forced_idr", "1",
+		}
+	}
+	return []string{
+		"-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+		"-profile:v", "high", "-level:v", "4.2",
+		"-b:v", b, "-maxrate", m, "-bufsize", m,
+		"-g", g, "-keyint_min", g, "-sc_threshold", "0",
+	}
 }
 
 // filter is the -vf chain: deinterlace when this generation's probe says
@@ -413,6 +513,12 @@ func (o Output) filter(plan Plan) string {
 // the declared layout with the bitrate table's rate.
 func audioCodecArgs(r Rendition, fill Fill) []string {
 	if fill.Kind == FillCopy {
+		if r.Name == RenditionAAC {
+			// An AAC stream in MPEG-TS is ADTS, which MP4 cannot hold as it
+			// is: without the filter ffmpeg fails with "Malformed AAC
+			// bitstream detected" (measured, ffmpeg 9.0.1).
+			return []string{"-c:a", "copy", "-bsf:a", "aac_adtstoasc"}
+		}
 		return []string{"-c:a", "copy"}
 	}
 	codec := map[string]string{RenditionAAC: "aac", RenditionAC3: "ac3", RenditionEAC3: "eac3"}[r.Name]

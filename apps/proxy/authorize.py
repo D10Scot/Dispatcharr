@@ -231,7 +231,7 @@ def resolve_output_profile(request, user):
     param = request.GET.get("output_profile")
     if param:
         try:
-            return OutputProfile.objects.get(id=int(param), is_active=True)
+            return OutputProfile.objects.get(id=int(param), is_active=True, hls_mode="")
         except (OutputProfile.DoesNotExist, ValueError, TypeError):
             return None
     if user:
@@ -239,7 +239,7 @@ def resolve_output_profile(request, user):
         profile_id = custom.get("output_profile")
         if profile_id:
             try:
-                return OutputProfile.objects.get(id=int(profile_id), is_active=True)
+                return OutputProfile.objects.get(id=int(profile_id), is_active=True, hls_mode="")
             except (OutputProfile.DoesNotExist, ValueError, TypeError):
                 return None
     return None

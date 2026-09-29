@@ -230,6 +230,26 @@ type NextSourceAnswer struct {
 	// key on its own, which is why this flag exists -- StreamProfileRef.
 	// ArgvPresent is the same shape for the same reason.
 	OutputProfilesPresent bool `json:"-"`
+
+	// HLSProfile is the channel's HLS Output Profile (Phase 4a-1d, spec D12):
+	// nil when the answer says null (no choice, an inactive row, a stream
+	// preview) and when the key is absent.
+	HLSProfile *HLSProfileRef `json:"-"`
+
+	// HLSProfilePresent reports whether the answer carried hls_profile at
+	// all. An ABSENT key is a control plane older than 4a-1d and is a contract
+	// mismatch an HLS entry answers 502 for; JSON null is "no HLS profile,
+	// use the built-in re-encode". OutputProfilesPresent has the same shape
+	// for the same reason.
+	HLSProfilePresent bool `json:"-"`
+}
+
+// HLSProfileRef is next-source's hls_profile: which HLS Output Profile the
+// channel chose and in which mode ("transcode" or "automatic"). The relay
+// builds the argv itself from a probe, so nothing else travels.
+type HLSProfileRef struct {
+	ID   int    `json:"id"`
+	Mode string `json:"mode"`
 }
 
 // Blocked reports the profiles that blocked a tune, when the answer says one
@@ -247,13 +267,25 @@ func (a *NextSourceAnswer) UnmarshalJSON(data []byte) error {
 	type plain NextSourceAnswer
 	var aux struct {
 		plain
-		ProfilesRaw json.RawMessage `json:"output_profiles"`
+		ProfilesRaw   json.RawMessage `json:"output_profiles"`
+		HLSProfileRaw json.RawMessage `json:"hls_profile"`
 	}
 	if err := json.Unmarshal(data, &aux); err != nil {
 		return err
 	}
 	*a = NextSourceAnswer(aux.plain)
 	a.OutputProfiles, a.OutputProfilesPresent = nil, false
+	a.HLSProfile, a.HLSProfilePresent = nil, false
+	if len(aux.HLSProfileRaw) != 0 {
+		a.HLSProfilePresent = true
+		if !bytes.Equal(bytes.TrimSpace(aux.HLSProfileRaw), []byte("null")) {
+			var ref HLSProfileRef
+			if err := json.Unmarshal(aux.HLSProfileRaw, &ref); err != nil {
+				return fmt.Errorf("hls_profile is not an object of {id, mode}: %w", err) // credential-logging: ok - an encoding/json type error naming the JSON shape, never a value
+			}
+			a.HLSProfile = &ref
+		}
+	}
 	if len(aux.ProfilesRaw) == 0 {
 		return nil
 	}

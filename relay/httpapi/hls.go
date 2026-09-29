@@ -31,10 +31,6 @@ import (
 // m3u8) and an Xtream `.m3u8` URL forces.
 const OutputFormatHLS = "hls"
 
-// hlsKey is the built-in transcode's key in the channel's HLS map. 4a-1d adds
-// "hls:p<id>" for an HLS profile.
-const hlsKey = "hls"
-
 // readyWaitMargin is what the entry's waits allow beyond the pipeline's own
 // worst legitimate cold start.
 const readyWaitMargin = 2 * time.Second
@@ -43,12 +39,12 @@ const readyWaitMargin = 2 * time.Second
 // resources; rulings R56 and R57). DERIVED from the pipeline's own bounds so
 // they cannot drift below what a legitimate cold software start can take: the
 // quick probe (3 s) and, in sequence, the re-probe (8 s), then the startup
-// stall allowance a generation gets before its first fragment (R55, 30 s),
-// plus a margin: 43 s. A 503 on the multivariant fails an AVPlayer item
-// outright, so this must not be shorter. nginx's proxy_read_timeout on /hls/
-// is 60 s, above both.
+// stall allowance a generation gets before its first fragment -- 30 s at every
+// target duration up to the longest, 6 (R55, R58) -- plus a margin: 43 s. A 503
+// on the multivariant fails an AVPlayer item outright, so this must not be
+// shorter. nginx's proxy_read_timeout on /hls/ is 60 s, above both.
 var (
-	defaultReadyWait    = hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStallFactor*hls.StallTimeout + readyWaitMargin
+	defaultReadyWait    = hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStall(hls.MaxTargetDuration) + readyWaitMargin
 	defaultPlaylistWait = defaultReadyWait
 )
 
@@ -167,7 +163,7 @@ func pipelineEnded(p *hls.Pipeline) bool {
 
 // startPipeline is the start func AttachHLS takes: it builds the pipeline's
 // Config from the channel and the process-wide HLS state, and starts it.
-func startPipeline(ctx context.Context, deps StreamDeps, ch *channel.Channel, log *slog.Logger) func(hls.Source) (*hls.Pipeline, error) {
+func startPipeline(ctx context.Context, deps StreamDeps, ch *channel.Channel, mode hls.Mode, log *slog.Logger) func(hls.Source) (*hls.Pipeline, error) {
 	return func(src hls.Source) (*hls.Pipeline, error) {
 		// ctx is context.Background(), NOT the entering request's: one
 		// pipeline is shared by every session on the channel, so the first
@@ -177,6 +173,7 @@ func startPipeline(ctx context.Context, deps StreamDeps, ch *channel.Channel, lo
 		return hls.Start(ctx, hls.Config{
 			ChannelID:    ch.ID(),
 			Source:       src,
+			Mode:         mode,
 			JoinBehind:   ch.Tuning().JoinBehind,
 			Detector:     deps.HLS.Detector,
 			Silence:      deps.HLS.Silence,
@@ -216,8 +213,26 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 	// which the status endpoints read under c.mu.
 	ch.SetClientOutputProfile(client.ID, nil)
 
-	// 2. Attach to the channel's HLS pipeline, starting one if none runs.
-	p, started, releaseOutput, err := ch.AttachHLS(hlsKey, startPipeline(context.Background(), deps, ch, log))
+	// 1a. The channel's HLS profile (Phase 4a-1d). An answer that carried no
+	// hls_profile at all -- a control plane older than 4a-1d -- or a mode this
+	// relay does not know is a contract mismatch, as an absent output_profiles
+	// is: 502 after the Attach release. A TS or fMP4 tune never asks.
+	profile := ch.HLSProfile()
+	if !profile.Known {
+		release()
+		log.Error("the control plane sent no usable hls_profile", "channel", ch.ID(), "client", client.ID)
+		http.Error(w, "control plane contract mismatch", http.StatusBadGateway)
+		return
+	}
+	key := profile.Key()
+	mode := hls.ModeTranscode
+	if profile.Mode == hlsModeAutomatic {
+		mode = hls.ModeAutomatic
+	}
+
+	// 2. Attach to the channel's HLS pipeline for its key, starting one if
+	// none runs.
+	p, started, releaseOutput, err := ch.AttachHLS(key, startPipeline(context.Background(), deps, ch, mode, log))
 	if err != nil {
 		release()
 		var failed *channel.ErrHLSOutputFailed
@@ -236,7 +251,7 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 	}
 	// 3. The failure watcher, once per pipeline.
 	if started {
-		go watchHLS(deps, ch, hlsKey, p)
+		go watchHLS(deps, ch, key, p)
 	}
 
 	// 4. The session, keyed by an id nobody else can guess.
@@ -251,7 +266,7 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 	token := control.MediaSessionToken(deps.Secret, sid)
 	fire(hooks.afterEntryAttach)
 	sessions.Add(&session.Session{
-		ID: sid, Owner: ch, Key: hlsKey, Pipeline: p, TD: hls.TargetDuration * time.Second,
+		ID: sid, Owner: ch, Key: key, Pipeline: p, TD: hls.TargetDuration * time.Second,
 	}, client, session.Releases{Output: releaseOutput, Client: release, BeforeClient: hooks.beforeLeaveClientRelease})
 
 	// abandon ends an entry that will not answer 200: the releases the table
@@ -296,7 +311,7 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 		// window would start a fresh pipeline and re-probe. FailHLS is
 		// idempotent and identity-safe, so the watcher's later call is a
 		// no-op.
-		ch.FailHLS(hlsKey, p, readyErr)
+		ch.FailHLS(key, p, readyErr)
 		abandon()
 		log.Warn("an HLS entry failed: the pipeline's output failed", "channel", ch.ID(), "client", client.ID)
 		writeJSONBody(w, http.StatusBadGateway, failureBody(readyErr))
@@ -314,12 +329,18 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 		return
 	}
 
+	// 5a. The session's presence thresholds are its pipeline's own (R42): a
+	// copied automatic run's target duration is known only now, once the first
+	// generation's output is decided. The entry request is in flight, so no
+	// threshold has read the placeholder Add gave it.
+	sessions.SetTD(sid, p.TargetDuration())
+
 	// 6. The multivariant, under this session's own token.
 	body, err := p.Multivariant("/hls/" + token)
 	if err != nil {
 		// Unreachable once Ready answered nil (the pipeline renders it from
 		// the same state), and answered as a failed output if it ever is.
-		ch.FailHLS(hlsKey, p, hls.ErrFailed)
+		ch.FailHLS(key, p, hls.ErrFailed)
 		abandon()
 		log.Error("the HLS multivariant could not be rendered", "channel", ch.ID(), "client", client.ID)
 		writeJSONBody(w, http.StatusBadGateway, outputFailedBody)

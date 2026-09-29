@@ -111,7 +111,7 @@ def _resolve_hdhr_output_profile_id(output_profile_id):
     if candidate is None:
         return None
     try:
-        OutputProfile.objects.get(id=candidate, is_active=True)
+        OutputProfile.objects.get(id=candidate, is_active=True, hls_mode="")
         return candidate
     except OutputProfile.DoesNotExist:
         source = "URL" if output_profile_id is not None else "system default"

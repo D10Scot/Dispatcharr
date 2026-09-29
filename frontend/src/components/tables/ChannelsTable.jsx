@@ -45,6 +45,7 @@ import {
   requeryChannels,
 } from '../../utils/forms/ChannelUtils.js';
 import { buildLiveStreamUrl } from '../../utils/components/FloatingVideoUtils.js';
+import { selectableOutputProfiles } from '../../utils/outputProfiles.js';
 import {
   ActionIcon,
   Box,
@@ -1285,7 +1286,7 @@ const ChannelsTable = ({ onReady }) => {
                       value={hdhrOutputProfileId || null}
                       onChange={(value) => setHdhrOutputProfileId(value || '')}
                       comboboxProps={{ withinPortal: false }}
-                      data={outputProfiles
+                      data={selectableOutputProfiles(outputProfiles)
                         .filter((p) => p.is_active)
                         .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />
@@ -1418,7 +1419,7 @@ const ChannelsTable = ({ onReady }) => {
                         }))
                       }
                       comboboxProps={{ withinPortal: false }}
-                      data={outputProfiles
+                      data={selectableOutputProfiles(outputProfiles)
                         .filter((p) => p.is_active)
                         .map((p) => ({ value: `${p.id}`, label: p.name }))}
                     />

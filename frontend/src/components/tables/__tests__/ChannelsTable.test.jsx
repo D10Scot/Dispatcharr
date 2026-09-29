@@ -630,6 +630,30 @@ describe('ChannelsTable', () => {
       expect(screen.queryByTestId('channel-form')).not.toBeInTheDocument();
     });
 
+    it('omits HLS profiles from both link builders', () => {
+      setupMocks();
+      vi.mocked(useOutputProfilesStore).mockImplementation((sel) =>
+        sel({
+          profiles: [
+            { id: 1, name: 'AC3 Audio', is_active: true, hls_mode: '' },
+            {
+              id: 2,
+              name: 'HLS (Automatic)',
+              is_active: true,
+              hls_mode: 'automatic',
+            },
+          ],
+        })
+      );
+      render(<ChannelsTable />);
+      const optionLabels = screen
+        .getAllByTestId('select')
+        .flatMap((s) => Array.from(s.options).map((o) => o.textContent));
+      // One ordinary row in each of the HDHR and M3U builders, and no HLS row
+      expect(optionLabels.filter((l) => l === 'AC3 Audio')).toHaveLength(2);
+      expect(optionLabels).not.toContain('HLS (Automatic)');
+    });
+
     it('renders HDHR, M3U, and EPG link buttons', () => {
       setupMocks();
       render(<ChannelsTable />);

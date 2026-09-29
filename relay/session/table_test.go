@@ -452,6 +452,34 @@ func TestAbandonReturnsTheReleasesOnlyWhileTheSessionHoldsThem(t *testing.T) {
 	}
 }
 
+// A session's target duration is fixed from its pipeline before Activate
+// (Phase 4a-1d, R42): the entry Adds it with the default, SetTDs the
+// pipeline's own once the first generation has decided it, and Activates.
+// After that SetTD is a no-op, so a late call cannot move a live session's
+// thresholds.
+func TestSetTDFixesTheThresholdsBeforeActivate(t *testing.T) {
+	r := newRig(t)
+	s := r.add(r.owner("c1"), "a", 2*time.Second)
+	r.table.SetTD(s.ID, 6*time.Second)
+	if !r.table.Activate(s.ID) {
+		t.Fatal("Activate refused an ARRIVED session")
+	}
+
+	r.clock.Advance(35*time.Second + 999*time.Millisecond)
+	if got := r.table.Sweep(); len(got) != 0 {
+		t.Fatalf("a TD 6 session departed at 35.999 s idle: %d departures", len(got))
+	}
+	// After Activate SetTD does nothing: the departure is still at 36 s.
+	r.table.SetTD(s.ID, 2*time.Second)
+	r.clock.Advance(time.Millisecond)
+	if got := r.table.Sweep(); len(got) != 1 {
+		t.Fatalf("at 36 s idle the sweep departed %d sessions, want 1: a SetTD after Activate moved the threshold", len(got))
+	}
+
+	// An unknown session is ignored.
+	r.table.SetTD("no-such-sid", time.Second)
+}
+
 func TestOutcomeNamesReadInFailureMessages(t *testing.T) {
 	for outcome, want := range map[Outcome]string{
 		Unknown: "Unknown", Gone: "Gone", Busy: "Busy", Resume: "Resume", Serve: "Serve", Outcome(99): "Outcome(?)",

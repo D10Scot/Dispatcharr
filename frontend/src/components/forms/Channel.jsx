@@ -5,6 +5,8 @@ import * as Yup from 'yup';
 import useChannelsStore from '../../store/channels';
 import API from '../../api';
 import useStreamProfilesStore from '../../store/streamProfiles';
+import useOutputProfilesStore from '../../store/outputProfiles';
+import { hlsOutputProfiles } from '../../utils/outputProfiles';
 import ChannelGroupForm from './ChannelGroup';
 import logo from '../../images/logo.png';
 import { useChannelLogoSelection } from '../../hooks/useSmartLogos';
@@ -125,6 +127,7 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
   }, [ensureLogosLoaded]);
 
   const streamProfiles = useStreamProfilesStore((s) => s.profiles);
+  const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const epgs = useEPGsStore((s) => s.epgs);
   const tvgs = useEPGsStore((s) => s.tvgs);
   const tvgsById = useEPGsStore((s) => s.tvgsById);
@@ -1240,6 +1243,25 @@ const ChannelForm = ({ channel: channelProp = null, isOpen, onClose }) => {
                 error={errors.stream_profile_id?.message}
                 data={[{ value: '0', label: '(use default)' }].concat(
                   streamProfiles.map((option) => ({
+                    value: `${option.id}`,
+                    label: option.name,
+                  }))
+                )}
+                size="xs"
+              />
+
+              <Select
+                id="hls_output_profile_id"
+                label="HLS output"
+                name="hls_output_profile_id"
+                description="Automatic copies what Apple devices accept and re-encodes the rest"
+                value={watch('hls_output_profile_id')}
+                onChange={(value) => {
+                  setValue('hls_output_profile_id', value);
+                }}
+                error={errors.hls_output_profile_id?.message}
+                data={[{ value: '0', label: '(built-in re-encode)' }].concat(
+                  hlsOutputProfiles(outputProfiles).map((option) => ({
                     value: `${option.id}`,
                     label: option.name,
                   }))

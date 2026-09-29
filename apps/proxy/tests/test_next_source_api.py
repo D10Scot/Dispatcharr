@@ -691,3 +691,81 @@ class OutputProfilesOnTheContractTests(RelayApiTestCase):
                 "argv": ["ffmpeg", "-i", "pipe:0", "-c:a", "ac3", "pipe:1"],
             },
         )
+
+
+def _hls_row(name, mode, *, active=True):
+    """An HLS OutputProfile, never assumed seeded: a TransactionTestCase
+    earlier in the same process can have flushed the migration's rows under
+    --keepdb, and setUp above deactivates every row anyway."""
+    from core.models import OutputProfile
+
+    row, _ = OutputProfile.objects.get_or_create(
+        name=name,
+        defaults={
+            "hls_mode": mode,
+            "command": "ffmpeg",
+            "parameters": "(built by the relay)",
+            "locked": True,
+            "is_active": True,
+        },
+    )
+    OutputProfile.objects.filter(id=row.id).update(
+        hls_mode=mode, locked=True, is_active=active
+    )
+    return row
+
+
+class HlsProfileOnTheContractTests(RelayApiTestCase):
+    """next-source's `hls_profile` (Phase 4a-1d, spec D12): the channel's HLS
+    Output Profile as {id, mode}, null in every other case. HLS rows never
+    enter `output_profiles`. The ledger tests in test_tune_path_query_ledger.py
+    are the oracle for "no new query"."""
+
+    def setUp(self):
+        super().setUp()
+        from core.models import OutputProfile
+
+        OutputProfile.objects.update(is_active=False)
+
+    def _next_source(self, identifier, expect=200):
+        response = self._post(self.next_source_path(identifier), {})
+        self.assertEqual(response.status_code, expect)
+        return response.json()
+
+    def test_hls_profile_is_null_without_a_choice(self):
+        self.assertIsNone(self._next_source(self.channel.uuid)["hls_profile"])
+
+    def test_the_channels_automatic_profile_travels_as_hls_profile(self):
+        row = _hls_row("HLS (Automatic)", "automatic")
+        Channel.objects.filter(id=self.channel.id).update(hls_output_profile=row)
+        answer = self._next_source(self.channel.uuid)
+        # The id is a literal read before the call, never recomputed from the
+        # answer under test.
+        self.assertEqual(answer["hls_profile"], {"id": row.id, "mode": "automatic"})
+
+    def test_an_inactive_hls_profile_travels_as_null(self):
+        row = _hls_row("HLS (Automatic)", "automatic", active=False)
+        Channel.objects.filter(id=self.channel.id).update(hls_output_profile=row)
+        self.assertIsNone(self._next_source(self.channel.uuid)["hls_profile"])
+
+    def test_hls_rows_never_enter_output_profiles(self):
+        from core.models import OutputProfile
+
+        _hls_row("HLS (Re-encode)", "transcode")
+        _hls_row("HLS (Automatic)", "automatic")
+        ordinary = OutputProfile.objects.create(
+            name="hls-contract-ordinary", command="ffmpeg",
+            parameters="-i pipe:0 pipe:1", is_active=True,
+        )
+        answer = self._next_source(self.channel.uuid)
+        self.assertEqual(sorted(answer["output_profiles"]), [str(ordinary.id)])
+
+    def test_a_stream_preview_carries_a_null_hls_profile(self):
+        _hls_row("HLS (Automatic)", "automatic")
+        answer = self._next_source(self.stream_a.stream_hash)
+        self.assertIsNone(answer["hls_profile"])
+
+    def test_the_404_carries_a_null_hls_profile(self):
+        answer = self._next_source("00000000-0000-0000-0000-000000000000", expect=404)
+        self.assertIn("hls_profile", answer)
+        self.assertIsNone(answer["hls_profile"])

@@ -1,14 +1,37 @@
 package channel
 
 import (
+	"sort"
+	"strconv"
 	"sync"
 
 	"github.com/D10Scot/Dispatcharr/relay/hls"
 )
 
-// hlsKey is the built-in transcode's key in the HLS map. 4a-1d adds
-// "hls:p<id>" for an HLS profile.
+// hlsKey is the built-in transcode's key in the HLS map, and the key of a
+// channel with no HLS profile. A channel with one runs its pipeline under
+// "hls:p<id>" (HLSProfile.Key), so "one ffmpeg per (channel, HLS profile)".
 const hlsKey = "hls"
+
+// HLSProfile is the channel's HLS Output Profile as the control plane last
+// described it (Phase 4a-1d, spec D12): the same three-state shape as
+// OutputProfiles.Known. Known false is an answer that carried no hls_profile
+// key at all, a contract mismatch an HLS entry answers 502 for; Known true
+// with ID 0 is "no HLS profile" (JSON null), the built-in re-encode.
+type HLSProfile struct {
+	Known bool
+	ID    int
+	Mode  string
+}
+
+// Key is the profile's pipeline key: "hls" with no profile, "hls:p<id>"
+// otherwise.
+func (h HLSProfile) Key() string {
+	if h.ID == 0 {
+		return hlsKey
+	}
+	return hlsKey + ":p" + strconv.Itoa(h.ID)
+}
 
 // hlsEntry is one running HLS pipeline and how many sessions hold it.
 type hlsEntry struct {
@@ -166,15 +189,39 @@ func (c *Channel) clearHLSFailed() {
 	c.outMu.Unlock()
 }
 
-// HLSStatus is the registered pipeline's encoder engine and generation, for
-// the payload's hls_encoder and hls_generation. ok is false with no pipeline;
-// the engine is empty until the first generation has chosen one.
+// HLSStatus is a registered pipeline's encoder engine and generation, for the
+// payload's hls_encoder and hls_generation. It reports the pipeline registered
+// under the channel's current key, else the one with the lowest key, so the
+// payload's two fields stay one value each while a profile change drains an
+// older pipeline. ok is false with no pipeline; the engine is empty until the
+// first generation has chosen one.
+//
+// The key is read through HLSProfile (c.mu) BEFORE outMu is taken, never with
+// the two held together (lock order: outMu is never nested with c.mu).
 func (c *Channel) HLSStatus() (engine string, generation int, ok bool) {
-	c.outMu.Lock()
-	entry, running := c.hls[hlsKey]
-	c.outMu.Unlock()
-	if !running {
+	entry, _, ok := c.statusEntryKey()
+	if !ok {
 		return "", 0, false
 	}
 	return string(entry.pipeline.Engine()), entry.pipeline.Generation(), true
+}
+
+// statusEntryKey is the registry entry HLSStatus reports and its key: the one
+// under the channel's current key, else the lowest key's.
+func (c *Channel) statusEntryKey() (*hlsEntry, string, bool) {
+	key := c.HLSProfile().Key()
+	c.outMu.Lock()
+	defer c.outMu.Unlock()
+	if entry, running := c.hls[key]; running {
+		return entry, key, true
+	}
+	keys := make([]string, 0, len(c.hls))
+	for k := range c.hls {
+		keys = append(keys, k)
+	}
+	if len(keys) == 0 {
+		return nil, "", false
+	}
+	sort.Strings(keys)
+	return c.hls[keys[0]], keys[0], true
 }

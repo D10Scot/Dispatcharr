@@ -103,6 +103,10 @@ type Channel struct {
 	// last described it, under mu. REPLACED WHOLESALE, never mutated in
 	// place, so OutputProfiles() can hand its map out without copying it.
 	outputProfiles OutputProfiles
+	// hlsProfile is the channel's HLS Output Profile as the control plane
+	// last described it (Phase 4a-1d), under mu and replaced wholesale, like
+	// outputProfiles.
+	hlsProfile HLSProfile
 	// channelName is StreamManager.channel_name: resolved once at construction
 	// (input/manager.py:41-44) and carried on every event, unchanged by a
 	// failover -- the SourceInfo's name can move, this one does not.
@@ -368,6 +372,15 @@ func (c *Channel) OutputProfiles() OutputProfiles {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.outputProfiles
+}
+
+// HLSProfile is the channel's HLS Output Profile from the most recent
+// next-source answer that carried one (Phase 4a-1d). Per channel, never per
+// client: a session inherits the channel's key.
+func (c *Channel) HLSProfile() HLSProfile {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.hlsProfile
 }
 
 // SetClientOutputProfile records which Output Profile this client is actually

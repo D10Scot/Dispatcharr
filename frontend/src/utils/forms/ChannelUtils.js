@@ -54,9 +54,14 @@ export const normalizeFieldValue = (field, value) => {
   if (value === '' || value === null || value === undefined || value === '-1') {
     return null;
   }
-  // The stream_profile and logo pickers encode "(use default)" as '0',
-  // which is semantically a null FK on the Channel row.
-  if ((field === 'stream_profile_id' || field === 'logo_id') && value === '0') {
+  // The stream_profile, hls_output_profile and logo pickers encode "(use
+  // default)" as '0', which is semantically a null FK on the Channel row.
+  if (
+    (field === 'stream_profile_id' ||
+      field === 'hls_output_profile_id' ||
+      field === 'logo_id') &&
+    value === '0'
+  ) {
     return null;
   }
   if (field === 'channel_number') {
@@ -67,7 +72,8 @@ export const normalizeFieldValue = (field, value) => {
     field === 'channel_group_id' ||
     field === 'logo_id' ||
     field === 'epg_data_id' ||
-    field === 'stream_profile_id'
+    field === 'stream_profile_id' ||
+    field === 'hls_output_profile_id'
   ) {
     const n = parseInt(value, 10);
     return Number.isFinite(n) ? n : null;
@@ -199,6 +205,9 @@ export const getChannelFormDefaultValues = (channel, channelGroups) => {
         ? Object.keys(channelGroups)[0]
         : '',
     stream_profile_id: streamProfileId ? `${streamProfileId}` : '0',
+    hls_output_profile_id: channel?.hls_output_profile_id
+      ? `${channel.hls_output_profile_id}`
+      : '0',
     tvg_id: tvgId || '',
     tvc_guide_stationid: gracenoteId || '',
     epg_data_id: epgDataId ?? '',
@@ -218,6 +227,14 @@ export const getFormattedValues = (values) => {
     formattedValues.stream_profile_id === '0'
   ) {
     formattedValues.stream_profile_id = null;
+  }
+
+  // Likewise "(built-in re-encode)" is '0' in the HLS output select
+  if (
+    !formattedValues.hls_output_profile_id ||
+    formattedValues.hls_output_profile_id === '0'
+  ) {
+    formattedValues.hls_output_profile_id = null;
   }
 
   // Ensure tvg_id is properly included (no empty strings)
@@ -246,6 +263,8 @@ export const handleEpgUpdate = async (
     const payload = {
       id: channel.id,
       hidden_from_output: formattedValues.hidden_from_output,
+      // A status field like hidden_from_output, not a provider value.
+      hls_output_profile_id: formattedValues.hls_output_profile_id,
     };
     if (overridePayload !== undefined) {
       payload.override = overridePayload;

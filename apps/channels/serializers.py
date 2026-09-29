@@ -17,7 +17,7 @@ from .models import (
     RecurringRecordingRule,
 )
 from apps.epg.serializers import EPGDataSerializer
-from core.models import CoreSettings, StreamProfile
+from core.models import CoreSettings, OutputProfile, StreamProfile
 from apps.epg.models import EPGData
 from django.db import connection, transaction
 from django.urls import reverse
@@ -397,6 +397,13 @@ class ChannelSerializer(serializers.ModelSerializer):
         required=False,
     )
 
+    hls_output_profile_id = serializers.PrimaryKeyRelatedField(
+        queryset=OutputProfile.objects.exclude(hls_mode=""),
+        source="hls_output_profile",
+        allow_null=True,
+        required=False,
+    )
+
     streams = serializers.PrimaryKeyRelatedField(
         queryset=Stream.objects.all(), many=True, required=False
     )
@@ -448,6 +455,7 @@ class ChannelSerializer(serializers.ModelSerializer):
             "epg_data_id",
             "streams",
             "stream_profile_id",
+            "hls_output_profile_id",
             "uuid",
             "logo_id",
             "user_level",

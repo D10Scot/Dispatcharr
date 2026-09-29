@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -264,5 +265,46 @@ func TestARemovedSegmentStaysAvailableForItsDurationPlusThePlaylists(t *testing.
 	publishN(s, 0, 1, t0)
 	if _, ok := s.Segment(RenditionVideo, 0); ok {
 		t.Fatalf("segment 0 is still stored 11 publications past its removal from the list: the store keeps more than StoreSegments = %d", StoreSegments)
+	}
+}
+
+var targetLine = regexp.MustCompile(`#EXT-X-TARGETDURATION:(\d+)`)
+
+func TestTheMediaPlaylistCarriesThePipelinesTargetDuration(t *testing.T) {
+	for _, c := range []struct {
+		set  int
+		want string
+	}{{0, "2"}, {6, "6"}, {4, "4"}} {
+		store := NewStore(time.Now)
+		if c.set != 0 {
+			store.SetTargetDuration(c.set)
+		}
+		store.publish(0, time.Now(), map[string]part{RenditionVideo: {data: []byte{1}, duration: 2}})
+		playlist, _, _ := store.MediaPlaylist(RenditionVideo)
+		if m := targetLine.FindStringSubmatch(string(playlist)); m == nil || m[1] != c.want {
+			t.Errorf("SetTargetDuration(%d): %v in\n%s\nwant %s", c.set, m, playlist, c.want)
+		}
+	}
+}
+
+// The byte ceiling scales with the target: at 6, twenty-one 9 MiB segments
+// (189 MiB) are all kept; at the default target the same run keeps only the
+// newest 7 (63 MiB, under 64 MiB).
+func TestTheByteCeilingScalesWithTheTargetDuration(t *testing.T) {
+	publish := func(store *Store) {
+		for i := 0; i < 21; i++ {
+			store.publish(0, time.Now(), map[string]part{RenditionVideo: {data: make([]byte, 9<<20), duration: 2}})
+		}
+	}
+	scaled := NewStore(time.Now)
+	scaled.SetTargetDuration(6)
+	publish(scaled)
+	if n := len(scaled.segs); n != 21 {
+		t.Errorf("at target 6 the store kept %d segments, want all 21", n)
+	}
+	plain := NewStore(time.Now)
+	publish(plain)
+	if n := len(plain.segs); n != 7 {
+		t.Errorf("at the default target the store kept %d segments, want the newest 7", n)
 	}
 }

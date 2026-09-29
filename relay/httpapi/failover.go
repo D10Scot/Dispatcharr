@@ -60,7 +60,7 @@ func (r *resolver) Next(parent context.Context, req channel.NextRequest) (channe
 		if answer.Source == nil {
 			return channel.Resolved{}, channel.ErrNoAlternate
 		}
-		return r.resolved(answer.Source, false, outputProfilesFrom(answer))
+		return r.resolved(answer.Source, false, outputProfilesFrom(answer), hlsProfileFrom(answer))
 	case isUnavailable(err):
 		r.log.Warn("control plane unreachable during failover; using the cached candidate list unenforced", "channel", r.id)
 		candidate := r.pickCached(req)
@@ -68,8 +68,9 @@ func (r *resolver) Next(parent context.Context, req channel.NextRequest) (channe
 			return channel.Resolved{}, channel.ErrNoAlternate
 		}
 		// The cached list carries no answer of its own, so the channel keeps
-		// the Output Profile set it already had (2c-7's Ruling R5).
-		return r.resolved(candidate, true, channel.OutputProfiles{})
+		// the Output Profile set it already had (2c-7's Ruling R5), and its
+		// HLS profile (Phase 4a-1d): a zero HLSProfile is Known false.
+		return r.resolved(candidate, true, channel.OutputProfiles{}, channel.HLSProfile{})
 	default:
 		// A Refused, or a misconfigured address: never degrade.
 		return channel.Resolved{}, err
@@ -109,7 +110,7 @@ func (r *resolver) pickCached(req channel.NextRequest) *control.Source {
 // candidate: reported as the switch's failure, never retried as a
 // connection failure, because no retry against the same profile can change
 // what Django could not split.
-func (r *resolver) resolved(candidate *control.Source, degraded bool, profiles channel.OutputProfiles) (channel.Resolved, error) {
+func (r *resolver) resolved(candidate *control.Source, degraded bool, profiles channel.OutputProfiles, hlsProfile channel.HLSProfile) (channel.Resolved, error) {
 	source, err := r.build.source(candidate)
 	if err != nil {
 		return channel.Resolved{}, err
@@ -119,5 +120,6 @@ func (r *resolver) resolved(candidate *control.Source, degraded bool, profiles c
 		Info:           infoFrom(candidate),
 		Degraded:       degraded,
 		OutputProfiles: profiles,
+		HLSProfile:     hlsProfile,
 	}, nil
 }

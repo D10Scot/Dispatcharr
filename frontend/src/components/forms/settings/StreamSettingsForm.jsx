@@ -3,6 +3,7 @@ import useWarningsStore from '../../../store/warnings.jsx';
 import useUserAgentsStore from '../../../store/userAgents.jsx';
 import useStreamProfilesStore from '../../../store/streamProfiles.jsx';
 import useOutputProfilesStore from '../../../store/outputProfiles.jsx';
+import { selectableOutputProfiles } from '../../../utils/outputProfiles.js';
 import React, { useEffect, useState } from 'react';
 import {
   getChangedSettings,
@@ -205,7 +206,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
               value ? parseInt(value, 10) : null
             )
           }
-          data={outputProfiles
+          data={selectableOutputProfiles(outputProfiles)
             .filter((p) => p.is_active)
             .map((p) => ({ value: `${p.id}`, label: p.name }))}
         />

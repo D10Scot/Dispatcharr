@@ -878,7 +878,7 @@ def _with_proxy_settings(answer):
     return answer
 
 
-def _with_output_profiles(answer):
+def _with_output_profiles(answer, hls_output_profile_id=None):
     """Every active OutputProfile's built argv, on every next-source answer.
 
     Spec § Stage 2b, the `views.py:152` row: "A control-plane response
@@ -898,11 +898,24 @@ def _with_output_profiles(answer):
     Redis cache with staleness semantics nothing has specified.
     apps/proxy/live_proxy/views.py:152's ORM read therefore stays, and
     2b-3 owns the decision to allowlist or close it.
+
+    An HLS profile (a row with a non-blank ``hls_mode``, spec D12) never
+    enters ``output_profiles``: it is chosen per channel, not per client,
+    and its argv is built by the relay from a probe. It rides this loop
+    anyway because the loop already reads every active row, so the
+    channel's choice costs no query: it becomes ``answer["hls_profile"]``
+    when its id is ``hls_output_profile_id``, and ``None`` in every other
+    case (no choice, an inactive row, a stream preview, the 404).
     """
     from core.models import OutputProfile
 
     output_profiles = {}
+    hls_profile = None
     for profile in OutputProfile.objects.filter(is_active=True):
+        if profile.hls_mode:
+            if profile.id == hls_output_profile_id:
+                hls_profile = {"id": profile.id, "mode": profile.hls_mode}
+            continue
         try:
             argv = profile.build_command()
         except ValueError:
@@ -936,6 +949,7 @@ def _with_output_profiles(answer):
             )
         output_profiles[str(profile.id)] = {"id": profile.id, "argv": argv}
     answer["output_profiles"] = output_profiles
+    answer["hls_profile"] = hls_profile
     return answer
 
 
@@ -1021,6 +1035,7 @@ def resolve_source(
     # unaffected. Kept (not discarded) so the reuse-or-reserve branch below
     # can tell a channel from a previewed stream without a second lookup.
     resolved_object = get_stream_object(identifier)
+    hls_output_profile_id = getattr(resolved_object, "hls_output_profile_id", None)
 
     excluded = {int(sid) for sid in exclude_stream_ids or ()}
 
@@ -1056,19 +1071,19 @@ def resolve_source(
                 identifier, answer["source"]["stream_id"], locked_ffmpeg_profile=locked,
             )
         answer.setdefault("alternates", [])
-        return _with_output_profiles(_with_proxy_settings(answer))
+        return _with_output_profiles(_with_proxy_settings(answer), hls_output_profile_id)
 
     if target_stream_id is not None:
         info = get_stream_info_for_switch(identifier, target_stream_id)
         if "error" in info:
             return _with_output_profiles(_with_proxy_settings(
                 {"source": None, "alternates": [], "error": info["error"]}
-            ))
+            ), hls_output_profile_id)
         return _with_output_profiles(_with_proxy_settings({
             "source": _commit(identifier, info, locked_ffmpeg_profile=locked),
             "alternates": [],
             "error": None,
-        }))
+        }), hls_output_profile_id)
 
     # Failover: the ordered traversal, minus what the relay has tried and
     # minus anything resolving to the URL already playing. That last check
@@ -1088,12 +1103,12 @@ def resolve_source(
             "source": _commit(identifier, info, locked_ffmpeg_profile=locked),
             "alternates": [],
             "error": None,
-        }))
+        }), hls_output_profile_id)
     return _with_output_profiles(_with_proxy_settings({
         "source": None,
         "alternates": [],
         "error": "No alternate stream with available connections",
-    }))
+    }), hls_output_profile_id)
 
 
 def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_pk=None):

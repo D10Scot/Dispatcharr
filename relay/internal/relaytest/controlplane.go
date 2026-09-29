@@ -145,6 +145,15 @@ type ControlPlaneConfig struct {
 	// as a contract mismatch rather than as "no profiles are configured".
 	OutputProfilesAbsent bool
 
+	// HLSProfile is the answer's hls_profile (Phase 4a-1d). Nil sends JSON
+	// null, Django's answer for a channel with no HLS profile.
+	HLSProfile *HLSProfileConfig
+
+	// HLSProfileAbsent leaves the key out entirely: the shape of a control
+	// plane older than 4a-1d, which an HLS entry must report as a contract
+	// mismatch.
+	HLSProfileAbsent bool
+
 	// Slots is the slot model's capacity per m3u profile id (Phase 4a-1c),
 	// keyed by the profile a channel is on. Nil is unlimited, today's
 	// behaviour, and a profile absent from a non-nil map is unlimited too.
@@ -163,6 +172,12 @@ type ControlPlaneConfig struct {
 // allProfilesFull is apps/m3u/connection_pool.py's ALL_PROFILES_FULL, spelled
 // here so a test cannot drift from it silently.
 const allProfilesFull = "All active M3U profiles have reached maximum connection limits"
+
+// HLSProfileConfig is the fake's hls_profile object.
+type HLSProfileConfig struct {
+	ID   int
+	Mode string
+}
 
 // OutputProfileConfig is one entry of the fake's output_profiles map.
 type OutputProfileConfig struct {
@@ -208,6 +223,8 @@ type ControlPlane struct {
 	delay     time.Duration
 	profiles  map[string]OutputProfileConfig
 	hasProfs  bool
+	hlsProf   *HLSProfileConfig
+	hasHLS    bool
 	authorize *AuthorizeDecision
 
 	// The slot model (Phase 4a-1c), under mu: which channels hold a slot on
@@ -308,6 +325,14 @@ func (c *ControlPlane) SetOutputProfiles(profiles map[string]OutputProfileConfig
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.profiles, c.hasProfs = profiles, true
+}
+
+// SetHLSProfile replaces the hls_profile every LATER answer carries, the way
+// an operator changing a channel's HLS output does. Nil sends null.
+func (c *ControlPlane) SetHLSProfile(profile *HLSProfileConfig) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.hlsProf, c.hasHLS = profile, true
 }
 
 // SetStatus makes every LATER call answer with status, whatever the route:
@@ -585,7 +610,19 @@ func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, channelID string
 	}
 	c.mu.Lock()
 	liveProfiles, overridden := c.profiles, c.hasProfs
+	liveHLS, hlsOverridden := c.hlsProf, c.hasHLS
 	c.mu.Unlock()
+	hlsConfigured := cfg.HLSProfile
+	if hlsOverridden {
+		hlsConfigured = liveHLS
+	}
+	if !cfg.HLSProfileAbsent {
+		if hlsConfigured == nil {
+			answer["hls_profile"] = nil
+		} else {
+			answer["hls_profile"] = map[string]any{"id": hlsConfigured.ID, "mode": hlsConfigured.Mode}
+		}
+	}
 	configured := cfg.OutputProfiles
 	if overridden {
 		configured = liveProfiles

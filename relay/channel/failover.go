@@ -52,6 +52,11 @@ type Resolved struct {
 	// its own, and the channel's existing set is then kept rather than
 	// cleared.
 	OutputProfiles OutputProfiles
+
+	// HLSProfile is the channel's HLS profile from the SAME answer
+	// (Phase 4a-1d). Known false for a degraded resolution, and the
+	// channel's existing choice is then kept.
+	HLSProfile HLSProfile
 }
 
 // ErrNoAlternate is "No alternate stream available" (input/manager.py:2110).
@@ -268,6 +273,12 @@ func (c *Channel) applySwitch(resolved Resolved) {
 	// each.
 	if resolved.OutputProfiles.Known {
 		c.outputProfiles = resolved.OutputProfiles
+	}
+	// The HLS profile refreshes the same way. A pipeline already running keeps
+	// its key (spec: one ffmpeg per (channel, HLS profile)); a NEW entry after
+	// the change uses the new one.
+	if resolved.HLSProfile.Known {
+		c.hlsProfile = resolved.HLSProfile
 	}
 	c.mu.Unlock()
 
