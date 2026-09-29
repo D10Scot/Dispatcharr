@@ -265,9 +265,6 @@ runs=12
 packages=40d4ba02d7d3
 package_count=12
 gomod=92baf312d30d
-# A raise under R21, declared for the CI guard that refuses an unexplained one
-# (R91): the base `missing` and the listed amount, O 6 (the start-line rule),
-# so 691 <= 687 + 6 = 693. Remove both when the next re-measurement moves
-# `missing` without a raise.
-raise_from=687
-raise_listed=6
+# Phase 4a-1d (R21, R34): 12-round CI census at 9c5ba13b, gate 687-691, max 691;
+# O=0 and 319 additions at 100%, so `missing` is unchanged and carries no raise
+# declaration (4a-1c's raise_from/raise_listed are removed, as its note above asked).
