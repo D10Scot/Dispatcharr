@@ -668,6 +668,9 @@ export default function FloatingVideo() {
           if (url) {
             sessionUrl = url;
             left = false;
+            // Retry budgets are per session.
+            networkRetries = 0;
+            mediaRecovered = false;
             return;
           }
         }
