@@ -1,6 +1,7 @@
 import type { Page, Request } from '@playwright/test';
 import { test, expect, readChannelStatus } from '../../fixtures';
 import type { ApiClient, Seeder, UpstreamClient } from '../../fixtures';
+import type { PageErrorCollector } from '../../fixtures/page-errors';
 import { MEDIA_SESSION_TOKEN_RE } from '../../fixtures/hls';
 import { listRows } from '../../setup/http';
 import { lockedProfile, withDeadline } from '../streaming/helpers';
@@ -66,11 +67,74 @@ function recordRequests(page: Page): Seen[] {
   return seen;
 }
 
-/** Play the channel from the TV Guide's channel logo (`GuideRow.jsx` -> `getShowVideoUrl`). */
-async function playFromGuide(page: Page, channelName: string): Promise<void> {
+/**
+ * Play the channel from the TV Guide's channel logo (`GuideRow.jsx` -> `getShowVideoUrl`).
+ *
+ * Clicks the `.channel-logo` container, which owns the click handler, not the `<img>`
+ * inside it: hovering the container renders a full-size Play overlay over the image
+ * (`GuideRow.jsx`), and Playwright's hit-test of the image then races that rerender and,
+ * once the overlay is there, never recovers ("subtree intercepts pointer events"). The
+ * overlay is a descendant of the container, so the container's hit-test always passes.
+ * Returns when the click happened, the origin of the abort log's timestamps.
+ */
+async function playFromGuide(page: Page, channelName: string): Promise<number> {
   await gotoSurface(page, guideSurface!);
   await page.getByPlaceholder('Search channels...').fill(channelName);
-  await page.getByTestId('guide-grid').getByAltText(channelName, { exact: false }).click();
+  await page
+    .getByTestId('guide-grid')
+    .locator('.channel-logo', { has: page.getByAltText(channelName, { exact: false }) })
+    .click();
+  return Date.now();
+}
+
+/** Every request the page itself cancelled, with when (`net::ERR_ABORTED`). */
+function recordAborts(page: Page): { path: string; at: number }[] {
+  const aborts: { path: string; at: number }[] = [];
+  page.on('requestfailed', (request: Request) => {
+    if (request.failure()?.errorText === 'net::ERR_ABORTED') {
+      aborts.push({ path: new URL(request.url()).pathname, at: Date.now() });
+    }
+  });
+  return aborts;
+}
+
+/** A fragment of the session: `/hls/<token>/<rendition>/<n>.m4s`. */
+const HLS_SEGMENT_PATH = /^\/hls\/[^/]+\/.+\.m4s$/;
+
+/**
+ * `pageErrors.expectClean()` for the page while the HLS player is OPEN, allowing exactly
+ * one thing: a status-0 `net::ERR_ABORTED` on a session's `.m4s` (ruling R89). That error
+ * is a client-side cancellation, and the only thing that cancels a fragment load while
+ * the player is open is hls.js itself, which aborts an in-flight fragment when it
+ * retargets (a cold start's live-sync position moving as the playlist grows). Every
+ * other signal still fails: any pageerror, any console error, any HTTP failure (403, 410
+ * and 5xx on `/hls/` included). `EXPECTED_PAGE_NOISE` is untouched. Each allowed abort
+ * is logged with its URL and the milliseconds since the play click, so it stays visible.
+ */
+async function expectCleanExceptHlsSegmentAborts(
+  page: Page,
+  pageErrors: PageErrorCollector,
+  aborts: { path: string; at: number }[],
+  playClickedAt: number
+): Promise<void> {
+  await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0))).catch(() => {});
+  const isAllowedAbort = (r: { url: string; status: number; failureText?: string }): boolean =>
+    r.status === 0 && r.failureText === 'net::ERR_ABORTED' && HLS_SEGMENT_PATH.test(r.url);
+  for (const a of aborts.filter((x) => HLS_SEGMENT_PATH.test(x.path))) {
+    console.log(`allowed hls.js abort: ${a.path} +${a.at - playClickedAt} ms after the play click`);
+  }
+  const offenders = [
+    ...pageErrors.pageErrors.map((e) => `pageerror: ${e}`),
+    ...pageErrors.consoleErrors.map((e) => `console.error: ${e}`),
+    ...pageErrors.failedResponses
+      .filter((r) => !isAllowedAbort(r))
+      .map((r) =>
+        r.status === 0
+          ? `network failure: ${r.url}${r.failureText ? ` (${r.failureText})` : ''}`
+          : `HTTP ${r.status} ${r.url}`
+      ),
+  ];
+  expect(offenders, 'the page produced errors while the HLS player was open').toEqual([]);
 }
 
 /** The one media-session token the page's `/hls/…` requests carry. */
@@ -91,13 +155,14 @@ test(
     const channel = await hlsChannel(upstream, seed, api, 'Player HLS');
     await setPlayerPrefs(adminPage, api);
     const seen = recordRequests(adminPage);
+    const aborts = recordAborts(adminPage);
 
     // A TS client holds the channel open first, so it is still running when the
     // status is read after the leave (with no other client the leave would stop it).
     await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
     await withDeadline(streamClient.readPackets(20), 30_000, 'readPackets(20)');
 
-    await playFromGuide(adminPage, channel.name);
+    const playClickedAt = await playFromGuide(adminPage, channel.name);
 
     // The entry: an HLS tune with no Output Profile, although the preference is set.
     await expect
@@ -134,7 +199,7 @@ test(
     const while_ = await readChannelStatus(api, channel.uuid);
     expect(while_.clients.map((c) => c.output_format).sort(), 'both viewers are listed').toEqual(['hls', 'mpegts']);
 
-    await pageErrors.expectClean();
+    await expectCleanExceptHlsSegmentAborts(adminPage, pageErrors, aborts, playClickedAt);
     pageErrors.waiveAutomaticCheck(
       'closing the player destroys hls.js, which aborts whichever playlist or segment request is in flight by design (FloatingVideo.jsx HLS destroy); the check above covered the whole playback'
     );
@@ -167,8 +232,9 @@ test(
     const channel = await hlsChannel(upstream, seed, api, 'Player HLS Paused');
     await setPlayerPrefs(adminPage, api);
     const seen = recordRequests(adminPage);
+    const aborts = recordAborts(adminPage);
 
-    await playFromGuide(adminPage, channel.name);
+    const playClickedAt = await playFromGuide(adminPage, channel.name);
     const video = adminPage.getByTestId('floating-video').locator('video');
     await expect
       .poll(() => video.evaluate((v: HTMLVideoElement) => v.currentTime), {
@@ -197,7 +263,7 @@ test(
     await testInfo.attach('q9.json', { body: JSON.stringify(measurement, null, 2), contentType: 'application/json' });
     console.log(`Q9: ${JSON.stringify(measurement)}`);
 
-    await pageErrors.expectClean();
+    await expectCleanExceptHlsSegmentAborts(adminPage, pageErrors, aborts, playClickedAt);
     pageErrors.waiveAutomaticCheck(
       'closing the player destroys hls.js, which aborts whichever playlist or segment request is in flight by design (FloatingVideo.jsx HLS destroy); the check above covered the whole playback'
     );
