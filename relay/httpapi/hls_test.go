@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -875,18 +876,32 @@ func TestAResumeThatLosesTheRaceToAStopReleasesItsAttachment(t *testing.T) {
 	ts := r.tuneAs(t, "c-resume1", "client-ts")
 	defer func() { _ = ts.Body.Close() }()
 	a := r.session(t, "c-resume1", "client-a")
+	// B holds the pipeline, so A's departure does not stop it and A's resume gets
+	// past AttachHLSExisting (R49) to the point the hook lands the stop on: without
+	// B the resume 410s earlier and the race is never run.
+	b := r.session(t, "c-resume1", "client-b")
 	ch := r.Manager.Get("c-resume1")
 
 	r.SessionClock.Advance(session12s)
+	if status, _, _ := r.getHLS(t, b.path("video.m3u8")); status != http.StatusOK {
+		t.Fatalf("B's GET answered %d", status)
+	}
 	r.tick(t)
 	waitFor(t, "the departure", 10*time.Second, func() bool {
-		return sameIDs(clientIDs(r.listedClients(t, "c-resume1")), "client-ts")
+		return sameIDs(clientIDs(r.listedClients(t, "c-resume1")), "client-ts", "client-b")
 	})
-	f.hooks.afterResumeAttach = func() { r.Manager.Stop("c-resume1") }
+	var fired atomic.Bool
+	f.hooks.afterResumeAttach = func() {
+		fired.Store(true)
+		r.Manager.Stop("c-resume1")
+	}
 
 	status, _, _ := r.getHLS(t, a.path("video.m3u8"))
 	if status != http.StatusGone {
 		t.Fatalf("the resume answered %d, want 410", status)
+	}
+	if !fired.Load() {
+		t.Fatal("the stop hook never fired: the resume ended before the attach it is meant to race, so nothing here ran the race")
 	}
 	for _, c := range ch.ClientSnapshot() {
 		if c.ID == "client-a" {
