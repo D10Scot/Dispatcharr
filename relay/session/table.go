@@ -60,8 +60,14 @@ type Session struct {
 	// decided its own; it is fixed before Activate, and no threshold reads it
 	// while the entry request is in flight.
 	TD time.Duration
+	// Grace is the channel's behind-live grace at entry (Phase 4a-3,
+	// Tuning.BehindLiveGrace): how long after it would otherwise be silent a
+	// session that was watching behind live stays unreclaimable. Immutable
+	// after Add, and a resume keeps it.
+	Grace time.Duration
 
 	// Under Table.mu.
+	behindLive bool            // the latest served media segment was more than BehindLiveAfter(TD) behind the newest
 	client     *channel.Client // the current registry entry's client; replaced on resume
 	state      State
 	inFlight   int
@@ -133,6 +139,18 @@ func (t *Table) SetTD(sid string, td time.Duration) {
 	defer t.mu.Unlock()
 	if s := t.byID[sid]; s != nil && s.state == Arrived {
 		s.TD = td
+	}
+}
+
+// NoteSegment records how far behind the newest segment the media segment a
+// session was just served is (Phase 4a-3): the latest one decides whether the
+// session is behind live. An ARRIVED or ACTIVE session only; a DEPARTED,
+// STOPPED or unknown one is untouched.
+func (t *Table) NoteSegment(sid string, behind time.Duration) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if s := t.byID[sid]; s != nil && (s.state == Arrived || s.state == Active) {
+		s.behindLive = behind > BehindLiveAfter(s.TD)
 	}
 }
 

@@ -3,7 +3,7 @@ import { test, expect, readChannelStatus } from '../../fixtures';
 import type { ApiClient, Seeder, UpstreamClient } from '../../fixtures';
 import { MEDIA_SESSION_TOKEN_RE } from '../../fixtures/hls';
 import { listRows } from '../../setup/http';
-import { lockedProfile, withDeadline } from '../streaming/helpers';
+import { lockedProfile, stopChannels, withDeadline } from '../streaming/helpers';
 import { SURFACES, gotoSurface } from './helpers';
 
 const guideSurface = SURFACES.find((s) => s.name === 'Guide');
@@ -21,6 +21,16 @@ if (!guideSurface) {
  * host. hls.js is preferred over Chromium 151's native HLS by design.
  */
 
+// Every channel this file tuned. The player leaves its session on close, and with
+// the rewind window on (Phase 4a-3) that leaves the channel lingering for 300 s, so
+// the teardown below stops it: fixture teardown runs even when a timeout abandons
+// the test body.
+const tuned: string[] = [];
+
+test.afterEach(async ({ api }) => {
+  await stopChannels(api, ...tuned.splice(0));
+});
+
 /** One SD channel the relay encodes in software on CI, as hls-sessions.spec.ts builds it. */
 async function hlsChannel(upstream: UpstreamClient, seed: Seeder, api: ApiClient, name: string) {
   const scenario = await upstream.scenario({
@@ -32,6 +42,7 @@ async function hlsChannel(upstream: UpstreamClient, seed: Seeder, api: ApiClient
     channelIds: [1],
     streamProfileId: proxy.id,
   });
+  tuned.push(channel.uuid);
   return channel;
 }
 

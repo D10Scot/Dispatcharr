@@ -478,3 +478,44 @@ func TestSetTDFixesTheThresholdsBeforeActivate(t *testing.T) {
 	// An unknown session is ignored.
 	r.table.SetTD("no-such-sid", time.Second)
 }
+
+func TestBehindLiveAfterIsFiveTargetDurations(t *testing.T) {
+	if got := BehindLiveAfter(2 * time.Second); got != 10*time.Second {
+		t.Fatalf("BehindLiveAfter(2 s) = %v, want 10 s", got)
+	}
+	if got := BehindLiveAfter(6 * time.Second); got != 30*time.Second {
+		t.Fatalf("BehindLiveAfter(6 s) = %v, want 30 s", got)
+	}
+}
+
+// The latest served media segment decides whether a session is behind live,
+// and only an ARRIVED or ACTIVE session records it.
+func TestNoteSegmentRecordsTheLatestServedSegment(t *testing.T) {
+	r := newRig(t)
+	o := r.owner("c1")
+	s := r.active(o, "a")
+	behind := func() bool {
+		r.table.mu.Lock()
+		defer r.table.mu.Unlock()
+		return s.behindLive
+	}
+	r.table.NoteSegment(s.ID, 10*time.Second)
+	if behind() {
+		t.Fatal("a segment exactly 5 x TD behind counted as behind live; it is STRICTLY more")
+	}
+	r.table.NoteSegment(s.ID, 10*time.Second+time.Millisecond)
+	if !behind() {
+		t.Fatal("a segment 10.001 s behind did not count as behind live")
+	}
+	r.table.NoteSegment(s.ID, 2*time.Second)
+	if behind() {
+		t.Fatal("a later live-edge segment did not clear behind live")
+	}
+	r.table.NoteSegment(s.ID, time.Minute)
+	r.departIdle(s)
+	r.table.NoteSegment(s.ID, 0)
+	if !behind() {
+		t.Fatal("a DEPARTED session's behind-live flag was changed")
+	}
+	r.table.NoteSegment("no-such-sid", time.Minute) // an unknown session is a no-op, not a panic
+}

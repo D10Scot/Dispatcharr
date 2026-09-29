@@ -1,6 +1,6 @@
 import { test, expect } from '../../fixtures';
 import { enterHls, leaveHls, waitForSegments } from '../../fixtures/hls';
-import { slotCappedChannels } from './helpers';
+import { slotCappedChannels, stopChannels } from './helpers';
 
 /**
  * Slot reclaim through nginx (Phase 4a-1c, spec D16, ruling R24), on an M3U
@@ -37,9 +37,9 @@ test(
       tokens.push(entryA.token);
       expect(await leaveHls(request, entryA.token)).toBe(204);
 
-      // Immediately: the leave answered only after its channel stopped, but
-      // the channel's provider slot comes back when its release POST lands, a
-      // moment later. The blocked tune waits for it rather than missing it.
+      // Immediately: the leave answered after its session ended. A lingers
+      // (Phase 4a-3), and B's blocked tune reclaims it and waits for its
+      // provider slot, which comes back when its release POST lands.
       const entryB = await enterHls(request, tune(b.uuid));
       tokens.push(entryB.token);
       const playlist = await waitForSegments(request, entryB.token, 'video', 1, SEGMENTS_TIMEOUT_MS);
@@ -50,6 +50,7 @@ test(
         .toEqual([2]);
     } finally {
       for (const token of tokens) await leaveHls(request, token);
+      await stopChannels(api, a.uuid, b.uuid);
     }
   }
 );
@@ -78,6 +79,7 @@ test(
       expect(await gone.json()).toEqual({ error: 'channel stopped' });
     } finally {
       for (const token of tokens) await leaveHls(request, token);
+      await stopChannels(api, a.uuid, b.uuid);
     }
   }
 );
@@ -123,6 +125,7 @@ test(
       reloading = false;
       await reloader?.catch(() => undefined);
       for (const token of tokens) await leaveHls(request, token);
+      await stopChannels(api, a.uuid, b.uuid);
     }
   }
 );

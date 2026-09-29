@@ -62,6 +62,11 @@ func main() {
 	// session that outlives its channel is still swept.
 	sessions := session.NewTable(session.Config{Log: slog.Default()})
 	go sessions.Run(context.Background())
+	// The on-disk rewind store (Phase 4a-3): one writer, one boot directory.
+	// The sweep of earlier boots' directories runs off the path to
+	// ListenAndServe.
+	rewind := hls.NewRewind(hls.RewindConfig{Log: slog.Default()})
+	go rewind.CleanStale()
 	channels := channel.NewManager(channel.ManagerConfig{
 		Events:   httpapi.EventSink(emitter),
 		Release:  httpapi.ReleaseVia(client, slog.Default()),
@@ -86,6 +91,7 @@ func main() {
 				HLS: httpapi.HLSDeps{
 					Detector: &hls.Detector{Log: slog.Default()},
 					Silence:  &hls.SilenceCache{Log: slog.Default()},
+					Rewind:   rewind,
 				},
 			},
 			Control: httpapi.ControlDeps{Secret: cfg.Secret, Channels: channels, Sessions: sessions},
@@ -126,6 +132,7 @@ func main() {
 			Channels: channels,
 			Server:   srv,
 			Events:   emitter,
+			Rewind:   rewind,
 			Log:      slog.Default(),
 		})
 	}()

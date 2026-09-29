@@ -132,6 +132,10 @@ def fixture():
         "stream_type": "mpegts",
         "hls_encoder": "software",
         "hls_generation": 3,
+        # Phase 4a-3: the rewind window's three.
+        "lingering_since": 1789000027.5,
+        "rewind_window_seconds": 3600.0,
+        "rewind_degraded": True,
         "clients": [
             {
                 "client_id": "client_1789000000000_1234",

@@ -134,7 +134,8 @@ class NextSourceRequestSerializer(serializers.Serializer):
 
 
 class RelayProxySettingsSerializer(serializers.Serializer):
-    """CoreSettings.get_proxy_settings()'s seven keys (core/models.py:709-717),
+    """CoreSettings.get_proxy_settings()'s stored keys (core/models.py, seven
+    until Phase 4a-3 added the four rewind ones),
     as the next-source contract renders them for the relay/a Go client.
 
     Declared field by field rather than as a DictField so the contract is
@@ -163,6 +164,12 @@ class RelayProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.FloatField()
     channel_client_wait_period = serializers.FloatField()
     new_client_behind_seconds = serializers.FloatField()
+    # Phase 4a-3 (spec D17): the live rewind window. FloatField like the other
+    # stored keys, which this class renders verbatim.
+    rewind_window_minutes = serializers.FloatField()
+    rewind_linger_seconds = serializers.FloatField()
+    rewind_behind_live_grace_seconds = serializers.FloatField()
+    rewind_disk_cap_gb = serializers.FloatField()
 
     # Phase 2 spec Amendment A1.4: TSConfig's class-attribute defaults, the
     # half of the effective settings that had never been on the wire. Each

@@ -1,7 +1,7 @@
 import { test, expect, expectTsAligned, readChannelStatus } from '../../fixtures';
 import type { ApiClient, Seeder, UpstreamClient } from '../../fixtures';
 import { enterHls, leaveHls } from '../../fixtures/hls';
-import { lockedProfile } from './helpers';
+import { lockedProfile, stopChannels } from './helpers';
 
 /**
  * The media-session token's lifecycle from outside the container (Phase 4a-1b,
@@ -48,6 +48,7 @@ test(
     } finally {
       // A left session is refused 403 from then on.
       expect(await leaveHls(request, first.token)).toBe(204);
+      await stopChannels(api, channel.uuid);
     }
     expect((await request.get(`/hls/${first.token}/video.m3u8`)).status()).toBe(403);
 
@@ -61,6 +62,7 @@ test(
       expect((await request.get(`/hls/${second.token}/video.m3u8`)).status()).toBe(403);
     } finally {
       await leaveHls(request, second.token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );
@@ -82,6 +84,7 @@ test(
     } finally {
       // A session already forgotten is still a 204: the leave is idempotent.
       expect(await leaveHls(request, entry.token)).toBe(204);
+      await stopChannels(api, channel.uuid);
     }
   }
 );
@@ -92,19 +95,23 @@ test(
   async ({ upstream, seed, api, request, streamClient }) => {
     const channel = await hlsChannel(upstream, seed, api, 'HLS Presence');
 
-    // A TS client keeps the channel up; the HLS session joins it.
-    await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
-    expectTsAligned(await streamClient.readPackets(20));
-    const entry = await enterHls(request, tune(channel.uuid));
+    try {
+      // A TS client keeps the channel up; the HLS session joins it.
+      await streamClient.open(`/proxy/ts/stream/${channel.uuid}`);
+      expectTsAligned(await streamClient.readPackets(20));
+      const entry = await enterHls(request, tune(channel.uuid));
 
-    const while_ = await readChannelStatus(api, channel.uuid);
-    expect(while_.clients.map((c) => c.output_format).sort(), 'both viewers are listed').toEqual(['hls', 'mpegts']);
+      const while_ = await readChannelStatus(api, channel.uuid);
+      expect(while_.clients.map((c) => c.output_format).sort(), 'both viewers are listed').toEqual(['hls', 'mpegts']);
 
-    expect(await leaveHls(request, entry.token)).toBe(204);
-    // The very next read: the leave answered only after its side effects, so
-    // no wait for the idle timeout (R24).
-    const after = await readChannelStatus(api, channel.uuid);
-    expect(after.clients.map((c) => c.output_format), 'only the TS client remains').toEqual(['mpegts']);
-    await streamClient.close();
+      expect(await leaveHls(request, entry.token)).toBe(204);
+      // The very next read: the leave answered only after its side effects, so
+      // no wait for the idle timeout (R24).
+      const after = await readChannelStatus(api, channel.uuid);
+      expect(after.clients.map((c) => c.output_format), 'only the TS client remains').toEqual(['mpegts']);
+      await streamClient.close();
+    } finally {
+      await stopChannels(api, channel.uuid);
+    }
   }
 );

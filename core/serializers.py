@@ -108,6 +108,11 @@ class ProxySettingsSerializer(serializers.Serializer):
     channel_init_grace_period = serializers.IntegerField(min_value=0, max_value=300)
     channel_client_wait_period = serializers.IntegerField(min_value=0, max_value=300, required=False, default=5)
     new_client_behind_seconds = serializers.IntegerField(min_value=0, max_value=120, required=False, default=5)
+    # Phase 4a-3 (spec D17): the live rewind window.
+    rewind_window_minutes = serializers.IntegerField(min_value=0, max_value=120, required=False, default=60)
+    rewind_linger_seconds = serializers.IntegerField(min_value=0, max_value=3600, required=False, default=300)
+    rewind_behind_live_grace_seconds = serializers.IntegerField(min_value=0, max_value=300, required=False, default=10)
+    rewind_disk_cap_gb = serializers.IntegerField(min_value=1, max_value=10000, required=False, default=16)
 
     def validate_buffering_timeout(self, value):
         if value < 0 or value > 300:
@@ -146,6 +151,26 @@ class ProxySettingsSerializer(serializers.Serializer):
     def validate_new_client_behind_seconds(self, value):
         if value < 0 or value > 120:
             raise serializers.ValidationError("New client buffer must be between 0 and 120 seconds")
+        return value
+
+    def validate_rewind_window_minutes(self, value):
+        if value < 0 or value > 120:
+            raise serializers.ValidationError("Rewind window must be between 0 and 120 minutes")
+        return value
+
+    def validate_rewind_linger_seconds(self, value):
+        if value < 0 or value > 3600:
+            raise serializers.ValidationError("Rewind linger must be between 0 and 3600 seconds")
+        return value
+
+    def validate_rewind_behind_live_grace_seconds(self, value):
+        if value < 0 or value > 300:
+            raise serializers.ValidationError("Behind-live grace must be between 0 and 300 seconds")
+        return value
+
+    def validate_rewind_disk_cap_gb(self, value):
+        if value < 1 or value > 10000:
+            raise serializers.ValidationError("Rewind disk cap must be between 1 and 10000 GB")
         return value
 
 

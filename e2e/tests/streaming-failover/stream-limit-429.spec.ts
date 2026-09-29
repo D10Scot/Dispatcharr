@@ -1,7 +1,7 @@
 import { test, expect, StreamStatusError, expectTsAligned } from '../../fixtures';
 import { enterHls, leaveHls, parseMultivariant, tokenOf } from '../../fixtures/hls';
 import type { ApiClient } from '../../fixtures';
-import { lockedProfile, newStreamClient, slotCappedChannels, withDeadline } from '../streaming/helpers';
+import { lockedProfile, newStreamClient, slotCappedChannels, stopChannels, withDeadline } from '../streaming/helpers';
 
 /**
  * The authorize hop's 429 restoration, behaviourally (#179).
@@ -301,6 +301,7 @@ test(
       tokens.push(tokenOf(multivariant));
     } finally {
       for (const token of tokens) await leaveHls(request, token);
+      await stopChannels(api, a.uuid, b.uuid);
     }
   }
 );

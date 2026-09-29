@@ -22,6 +22,16 @@ export const getStartDate = (startedAt) => {
   return new Date(startedAt * 1000).toLocaleString();
 };
 
+// The tooltip of the LINGERING badge (Phase 4a-3): when the channel's last HLS
+// viewer left, in the user's own date format.
+export const getLingeringLabel = (lingeringSince, fullDateTimeFormat) => {
+  const since = format(
+    initializeTime(lingeringSince * 1000),
+    fullDateTimeFormat
+  );
+  return `No viewers since ${since}; the rewind window is kept for a quick return`;
+};
+
 export const getM3uAccountsMap = (m3uAccounts) => {
   const map = {};
   if (m3uAccounts && Array.isArray(m3uAccounts)) {

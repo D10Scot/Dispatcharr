@@ -130,6 +130,11 @@ type Config struct {
 	// ProbeCommand maps a probe to the command and argv run, by generation.
 	// Nil runs FFprobe with ProbeArgv.
 	ProbeCommand func(generation int) (string, []string)
+	// Rewind is the process-wide rewind store and WindowDepth this channel's
+	// window depth (4a-3). Both must be set for the pipeline to keep a window;
+	// otherwise its store holds the live edge alone, as before.
+	Rewind      *Rewind
+	WindowDepth time.Duration
 	// Log and Now are the logger and the clock.
 	Log *slog.Logger
 	Now func() time.Time
@@ -209,12 +214,33 @@ func Start(ctx context.Context, cfg Config) (*Pipeline, error) {
 		readyCh: make(chan struct{}),
 		probes:  map[int]Probe{},
 	}
+	if cfg.Rewind != nil && cfg.WindowDepth > 0 {
+		cfg.Rewind.open(cfg.ChannelID, cfg.WindowDepth, p.store)
+	}
 	go p.run(ctx)
 	return p, nil
 }
 
 // Store is the pipeline's segments and playlists.
 func (p *Pipeline) Store() *Store { return p.store }
+
+// IsReady is whether one generation's init segments all exist and the pipeline
+// did not fail before that (Ready's answer, without the wait). A pipeline that
+// is not ready has served no multivariant, so nothing lingers for it (4a-3).
+func (p *Pipeline) IsReady() bool {
+	select {
+	case <-p.readyCh:
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		return p.readyErr == nil
+	default:
+		return false
+	}
+}
+
+// SetLingering tells the pipeline's window its channel is lingering (spec D14),
+// which the disk cap's eviction order prefers to evict from.
+func (p *Pipeline) SetLingering(on bool) { p.store.SetLingering(on) }
 
 // Done is closed when the pipeline has ended.
 func (p *Pipeline) Done() <-chan struct{} { return p.done }

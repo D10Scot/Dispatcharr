@@ -85,6 +85,10 @@ class ProxySettingsWritePathTests(TestCase):
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "rewind_window_minutes": 60,
+                "rewind_linger_seconds": 300,
+                "rewind_behind_live_grace_seconds": 10,
+                "rewind_disk_cap_gb": 16,
             },
         )
 
@@ -108,6 +112,10 @@ class ProxySettingsWritePathTests(TestCase):
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "rewind_window_minutes": 60,
+                "rewind_linger_seconds": 300,
+                "rewind_behind_live_grace_seconds": 10,
+                "rewind_disk_cap_gb": 16,
             },
         )
 
@@ -141,5 +149,9 @@ class ProxySettingsWritePathTests(TestCase):
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "rewind_window_minutes": 60,
+                "rewind_linger_seconds": 300,
+                "rewind_behind_live_grace_seconds": 10,
+                "rewind_disk_cap_gb": 16,
             },
         )

@@ -231,6 +231,9 @@ func (c *Channel) stopOutputs() {
 		delete(c.hls, key)
 	}
 	c.outputsStopped = true
+	if ls := c.linger.Swap(nil); ls != nil {
+		ls.stop()
+	}
 	c.outMu.Unlock()
 	for _, entry := range entries {
 		entry.pipeline.Stop()

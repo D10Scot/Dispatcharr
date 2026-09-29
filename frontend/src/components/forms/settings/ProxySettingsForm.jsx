@@ -26,6 +26,10 @@ const isNumericField = (key) => {
     'channel_init_grace_period',
     'channel_client_wait_period',
     'new_client_behind_seconds',
+    'rewind_window_minutes',
+    'rewind_linger_seconds',
+    'rewind_behind_live_grace_seconds',
+    'rewind_disk_cap_gb',
   ].includes(key);
 };
 
@@ -37,8 +41,14 @@ const getNumericFieldMax = (key) => {
   if (key === 'channel_shutdown_delay') return 300;
   if (key === 'channel_client_wait_period') return 300;
   if (key === 'new_client_behind_seconds') return 120;
+  if (key === 'rewind_window_minutes') return 120;
+  if (key === 'rewind_linger_seconds') return 3600;
+  if (key === 'rewind_behind_live_grace_seconds') return 300;
+  if (key === 'rewind_disk_cap_gb') return 10000;
   return 300;
 };
+
+const getNumericFieldMin = (key) => (key === 'rewind_disk_cap_gb' ? 1 : 0);
 
 const renderProxySettingField = (key, config, proxySettingsForm) => {
   if (isNumericField(key)) {
@@ -48,7 +58,7 @@ const renderProxySettingField = (key, config, proxySettingsForm) => {
         label={config.label}
         {...proxySettingsForm.getInputProps(key)}
         description={config.description || null}
-        min={0}
+        min={getNumericFieldMin(key)}
         max={getNumericFieldMax(key)}
       />
     );

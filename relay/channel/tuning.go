@@ -94,4 +94,24 @@ type Tuning struct {
 	// keepalives before the client is dropped (output/ts/generator.py:
 	// 371-380).
 	MaxKeepalive time.Duration
+
+	// RewindWindow is rewind_window_minutes: how far back an HLS channel keeps
+	// its segments on disk (Phase 4a-3, spec D14). Zero turns the window off,
+	// and with it the linger.
+	RewindWindow time.Duration
+
+	// RewindLinger is rewind_linger_seconds: how long a channel keeps running
+	// after its last HLS session ends, so a zap back keeps the window (spec
+	// D15). Zero stops the pipeline at once.
+	RewindLinger time.Duration
+
+	// BehindLiveGrace is rewind_behind_live_grace_seconds: how long a session
+	// that was watching behind live stays unreclaimable after it would
+	// otherwise be silent (spec D15, ruling R82).
+	BehindLiveGrace time.Duration
+
+	// RewindDiskCap is rewind_disk_cap_gb in bytes: the process-wide bound on
+	// every rewind window together (spec D17). The most recent initial tune's
+	// value sets it.
+	RewindDiskCap int64
 }

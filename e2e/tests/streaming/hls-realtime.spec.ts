@@ -1,6 +1,6 @@
 import { test, expect } from '../../fixtures';
 import { enterHls, leaveHls, parseMediaPlaylist, waitForSegments } from '../../fixtures/hls';
-import { lockedProfile } from './helpers';
+import { lockedProfile, stopChannels } from './helpers';
 
 /**
  * Whether the SOFTWARE transcode of the worst fixture keeps up with real time
@@ -64,6 +64,7 @@ test(
       expect(seen.size, 'segments appear').toBeGreaterThan(first.segments.length);
     } finally {
       await leaveHls(request, entry.token);
+      await stopChannels(api, channel.uuid);
     }
   }
 );

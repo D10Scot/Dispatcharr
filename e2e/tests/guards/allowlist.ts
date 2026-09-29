@@ -161,6 +161,22 @@ export const GLOBAL_SETTINGS_WRITE: Capability = {
     // Redis on `post_save`, reaching every worker immediately, so there is
     // no settling sleep before tuning.
     'tests/streaming-failover/stream-limit-429.spec.ts',
+    // Writes `proxy_settings`, and only `rewind_linger_seconds` within it, set
+    // to 20 s for its run — merged into a spread copy of the row's existing
+    // `value`, as `stream-limit-429.spec.ts` merges its own. Nothing else reads
+    // it in a way that matters: the value is snapshotted by a channel at its
+    // start, `streaming-failover` is `workers: 1`, and the only other HLS
+    // viewer in this project (`stream-limit-429.spec.ts`'s leave-and-zap test)
+    // runs before or after, never during. Teardown restores it in an
+    // unconditional `afterEach` that PATCHes the captured original `value`
+    // with `rewind_linger_seconds` set to the value in force before the
+    // write — the stored one, or 300 (`get_proxy_settings`' default) when the
+    // row lacked the key, because a save merges over the stored group and a
+    // bare verbatim restore would leave the 20 behind — and an up-front guard
+    // refuses a row a previous run left at 20. `CoreSettings._get_group` invalidates the group in Redis on
+    // `post_save`, and next-source reads it through that cache, so there is
+    // no settling sleep before tuning.
+    'tests/streaming-failover/hls-linger.spec.ts',
     // Narrows network_access["XC_API"] from its default 0.0.0.0/0 to the
     // local CIDRs, for its one PATCH-writing test. Which group: the
     // `network_access` row, and only the `XC_API` key inside it —

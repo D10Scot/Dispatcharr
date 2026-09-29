@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -74,7 +75,10 @@ type fakeJudge struct {
 	silent      map[string]time.Time
 	refuseStop  map[string]bool
 	silentCalls []string
-	stopCalls   map[string][][]string
+	// silentIDs is the id list each Silent call carried, in call order (4a-3:
+	// a zero-client channel asks the judge with an empty list).
+	silentIDs [][]string
+	stopCalls map[string][][]string
 }
 
 func newFakeJudge() *fakeJudge {
@@ -85,10 +89,11 @@ func newFakeJudge() *fakeJudge {
 	}
 }
 
-func (j *fakeJudge) Silent(c *Channel, _ []string) (time.Time, bool) {
+func (j *fakeJudge) Silent(c *Channel, ids []string) (time.Time, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	j.silentCalls = append(j.silentCalls, c.ID())
+	j.silentIDs = append(j.silentIDs, append([]string(nil), ids...))
 	since, ok := j.silent[c.ID()]
 	return since, ok
 }
@@ -240,6 +245,9 @@ func TestAZeroClientChannelInItsShutdownDelayIsReclaimable(t *testing.T) {
 		mu.Unlock()
 	}
 
+	// A zero-client channel now asks the judge for the behind-live grace (Phase
+	// 4a-3): "silent, since the zero time", so the ranking is the idle time's.
+	judge.silent["A"] = time.Time{}
 	tuning := testTuning()
 	tuning.ShutdownDelay = time.Second
 	c, release := attachOnProfile(t, m, "A", "ca", 1, tuning)
@@ -253,10 +261,10 @@ func TestAZeroClientChannelInItsShutdownDelayIsReclaimable(t *testing.T) {
 		t.Fatalf("ReclaimFor = %+v, want %+v", got, want)
 	}
 	judge.mu.Lock()
-	silentCalls, stopCalls := len(judge.silentCalls), judge.stopCalls["A"]
+	silentIDs, stopCalls := judge.silentIDs, judge.stopCalls["A"]
 	judge.mu.Unlock()
-	if silentCalls != 0 {
-		t.Fatalf("Silent ran %d times for a channel with no client; the pick's verdict is the manager's own", silentCalls)
+	if len(silentIDs) != 1 || len(silentIDs[0]) != 0 {
+		t.Fatalf("Silent calls = %v, want exactly one, with an empty client list (the behind-live grace's question)", silentIDs)
 	}
 	if len(stopCalls) != 1 || len(stopCalls[0]) != 0 {
 		t.Fatalf("StopIfSilent calls = %v, want exactly one with an empty client list (the re-check still runs)", stopCalls)
@@ -599,5 +607,66 @@ func TestReclaimForWaitsOnARunThatEndedByItself(t *testing.T) {
 		if c.String() != want {
 			t.Fatalf("ReclaimCase(%d).String() = %q, want %q", int(c), c.String(), want)
 		}
+	}
+}
+
+// Row ⟨F⟩ (spec D15, D16; R82): a lingering channel with no client asks the
+// judge for the behind-live grace, and is reclaimed only once the judge says
+// it is past it.
+func TestALingeringChannelIsReclaimedOnlyPastItsGrace(t *testing.T) {
+	judge := newFakeJudge()
+	g := newLingerRig(t, func(cfg *ManagerConfig) { cfg.Silence = judge })
+	ch, release := g.attach("A", "ca", lingerTuning())
+	starter := newReadyStarter(t)
+	p, _, out, err := ch.AttachHLS("hls", starter.start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := p.Ready(ctx); err != nil {
+		t.Fatal(err)
+	}
+	out()
+	release()
+	if _, ok := ch.Lingering(); !ok || ch.Clients() != 0 {
+		t.Fatalf("the channel is not lingering with no client")
+	}
+	linger := g.timers.pending()[0]
+
+	if got := g.m.ReclaimFor([]int{1}, time.Second); got.Case != ReclaimNothing {
+		t.Fatalf("ReclaimFor with the judge inside the grace = %+v, want nothing", got)
+	}
+	judge.mu.Lock()
+	ids := judge.silentIDs
+	judge.mu.Unlock()
+	if len(ids) != 1 || len(ids[0]) != 0 {
+		t.Fatalf("Silent calls = %v, want exactly one, with an empty client list", ids)
+	}
+	if !inMap(g.m, ch) {
+		t.Fatal("a channel inside its grace was removed")
+	}
+
+	judge.mu.Lock()
+	judge.silent["A"] = time.Time{}
+	judge.mu.Unlock()
+	got := g.m.ReclaimFor([]int{1}, 5*time.Second)
+	if got.Case != ReclaimStopped || got.Channel != "A" {
+		t.Fatalf("ReclaimFor past the grace = %+v, want stopped A", got)
+	}
+	if !linger.wasStopped() {
+		t.Fatal("the reclaim left the linger's timer armed")
+	}
+	pipelineDone(t, p, "the reclaim stopped the channel")
+}
+
+func TestLaterIsTheLaterOfTwoTimes(t *testing.T) {
+	early := time.Unix(1_000, 0)
+	late := time.Unix(2_000, 0)
+	if got := later(early, late); !got.Equal(late) {
+		t.Fatalf("later(early, late) = %v, want the late one", got)
+	}
+	if got := later(late, early); !got.Equal(late) {
+		t.Fatalf("later(late, early) = %v, want the late one", got)
 	}
 }

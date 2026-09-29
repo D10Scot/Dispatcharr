@@ -69,6 +69,11 @@ type HLSDeps struct {
 	Detector *hls.Detector
 	Silence  *hls.SilenceCache
 
+	// Rewind is the process-wide on-disk rewind store (Phase 4a-3): main.go
+	// builds one. Nil means no channel keeps a window, which every test but
+	// the rewind ones wants.
+	Rewind *hls.Rewind
+
 	// The rest are test seams, never set by main.go: the process a pipeline
 	// spawns for its encoder and its probe, the exit grace and stall
 	// watchdog, and the two waits.
@@ -137,6 +142,22 @@ func hlsFields(c *channel.Channel) (string, *int) {
 	return engine, &generation
 }
 
+// rewindFields is the payload's three rewind fields (Phase 4a-3): when the
+// channel began lingering, the span of the video playlist the pipeline lists,
+// and whether its window degraded. All absent with no HLS pipeline, and the
+// first absent while the channel is not lingering.
+func rewindFields(c *channel.Channel) (lingeringSince, windowSeconds *float64, degraded bool) {
+	since, window, ok := c.RewindStatus()
+	if !ok {
+		return nil, nil, false
+	}
+	if !since.IsZero() {
+		f := unixFloat(since)
+		lingeringSince = &f
+	}
+	return lingeringSince, &window.Seconds, window.Degraded
+}
+
 func writeJSONBody(w http.ResponseWriter, status int, body string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -177,6 +198,8 @@ func startPipeline(ctx context.Context, deps StreamDeps, ch *channel.Channel, mo
 			JoinBehind:   ch.Tuning().JoinBehind,
 			Detector:     deps.HLS.Detector,
 			Silence:      deps.HLS.Silence,
+			Rewind:       deps.HLS.Rewind,
+			WindowDepth:  ch.Tuning().RewindWindow,
 			Command:      deps.HLS.Command,
 			ProbeCommand: deps.HLS.ProbeCommand,
 			ExitGrace:    deps.HLS.ExitGrace,
@@ -267,6 +290,7 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 	fire(hooks.afterEntryAttach)
 	sessions.Add(&session.Session{
 		ID: sid, Owner: ch, Key: key, Pipeline: p, TD: hls.TargetDuration * time.Second,
+		Grace: ch.Tuning().BehindLiveGrace,
 	}, client, session.Releases{Output: releaseOutput, Client: release, BeforeClient: hooks.beforeLeaveClientRelease})
 
 	// abandon ends an entry that will not answer 200: the releases the table
@@ -589,7 +613,14 @@ func serveHLSResource(w http.ResponseWriter, r *http.Request, deps StreamDeps, l
 			http.NotFound(w, r)
 			return
 		}
-		body, found = p.Store().Segment(rendition, seq)
+		var behind time.Duration
+		body, behind, found = p.Store().SegmentAt(rendition, seq)
+		if found && lookup.Session != nil {
+			// The latest served segment decides whether the session is
+			// behind live (Phase 4a-3); a playlist, an init or a 404 moves
+			// nothing.
+			deps.Sessions.NoteSegment(lookup.Session.ID, behind)
+		}
 	}
 	if !found {
 		http.NotFound(w, r)

@@ -21,6 +21,7 @@ DATA_DIRS=(
     "/data/cache"
     "/data/cache/logos"
     "/data/cache/sd_posters"
+    "/data/cache/rewind"
     "/data/recordings"
     "/data/uploads/m3us"
     "/data/uploads/epgs"

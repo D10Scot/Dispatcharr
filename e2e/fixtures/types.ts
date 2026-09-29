@@ -519,6 +519,15 @@ export type ChannelStatus = {
    */
   hls_encoder?: 'qsv' | 'software' | 'copy';
   hls_generation?: number;
+  /**
+   * Phase 4a-3: `lingering_since` (a Unix time) is present while the channel
+   * lingers after its last HLS session; `rewind_window_seconds` is the span the
+   * video playlist lists while an HLS pipeline is registered;
+   * `rewind_degraded` is present only when the window stopped persisting.
+   */
+  lingering_since?: number;
+  rewind_window_seconds?: number;
+  rewind_degraded?: boolean;
 };
 
 /* ------------------------------------------------------------------------ *

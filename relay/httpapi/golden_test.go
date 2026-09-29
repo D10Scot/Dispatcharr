@@ -44,6 +44,7 @@ func goldenPayload() channelListPayload {
 	speed := 1.02
 	healthy := true
 	hlsGeneration := 3
+	lingeringSince, rewindSeconds := 1_789_000_027.5, 3600.0
 
 	return channelListPayload{
 		Count: 2,
@@ -75,6 +76,10 @@ func goldenPayload() channelListPayload {
 				StreamType:     "mpegts",
 				HLSEncoder:     "software",
 				HLSGeneration:  &hlsGeneration,
+
+				LingeringSince:      &lingeringSince,
+				RewindWindowSeconds: &rewindSeconds,
+				RewindDegraded:      true,
 				Clients: []clientPayload{
 					{
 						ClientID:        "client_1789000000000_1234",
@@ -179,6 +184,7 @@ func TestEveryOptionalFieldIsAbsentRatherThanNull(t *testing.T) {
 		"video_codec", "resolution", "source_fps", "ffmpeg_speed",
 		"audio_codec", "audio_channels", "stream_type",
 		"hls_encoder", "hls_generation",
+		"lingering_since", "rewind_window_seconds", "rewind_degraded",
 	} {
 		if _, present := minimal[key]; present {
 			t.Errorf("a channel with no %s still carries the key, as %v: DRF declares it "+
@@ -272,11 +278,15 @@ func TestTheLiveEndpointProducesTheGoldensKeySet(t *testing.T) {
 	_ = json.Unmarshal(encoded, &golden)
 
 	// A TS-only transcode tune runs no HLS pipeline, so the live channel has
-	// neither HLS key; TestTheChannelPayloadCarriesTheHLSEncoderAndGeneration
-	// pins the two keys on a channel that does.
+	// neither HLS key nor any of the three rewind ones;
+	// TestTheChannelPayloadCarriesTheHLSEncoderAndGeneration and
+	// TestTheChannelPayloadsCarryTheRewindFields pin them on a channel that
+	// does.
 	wantKeys := map[string]any{}
 	for key, value := range golden.Channels[0] {
-		if key != "hls_encoder" && key != "hls_generation" {
+		switch key {
+		case "hls_encoder", "hls_generation", "lingering_since", "rewind_window_seconds", "rewind_degraded":
+		default:
 			wantKeys[key] = value
 		}
 	}

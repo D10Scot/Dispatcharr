@@ -277,3 +277,169 @@ func TestStopIfSilentLeavesANonSilentChannelAlone(t *testing.T) {
 		t.Fatalf("the refused stop changed the session: state=%v stoppedAt=%v releases=%v", loud.state, loud.stoppedAt, loud.releases)
 	}
 }
+
+// behindLive activates a session of o whose latest served segment was far
+// behind the newest, with the given grace.
+func (r *rig) behindLive(o Owner, clientID string, grace time.Duration) *Session {
+	r.t.Helper()
+	s := r.add(o, clientID, 2*time.Second)
+	s.Grace = grace
+	if !r.table.Activate(s.ID) {
+		r.t.Fatalf("Activate(%s) refused", clientID)
+	}
+	r.table.NoteSegment(s.ID, time.Minute)
+	return s
+}
+
+// Row ⟨F⟩ (spec D15, D16; R82): a behind-live session's silence point is its
+// last request's end plus 2 x TD plus the grace.
+func TestTheBehindLiveGrace(t *testing.T) {
+	const grace = 10 * time.Second
+
+	t.Run("1 to 3 an ACTIVE behind-live session is silent strictly after 14 s", func(t *testing.T) {
+		r := newRig(t)
+		o := r.owner("c1")
+		r.behindLive(o, "a", grace)
+		lastEnd := r.clock.Now()
+		r.clock.Advance(5 * time.Second)
+		if _, ok := r.silent(o, "a"); ok {
+			t.Fatal("(1) a behind-live session silent for 5 s was judged silent")
+		}
+		r.clock.Advance(9 * time.Second)
+		if _, ok := r.silent(o, "a"); ok {
+			t.Fatal("(2) a behind-live session silent for exactly 14 s was judged silent; silent is STRICTLY more")
+		}
+		r.clock.Advance(time.Millisecond)
+		since, ok := r.silent(o, "a")
+		if !ok {
+			t.Fatal("(3) a behind-live session silent for 14.001 s was judged not silent")
+		}
+		if want := lastEnd.Add(14 * time.Second); !since.Equal(want) {
+			t.Fatalf("(3) since = %v, want lastEnd + 14 s = %v", since, want)
+		}
+	})
+
+	t.Run("4 a settling departure with its client listed waits out the grace", func(t *testing.T) {
+		r := newRig(t)
+		o := r.owner("c1")
+		s := r.behindLive(o, "a", grace)
+		r.clock.Advance(IdleTimeout(s.TD))
+		if d := r.table.Sweep(); len(d) != 1 {
+			t.Fatalf("the sweep departed %d sessions, want 1", len(d))
+		}
+		r.clock.Advance(500 * time.Millisecond)
+		if _, ok := r.silent(o, "a"); ok {
+			t.Fatal("a behind-live departure settling at 12.5 s was judged silent inside its grace")
+		}
+	})
+
+	t.Run("5 a settled departure holds an empty-list verdict until its silence point", func(t *testing.T) {
+		r := newRig(t)
+		o := r.owner("c1")
+		s := r.behindLive(o, "a", grace)
+		lastEnd := r.clock.Now()
+		r.departIdle(s)
+		r.clock.Advance(time.Second) // 13 s
+		if _, ok := r.silent(o); ok {
+			t.Fatal("an empty list at 13 s was judged silent while a behind-live departure was inside its grace")
+		}
+		r.clock.Advance(2 * time.Second) // 15 s
+		since, ok := r.silent(o)
+		if !ok {
+			t.Fatal("an empty list at 15 s was judged not silent past the grace")
+		}
+		if want := lastEnd.Add(14 * time.Second); !since.Equal(want) {
+			t.Fatalf("since = %v, want lastEnd + 14 s = %v", since, want)
+		}
+	})
+
+	t.Run("6 with no grace a behind-live session is silent at 4a-1c's 4 s", func(t *testing.T) {
+		r := newRig(t)
+		o := r.owner("c1")
+		r.behindLive(o, "a", 0)
+		r.clock.Advance(4 * time.Second)
+		if _, ok := r.silent(o, "a"); ok {
+			t.Fatal("silent at exactly 4 s")
+		}
+		r.clock.Advance(time.Millisecond)
+		if _, ok := r.silent(o, "a"); !ok {
+			t.Fatal("a zero-grace behind-live session was not silent past 4 s")
+		}
+	})
+
+	t.Run("7 a session that is not behind live has no grace", func(t *testing.T) {
+		r := newRig(t)
+		o := r.owner("c1")
+		s := r.add(o, "a", 2*time.Second)
+		s.Grace = grace
+		r.table.Activate(s.ID)
+		r.table.NoteSegment(s.ID, 10*time.Second) // exactly 5 x TD: not behind
+		r.clock.Advance(5 * time.Second)
+		if _, ok := r.silent(o, "a"); !ok {
+			t.Fatal("a session at the live edge kept a grace")
+		}
+	})
+
+	t.Run("8 two departures, one inside its grace, are not silent", func(t *testing.T) {
+		r := newRig(t)
+		o := r.owner("c1")
+		early := r.behindLive(o, "early", grace)
+		r.clock.Advance(3 * time.Second)
+		r.behindLive(o, "late", grace)
+		r.clock.Advance(IdleTimeout(early.TD) - 3*time.Second) // early idles out
+		departures := r.table.Sweep()
+		if len(departures) != 1 {
+			t.Fatalf("the sweep departed %d sessions, want 1 (the early one)", len(departures))
+		}
+		departures[0].Run()
+		r.clock.Advance(3 * time.Second)
+		departures = r.table.Sweep()
+		if len(departures) != 1 {
+			t.Fatalf("the sweep departed %d sessions, want the late one", len(departures))
+		}
+		departures[0].Run()
+		// early is 15 s past its last request, past its silence point at 14 s; late is 12 s
+		// past its own, inside its silence point at 17 s
+		if _, ok := r.silent(o); ok {
+			t.Fatal("an empty list was judged silent with one departure inside its grace")
+		}
+		r.clock.Advance(3 * time.Second)
+		if _, ok := r.silent(o); !ok {
+			t.Fatal("an empty list was not silent once both departures were past their graces")
+		}
+	})
+
+	t.Run("9 another channel's behind-live departure is ignored", func(t *testing.T) {
+		r := newRig(t)
+		mine, other := r.owner("mine"), r.owner("other")
+		s := r.behindLive(other, "a", grace)
+		r.departIdle(s)
+		if _, ok := r.silent(mine); !ok {
+			t.Fatal("another channel's grace held this channel")
+		}
+	})
+}
+
+func TestStopIfSilentHonoursTheGrace(t *testing.T) {
+	r := newRig(t)
+	c := &channel.Channel{}
+	s := r.behindLive(c, "a", 10*time.Second)
+	// Departed and settling: the zero Channel cannot emit, so it is not run.
+	r.clock.Advance(IdleTimeout(s.TD))
+	if d := r.table.Sweep(); len(d) != 1 {
+		t.Fatalf("the sweep departed %d sessions, want 1", len(d))
+	}
+	if stopped, ok := r.table.StopIfSilent(c, nil); ok || stopped != nil {
+		t.Fatalf("StopIfSilent inside the grace = %+v, %v; want nil, false", stopped, ok)
+	}
+	if l := r.table.Begin(s.ID); l.Outcome != Busy {
+		t.Fatalf("the refused stop marked the session: Begin = %v, want Busy (still settling)", l.Outcome)
+	}
+	r.clock.Advance(3 * time.Second) // 15 s, past lastEnd + 14 s
+	if _, ok := r.table.StopIfSilent(c, nil); !ok {
+		t.Fatal("StopIfSilent past the grace refused")
+	}
+	if l := r.table.Begin(s.ID); l.Outcome != Gone {
+		t.Fatalf("Begin after the stop = %v, want Gone", l.Outcome)
+	}
+}

@@ -254,3 +254,39 @@ func TestRunWithNoDependenciesReturns(t *testing.T) {
 		t.Fatalf("an empty drain took %s", elapsed)
 	}
 }
+
+// rewindRecorder is the drain's Rewind, writing into the same order log.
+type rewindRecorder struct{ rec *recorder }
+
+func (r rewindRecorder) RemoveBoot() { r.rec.note("rewind") }
+
+// Phase 4a-3: the rewind windows go after the channels have stopped and the
+// server has shut down, and before the events flush; a nil Rewind is skipped.
+func TestTheDrainRemovesTheBootDirectoryAfterTheChannelsStop(t *testing.T) {
+	rec := &recorder{gate: &fakeGate{}}
+	Run(Deps{
+		Gate:        rec.gate,
+		Channels:    rec,
+		Server:      rec,
+		Events:      rec,
+		Rewind:      rewindRecorder{rec},
+		ClientGrace: 10 * time.Millisecond,
+		Budget:      2 * time.Second,
+	})
+	want := []string{"channels", "server", "rewind", "events"}
+	got := rec.Order()
+	if len(got) != len(want) {
+		t.Fatalf("the drain called %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("the drain called %v, want %v: the windows go after the channels that own them and before the flush", got, want)
+		}
+	}
+
+	skipped := &recorder{gate: &fakeGate{}}
+	Run(Deps{Gate: skipped.gate, Channels: skipped, Server: skipped, Events: skipped, ClientGrace: time.Millisecond, Budget: time.Second})
+	if got := skipped.Order(); len(got) != 3 {
+		t.Fatalf("with no Rewind the drain called %v, want the three steps", got)
+	}
+}
