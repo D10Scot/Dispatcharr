@@ -219,15 +219,35 @@ jobs:
         # A rule is a decision with an end date, never a mute. The informational
         # step above is unaffected and keeps printing every accepted finding.
         #
-        # Empty since fixplan G-9: the base image moved to ffmpeg 9.0
-        # (linuxserver's Ubuntu 26.04 build), which carries the CFHD and
-        # DVB-subtitle fixes the two CVE-2026-70632/-70628 rules existed for
-        # (#277). Kept as a step, with the expiry check below still running
-        # against it, so the next accepted risk has a home without needing
-        # this file's structure rebuilt.
+        # Empty from fixplan G-9 (the base image moved to ffmpeg 9.0, which
+        # carried the fixes the two CVE-2026-70632/-70628 rules existed for,
+        # #277) until #549: two High CVEs in that same ffmpeg 9.0 binary were
+        # published with upstream fixes only and no ffmpeg release or patched
+        # linuxserver build carries them yet. Both rules go when the base
+        # image's digest is bumped to a build that does, and at the latest by
+        # their EXPIRES date. The next step, "Refuse an expired or undated
+        # accepted-risk rule", compares with `<`, so a rule dated 2026-10-13
+        # still holds that day and fails the scan from 2026-10-14, on purpose,
+        # so the decision is made again rather than the date silently extended.
         run: |
           cat > "$RUNNER_TEMP/grype.yaml" <<'YAML'
-          ignore: []
+          ignore:
+            # CVE-2026-75146: no patched linuxserver/ffmpeg 9.0 build exists yet;
+            # the fix is upstream commit 65b0dab903e5975e036b30ecc58f5935d4f151e0
+            # (#549). EXPIRES 2026-10-13
+            - vulnerability: CVE-2026-75146
+              package:
+                name: ffmpeg
+                version: "9.0"
+                type: binary
+            # CVE-2026-75142: no patched linuxserver/ffmpeg 9.0 build exists yet;
+            # the fix is upstream commit 9d786e4b5e9b8482651928574de33772aeee7be1
+            # (#549). EXPIRES 2026-10-13
+            - vulnerability: CVE-2026-75142
+              package:
+                name: ffmpeg
+                version: "9.0"
+                type: binary
           YAML
 
       - name: Refuse an expired or undated accepted-risk rule
