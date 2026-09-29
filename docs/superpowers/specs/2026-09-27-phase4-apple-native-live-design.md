@@ -905,7 +905,8 @@ otherwise unchanged.
 1. **Django.** `resolve_initial_source`'s maxed-out branch computes `profile_ids`. For each of the
    channel's (or stream's) active profiles:
    - when `profile_has_capacity_for_selection` is false, it takes that profile;
-   - when `pool_has_capacity_for_profile` is false, it adds every active profile sharing that
+   - *(superseded by the amendment below, R64 and R72)* when `pool_has_capacity_for_profile` is
+     false, it adds every active profile sharing that
      profile's credential counter (`_credential_counter_key`, `apps/m3u/connection_pool.py:138`).
 
    It returns `capacity: {blocked: true, profile_ids}`. This is **advisory and read-only**: the
