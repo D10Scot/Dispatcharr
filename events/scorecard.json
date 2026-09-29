@@ -1,6 +1,6 @@
 {
  "detail": null,
- "fetched_at": "2026-09-28T13:02:39+00:00",
+ "fetched_at": "2026-09-29T12:14:34+00:00",
  "kind": "scorecard",
  "records": [
   {
@@ -13,7 +13,7 @@
     "Contributors": 10,
     "Dangerous-Workflow": 10,
     "Dependency-Update-Tool": 10,
-    "Fuzzing": 0,
+    "Fuzzing": 10,
     "License": 10,
     "Maintained": 0,
     "Packaging": 10,
@@ -24,10 +24,10 @@
     "Token-Permissions": 10,
     "Vulnerabilities": 6
    },
-   "commit": "0f8d5bd06c3dd13ba2ab5041fc53fea3cafbf0f3",
-   "date": "2026-09-27T22:50:24Z",
-   "id": "2026-09-27T22:50:24Z",
-   "score": 6.7
+   "commit": "aa44f0b8fd5328eefbae1007e97faf682a457011",
+   "date": "2026-09-29T04:08:23Z",
+   "id": "2026-09-29T04:08:23Z",
+   "score": 7.2
   }
  ],
  "repo": "D10Scot/Dispatcharr",
