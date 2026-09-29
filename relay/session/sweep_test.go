@@ -32,6 +32,20 @@ func send(t *testing.T, tick chan<- time.Time) {
 	}
 }
 
+// settlingSessions is how many sessions still have an idle departure running:
+// read under the table's own lock.
+func settlingSessions(table *Table) int {
+	table.mu.Lock()
+	defer table.mu.Unlock()
+	n := 0
+	for _, s := range table.byID {
+		if s.settling {
+			n++
+		}
+	}
+	return n
+}
+
 func TestTheSweeperDepartsOnItsTicks(t *testing.T) {
 	clock := newFakeClock()
 	tick := make(chan time.Time)
@@ -56,6 +70,11 @@ func TestTheSweeperDepartsOnItsTicks(t *testing.T) {
 	clock.Advance(IdleTimeout(2 * time.Second))
 	send(t, tick)
 	waitUntil(t, "both idle sessions to depart", func() bool { return len(j.all()) == 6 })
+	// The journal's last entry is the Client release, which runs BEFORE the
+	// departure settles the session (and stamps departedAt from the clock). The
+	// clock must not move until both have settled, or the settle would stamp the
+	// advanced time and restart the resume window.
+	waitUntil(t, "both departures to settle", func() bool { return settlingSessions(table) == 0 })
 	// A departed session is resumable, so it is still in the table.
 	if table.Len() != 2 {
 		t.Fatalf("the table holds %d sessions after two departures, want 2 (both resumable)", table.Len())

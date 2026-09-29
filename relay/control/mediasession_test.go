@@ -70,6 +70,7 @@ func TestAMediaSessionTokenIsRefusedWhenForgedOrTampered(t *testing.T) {
 		{"a changed sid under the original MAC", parts[0] + "." + otherSID + "." + parts[2]},
 		{"a fourth segment", token + ".x"},
 		{"a non-ASCII byte in the MAC", parts[0] + "." + parts[1] + "." + parts[2][:42] + "é"},
+		{"a non-ASCII byte in a 22-byte sid", parts[0] + "." + parts[1][:20] + "\u00e9" + "." + parts[2]},
 		{"a padded MAC", parts[0] + "." + parts[1] + "." + parts[2][:42] + "="},
 		{"an empty token", ""},
 		{"an over-long sid", parts[0] + "." + parts[1] + "A." + parts[2]},
