@@ -1047,10 +1047,17 @@ func TestTheSweeperIsProcessWideAndOutlivesItsChannel(t *testing.T) {
 		t.Fatalf("the table holds %d sessions, want the one departed (resumable)", r.Sessions.Len())
 	}
 
-	// The channel and its pipeline are gone; the sweeper is not.
-	r.SessionClock.Advance(session300s + time.Second)
-	r.tick(t)
-	waitFor(t, "the expired session to be removed", 10*time.Second, func() bool { return r.Sessions.Len() == 0 })
+	// The channel and its pipeline are gone; the sweeper is not. The channel
+	// leaves the map BEFORE the table stamps the session (settle's departedAt,
+	// or the STOPPED stamp the channel's stop makes), so a single advance could
+	// land before the stamp and be undone by it. Advancing and ticking inside the
+	// wait converges regardless of the order: once the stamp exists, the next
+	// advance takes the session past its window and the tick removes it.
+	waitFor(t, "the expired session to be removed", 15*time.Second, func() bool {
+		r.SessionClock.Advance(session300s + time.Second)
+		r.tick(t)
+		return r.Sessions.Len() == 0
+	})
 }
 
 // Nit 10 of round 1: a pipeline released at zero stops off the request

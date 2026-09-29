@@ -596,9 +596,11 @@ func TestADepartureRunsBeforeClientBetweenTheTwoReleases(t *testing.T) {
 	}
 }
 
-// With no injected tick the sweeper runs on its own one-second ticker, and it
-// returns when its context ends.
-func TestTheSweeperRunsOnItsOwnTickerAndStopsWithItsContext(t *testing.T) {
+// With no injected tick the sweeper builds its own one-second ticker, and it
+// returns when its context ends. (It observes no tick: the idle timeout is 12 s
+// of real time, which no test should wait for; the ticks themselves are driven
+// by TestTheSweeperDepartsOnItsTicks.)
+func TestTheSweeperWithNoInjectedTickStopsWithItsContext(t *testing.T) {
 	table := NewTable(Config{})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
