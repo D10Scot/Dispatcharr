@@ -242,6 +242,10 @@
 # rule above. Phase 4a-1a is the first PR
 # under this rule: it adds relay/hls unlinked (4a-1b links it) and lists its
 # own additions to the linked packages.
+# A PR that raises `missing` under ruling R21 also adds two lines below, `raise_from=<the
+# base floor's missing>` and `raise_listed=<the uncovered statements its body lists>`;
+# scripts/check_floor_raise.sh (go-tests.yml) requires them and caps the new missing at
+# their sum. --gate and --write-floor ignore both and never hash them.
 shape=go-race-per-package/v1
 statements=6073
 missing=687
