@@ -1291,3 +1291,25 @@ func TestAWindowDegradesOnce(t *testing.T) {
 		t.Fatalf("two failures logged %d degradations, want one:\n%s", n, g.log.String())
 	}
 }
+
+// Queued segments past the byte ceiling never cost the window its on-disk
+// history: retiring listed segments frees nothing while every held byte is queued.
+func TestQueuedSegmentsPastTheCeilingKeepTheDurableWindow(t *testing.T) {
+	const big = 20 << 20
+	g := newRewindRig(t)
+	s := g.store("chan", time.Hour)
+	publishDurable(t, s, 0, 25, t0, 64)
+	g.fs.gate = make(chan struct{})
+	t.Cleanup(func() { close(g.fs.gate) })
+	for i := 25; i < 29; i++ {
+		pub(s, 0, t0.Add(time.Duration(i)*2*time.Second), big)
+	}
+	if first, listed := mediaSequence(t, s); first != 0 || listed != 29 {
+		t.Fatalf("the playlist lists %d from %d after queued segments passed the ceiling, want 29 from 0", listed, first)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.retired) != 0 {
+		t.Fatalf("%d segments were retired for bytes that retiring cannot free", len(s.retired))
+	}
+}

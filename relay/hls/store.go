@@ -333,14 +333,25 @@ func (s *Store) trimLocked() {
 			s.releaseLocked(oldest)
 			continue
 		}
-		if s.segs[0].pending {
-			// Queued segments are the newest, and their bytes leave memory
-			// when the writer has written them: retiring one would free
-			// none, and lose it from the playlist for nothing.
+		if !s.freeableLocked() {
+			// Every byte still held is a queued segment's: it leaves memory
+			// when the writer has written it, and retiring listed segments
+			// (the whole on-disk window included) would free none.
 			break
 		}
 		s.retireHeadLocked()
 	}
+}
+
+// freeableLocked is whether retiring heads can free memory: some listed
+// segment holds data that is not queued for the disk.
+func (s *Store) freeableLocked() bool {
+	for _, seg := range s.segs {
+		if seg.held && !seg.pending {
+			return true
+		}
+	}
+	return false
 }
 
 // evictInitsLocked drops the init segments of generations no stored or retired
