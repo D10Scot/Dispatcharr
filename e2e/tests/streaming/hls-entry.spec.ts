@@ -1,5 +1,5 @@
 import { test, expect, parseM3u, readChannelStatus, xcQuery } from '../../fixtures';
-import { MEDIA_SESSION_TOKEN_RE, enterHls, leaveHls } from '../../fixtures/hls';
+import { MEDIA_SESSION_TOKEN_RE, enterHls, leaveHls, waitForSegments } from '../../fixtures/hls';
 import { lockedProfile, stopChannels } from './helpers';
 
 /**
@@ -87,6 +87,39 @@ test(
       expect(opens.length, "the provider's log shows the relay's own connection").toBeGreaterThanOrEqual(1);
     } finally {
       await leaveHls(request, entry.token);
+      await stopChannels(api, channel.uuid);
+    }
+  }
+);
+
+test(
+  'a cold hls tune on the built-in ffmpeg stream profile answers the multivariant',
+  { tag: '@contract' },
+  async ({ upstream, seed, api, request }) => {
+    // Issue #560. The built-in `ffmpeg` profile is the stock default, and its
+    // ffmpeg analyses its own input before it writes a byte: measured, the
+    // ring's first chunk lands about 6 s after a cold tune at `rate: 1`, past
+    // the quick probe's 3 s bound, which used to start at the entry's attach
+    // and answer 502. Every other HLS spec seeds Proxy, whose first chunk is
+    // about 1.5 s. The channel is fresh, so nothing has warmed it.
+    const scenario = await upstream.scenario({
+      channels: [{ id: 1, name: 'HLS Cold FFmpeg', tvgId: 'hls-cold-ffmpeg.e2e', logo: null, asset: 'mpeg2-576i-mp2' }],
+      rate: 1,
+    });
+    const ffmpeg = await lockedProfile(api, 'ffmpeg');
+    const { channel } = await seed.upstreamChannel(scenario, {
+      channelIds: [1],
+      streamProfileId: ffmpeg.id,
+    });
+    let token: string | undefined;
+    try {
+      const entry = await enterHls(request, `/proxy/ts/stream/${channel.uuid}?output_format=hls`);
+      token = entry.token;
+      expect(entry.multivariant.text).toContain('#EXT-X-STREAM-INF');
+      const video = await waitForSegments(request, entry.token, 'video', 1, 60_000);
+      expect(video.segments.length, 'the cold channel publishes media segments').toBeGreaterThanOrEqual(1);
+    } finally {
+      if (token) await leaveHls(request, token);
       await stopChannels(api, channel.uuid);
     }
   }
