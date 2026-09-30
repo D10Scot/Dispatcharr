@@ -22,7 +22,10 @@ def validate_outbound_http_url(
     Only ``http`` and ``https`` are allowed. After DNS resolution, addresses
     that are link-local, reserved, unspecified, or multicast are always
     rejected. Loopback and RFC1918-style private addresses are rejected
-    unless explicitly allowed via *allow_loopback* / *allow_private*.
+    unless explicitly allowed via *allow_loopback* / *allow_private*. With
+    *allow_private* unset (strict mode), any other address that is not
+    globally reachable is rejected too, notably 100.64.0.0/10 (RFC 6598
+    shared address space: carrier-grade NAT, Tailscale).
 
     Image proxies typically set ``allow_private=True`` so LAN-hosted artwork
     still works, while plugin installs keep the stricter default.
@@ -138,6 +141,14 @@ def validate_outbound_http_url(
                 )
             continue
         if ip.is_reserved:
+            raise ValueError(
+                f"URL resolves to a non-routable address ({addr_str}) and cannot be fetched."
+            )
+        # The categories above do not cover every non-global range: under
+        # Python 3.13, 100.64.0.0/10 and its IPv4-mapped form are none of
+        # them (#555). Strict mode refuses whatever is not globally
+        # reachable; allow_private keeps admitting it, as it admits a LAN.
+        if not allow_private and not ip.is_global:
             raise ValueError(
                 f"URL resolves to a non-routable address ({addr_str}) and cannot be fetched."
             )
