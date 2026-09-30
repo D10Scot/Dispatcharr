@@ -147,7 +147,7 @@ Operationally: no metrics and no structured logs, and the two uWSGI processes st
 
 ## Testing
 
-`dispatcharr/test_runner.py` expands a label-less `manage.py test` via `dispatcharr/test_discovery.py` (AST-parses `INSTALLED_APPS`). 15 labels; 2544 backend tests (at `36e4ce10`, 2026-09-25; re-measure rather than quote — see the commit-gate paragraph above), 6,216 frontend tests.
+`dispatcharr/test_runner.py` expands a label-less `manage.py test` via `dispatcharr/test_discovery.py` (AST-parses `INSTALLED_APPS`). 15 labels; 2544 backend tests (at `36e4ce10`, 2026-09-25; re-measure rather than quote — see the commit-gate paragraph above), 6,250 frontend tests.
 
 **CI never runs the suite in one process** — `backend-tests.yml` runs each label as its own matrix job in its own container. The full in-process run has historically **failed** with a different set each time while every failure passed in its shard: `SimpleTestCase` subclasses in `test_catchup_redirect.py` reach the DB and pass only when an earlier test warmed the `CoreSettings` cache. **A green CI run does not mean a green suite.** The frontend suite passes in default order but fails under `vitest --sequence.shuffle` — module mocks and store singletons leak.
 
