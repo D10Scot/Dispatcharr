@@ -1869,14 +1869,17 @@ PR description draft:
 | Q8 | Are GitHub macOS runners available with an iOS/tvOS 27 runtime? | The app repository, when its CI is set up. | Whether the manual AVPlayer gate moves into the app repository's CI. |
 | Q9 | Does hls.js keep reloading a live playlist while paused, as AVPlayer does (M7)? | 4a-2's E2E records the cadence. | If it stops, the browser player calls leave on pause and re-tunes on play. |
 
-Recorded by CI, 2026-09-29:
+Recorded by CI, 2026-09-28/29:
 
 - **Q6, software half only.** The HLS failover E2E (`e2e/tests/streaming/hls-failover.spec.ts`)
-  logged `q6-failover-gap-seconds=8.68` (E2E run 36495275297, #538 at `30356831`), `8.44` (run
-  36594151163, #538's final head `79aa09f4`) and `7.91` (run 36635918319, `main` at `926d2d5e`),
-  measured from the status flip to the first segment after the discontinuity with 250 ms polls; the
-  fault-to-flip time was 0.79-0.80 s each time. All three are under 10 s, so CI's libx264 gives no
-  reason to pre-spawn the next generation. The owner's Quick Sync measurement is still owed.
+  logged `q6-failover-gap-seconds` in every E2E run read: 8.68 (run 36495275297, #538 at
+  `30356831`), 8.44 (run 36594151163, #538's final head `79aa09f4`), 9.97 (run 36521034148, #548
+  at `14de042b`), 8.72 (run 36529018759, #548 at `2266db4c`), 8.70 (run 36616628232, #548's final
+  head `3d8e7f11`) and 7.91 (run 36635918319, `main` at `926d2d5e`). Each is measured from the
+  status flip to the first segment after the discontinuity with 250 ms polls; the fault-to-flip time
+  was 0.79-0.81 s. The gap was under 10 s every time, but one draw was 9.97 s, so CI's libx264 sits
+  at the edge of the threshold, and the owner's Quick Sync measurement decides whether a follow-up
+  pre-spawns the next generation.
 - **Q9, answered.** `e2e/tests/frontend/player-hls.spec.ts`'s E2 logged
   `Q9: {"videoPlaylistReloads":14,"segmentsFetched":12,"windowSeconds":20}` on every run read:
   E2E runs 36521034148 and 36529018759 (#548's cited runs), 36616628232 (#548's final head
@@ -2268,8 +2271,8 @@ Filled in as PRs merge.
     the R79 waivers and the R45 manual gate.
 - **2026-09-30, 4a closed out.** The Done log records 4a-1b to 4a-3, all merged on 2026-09-29.
   § Open questions records CI's measurements: Q9 is answered (hls.js keeps reloading while paused,
-  so there is no leave on pause), and Q6's software gap is 7.91-8.68 s, under the 10 s threshold,
-  with the Quick Sync half still owed.
+  so there is no leave on pause), and Q6's software gap is 7.91-9.97 s over six runs, under the
+  10 s threshold every time but at its edge, so the owner's Quick Sync measurement decides.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
