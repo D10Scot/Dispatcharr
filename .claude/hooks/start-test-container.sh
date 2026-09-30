@@ -40,6 +40,11 @@ docker run -d --name "$CONTAINER" --entrypoint sleep \
   "$IMAGE" infinity >/dev/null
 
 echo "==> starting redis + postgres"
+# Issue #166 defect 3 ("hangs when backgrounded"): the heredoc below is this
+# exec's stdin, so the caller's stdin (a tty, /dev/null or a never-closing pipe)
+# is never read, and none of those variants reproduced a hang (verified with an
+# open FIFO, `| cat` on stdout and </dev/null). The observed hang was #241's
+# unredirected pg_ctl inside `$( )`, fixed by the `-l` below.
 docker exec -i "$CONTAINER" bash -s <<'INNER'
 set -euo pipefail
 cd /repo

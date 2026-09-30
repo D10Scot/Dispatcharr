@@ -3,7 +3,7 @@ services:
     # build:
     #   context: ..
     #   dockerfile: docker/Dockerfile.dev
-    image: ghcr.io/dispatcharr/dispatcharr:base
+    image: ghcr.io/d10scot/dispatcharr:base
     container_name: dispatcharr_debug
     ports:
       - 5656:5656 # API port
