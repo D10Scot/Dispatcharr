@@ -125,7 +125,7 @@ The `PostToolUse` Go hook runs most of these on every `*.go` edit, but a hook ru
 - Apply Appendix C once the PR number is known (Task 8 opens the PR): fill `⟨PR⟩` with that number and `⟨merge date⟩` with the day the PR is expected to merge. That day is normally the day the census completes. If the merge slips to a later day, the merge gate corrects it.
 - Run `python -m metrics.build --validate-only` and confirm it prints `ok: … 47 defects`.
 
-**Task 7: commit.** Stage and commit in separate Bash calls, with each message written to a file and committed with `-F`. Every message says `Refs #553` and never a closing keyword. The commits in order: the test, the fix, the spec, the ledger. Or fewer commits, if the test and fix land together **after** Task 2's red run has been recorded.
+**Task 7: commit.** Stage and commit in separate Bash calls, with each message written to a file and committed with `-F`. Every message says `Refs #553` and never a closing keyword: no commit subject or body may contain "fix #553", "fixes #553", "closes #553" or "resolves #553" in any case or form. Only the PR body carries `Closes #553.` The commits in order: the test, the fix, the spec, the ledger. Or fewer commits, if the test and fix land together **after** Task 2's red run has been recorded.
 
 **Task 8: the PR.** Open a draft: `gh pr create --repo D10Scot/Dispatcharr --draft --base main --head fix/553-interlaced-output-rate --title "fix(relay): an interlaced source's HLS output rate comes from its avg_frame_rate (#553)" --body-file <file>`, with the body from § PR description draft. Then run `gh pr view <n> --repo D10Scot/Dispatcharr --json closingIssuesReferences --jq '[.closingIssuesReferences[].number]'`. It must print `[553]` and nothing else.
 
@@ -141,7 +141,7 @@ None (Global constraint 3).
 
 ## Break-checks
 
-Apply each wrong edit alone to the fixed `relay/hls/probe.go`, run `cd relay && go test -count=1 -run TestAnInterlacedSourcesRateIsItsAverageFrameRate ./hls`, compare the red lines with the ones below, record them in the PR body, and revert. All four were run on a prototype of this exact diff at the seed; the lines are quoted from those runs.
+Apply each wrong edit alone to the fixed tree (BC1-BC3 edit `relay/hls/probe.go`, BC4 edits `relay/hls/argv.go`), run `cd relay && go test -count=1 -run TestAnInterlacedSourcesRateIsItsAverageFrameRate ./hls`, compare the red lines with the ones below, record them in the PR body, and revert. All four were run on a prototype of this exact diff at the seed; the lines are quoted from those runs.
 
 - **BC1: revert the fix** (read `r_frame_rate` first for every source, as at the seed). Rows 1-2 redden, naming the field rate as the probed rate and `R` capped at 60:
   - `1080i25 PAFF, r_frame_rate the field rate: probed 50/1, R=60/1 G=120; want probed 25/1, R=50/1 G=100`
@@ -362,8 +362,8 @@ index 79628d23..b9b7707e 100644
 +  progressive one, capped at 60. The field rate is twice the probe's `avg_frame_rate`, and twice
 +  `r_frame_rate` only when `avg_frame_rate` is missing or `0/0` (R94, issue #553): ffprobe can
 +  report an H.264 PAFF stream's `r_frame_rate` as its field rate, 50/1 for 1080i25, and doubling
-+  that again would cap at 60. A progressive source's frame rate is its `r_frame_rate`, with
-+  `avg_frame_rate` as the fallback. `G` = round(2 × R). For fractional rates (29.97, 59.94) a segment
++  that again would cap at 60. A progressive source's frame rate, or one whose field order is
++  unknown (R28), is its `r_frame_rate`, with `avg_frame_rate` as the fallback. `G` = round(2 × R). For fractional rates (29.97, 59.94) a segment
    is then 60 or 120 frames, and `EXTINF` is 2.002 s rather than 2.000 s. That is within
    4a-1a's "2.000 s ± one frame" and within Apple 7.7.
  - Bitrate `B` / `M`: height ≥ 1080 is 6 / 8 Mb/s; ≥ 720 is 4 / 5 Mb/s; otherwise 2.5 / 3 Mb/s.
