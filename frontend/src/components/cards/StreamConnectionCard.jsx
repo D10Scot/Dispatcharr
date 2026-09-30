@@ -83,8 +83,6 @@ const StreamConnectionCard = ({
   const users = useUsersStore((s) => s.users);
   // Get settings for speed threshold and environment mode
   const settings = useSettingsStore((s) => s.settings);
-  const env_mode =
-    useSettingsStore((s) => s.environment?.env_mode) || 'production';
   // Get video preview function
   const showVideo = useVideoStore((s) => s.showVideo);
 
@@ -515,10 +513,7 @@ const StreamConnectionCard = ({
     if (!actualChannel?.uuid) return;
 
     const uri = buildLiveStreamUrl(`/proxy/ts/stream/${actualChannel.uuid}`);
-    let url = `${window.location.protocol}//${window.location.host}${uri}`;
-    if (env_mode === 'dev') {
-      url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
-    }
+    const url = `${window.location.protocol}//${window.location.host}${uri}`;
 
     showVideo(url, 'live', { name: actualChannel.name });
   };

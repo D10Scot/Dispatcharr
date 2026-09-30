@@ -1054,6 +1054,57 @@ describe('ChannelsTable', () => {
     });
   });
 
+  describe('dev mode (#542)', () => {
+    const devMode = () =>
+      vi.mocked(useSettingsStore).mockImplementation((sel) =>
+        sel({ environment: { env_mode: 'dev' } })
+      );
+
+    it('plays a channel same-origin', () => {
+      const channel = makeChannel({ uuid: 'uuid-abc', name: 'ESPN' });
+      const showVideoMock = vi.fn();
+      const { tableInstance } = setupMocks();
+      devMode();
+      vi.mocked(useVideoStore).mockImplementation((sel) =>
+        sel({ showVideo: showVideoMock })
+      );
+      vi.mocked(buildChannelHlsUrl).mockReturnValue(
+        '/proxy/ts/stream/uuid-abc?output_format=hls'
+      );
+      render(<ChannelsTable />);
+      const col = getActionsCol();
+      const { getByTestId } = render(
+        col.cell({ row: { original: channel }, table: tableInstance })
+      );
+      fireEvent.click(getByTestId('icon-circle-play').closest('button'));
+      expect(
+        showVideoMock.mock.calls[0][0],
+        'a dev-mode live URL must go through vite, never straight to :5656'
+      ).toBe(
+        `${window.location.origin}/proxy/ts/stream/uuid-abc?output_format=hls`
+      );
+    });
+
+    it('copies a same-origin channel URL', () => {
+      const channel = makeChannel({ uuid: 'uuid-1' });
+      const { tableInstance } = setupMocks();
+      devMode();
+      render(<ChannelsTable />);
+      const col = getActionsCol();
+      const { getAllByTestId } = render(
+        col.cell({ row: { original: channel }, table: tableInstance })
+      );
+      const copyBtn = getAllByTestId('unstyled-button').find((el) =>
+        el.textContent.includes('Copy URL')
+      );
+      fireEvent.click(copyBtn);
+      expect(
+        copyToClipboard.mock.calls[0][0],
+        'a dev-mode live URL must go through vite, never straight to :5656'
+      ).toBe(`${window.location.origin}/proxy/ts/stream/uuid-1`);
+    });
+  });
+
   // ── Recording form ─────────────────────────────────────────────────────────
 
   describe('Recording form', () => {

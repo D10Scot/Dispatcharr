@@ -121,7 +121,7 @@ const RecordingCard = ({
 
   const handleWatchLive = () => {
     if (!channel) return;
-    showVideo(getShowVideoUrl(channel, env_mode), 'live', {
+    showVideo(getShowVideoUrl(channel), 'live', {
       name: channel.name,
     });
   };
