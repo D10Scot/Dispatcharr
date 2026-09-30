@@ -13,10 +13,13 @@ export const buildLiveStreamUrl = (path) => {
   return `${path}?${params.toString()}`;
 };
 
-// The relay's entry and first-playlist waits (relay/httpapi/hls.go:47-48,
-// defaultReadyWait = defaultPlaylistWait = QuickProbe 3 s + FullProbe 8 s +
-// 3 x StallTimeout 10 s + 2 s, ruling R57).
+// The relay's first-playlist wait (relay/httpapi/hls.go, defaultPlaylistWait =
+// QuickProbe 3 s + FullProbe 8 s + 3 x StallTimeout 10 s + 2 s, ruling R57).
 export const HLS_RELAY_WAIT_MS = 43_000;
+// The relay's entry wait (defaultReadyWait): the playlist wait plus the 15 s a
+// cold channel's source gets to publish its first chunk before the probe runs
+// (hls.SourceStartWait, issue #560).
+export const HLS_RELAY_READY_WAIT_MS = 58_000;
 // The next-source budget the relay spends before the entry's ready wait starts
 // (relay/httpapi/stream.go:193, tuneBudget = 2 x (2 s + 5 s) + 100 ms).
 export const HLS_RELAY_TUNE_BUDGET_MS = 14_100;
@@ -24,7 +27,7 @@ export const HLS_RELAY_TUNE_BUDGET_MS = 14_100;
 // under nginx's 300 s proxy_read_timeout on ^~ /proxy/ts/stream/
 // (docker/nginx.conf:350).
 export const HLS_ENTRY_TIMEOUT_MS =
-  HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS + 7_900; // 65 000
+  HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_READY_WAIT_MS + 7_900; // 80 000
 // The media-playlist timeout: above the relay's 43 s first-segment wait, under
 // nginx's 60 s proxy_read_timeout on ^~ /hls/ (docker/nginx.conf:488).
 export const HLS_PLAYLIST_TIMEOUT_MS = 50_000;
