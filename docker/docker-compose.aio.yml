@@ -3,7 +3,7 @@ services:
     # build:
     #   context: .
     #   dockerfile: Dockerfile
-    image: ghcr.io/dispatcharr/dispatcharr:latest
+    image: ghcr.io/d10scot/dispatcharr:latest
     restart: unless-stopped
     # supervisord stops its programs one priority group at a time, waiting
     # for each before signalling the next, so the budget is the sum of
