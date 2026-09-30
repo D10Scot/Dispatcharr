@@ -25,6 +25,10 @@ phases:
     label: Phase 2
     summary: "Pin the relay's externally-observable behaviour before any rewrite: a real-subprocess test harness, a 30-row parity matrix and a CI-enforced coverage ratchet. Stage 2a ships the ratchet; the Go relay itself is 2c."
     headline_ids: [backend_coverage, backend_tests, defects_pinned]
+  - id: phase4
+    label: Phase 4
+    summary: "Apple-native live playback: 4a is the server half (an HLS output, the live rewind window, the browser player on HLS), 4b the Apple app in its own repository, 4c paired-device auth."
+    headline_ids: [e2e_scenarios, frontend_tests]
 milestones:
   - {sha: fd413f0cc4ab3131789a68fb31f1ae622ae7371a, label: v0.29.0 baseline, kind: phase-start, phase: investigate, pr: null, summary: "Fork divergence point from upstream Dispatcharr."}
   - {sha: 4ede0d70778abfa167001045b15153bf43fa2edc, label: zizmor + 16/16 packages, kind: goal, phase: investigate, pr: 2, summary: "Actions linting, 101 findings cleared, the silently missing 16th backend test package fixed."}
@@ -63,3 +67,5 @@ milestones:
   - {sha: 6160094013f29f02d6440151a461227a06f5f63e, label: Phase 2b gates closed, kind: goal, phase: phase2, pr: 275, summary: "Five PRs: the relay contract carries names, profiles, output format and client IP; a zero-ORM guard closes Gate 1; the coverage ratchet closes Gate 2 at 81.11%, unblocking D7."}
   - {sha: 1326de3ee9db9f0254a81b4376a4cf78975aeb1f, label: Phase 2c Go relay, kind: goal, phase: phase2, pr: 317, summary: "Nine PRs: a stdlib-only Go relay serving the live TS and fMP4 paths with failover and Output Profiles, behind a CI coverage ratchet and a 28-of-28 Go-pinned parity matrix."}
   - {sha: b2a47ae982ec5de777f3bad5458bf6a573c9ea0a, label: Phase 2 done, kind: phase-done, phase: phase2, pr: 341, summary: "A stdlib-only Go relay now serves the whole live path through nginx, apps/proxy/live_proxy/ deleted (~26k lines), Gate 2 re-censused over the nine surviving boundary modules at 97.46%, and ADR 0006 records the design; five Go-only defects (#222, #296, #302, #299, #314) remain, plus the Django-side ORM ratchet Gate 1's retirement left behind and two shim docstrings owed."}
+  - {sha: 6c98547399a58acbd025c306f77c349c9dfcd308, label: Phase 4 spec, kind: phase-start, phase: phase4, pr: 523, summary: "Apple-native live playback: twenty decisions, seven 4a PRs, ADRs 0008 and 0009."}
+  - {sha: 926d2d5efd676a4f4f44c4fda2872e942c6c394e, label: Phase 4a server half, kind: goal, phase: phase4, pr: 551, summary: "Seven PRs: the Go relay serves live channels over HLS, with slot reclaim, an automatic HLS profile and a live rewind window, and the browser player plays channels through hls.js."}
