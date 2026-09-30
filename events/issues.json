@@ -1,8 +1,26 @@
 {
  "detail": null,
- "fetched_at": "2026-09-29T12:14:26+00:00",
+ "fetched_at": "2026-09-30T12:01:00+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-29T18:31:55Z",
+   "id": 549,
+   "label_events": [
+    {
+     "at": "2026-09-29T18:31:57Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    }
+   ],
+   "labels": [
+    "ready-for-agent"
+   ],
+   "state": "open",
+   "title": "Base image: ffmpeg 9.0 CVE-2026-75146/75142 (High) \u2014 accepted until a patched linuxserver build ships",
+   "updated_at": "2026-09-29T18:31:55Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-29T00:46:21Z",
@@ -196,7 +214,7 @@
    "updated_at": "2026-09-27T17:16:16Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-29T18:23:55Z",
    "created_at": "2026-09-27T14:53:48Z",
    "id": 525,
    "label_events": [
@@ -209,9 +227,9 @@
    "labels": [
     "ready-for-agent"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Phase 4a: treat ffprobe field_order=unknown (progressive HEVC) as progressive",
-   "updated_at": "2026-09-29T00:57:12Z"
+   "updated_at": "2026-09-29T18:23:55Z"
   },
   {
    "closed_at": null,
