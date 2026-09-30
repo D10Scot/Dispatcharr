@@ -7,7 +7,7 @@ services:
   # Web Service
   # ============================================================================
   web:
-    image: ghcr.io/dispatcharr/dispatcharr:latest
+    image: ghcr.io/d10scot/dispatcharr:latest
     container_name: dispatcharr_web
     restart: unless-stopped
     # supervisord stops its programs one priority group at a time, waiting
@@ -143,7 +143,7 @@ services:
   # Relay Service — the streaming relay's own uWSGI process (Phase 1 PR 4)
   # ============================================================================
   relay:
-    image: ghcr.io/dispatcharr/dispatcharr:latest
+    image: ghcr.io/d10scot/dispatcharr:latest
     container_name: dispatcharr_relay
     restart: unless-stopped
     # DISPATCHARR_RELAY_PORT (unset here, default 5657) is honoured on both
@@ -211,7 +211,7 @@ services:
   # Celery Service - Background task worker
   # ============================================================================
   celery:
-    image: ghcr.io/dispatcharr/dispatcharr:latest
+    image: ghcr.io/d10scot/dispatcharr:latest
     container_name: dispatcharr_celery
     restart: unless-stopped
     # Both Celery workers carry stopwaitsecs=30 for a task in flight, and
