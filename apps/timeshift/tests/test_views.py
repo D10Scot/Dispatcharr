@@ -16,6 +16,7 @@ from apps.timeshift.redis_keys import TimeshiftRedisKeys
 from apps.proxy.authorize import SURFACE_CATCHUP, AuthorizeDenied
 from apps.proxy.utils import check_user_stream_limits as _check_user_stream_limits
 from apps.proxy.utils import find_ts_sync as _find_ts_sync
+from dispatcharr.utils import REDACTED
 
 TEST_SESSION_ID = "testsession1"
 TEST_MEDIA_ID = "8_2026-06-08-17-00"
@@ -582,9 +583,157 @@ class RedactUrlTests(TestCase):
         url = "http://user:pass@example.test/timeshift/1.ts"
         self.assertEqual(views._redact_url(url), "http://example.test/...")
 
-    def test_passes_through_non_urls(self):
-        self.assertEqual(views._redact_url("not a url"), "not a url")
+    def test_masks_non_urls_and_passes_none_through(self):
+        # Fails closed (#554): a string that is not a URL is masked, never
+        # returned as given. None carries nothing and is returned as is.
+        self.assertEqual(views._redact_url("not a url"), REDACTED)
         self.assertIsNone(views._redact_url(None))
+
+
+class RedactUrlFailClosedTests(TestCase):
+    """#554, CodeQL alerts 95/96: `_redact_url` returned any string without
+    `://` unchanged. A scheme-less `server_url` (an M3U profile replace
+    pattern that drops the scheme, or a row written outside the serializer)
+    makes exactly such a URL; requests raises MissingSchema on it, and the
+    unreachable-provider log lines logged it whole, XC password included."""
+
+    def test_a_scheme_less_query_layout_url_is_masked(self):
+        url = "myhost/streaming/timeshift.php?username=usr0&password=s3cret&stream=1"
+        out = views._redact_url(url)
+        self.assertNotIn("s3cret", out)
+        self.assertEqual(out, REDACTED)
+
+    def test_a_scheme_less_path_layout_url_is_masked(self):
+        url = "myhost:8080/timeshift/usr0/s3cret/120/2026-05-12:17-00/1.ts"
+        out = views._redact_url(url)
+        self.assertNotIn("s3cret", out)
+        self.assertEqual(out, REDACTED)
+
+    def test_a_network_path_reference_with_no_scheme_is_masked(self):
+        # `//host/...` has a netloc and no scheme; the seed helper returned
+        # it whole because it holds no `://`.
+        url = "//usr0:s3cret@example.invalid/timeshift/1.ts"
+        out = views._redact_url(url)
+        self.assertNotIn("s3cret", out)
+        self.assertEqual(out, REDACTED)
+
+    def test_a_scheme_with_no_host_is_masked(self):
+        # urlsplit reads `http:usr0/s3cret` as scheme `http`, no netloc.
+        for url in ("http:usr0/s3cret/1.ts", "http:///usr0/s3cret/1.ts"):
+            with self.subTest(url=url):
+                out = views._redact_url(url)
+                self.assertNotIn("s3cret", out)
+                self.assertEqual(out, REDACTED)
+
+    def test_a_netloc_that_is_not_a_host_is_masked(self):
+        # With no `@` left in the netloc, what follows the last `@` is the
+        # whole netloc. An encoded `@` (%40), a backslash, a `;` or a
+        # non-numeric port there means the "host" still holds userinfo.
+        # The two without a `:` hold a token as the userinfo, which only
+        # the character check can catch.
+        for url in (
+            "http://alice:s3cret%40myhost/x",
+            "http://alice:s3cret\\myhost/x",
+            "http://s3cret%40myhost/x",
+            "http://s3cret\\myhost/x",
+            "http://alice:s3cret@myhost;s3cret/x",
+            "http://alice:s3cret@myhost:8080;s3cret/x",
+            "http://alice:s3cret/x",
+        ):
+            with self.subTest(url=url):
+                out = views._redact_url(url)
+                self.assertNotIn("s3cret", out)
+                self.assertEqual(out, REDACTED)
+
+    def test_the_unreachable_provider_log_line_carries_no_password(self):
+        # The path alerts 95/96 trace, end to end with the real requests:
+        # it refuses a scheme-less URL before connecting (MissingSchema or,
+        # as here, InvalidSchema; both RequestException), and
+        # _stream_from_provider's RequestException branch logs the URL.
+        url = "myhost/timeshift/usr0/s3cret/120/2026-05-12:17-00/1.ts"
+        with self.assertLogs(views.logger, level="ERROR") as logs:
+            response = views._stream_from_provider(
+                candidate_urls=[url],
+                user_agent="test-agent",
+                client_user_agent="test-client-agent",
+                range_header=None,
+                virtual_channel_id="1_2026-05-12-17-00_1",
+                client_id="test554",
+                client_ip="127.0.0.1",
+                user=None,
+                channel_display_name="Test",
+                timestamp_utc="2026-05-12:17-00",
+                channel_logo_id=None,
+                m3u_profile_id=None,
+                channel_id=1,
+                channel_uuid="00000000-0000-0000-0000-000000000001",
+                debug=False,
+            )
+        self.assertEqual(response.status_code, 400)
+        output = "\n".join(logs.output)
+        self.assertIn("Timeshift provider unreachable", output)
+        self.assertNotIn("s3cret", output)
+
+
+class RedactUrlAtSignTests(TestCase):
+    """#554: `_redact_url` took the host from after the FIRST `@` anywhere
+    past the scheme, so a literal `@` in a password, or anywhere later in the
+    URL, put part of the credential where the host should be. Every secret
+    below is a distinctive token so an assertNotIn cannot pass by accident."""
+
+    def test_a_literal_at_in_the_password_leaves_no_tail_before_the_host(self):
+        url = "http://usr0:s3cr@tail9@example.invalid/timeshift/a/b/1/2/3.ts"
+        out = views._redact_url(url)
+        self.assertNotIn("tail9", out)
+        self.assertEqual(out, "http://example.invalid/...")
+
+    def test_an_at_in_the_path_is_not_taken_for_the_end_of_the_userinfo(self):
+        # `last_url` (a provider redirect) and a cached CDN URL are logged as
+        # given, so an XC path segment holding a literal `@` can reach here.
+        url = "http://example.invalid/timeshift/usr0/s3cr@tail9/60/2026-05-12:17-00/1.ts"
+        out = views._redact_url(url)
+        self.assertNotIn("tail9", out)
+        self.assertEqual(out, REDACTED)
+
+    def test_an_at_in_a_query_token_is_not_taken_for_the_host(self):
+        # A provider CDN URL (`response.url`, logged at the upstream-rejected
+        # line) can carry an `@` in a token; the seed helper logged its tail
+        # as the host.
+        url = "http://cdn.example.invalid/seg.ts?token=abc@tail9"
+        out = views._redact_url(url)
+        self.assertNotIn("tail9", out)
+        self.assertEqual(out, REDACTED)
+
+    def test_a_query_with_no_path_is_dropped(self):
+        url = "http://example.invalid?username=usr0&password=s3cret"
+        out = views._redact_url(url)
+        self.assertNotIn("s3cret", out)
+        self.assertEqual(out, "http://example.invalid/...")
+
+    def test_a_slash_in_the_password_leaks_neither_half_of_the_userinfo(self):
+        # urlsplit reads `usr0:12/tail9@example.invalid` as host `usr0` and
+        # port `12`, so a rule built on the parsed host and port alone would
+        # log the username and the head of the password.
+        url = "http://usr0:12/tail9@example.invalid/x"
+        out = views._redact_url(url)
+        for secret in ("usr0", "12", "tail9"):
+            self.assertNotIn(secret, out)
+
+    def test_a_url_urlsplit_refuses_is_masked_and_never_raises(self):
+        for url in (
+            "http://usr0:s3cret@[::1/x",
+            # U+FF20 FULLWIDTH COMMERCIAL AT: not an `@` to a string search,
+            # an `@` after NFKC, so urlsplit refuses the netloc.
+            "http://usr0:s3cret\uff20example.invalid/x",
+        ):
+            with self.subTest(url=url):
+                out = views._redact_url(url)
+                self.assertNotIn("s3cret", out)
+                self.assertEqual(out, REDACTED)
+
+    def test_the_port_is_kept(self):
+        url = "http://usr0:s3cret@example.invalid:8080/timeshift/1.ts"
+        self.assertEqual(views._redact_url(url), "http://example.invalid:8080/...")
 
 
 def _make_catchup_stream(provider_tz="Europe/Brussels", *, account_id=9,

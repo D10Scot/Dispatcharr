@@ -6,7 +6,7 @@ import secrets
 import threading
 import time
 from collections import namedtuple
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
 import requests
 from django.core.cache import cache
@@ -50,7 +50,7 @@ from apps.timeshift.redis_keys import (
 )
 
 stats_channel_id = make_stats_channel_id
-from dispatcharr.utils import get_client_ip
+from dispatcharr.utils import REDACTED, get_client_ip
 from apps.proxy.utils import (
     _timeshift_stop_channel_id,
     check_user_stream_limits,
@@ -3342,14 +3342,14 @@ def _stream_from_provider(
         except requests.exceptions.RequestException as exc:
             if cached_final:
                 logger.warning(  # credential-logging: ignore - already redacted by
-                    # the local _redact_url() helper (:3621), not redact_url().
+                    # the local _redact_url() helper (below), not redact_url().
                     "Timeshift cached CDN unreachable (%s): %s; falling back to portal",
                     _redact_url(url), type(exc).__name__,
                 )
                 _clear_pool_final_url(redis_client, pool_session_id)
                 continue
             logger.error(  # credential-logging: ignore - already redacted by
-                # the local _redact_url() helper (:3621), not redact_url().
+                # the local _redact_url() helper (below), not redact_url().
                 "Timeshift provider unreachable (%s): %s",
                 _redact_url(url), type(exc).__name__,
             )
@@ -3361,7 +3361,7 @@ def _stream_from_provider(
         cascade_label = "cdn" if cached_final else (orig_idx if orig_idx is not None else "?")
         if debug:
             logger.debug(  # credential-logging: ignore - already redacted by
-                # the local _redact_url() helper (:3621), not redact_url().
+                # the local _redact_url() helper (below), not redact_url().
                 "Timeshift cascade[%s]: status=%d type=%s url=%s",
                 cascade_label, response.status_code,
                 response.headers.get("Content-Type", "?"),
@@ -3397,7 +3397,7 @@ def _stream_from_provider(
             # which made the whole log (and a test run's output) binary (#183).
             snippet = repr(peek[:120]) if peek else "(empty)"
             logger.warning(  # credential-logging: ignore - already redacted by
-                # the local _redact_url() helper (:3580), not redact_url().
+                # the local _redact_url() helper (below), not redact_url().
                 "Timeshift upstream returned %d but no TS sync in first %d "
                 "bytes (likely PHP error): %s, url=%s",
                 response.status_code,
@@ -3430,7 +3430,7 @@ def _stream_from_provider(
 
     if upstream is None:
         logger.error(  # credential-logging: ignore - already redacted by
-            # the local _redact_url() helper (:3621), not redact_url().
+            # the local _redact_url() helper (below), not redact_url().
             "Timeshift upstream rejected: status=%s url=%s",
             last_status, _redact_url(last_url))
         # Map 404/403 to meaningful client responses; other failures stay 400.
@@ -3736,11 +3736,42 @@ def _stream_from_provider(
 
 
 def _redact_url(url):
-    """Truncate *url* to ``scheme://host/...`` for safe logging (drops credentials)."""
-    if not url or "://" not in url:
+    """Truncate *url* to ``scheme://host/...`` for safe logging (drops credentials).
+
+    Fails closed: anything that is not a URL with both a scheme and a host
+    is masked whole (``***``), never returned as given. A scheme-less
+    ``server_url`` yields exactly such a string, and it carries the XC
+    password in its path or query (#554, CodeQL alerts 95/96).
+
+    The host is what follows the LAST ``@`` of urlsplit's authority, the rule
+    urlsplit, requests and ``dispatcharr.utils.redact_url`` all apply, so a
+    password holding a literal ``@`` cannot leave its tail in front of the
+    host. An ``@`` after the authority makes the authority ambiguous
+    (``http://u:p/ss@host/`` is userinfo holding a ``/`` to one reader and a
+    host ``u`` to urlsplit), so that URL is masked whole rather than guessed
+    at. What is left after that ``@`` must look like a host: a port that is
+    not a number, or a ``%``, ``\\``, ``;``, space or unprintable character,
+    means an encoded or mistyped delimiter left userinfo there, and the URL
+    is masked. Never raises: a URL urlsplit refuses is masked whole too. Any
+    falsy value carries nothing and is returned as given.
+    """
+    if not url:
         return url
-    scheme, rest = url.split("://", 1)
-    if "@" in rest:
-        rest = rest.split("@", 1)[1]
-    host = rest.split("/", 1)[0]
-    return f"{scheme}://{host}/..."
+    if not isinstance(url, str):
+        return REDACTED
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return REDACTED
+    if not parts.scheme or not parts.netloc:
+        return REDACTED
+    if "@" in parts.path or "@" in parts.query or "@" in parts.fragment:
+        return REDACTED
+    host = parts.netloc.rpartition("@")[2]
+    try:
+        parts.port  # raises ValueError on a non-numeric or out-of-range port
+    except ValueError:
+        return REDACTED
+    if not host or not host.isprintable() or any(c in host for c in "%\\; \t"):
+        return REDACTED
+    return f"{parts.scheme}://{host}/..."
