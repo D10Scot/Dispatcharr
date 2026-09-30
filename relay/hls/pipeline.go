@@ -60,8 +60,9 @@ func StartupStall(target int) time.Duration {
 // target seconds (ruling R42): the stall timeout max(10 s, 5 x target), and
 // the allowance before a generation's first fragment, max(StartupStallFactor x
 // StallTimeout, the stall timeout) -- 30 s at every target from 2 to 6 (ruling
-// R58), which is what keeps the entry's waits at 43 s, under nginx's 60 s
-// read timeout on /hls/. The wait before a first fragment is an encoder's cold
+// R58), which is what keeps a media playlist's wait at 43 s, under nginx's 60 s
+// read timeout on /hls/, and the entry's at 58 s with SourceStartWait (issue
+// #560). The wait before a first fragment is an encoder's cold
 // start, whose GOP is 2 s in every mode, or a copy's first closed GOP, at most
 // 2 x K = 12 s of media, so the allowance does not need to grow with the
 // target: three times max(10 s, 5 x 6) would be 90 s.
@@ -69,6 +70,16 @@ func stallLimits(target int) (stall, startup time.Duration) {
 	stall = max(StallTimeout, 5*time.Duration(target)*time.Second)
 	return stall, max(StartupStallFactor*StallTimeout, stall)
 }
+
+// SourceStartWait bounds how long a probe waits for the first chunk past where
+// its generation starts, before ffprobe is spawned and the probe's own bound
+// begins (issue #560). A cold channel's pipeline starts at the entry's attach,
+// before its ring holds a byte, and the FFmpeg stream profile publishes its
+// first chunk about 6 s later, after its own ffmpeg's input analysis. 15 s is
+// 2.5 times that measured 6 s, and the Proxy source's 5 s connect bound plus
+// one 255,868-byte chunk at 205 kb/s. A source that sends nothing for longer
+// fails the output, as a failed probe does.
+const SourceStartWait = 15 * time.Second
 
 // stopJoinWait bounds Stop's wait for the pipeline to wind down: the exit
 // grace, the reap budget and a margin.
@@ -124,6 +135,8 @@ type Config struct {
 	// first video fragment (R55); zero means StartupStallFactor x the stall
 	// timeout in force.
 	StartupStallTimeout time.Duration
+	// SourceStartWait overrides the package's SourceStartWait, for tests.
+	SourceStartWait time.Duration
 	// Command maps a Spawn to the command and argv actually run. Nil runs
 	// FFmpeg with the built argv; the stand-in tests replace it.
 	Command func(Spawn) (string, []string)
@@ -661,6 +674,15 @@ func needsFullProbe(p Probe, fed feedResult, mode Mode) bool {
 // probe runs one ffprobe over the bytes the generation will start from,
 // within bound.
 func (p *Pipeline) probe(ctx context.Context, gen int, start uint64, bound ProbeBound) (Probe, feedResult, error) {
+	// The bound is on analysis, not on the source's start (issue #560): no
+	// ffprobe, and no clock, until the generation's first chunk exists.
+	wait := p.cfg.SourceStartWait
+	if wait <= 0 {
+		wait = SourceStartWait
+	}
+	if fed, err := awaitInput(ctx, p.cfg.Source.Ring(), start, wait); err != nil {
+		return Probe{}, fed, err
+	}
 	command, argv := p.cfg.FFprobe, ProbeArgvFor(bound, p.cfg.Mode)
 	if command == "" {
 		command = "ffprobe"

@@ -342,6 +342,9 @@ func TestEOFMidFragmentSegmentsOnlyTheWholeFragments(t *testing.T) {
 // discontinuity; a third such death within 60 s is a total failure.
 func TestDeathsAfterTheFirstSegmentRestartUntilTheThirdWithinAMinute(t *testing.T) {
 	h := newHarness(t)
+	// A live channel's ring advances: each restart at the head probes the
+	// chunks after it, and waits for them (issue #560).
+	feedRing(t, h)
 	stream := file(t, "v.mp4", videoStream(0, 2, 50))
 	p := h.start(probeVideoOnly, nil, func(Spawn) []string {
 		return []string{"--fd-file", relaytest.FDFileArg(1, stream)}

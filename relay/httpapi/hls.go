@@ -42,10 +42,17 @@ const readyWaitMargin = 2 * time.Second
 // stall allowance a generation gets before its first fragment -- 30 s at every
 // target duration up to the longest, 6 (R55, R58) -- plus a margin: 43 s. A 503
 // on the multivariant fails an AVPlayer item outright, so this must not be
-// shorter. nginx's proxy_read_timeout on /hls/ is 60 s, above both.
+// shorter.
+//
+// The entry's wait also covers the source's start (issue #560): on a cold
+// channel the probe first waits up to hls.SourceStartWait (15 s) for the
+// ring's first chunk, so the entry waits 58 s, under nginx's 300 s
+// proxy_read_timeout on the tune locations. A media playlist is requested only
+// after its multivariant, once the source has started, so its wait keeps 43 s,
+// under nginx's 60 s on /hls/.
 var (
-	defaultReadyWait    = hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStall(hls.MaxTargetDuration) + readyWaitMargin
-	defaultPlaylistWait = defaultReadyWait
+	defaultPlaylistWait = hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStall(hls.MaxTargetDuration) + readyWaitMargin
+	defaultReadyWait    = hls.SourceStartWait + defaultPlaylistWait
 )
 
 const (

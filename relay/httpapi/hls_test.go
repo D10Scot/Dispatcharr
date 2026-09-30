@@ -1211,6 +1211,23 @@ func TestTheEntryWaitsOutALegitimateColdStart(t *testing.T) {
 	}
 }
 
+// Issue #560: on a cold channel the probe first waits up to hls.SourceStartWait
+// for the ring's first chunk, so the entry's wait covers the source's start as
+// well as a cold start, and stays under nginx's 300 s proxy_read_timeout on the
+// tune locations. A media playlist is requested only after its multivariant,
+// once the source has started, so its wait does not carry the term.
+func TestTheEntryWaitAlsoCoversTheSourcesStart(t *testing.T) {
+	cold := hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStall(hls.MaxTargetDuration)
+	got := HLSDeps{}.readyWait()
+	if floor := hls.SourceStartWait + cold; got < floor {
+		t.Errorf("the default ReadyWait is %v, below the source's start plus a cold start, %v (SourceStartWait %v + %v)",
+			got, floor, hls.SourceStartWait, cold)
+	}
+	if got >= 300*time.Second {
+		t.Errorf("the default ReadyWait is %v, not under nginx's 300 s proxy_read_timeout on the tune locations", got)
+	}
+}
+
 // enterAsync starts an HLS entry on a goroutine and returns what it answered.
 type entryAnswer struct {
 	status int
