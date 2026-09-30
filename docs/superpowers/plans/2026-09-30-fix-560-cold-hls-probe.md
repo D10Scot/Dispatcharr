@@ -26,7 +26,7 @@
 
 1. **Standard library only** (`scripts/check_go_stdlib_only.sh relay`). The fix adds `fmt` to `relay/hls/feed.go`; it is stdlib.
 2. **Zero lint findings under three GOOS** (`golangci-lint run ./...` natively, with `GOOS=linux` and with `GOOS=darwin`). Also green: `go vet ./...` under the same three, `go test -race ./...` and credlint (`go run ./internal/credlint ./...`). The new error messages are built with `errors.New` and with `fmt.Errorf` over a `time.Duration`; neither formats an error value, so credlint has nothing to flag. Measured clean on the prototype.
-3. **The test-modification rule.** Exactly two existing Go tests change, and one frontend test file gains an import. § Tests changed lists each with before and after. No assertion is deleted, weakened or given a wider tolerance.
+3. **The test-modification rule.** Exactly two existing Go tests and three existing frontend tests change, each because the entry wait it pins is what this PR changes. § Tests changed lists each with before and after. No assertion is deleted, weakened or given a wider tolerance.
 4. **No local E2E stack.** The implementer does not build an image or start a Playwright stack. The E2E's red and green are both read from CI (Task 2 and Task 8). The shared `e2e-upstream` provider and `dispatcharr-testrunner` are never touched.
 5. **No floor raise.** `scripts/coverage_relay_go.floor` is not edited (§ Coverage).
 6. **No Python change**, so there is no backend label, no Gate 2 and no Django container.
@@ -35,7 +35,7 @@
 
 | Work | Touches | Interaction |
 |---|---|---|
-| PR #559, fix #553 (`fix/553-interlaced-output-rate`, open) | `relay/hls/probe.go`, `probe_test.go`, the spec's § Encoder argv `R` bullet and **Changelog tail**, and **the tail of `metrics/curated/defects.yml`** | No Go overlap: this plan does not touch `probe.go`. Appendices A, B, C and E apply cleanly on #559's head (`67edca5d`, checked with `git apply --check`). **D and F conflict on their last hunk only**, because both PRs append after the same last line. Whichever PR merges second re-anchors that one hunk so its entry lands after the other's (Task 1). After #559 merges, the validator reads `48 defects`, not `47`. |
+| PR #559, fix #553 (`fix/553-interlaced-output-rate`; **merged, `main` at `250ee10f`**) | `relay/hls/probe.go`, `probe_test.go`, the spec's § Encoder argv `R` bullet and **Changelog tail**, and **the tail of `metrics/curated/defects.yml`** | No Go overlap: this plan does not touch `probe.go`. Appendices A, B, C and E apply cleanly on #559's head (`67edca5d`, checked with `git apply --check`). **D and F conflict on their last hunk only**, because both PRs append after the same last line. #559 merged first, so this PR re-anchors those two hunks so its entries land after #559's (Task 1); the round-1 review confirmed that on `250ee10f` only D's and F's last hunks fail. The validator then reads `48 defects`. |
 | `.worktrees/fix-542`, `.worktrees/fixplan-554-556` | plan documents only at their heads (`git diff --stat origin/main...<branch>`) | None. |
 | The owner's QSV hardware runbook (`runbook-hw`) | an operational note that cold HLS on an FFmpeg-profile channel 502s | After this merges, the note is obsolete: a cold tune waits instead. The orchestrator relays this (open question 4). |
 
@@ -99,9 +99,9 @@ The wait needs a bound of its own. The pipeline's context and the ring's close a
 ### What a client sees
 
 - **The entry blocks** from the tune until the multivariant (headers included), or until an error: 502 at `SourceStartWait` for a source that sends nothing, 502 for a probe that fails, 503 `Retry-After: 1` at 58 s for inits that never arrive. A typical cold `ffmpeg`-profile tune: the first chunk at about 6 s, the quick probe 3 s, then the encoder's first init. The software 576i encode is ready a few seconds after its spawn, so the entry answers at about 12-15 s. That is an estimate from the measured terms, not a measurement: the E2E asserts success, not a time, and the owner's hardware run records the real figure (open question 1).
-- **hls.js** (the browser player, D18): `manifestLoadPolicy.maxLoadTimeMs` becomes 80 s (the 14.1 s tune budget, plus 58 s, plus a 7.9 s margin), `timeoutRetry: null`, and `errorRetry` retries once after 1 s. At the seed's 65 s, hls.js would abandon a legitimate worst-case entry at 72.1 s. And an abandoned entry stops its not-ready pipeline at refcount zero (`hlsoutput.go:159-185`), so the retry would start cold again. Hence Appendix B. A 502 retried once meets the channel's mark and fails fast with the same message.
+- **hls.js** (the browser player, D18): `manifestLoadPolicy.maxLoadTimeMs` becomes 80 s (the 14.1 s tune budget, plus 58 s, plus a 7.9 s margin), `timeoutRetry: null`, and `errorRetry` retries once after 1 s. At the seed's 65 s, hls.js would abandon a legitimate worst-case entry at 72.1 s. And an abandoned entry stops its not-ready pipeline at refcount zero (`hlsoutput.go:159-185`), so the retry would start cold again. Hence Appendix B. The E2E harness's own entry timeout (`e2e/fixtures/hls.ts:364`, 60 s) is raised the same way, to a derived 80 s, so a slow CI entry fails as the relay's 503 rather than as a Playwright request timeout (Appendix C). A 502 retried once meets the channel's mark and fails fast with the same message.
 - **Safari and AVPlayer.** Where MSE or ManagedMediaSource exists, Safari runs hls.js, as above. Native playback (AVFoundation, and the Mino app) sends one request and waits. Its own timeout for a multivariant that takes a while was never measured in this programme; the 4a-1b AVPlayer runs saw about a 20 s cold entry succeed. The worst case moves from 43 s to 58 s past the tune, and a typical cold `ffmpeg` tune moves from a certain 502 at 3 s to success at about 12-15 s. Open question 1 asks the owner's hardware run to record a cold `ffmpeg`-profile entry in AVPlayer.
-- **A media playlist's wait stays 43 s.** It is requested only after its multivariant, which is served only once one generation's inits exist, so the source has started. `defaultPlaylistWait` keeps its own derivation, under nginx's 60 s on `/hls/`, and `docker/nginx.conf:476-477` stays true.
+- **A media playlist's wait stays 43 s.** It is requested only after its multivariant, which is served only once one generation's inits exist, so the source has started. `defaultPlaylistWait` keeps its own derivation, under nginx's 60 s on `/hls/`, and `docker/nginx.conf:476-477` stays true. **Which nginx timeout governs the entry:** the entry is a tune request, served on `^~ /proxy/ts/stream/`, `^~ /live/` and the XC three-segment regex, each `proxy_read_timeout 300s` (`docker/nginx.conf:350`, `:538`, `:697`); the 60 s on `^~ /hls/` (`:488`) governs only the session resources. The stale comment at `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts:653-655`, which put the entry's wait on `/hls/`, is corrected in Appendix C.
 
 ### Linger, rewind and reclaim (4a-3, 4a-1c)
 
@@ -112,17 +112,17 @@ The wait needs a bound of its own. The pipeline's context and the ring's close a
 
 ### What is not changed
 
-- `QuickProbe`, `FullProbe` and the probe's argv; the startup stall allowance; the entry's 502/503 contract (only the 43 s becomes 58 s); the media playlist's wait; nginx.
-- **No CLAUDE.md edit.** CLAUDE.md names neither the probe bound nor the 43 s wait. Its frontend test count (6,216) is a dated snapshot that housekeeping refreshes (as #557 did); this PR moves it to 6,217. Editing the figure here would conflict with every concurrent frontend PR.
+- `QuickProbe`, `FullProbe` and the probe's argv; the startup stall allowance; the entry's 502/503 contract (only the 43 s becomes 58 s); the media playlist's wait; `docker/nginx.conf`.
+- **No CLAUDE.md edit.** CLAUDE.md names neither the probe bound nor the 43 s wait. Its frontend test count (6,216) does not move: this PR changes three frontend tests and adds none.
 - **ADRs 0008 and 0009** are not amended: neither speaks to probe timing.
 
 ### The spec: an amendment, and a Changelog line
 
 Yes, the spec needs both. D9's bound gains a start ("the bound starts at the generation's first chunk"). The entry's 43 s becomes 58 s in D7, § Entry, § Presence › Activity and § Automatic generation's R42 bullet. The browser player's 65 s becomes 80 s. § Encoder argv › Failure gains a paragraph, "A probe waits for its input". The Changelog gains an entry. The PR sections (§ 4a-1b, § 4a-1d) and earlier Changelog entries are history and are left alone. Appendix D is the diff.
 
-### The parity matrix: two rows amended, no new row
+### The parity matrix: three rows amended, no new row
 
-No new row is needed. **Row 33** is the probe's behaviour ("Each HLS generation is probed where it starts … bounded at 3 s"), and this changes when that bound starts, so row 33 is extended in place: the claim, a `relay/hls/feed.go:116-132` source citation, and three pins (two Go, one E2E). **Row 37** states the entry's "not ready within 43 s", which becomes 58 s, with one more pin. One line each, per the matrix's own rules. `npx playwright test --project=guards` passes on the prototype, so every new citation and pin resolves (Appendix E).
+No new row is needed. **Row 33** is the probe's behaviour ("Each HLS generation is probed where it starts … bounded at 3 s"), and this changes when that bound starts, so row 33 is extended in place: the claim, a `relay/hls/feed.go:116-132` source citation, and five pins (all four `cold_probe_test.go` tests, which also pin its note's close-and-stop clause, and the E2E). **Row 37** states the entry's "not ready within 43 s", which becomes 58 s, with one more pin. **Row 36** (`:210`) said "so the entry's 43 s waits stay under nginx's 60 s"; it now says a media playlist's 43 s wait stays under the 60 s on `/hls/` and the entry's 58 s under the 300 s on the tune locations, consistent with Appendix D's R42 bullet, and its pin `TestTheEntryWaitsCoverTheLongestTargetDuration` pins exactly that pair. One line each, per the matrix's own rules. `npx playwright test --project=guards` passes on the prototype, so every new citation and pin resolves (Appendix E).
 
 ### The defect ledger: one entry
 
@@ -138,7 +138,7 @@ Yes, one entry. Precedent: #553 (`hls-interlaced-field-rate-doubled`), #111 and 
 - If anything else has changed shape, stop and report.
 
 **Task 2: the E2E first, and its red read from CI.**
-- Apply Appendix C (`e2e/tests/streaming/hls-entry.spec.ts` and `e2e/COVERAGE.md`). Run `cd e2e && npm ci && npx tsc --noEmit && npx playwright test --project=guards`.
+- Apply Appendix C (`e2e/tests/streaming/hls-entry.spec.ts`, `e2e/fixtures/hls.ts`, `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts` and `e2e/COVERAGE.md`). Run `cd e2e && npm ci && npx tsc --noEmit && npx playwright test --project=guards`.
 - Commit (message in § Commits) and push.
 - Dispatch the E2E workflow on the branch: `gh workflow run e2e-tests.yml --repo D10Scot/Dispatcharr --ref fix/560-cold-hls-probe`. Only the plan and the E2E are on the branch, so this runs the seed's relay.
 - From the `streaming` job, record the new test's red. It must be `an HLS entry at /proxy/ts/stream/<uuid>?output_format=hls answered 502, want 200: {"error": "HLS output failed"}` (the fixture's own message, `e2e/fixtures/hls.ts:366-368`). A green result here would mean CI's `ffmpeg` profile publishes its first chunk within 3 s, and the E2E cannot see the defect. Then stop and report; do not go on to the fix.
@@ -151,9 +151,9 @@ Yes, one entry. Precedent: #553 (`hls-interlaced-field-rate-doubled`), #111 and 
 - The `TestReal*` tests must **run**, not skip: ffmpeg and ffprobe must be on `PATH`. A skip line (`is not on PATH`) means they did not run, and the report says so.
 - The `PostToolUse` Go hook also runs on every `.go` edit. A hook run is no substitute for this list.
 
-**Task 4: the frontend mirror.** Apply Appendix B. Run `cd frontend && npm ci && npx vitest --run`: every test passes, 6,217 of them (6,216 at the seed). Then run the frontend break-check FE-BC.
+**Task 4: the frontend mirror.** Apply Appendix B. Run `cd frontend && npm ci && npx vitest --run`: every test passes, 6,216 of them (the count is unchanged: no `it` is added). Then run the frontend break-check FE-BC.
 
-**Task 5: the documents.** Apply Appendices D and E. Run `cd e2e && npx playwright test --project=guards` (the parity-matrix spec checks every citation and pin in rows 33 and 37).
+**Task 5: the documents.** Apply Appendices D and E. Run `cd e2e && npx playwright test --project=guards` (the parity-matrix spec checks every citation and pin in rows 33, 36 and 37).
 
 **Task 6: commits and the PR.**
 - Commit per § Commits and push.
@@ -173,7 +173,7 @@ Stage and commit in separate Bash calls, each message written to a file and comm
 2. `test(e2e): a cold hls tune on the ffmpeg profile answers the multivariant (Refs #560)`: Appendix C.
 3. `fix(relay): a probe waits for its generation's first chunk before its bound starts (Refs #560)`: Appendix A.
 4. `fix(frontend): hls.js's entry timeout follows the relay's 58 s ready wait (Refs #560)`: Appendix B.
-5. `docs: spec amendment and parity rows 33 and 37 for #560 (Refs #560)`: Appendices D and E.
+5. `docs: spec amendment and parity rows 33, 36 and 37 for #560 (Refs #560)`: Appendices D and E.
 6. `docs(metrics): ledger entry for the cold HLS probe (Refs #560)`: Appendix F, after the PR exists.
 
 ## Tests added
@@ -184,7 +184,6 @@ Stage and commit in separate Bash calls, each message written to a file and comm
   - **`TestARingThatClosesBeforeItsFirstChunkIsAStop`.** The ring closes 200 ms in. `Err` must be nil, with no probe spawned and no ERROR logged. Red at the seed (quoted above).
   - **`TestAStopWhileWaitingForTheFirstChunkIsAStop`.** `SourceStartWait` is 1 minute, and `Stop` 200 ms in must return within 2 s, with `Err` nil, no probe spawned and no ERROR.
 - `relay/httpapi/hls_test.go::TestTheEntryWaitAlsoCoversTheSourcesStart`: `readyWait()` ≥ `SourceStartWait` + quick + full + the startup allowance, and < 300 s (nginx on the tune locations).
-- `frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js`, `it('bounds the entry timeout by the relay ready wait, which waits out a cold source (#560)')`: the entry timeout exceeds the tune budget plus `HLS_RELAY_READY_WAIT_MS`, and that constant is 58000.
 - `e2e/tests/streaming/hls-entry.spec.ts`, `a cold hls tune on the built-in ffmpeg stream profile answers the multivariant` (`@contract`): a fresh channel on the locked `ffmpeg` profile, `mpeg2-576i-mp2` at `rate: 1`. The entry answers the multivariant, and the video playlist lists at least one segment within 60 s. `finally` leaves the session and calls `stopChannels` (R87). Its red is Task 2's CI run; its green is the PR's.
 
 ## Tests changed
@@ -200,7 +199,14 @@ Each change pins a behaviour this PR changes. Nothing is loosened.
    - **Before:** it asserts `got != 43*time.Second` for both ReadyWait and PlaylistWait (`:236`).
    - **After:** a `want` map, `ReadyWait` 58 s and `PlaylistWait` 43 s, compared per name, and a comment clause "the entry's adds the source's start (issue #560), 58 s". The floor and the under-60 s checks are unchanged.
    - **Why:** the ReadyWait value is exactly the behaviour this PR changes.
-3. **`frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js`**: the import list gains `HLS_RELAY_READY_WAIT_MS`. No existing `it` changes. `'mirrors the relay bounds as literals'` still pins `HLS_RELAY_WAIT_MS` at 43000, which is now the playlist wait only, by Appendix B's comment.
+3. **`frontend/src/components/__tests__/FloatingVideo.test.jsx::'uses the live HLS config'`** (`:669-677`).
+   - **Before:** `maxLoadTimeMs > HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS` (14,100 + 43,000), under the message "the entry timeout must cover the relay tune budget plus its ready wait"; the import list names `HLS_RELAY_WAIT_MS`.
+   - **After:** `… + HLS_RELAY_READY_WAIT_MS` (14,100 + 58,000), message unchanged; the import names `HLS_RELAY_READY_WAIT_MS` in its place.
+   - **Why:** Appendix B makes `HLS_RELAY_WAIT_MS` the playlist wait. Left alone, this pin would keep comparing against 43 s under a message naming the ready wait, and stay green with the entry timeout back at 65 s: a test gone hollow without changing (review round 1, finding 1).
+4. **`frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js::'bounds the entry timeout by the relay and by nginx'`** (`:568-575`).
+   - **Before:** `maxLoadTimeMs > HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS`. **After:** `… + HLS_RELAY_READY_WAIT_MS`; the `< 300_000` and `timeoutRetry` checks are unchanged. **Why:** the same as 3, in the unit that builds the config.
+5. **`…FloatingVideoUtils.test.js::'mirrors the relay bounds as literals'`** (`:588-591`).
+   - **Before:** pins `HLS_RELAY_WAIT_MS` 43000 and `HLS_RELAY_TUNE_BUDGET_MS` 14100. **After:** the same two, plus `expect(HLS_RELAY_READY_WAIT_MS).toBe(58000)`; the file's import list gains `HLS_RELAY_READY_WAIT_MS`. **Why:** the new mirror constant is pinned where its siblings are, rather than in a near-duplicate `it`.
 
 `relay/httpapi/hls_test.go::TestTheEntryWaitsOutALegitimateColdStart` (`:1199`) is **not** changed. It still holds, as it states it (ReadyWait and PlaylistWait ≥ the cold start, < 60 s), and the new term has its own test above.
 
@@ -221,8 +227,9 @@ Apply each wrong edit alone to the fixed tree, run the named test with `go test 
 - **BC6: the entry's wait without the new term.** In `relay/httpapi/hls.go`, `defaultReadyWait    = hls.SourceStartWait + defaultPlaylistWait` → `defaultReadyWait    = defaultPlaylistWait`. Tests `TestTheEntryWaitAlsoCoversTheSourcesStart|TestTheEntryWaitsCoverTheLongestTargetDuration`, in `./httpapi`:
   `hls_automatic_test.go:239: the default ReadyWait is 43s, want 58s`
   `hls_test.go:1223: the default ReadyWait is 43s, below the source's start plus a cold start, 56s (SourceStartWait 15s + 41s)`
-- **FE-BC: hls.js's entry timeout without the new term.** In `FloatingVideoUtils.js`, `HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_READY_WAIT_MS + 7_900` → `HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS + 7_900`. `npx vitest --run src/utils/components/__tests__/FloatingVideoUtils.test.js`:
-  `× bounds the entry timeout by the relay ready wait, which waits out a cold source (#560)` / `AssertionError: expected 65000 to be greater than 72100`
+- **FE-BC: hls.js's entry timeout without the new term.** In `FloatingVideoUtils.js`, `HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_READY_WAIT_MS + 7_900` → `HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS + 7_900`. `npx vitest --run src/utils/components/__tests__/FloatingVideoUtils.test.js src/components/__tests__/FloatingVideo.test.jsx` reddens both files, 2 failed of 118:
+  `FAIL src/components/__tests__/FloatingVideo.test.jsx > FloatingVideo > Live channel over HLS > uses the live HLS config` / `AssertionError: the entry timeout must cover the relay tune budget plus its ready wait: expected 65000 to be greater than 72100`
+  `FAIL src/utils/components/__tests__/FloatingVideoUtils.test.js > FloatingVideoUtils: live channels over HLS > buildLiveHlsConfig > bounds the entry timeout by the relay and by nginx` / `AssertionError: expected 65000 to be greater than 72100`
 - **The E2E's break-check is its CI red** (Task 2): the seed's relay is the wrong edit.
 
 ## Coverage (R21, R52, R80, R93)
@@ -268,13 +275,13 @@ The floor still carries `raise_from=691` / `raise_listed=14` from 4a-3. They are
 
 Fill the `⟨…⟩` slots from Tasks 1, 2, 3, 4 and 7.
 
-> **fix(relay): a cold HLS entry waits for the source's first chunk before it probes.** A cold channel's HLS pipeline starts at the entry's attach, before the ring holds a byte, and the quick probe armed its 3 s feed deadline at ffprobe's spawn. The built-in `ffmpeg` stream profile, the default, publishes its first chunk about 6 s after a cold tune, so every cold HLS tune on it answered 502 `HLS output failed`; so did any Proxy source under about 680 kb/s. Every probe now waits for a chunk past where its generation starts before it spawns ffprobe and starts its bound. The wait is bounded by the pipeline's stop, by the ring's close (a stop, as R40) and by `hls.SourceStartWait`, 15 s, after which the output fails as a failed probe does. The entry's wait is 58 s (R57's 43 s plus those 15 s), and hls.js's entry timeout is 80 s; a media playlist's wait stays 43 s. A generation restarted at the ring's head after a death waits the same way. A source boundary never did, so the failover gap is unchanged. Spec: D7, D9, § Entry, § Encoder argv › Failure, § Presence, § Browser player and a Changelog entry. Parity rows 33 and 37 are amended. Owner ruling R113. Plan: `docs/superpowers/plans/2026-09-30-fix-560-cold-hls-probe.md` (this PR's first commit), passed at `⟨plan PASS SHA⟩`. Anchors re-grepped at `⟨BASE⟩`: ⟨moved lines, or "none moved"; and whether #559's entries were re-anchored⟩.
+> **fix(relay): a cold HLS entry waits for the source's first chunk before it probes.** A cold channel's HLS pipeline starts at the entry's attach, before the ring holds a byte, and the quick probe armed its 3 s feed deadline at ffprobe's spawn. The built-in `ffmpeg` stream profile, the default, publishes its first chunk about 6 s after a cold tune, so every cold HLS tune on it answered 502 `HLS output failed`; so did any Proxy source under about 680 kb/s. Every probe now waits for a chunk past where its generation starts before it spawns ffprobe and starts its bound. The wait is bounded by the pipeline's stop, by the ring's close (a stop, as R40) and by `hls.SourceStartWait`, 15 s, after which the output fails as a failed probe does. The entry's wait is 58 s (R57's 43 s plus those 15 s), and hls.js's entry timeout is 80 s; a media playlist's wait stays 43 s. A generation restarted at the ring's head after a death waits the same way. A source boundary never did, so the failover gap is unchanged. Spec: D7, D9, § Entry, § Encoder argv › Failure, § Presence, § Browser player and a Changelog entry. Parity rows 33, 36 and 37 are amended. The E2E harness's entry timeout is 80 s, derived as the player's. Owner ruling R113. Plan: `docs/superpowers/plans/2026-09-30-fix-560-cold-hls-probe.md` (this PR's first commit), passed at `⟨plan PASS SHA⟩`. Anchors re-grepped at `⟨BASE⟩`: ⟨moved lines, or "none moved"; and whether #559's entries were re-anchored⟩.
 >
 > **Red first.** Go, at the seed: `TestAProbeWaitsForTheSourcesFirstChunk` answered `Ready = hls: the HLS output failed … the probe's 3s bound ran out before its input arrived`, with the issue's own `the HLS probe failed … exited with status 1` log. E2E: run ⟨Task 2 run id⟩, the new test answered ⟨the 502 line⟩ on the seed's relay.
 >
 > **Break-checks:** ⟨BC1-BC6 and FE-BC, one line each: the wrong edit and the red line⟩.
 >
-> **Tests changed:** `TestDeathsAfterTheFirstSegmentRestartUntilTheThirdWithinAMinute` gains `feedRing` (its ring now advances, as a live channel's does; assertions unchanged; passes at the seed with the line too). `TestTheEntryWaitsCoverTheLongestTargetDuration` pins ReadyWait at 58 s and PlaylistWait at 43 s (was 43 s for both). `FloatingVideoUtils.test.js` imports one more constant.
+> **Tests changed:** `TestDeathsAfterTheFirstSegmentRestartUntilTheThirdWithinAMinute` gains `feedRing` (its ring now advances, as a live channel's does; assertions unchanged; passes at the seed with the line too). `TestTheEntryWaitsCoverTheLongestTargetDuration` pins ReadyWait at 58 s and PlaylistWait at 43 s (was 43 s for both). The two frontend entry-timeout pins (`FloatingVideo.test.jsx`'s `uses the live HLS config`, `FloatingVideoUtils.test.js`'s `bounds the entry timeout by the relay and by nginx`) compare against the 58 s ready wait, not the 43 s playlist wait, and the literal-mirror test pins 58000 too.
 >
 > **Coverage (R21).** No raise: O = 0 (`relay/hls/feed.go` 0, `relay/hls/pipeline.go` 0, `relay/httpapi/hls.go` 0 by the start-line rule in every round); the floor is unchanged at 705. Census, ⟨N⟩ rounds in order: ⟨`this run missing=` per round with run ids⟩; max ⟨m⟩ ≤ 705.
 >
@@ -650,6 +657,28 @@ index 1ffc2144..8146a5f2 100644
 ## Appendix B — the frontend mirror (`frontend/`)
 
 ```diff
+diff --git a/frontend/src/components/__tests__/FloatingVideo.test.jsx b/frontend/src/components/__tests__/FloatingVideo.test.jsx
+index 88f8a749..19d4ad15 100644
+--- a/frontend/src/components/__tests__/FloatingVideo.test.jsx
++++ b/frontend/src/components/__tests__/FloatingVideo.test.jsx
+@@ -10,7 +10,7 @@ import FloatingVideo from '../FloatingVideo';
+ import {
+   HLS_LEAVE_WAIT_MS,
+   HLS_RELAY_TUNE_BUDGET_MS,
+-  HLS_RELAY_WAIT_MS,
++  HLS_RELAY_READY_WAIT_MS,
+ } from '../../utils/components/FloatingVideoUtils.js';
+ import useVideoStore from '../../store/useVideoStore';
+ 
+@@ -672,7 +672,7 @@ describe('FloatingVideo', () => {
+       expect(
+         capturedHlsConfig.manifestLoadPolicy?.default?.maxLoadTimeMs ?? 0,
+         'the entry timeout must cover the relay tune budget plus its ready wait'
+-      ).toBeGreaterThan(HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS);
++      ).toBeGreaterThan(HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_READY_WAIT_MS);
+       expect(capturedHlsConfig.backBufferLength).toBe(120);
+     });
+ 
 diff --git a/frontend/src/utils/components/FloatingVideoUtils.js b/frontend/src/utils/components/FloatingVideoUtils.js
 index c6842e5d..b4252db7 100644
 --- a/frontend/src/utils/components/FloatingVideoUtils.js
@@ -681,7 +710,7 @@ index c6842e5d..b4252db7 100644
  // nginx's 60 s proxy_read_timeout on ^~ /hls/ (docker/nginx.conf:488).
  export const HLS_PLAYLIST_TIMEOUT_MS = 50_000;
 diff --git a/frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js b/frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js
-index c8467017..991cc5ea 100644
+index c8467017..1d34d8ca 100644
 --- a/frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js
 +++ b/frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js
 @@ -16,6 +16,7 @@ import {
@@ -692,24 +721,26 @@ index c8467017..991cc5ea 100644
    HLS_RELAY_TUNE_BUDGET_MS,
  } from '../FloatingVideoUtils';
  
-@@ -585,6 +586,14 @@ describe('FloatingVideoUtils: live channels over HLS', () => {
-       }
-     });
- 
-+    it('bounds the entry timeout by the relay ready wait, which waits out a cold source (#560)', () => {
-+      const entry = config.manifestLoadPolicy.default;
-+      expect(entry.maxLoadTimeMs).toBeGreaterThan(
+@@ -568,7 +569,7 @@ describe('FloatingVideoUtils: live channels over HLS', () => {
+     it('bounds the entry timeout by the relay and by nginx', () => {
+       const entry = config.manifestLoadPolicy.default;
+       expect(entry.maxLoadTimeMs).toBeGreaterThan(
+-        HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS
 +        HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_READY_WAIT_MS
-+      );
-+      expect(HLS_RELAY_READY_WAIT_MS).toBe(58000);
-+    });
-+
+       );
+       expect(entry.maxLoadTimeMs).toBeLessThan(300_000);
+       expect(entry.timeoutRetry).toBeNull();
+@@ -587,6 +588,7 @@ describe('FloatingVideoUtils: live channels over HLS', () => {
+ 
      it('mirrors the relay bounds as literals', () => {
        expect(HLS_RELAY_WAIT_MS).toBe(43000);
++      expect(HLS_RELAY_READY_WAIT_MS).toBe(58000);
        expect(HLS_RELAY_TUNE_BUDGET_MS).toBe(14100);
+     });
+ 
 ```
 
-## Appendix C — the E2E and its COVERAGE.md row (`e2e/`)
+## Appendix C — the E2E, its harness timeout, a stale comment and its COVERAGE.md row (`e2e/`)
 
 ```diff
 diff --git a/e2e/COVERAGE.md b/e2e/COVERAGE.md
@@ -724,6 +755,53 @@ index 43fa9d22..f2d5c890 100644
  | Streaming | Live HLS playlists per codec fixture: the audio groups and `CODECS` of the multivariant on `h264-eac3` (three groups, `mp4a.40.2`, `ac-3`, `ec-3`), `h264-noaudio` (one `aac` group, relay-synthesised silence), `mpeg2-576i-mp2` (720×576, `FRAME-RATE=50.000`, `aac` only) and `h264-1080i-aac-ac3` (1920×1080 at 50, `aac` and `ac3`); a media playlist conforms (`VERSION:7`, `TARGETDURATION:2`, `INDEPENDENT-SEGMENTS`, PDT on every segment, at least 6 listed, the media sequence advancing across reloads), and an init segment and two media segments parse in TypeScript with the durations their `EXTINF` claims and no edit list. `tests/streaming/hls-playlists.spec.ts` | 4a-1b | done |
  | Streaming | Live HLS sessions: a tampered token, a left session and a client stopped through `/proxy/ts/stop_client/` are refused 403; a session on a stopped channel is refused 410 once and 403 after; `/proxy/ts/status/<uuid>` lists an `hls` client that disappears at once on `DELETE /hls/<token>` beside a TS client that stays, with no wait for the idle timeout. `tests/streaming/hls-sessions.spec.ts` | 4a-1b | done |
  | Streaming | Live HLS failover: an upstream fault on `h264-1080i-aac-ac3` switches the channel to an alternate carrying `mpeg2-576i-mp2`, and the next media playlist carries `EXT-X-DISCONTINUITY` and a new `EXT-X-MAP` with the media sequence continuing and the multivariant's `CODECS` unchanged. `tests/streaming/hls-failover.spec.ts` | 4a-1b | done |
+diff --git a/e2e/fixtures/hls.ts b/e2e/fixtures/hls.ts
+index b6801f85..b902fa28 100644
+--- a/e2e/fixtures/hls.ts
++++ b/e2e/fixtures/hls.ts
+@@ -357,11 +357,22 @@ export interface HlsEntry {
+ /**
+  * An HLS tune: `path` is any of the three entry forms. Requires a 200 and
+  * returns the parsed multivariant and its session token. A 503 (the relay's
+- * own 20 s wait for the encoder's init segments ran out) is an error here,
++ * own 58 s wait for the encoder's init segments ran out) is an error here,
+  * not retried: a viewer's first tune failing is a finding, not noise.
+  */
++/**
++ * The entry request's own timeout, derived as the browser player's is
++ * (frontend/src/utils/components/FloatingVideoUtils.js, HLS_ENTRY_TIMEOUT_MS):
++ * the relay's next-source budget (14.1 s, relay/httpapi/stream.go's tuneBudget)
++ * plus its entry wait (58 s: hls.SourceStartWait 15 s + the 43 s cold start,
++ * issue #560) plus a 7.9 s margin, so a slow entry fails as the relay's own
++ * 503 rather than as a request timeout. Under nginx's 300 s on the tune
++ * locations.
++ */
++const ENTRY_TIMEOUT_MS = 14_100 + 58_000 + 7_900;
++
+ export async function enterHls(request: APIRequestContext, path: string): Promise<HlsEntry> {
+-  const response = await request.get(path, { timeout: 60_000 });
++  const response = await request.get(path, { timeout: ENTRY_TIMEOUT_MS });
+   const text = await response.text();
+   if (response.status() !== 200) {
+     throw new Error(`an HLS entry at ${path} answered ${response.status()}, want 200: ${text.slice(0, 300)}`);
+diff --git a/e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts b/e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts
+index 436343fa..8f39375d 100644
+--- a/e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts
++++ b/e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts
+@@ -650,9 +650,10 @@ test(
+         `location "${block.header}" does not set proxy_http_version 1.1:\n${body}`
+       ).toBe(true);
+ 
+-      // Above the relay's own 43 s waits (R57) (the entry's init wait, a media
+-      // playlist's first-segment wait), and the byte-path locations' own
+-      // connect budget rather than the server block's inherited 75.
++      // Above the relay's 43 s wait for a media playlist's first segment
++      // (R57), the one long wait on /hls/ (the entry's 58 s wait is on the
++      // tune locations, at 300 s; issue #560), and the byte-path locations'
++      // own connect budget rather than the server block's inherited 75.
+       expect(
+         has(/^\s*proxy_read_timeout\s+60s\s*;/),
+         `location "${block.header}" does not set proxy_read_timeout 60s:\n${body}`
 diff --git a/e2e/tests/streaming/hls-entry.spec.ts b/e2e/tests/streaming/hls-entry.spec.ts
 index 14253c0d..86cc8246 100644
 --- a/e2e/tests/streaming/hls-entry.spec.ts
@@ -877,11 +955,11 @@ index 79628d23..2f332d9b 100644
  
 ```
 
-## Appendix E — the parity-matrix rows 33 and 37
+## Appendix E — the parity-matrix rows 33, 36 and 37
 
 ```diff
 diff --git a/docs/relay-parity-matrix.md b/docs/relay-parity-matrix.md
-index 6780ecdb..80c4ae76 100644
+index 6780ecdb..1125c916 100644
 --- a/docs/relay-parity-matrix.md
 +++ b/docs/relay-parity-matrix.md
 @@ -204,11 +204,11 @@ PR's first, which is the distance git needs to merge them cleanly.
@@ -889,11 +967,12 @@ index 6780ecdb..80c4ae76 100644
  | 31 | An HLS generation's segments are 2.000 s plus or minus one frame, each starting with a sync sample: the segmenter accumulates the encoder's fragments until the 2 s grid from the generation's first video frame is reached and cuts only before a fragment that opens on a sync sample | `relay/hls/segmenter.go:238-275`, `relay/hls/argv.go:340-393` | `relay/hls/real_test.go::TestRealThe1080iFixtureGivesAligned2sSegmentsOnThreeRenditions`, `relay/hls/pipeline_test.go::TestSegmentsAccumulateToTheGridAndCutOnlyAtASyncSample` | Phase 4a-1a (spec D6, D8). The real pin runs 12 s of the 4a-0 `h264-1080i-aac-ac3` fixture through the software transcode (`-force_key_frames expr:gte(t,n_forced*2)`, `-g` and `-keyint_min` at round(2R)) and checks every segment but the generation's flushed last one. The stand-in pin feeds one-second fragments, a non-sync one on a grid line included, so the accumulation and the sync rule are held without a real encoder. Served since 4a-1b, which links the package. |
  | 32 | A source boundary (every new upstream connection: a failover or a same-URL reconnect) ends the HLS generation at the boundary's first chunk, and the next generation's first segment carries `EXT-X-DISCONTINUITY` and a new `EXT-X-MAP` while the media sequence continues | `relay/channel/boundary.go:38-63`, `relay/channel/channel.go:622-624`, `relay/hls/feed.go:61-104`, `relay/hls/store.go:107-136`, `relay/hls/store.go:209-241` | `relay/hls/real_test.go::TestRealABoundaryGivesTwoGenerationsAndADiscontinuity`, `relay/channel/boundary_test.go::TestEveryConnectionAttemptRecordsASourceBoundary`, `e2e/tests/streaming/hls-failover.spec.ts::a failover to a different asset starts a new generation behind EXT-X-DISCONTINUITY` | Phase 4a-1a (spec D10, M3). The real pin feeds two 4a-0 fixtures with different PIDs across a recorded boundary; one encoder fed straight across it silently drops the second source, which is the break-check. `buffer.Ring.MarkBoundary` publishes the old connection's pending whole packets before the boundary, so the chunk at the boundary index is the new connection's own. |
 -| 33 | Each HLS generation is probed where it starts: the first from the join point behind live, every later one from its boundary index, so the second generation's probe describes the second source | `relay/hls/pipeline.go:328-444`, `relay/hls/pipeline.go:468-549` | `relay/hls/real_test.go::TestRealABoundaryGivesTwoGenerationsAndADiscontinuity` | Phase 4a-1a (spec D9). The probe's feed stops at the next boundary as the generation's does. It is bounded at 3 s or 3,000,000 bytes, with one re-probe at 8 s or 5 MB when the video has no geometry or field order (ruling R30; the long-GOP case is `relay/hls/real_test.go::TestRealALongGOPIsReprobedAtTheFullBound`); on an MPEG-TS pipe ffprobe reads to its bound whatever it has found, so the bound is the probe's share of the failover gap (Q6). A connection that ends at the next boundary before it can be probed is skipped rather than failing the output, at generation 0 as at any later one (plan review, round 1 finding 3 and ruling R39); a ring that closes under a probe is a stop (R40). |
-+| 33 | Each HLS generation is probed where it starts: the first from the join point behind live, every later one from its boundary index, so the second generation's probe describes the second source; and the probe's bound starts at that start's first chunk, never before it | `relay/hls/pipeline.go:328-444`, `relay/hls/pipeline.go:468-549`, `relay/hls/feed.go:116-132` | `relay/hls/real_test.go::TestRealABoundaryGivesTwoGenerationsAndADiscontinuity`, `relay/hls/cold_probe_test.go::TestAProbeWaitsForTheSourcesFirstChunk`, `relay/hls/cold_probe_test.go::TestASourceThatSendsNothingFailsTheOutputAfterTheStartWait`, `e2e/tests/streaming/hls-entry.spec.ts::a cold hls tune on the built-in ffmpeg stream profile answers the multivariant` | Phase 4a-1a (spec D9). The probe's feed stops at the next boundary as the generation's does. It is bounded at 3 s or 3,000,000 bytes, with one re-probe at 8 s or 5 MB when the video has no geometry or field order (ruling R30; the long-GOP case is `relay/hls/real_test.go::TestRealALongGOPIsReprobedAtTheFullBound`); on an MPEG-TS pipe ffprobe reads to its bound whatever it has found, so the bound is the probe's share of the failover gap (Q6). A connection that ends at the next boundary before it can be probed is skipped rather than failing the output, at generation 0 as at any later one (plan review, round 1 finding 3 and ruling R39); a ring that closes under a probe is a stop (R40). Since issue #560 (R113) a probe first waits for a chunk past its start, up to `hls.SourceStartWait` (15 s), and spawns ffprobe and starts its bound only then: a cold channel's ring is empty when the pipeline starts, and the built-in `ffmpeg` stream profile publishes its first chunk about 6 s later, so a bound armed at the spawn answered every such tune 502. A source that sends nothing for 15 s fails the output as a failed probe does; a ring that closes, or a stop, during the wait is a stop. |
++| 33 | Each HLS generation is probed where it starts: the first from the join point behind live, every later one from its boundary index, so the second generation's probe describes the second source; and the probe's bound starts at that start's first chunk, never before it | `relay/hls/pipeline.go:328-444`, `relay/hls/pipeline.go:468-549`, `relay/hls/feed.go:116-132` | `relay/hls/real_test.go::TestRealABoundaryGivesTwoGenerationsAndADiscontinuity`, `relay/hls/cold_probe_test.go::TestAProbeWaitsForTheSourcesFirstChunk`, `relay/hls/cold_probe_test.go::TestASourceThatSendsNothingFailsTheOutputAfterTheStartWait`, `relay/hls/cold_probe_test.go::TestARingThatClosesBeforeItsFirstChunkIsAStop`, `relay/hls/cold_probe_test.go::TestAStopWhileWaitingForTheFirstChunkIsAStop`, `e2e/tests/streaming/hls-entry.spec.ts::a cold hls tune on the built-in ffmpeg stream profile answers the multivariant` | Phase 4a-1a (spec D9). The probe's feed stops at the next boundary as the generation's does. It is bounded at 3 s or 3,000,000 bytes, with one re-probe at 8 s or 5 MB when the video has no geometry or field order (ruling R30; the long-GOP case is `relay/hls/real_test.go::TestRealALongGOPIsReprobedAtTheFullBound`); on an MPEG-TS pipe ffprobe reads to its bound whatever it has found, so the bound is the probe's share of the failover gap (Q6). A connection that ends at the next boundary before it can be probed is skipped rather than failing the output, at generation 0 as at any later one (plan review, round 1 finding 3 and ruling R39); a ring that closes under a probe is a stop (R40). Since issue #560 (R113) a probe first waits for a chunk past its start, up to `hls.SourceStartWait` (15 s), and spawns ffprobe and starts its bound only then: a cold channel's ring is empty when the pipeline starts, and the built-in `ffmpeg` stream profile publishes its first chunk about 6 s later, so a bound armed at the spawn answered every such tune 502. A source that sends nothing for 15 s fails the output as a failed probe does; a ring that closes, or a stop, during the wait is a stop. |
  | 34 | With no usable Quick Sync the HLS encoder runs in software and never refuses: a missing render node, a failing one-frame detection encode or its timeout selects libx264, and Quick Sync is written off for the process only when a software retry succeeds where it failed and the detection encode, re-run, fails | `relay/hls/detect.go:89-173`, `relay/hls/pipeline.go:574-606` | `relay/hls/detect_test.go::TestDetection`, `relay/hls/real_test.go::TestRealDetectionWithoutQuickSyncGivesSoftware`, `relay/hls/pipeline_test.go::TestASourceCausedEarlyFailureDoesNotWriteQuickSyncOff`, `relay/hls/pipeline_test.go::TestQuickSyncIsWrittenOffOnlyWhenSoftwareSucceedsAndRedetectionFails`, `relay/hls/detect_test.go::TestADetectionCutShortByTheCallerIsNotCached` | Phase 4a-1a (spec D11, finding 5). A detection or re-check cut short by the caller's own context is no evidence and writes nothing off (plan review, finding 1). The QSV argv itself has not run on Quick Sync hardware (Q1); these pins hold the selection and the write-off rule, not the device. |
  | 35 | An audio stream that does not qualify (no known codec, 0 channels or a 0 sample rate, which is what a PMT-declared PID carrying no packets probes as) declares no HLS rendition and is never mapped into the encoder's argv | `relay/hls/probe.go:167-173`, `relay/hls/argv.go:124-154`, `relay/hls/argv.go:260-294` | `relay/hls/real_test.go::TestRealADeclaredButEmptyAudioPIDIsNotMapped`, `relay/hls/argv_test.go::TestANonQualifyingAudioStreamIsNotMapped` | Phase 4a-1a (spec § Encoder argv, finding 7). Mapping such a stream fails every output of the generation (ffmpeg 9.0.1: `sample rate not set`). The real pin strips the AC-3 PID's packets from the 4a-0 1080i fixture and keeps its PMT entry. |
- | 36 | A stalled HLS encoder is a death: a generation that writes no new video fragment for max(10 s, 5 x TARGETDURATION) of the channel's ring advancing is killed (before its first fragment, max(30 s, that): R55 as amended by R58) and counted against the restart bound, while an encoder starved by an idle ring is left alone | `relay/hls/pipeline.go:68-71`, `relay/hls/pipeline.go:1003-1041` | `relay/hls/pipeline_test.go::TestAStalledEncoderIsKilledAsADeath`, `relay/hls/pipeline_test.go::TestAStarvedEncoderIsNotKilled`, `relay/hls/pipeline_test.go::TestASlowFirstFragmentIsNotKilledAsAStall`, `relay/hls/pipeline_test.go::TestAnEncoderThatWritesNothingPastTheStartupAllowanceIsKilled` | Phase 4a-1a (ruling R33, R38). The ring, not the bytes fed, is the measure of input advancing, because a wedged encoder that stops reading its stdin stops the feed too. The clock starts at the first ring advance after the latest fragment and resets whenever the ring is idle for half the timeout, so the watchdog is inert below roughly 410 kb/s (a 255,868-byte chunk less often than every 5 s). Before a generation's first video fragment the allowance is StartupStallFactor (3) times the timeout (ruling R55, 4a-1b): a cold software encode of a 1080i source is fed at real time and was measured killed healthy at 10 s. Since 4a-1d the timeout is the pipeline's own (ruling R42: 10 s at TARGETDURATION 2, 30 s at 6) and the startup allowance is max(30 s, the timeout), 30 s at every target up to 6 (ruling R58), so the entry's 43 s waits stay under nginx's 60 s; pinned also by `relay/hls/automatic_pipeline_test.go::TestTheStallLimitsFollowTheTargetDuration` and `relay/httpapi/hls_automatic_test.go::TestTheEntryWaitsCoverTheLongestTargetDuration`. |
+-| 36 | A stalled HLS encoder is a death: a generation that writes no new video fragment for max(10 s, 5 x TARGETDURATION) of the channel's ring advancing is killed (before its first fragment, max(30 s, that): R55 as amended by R58) and counted against the restart bound, while an encoder starved by an idle ring is left alone | `relay/hls/pipeline.go:68-71`, `relay/hls/pipeline.go:1003-1041` | `relay/hls/pipeline_test.go::TestAStalledEncoderIsKilledAsADeath`, `relay/hls/pipeline_test.go::TestAStarvedEncoderIsNotKilled`, `relay/hls/pipeline_test.go::TestASlowFirstFragmentIsNotKilledAsAStall`, `relay/hls/pipeline_test.go::TestAnEncoderThatWritesNothingPastTheStartupAllowanceIsKilled` | Phase 4a-1a (ruling R33, R38). The ring, not the bytes fed, is the measure of input advancing, because a wedged encoder that stops reading its stdin stops the feed too. The clock starts at the first ring advance after the latest fragment and resets whenever the ring is idle for half the timeout, so the watchdog is inert below roughly 410 kb/s (a 255,868-byte chunk less often than every 5 s). Before a generation's first video fragment the allowance is StartupStallFactor (3) times the timeout (ruling R55, 4a-1b): a cold software encode of a 1080i source is fed at real time and was measured killed healthy at 10 s. Since 4a-1d the timeout is the pipeline's own (ruling R42: 10 s at TARGETDURATION 2, 30 s at 6) and the startup allowance is max(30 s, the timeout), 30 s at every target up to 6 (ruling R58), so the entry's 43 s waits stay under nginx's 60 s; pinned also by `relay/hls/automatic_pipeline_test.go::TestTheStallLimitsFollowTheTargetDuration` and `relay/httpapi/hls_automatic_test.go::TestTheEntryWaitsCoverTheLongestTargetDuration`. |
 -| 37 | A live tune whose output format resolves to `hls` answers a multivariant playlist rather than bytes: `?output_format=hls` or `m3u8` through the hop's aliases, or an Xtream `.m3u8` URL on either XC root through the relay's extension override, gets 200 `application/vnd.apple.mpegurl` with `Cache-Control: no-store` once the first generation that writes a complete set of init segments has done so, every URI under `/hls/<token>/`; not ready within 43 s (R57) is 503 with `Retry-After: 1` and leaves no client | `apps/proxy/authorize.py:251-260`, `relay/httpapi/xc.go:65-76`, `relay/httpapi/stream.go:429-434`, `relay/httpapi/hls.go:200-354` | `relay/httpapi/hls_test.go::TestAnHLSTuneAnswersAMultivariantPlaylistRatherThanBytes`, `relay/httpapi/hls_test.go::TestAnXCM3U8URLForcesHLSOnBothRoots`, `relay/httpapi/hls_test.go::TestAnEntryWhoseInitsNeverArriveIs503AndLeavesNoClient`, `e2e/tests/streaming/hls-entry.spec.ts::an hls tune answers a multivariant playlist on all three entry forms` | Phase 4a-1b (spec D2, D3, § Entry). The multivariant carries a fresh token on every entry, hence `no-store`. `X-Relay-Output` is ignored on an `hls` tune (D12), so the client's `output_profile_id` is null. `hls` is never a deployment or user default (D2, R23). |
++| 36 | A stalled HLS encoder is a death: a generation that writes no new video fragment for max(10 s, 5 x TARGETDURATION) of the channel's ring advancing is killed (before its first fragment, max(30 s, that): R55 as amended by R58) and counted against the restart bound, while an encoder starved by an idle ring is left alone | `relay/hls/pipeline.go:68-71`, `relay/hls/pipeline.go:1003-1041` | `relay/hls/pipeline_test.go::TestAStalledEncoderIsKilledAsADeath`, `relay/hls/pipeline_test.go::TestAStarvedEncoderIsNotKilled`, `relay/hls/pipeline_test.go::TestASlowFirstFragmentIsNotKilledAsAStall`, `relay/hls/pipeline_test.go::TestAnEncoderThatWritesNothingPastTheStartupAllowanceIsKilled` | Phase 4a-1a (ruling R33, R38). The ring, not the bytes fed, is the measure of input advancing, because a wedged encoder that stops reading its stdin stops the feed too. The clock starts at the first ring advance after the latest fragment and resets whenever the ring is idle for half the timeout, so the watchdog is inert below roughly 410 kb/s (a 255,868-byte chunk less often than every 5 s). Before a generation's first video fragment the allowance is StartupStallFactor (3) times the timeout (ruling R55, 4a-1b): a cold software encode of a 1080i source is fed at real time and was measured killed healthy at 10 s. Since 4a-1d the timeout is the pipeline's own (ruling R42: 10 s at TARGETDURATION 2, 30 s at 6) and the startup allowance is max(30 s, the timeout), 30 s at every target up to 6 (ruling R58), so a media playlist's 43 s wait stays under nginx's 60 s `proxy_read_timeout` on `/hls/`, and the entry's, 58 s with `hls.SourceStartWait` (issue #560), stays under the 300 s on the tune locations that front it; pinned also by `relay/hls/automatic_pipeline_test.go::TestTheStallLimitsFollowTheTargetDuration` and `relay/httpapi/hls_automatic_test.go::TestTheEntryWaitsCoverTheLongestTargetDuration`. |
 +| 37 | A live tune whose output format resolves to `hls` answers a multivariant playlist rather than bytes: `?output_format=hls` or `m3u8` through the hop's aliases, or an Xtream `.m3u8` URL on either XC root through the relay's extension override, gets 200 `application/vnd.apple.mpegurl` with `Cache-Control: no-store` once the first generation that writes a complete set of init segments has done so, every URI under `/hls/<token>/`; not ready within 58 s (R57's 43 s plus `hls.SourceStartWait`, issue #560) is 503 with `Retry-After: 1` and leaves no client | `apps/proxy/authorize.py:251-260`, `relay/httpapi/xc.go:65-76`, `relay/httpapi/stream.go:429-434`, `relay/httpapi/hls.go:200-354` | `relay/httpapi/hls_test.go::TestAnHLSTuneAnswersAMultivariantPlaylistRatherThanBytes`, `relay/httpapi/hls_test.go::TestAnXCM3U8URLForcesHLSOnBothRoots`, `relay/httpapi/hls_test.go::TestAnEntryWhoseInitsNeverArriveIs503AndLeavesNoClient`, `relay/httpapi/hls_test.go::TestTheEntryWaitAlsoCoversTheSourcesStart`, `e2e/tests/streaming/hls-entry.spec.ts::an hls tune answers a multivariant playlist on all three entry forms` | Phase 4a-1b (spec D2, D3, § Entry). The multivariant carries a fresh token on every entry, hence `no-store`. `X-Relay-Output` is ignored on an `hls` tune (D12), so the client's `output_profile_id` is null. `hls` is never a deployment or user default (D2, R23). |
  | 38 | `/hls/` is authorized by the media-session token alone: `v1.<sid>.<mac>`, a 128-bit random sid and an HMAC-SHA256 of `SECRET_KEY` over `media-session`, `v1` and the sid, naming no channel; a GET whose token is malformed or whose MAC is wrong, or whose sid is unknown (left, ended by an admin, past its resume window, or minted before a relay restart), is 403 with one body and no detail; a GET on a session whose channel stopped is 410 once and 403 after; `X-Relay-*` and `X-Dispatcharr-Authorized` are ignored there | `relay/control/mediasession.go:50-79`, `relay/session/table.go:205-240`, `relay/httpapi/hls.go:394-437` | `relay/control/mediasession_test.go::TestAMediaSessionTokenIsRefusedWhenForgedOrTampered`, `relay/httpapi/hls_test.go::TestAStoppedSessionIs410OnceThen403AndADeleteIs204`, `relay/httpapi/hls_test.go::TestARejectedTokensTextNeverReachesTheLog`, `e2e/tests/streaming/hls-sessions.spec.ts::a tampered token, a left session and a stopped client are refused` | Phase 4a-1b (spec D4, § The media-session token; R13, R22). No expiry field: the token lives exactly as long as its session (R22). The MAC is compared with `hmac.Equal` before any table lookup. The token is never logged by the relay; nginx's access log records it as it records XC credentials (spec § Risks). |
  | 39 | An HLS viewer is a client in the channel's registry exactly while its session is live: it arrives with its multivariant (`client_connect`), is active on every request carrying its token, and leaves, with `client_disconnect` (`duration`, `bytes_sent`) and its Attach release, on `DELETE /hls/<token>` (204, idempotent), on an admin client stop or stream-limit termination, or once `max(12 s, 6 x TARGETDURATION)` has passed with no request in flight | `relay/session/table.go:287-409`, `relay/session/departure.go:29-46`, `relay/httpapi/control.go:128-170` | `relay/session/table_test.go::TestAnIdleSessionDepartsAfterTheIdleTimeoutAndNotBefore`, `relay/session/table_test.go::TestARequestInFlightHoldsASessionActive`, `relay/httpapi/hls_test.go::TestALeaveEndsTheSessionAtOnceAndIsIdempotent`, `relay/httpapi/hls_test.go::TestAnAdminClientStopEndsAnHLSSession`, `e2e/tests/streaming/hls-sessions.spec.ts::an hls client is listed while it plays and leaves at once on DELETE` | Phase 4a-1b (spec D5, § Presence). The one place the relay infers presence rather than observing it (spec § The ADR 0006 amendment). The per-user stream limit counts these clients because it counts the registry; a departed session is not a client. |
