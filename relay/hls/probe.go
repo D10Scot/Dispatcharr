@@ -150,7 +150,8 @@ func (r Rational) Float() float64 {
 // String is "num/den", which ffmpeg's fps filter takes as it is.
 func (r Rational) String() string { return fmt.Sprintf("%d/%d", r.Num, r.Den) }
 
-// Video is the first video stream the probe found.
+// Video is the first video stream the probe found. Its FrameRate counts
+// whole frames, an interlaced source's too (frameRate).
 type Video struct {
 	ID string
 	// Index is ffprobe's stream index, which the packet list is keyed by.
@@ -287,17 +288,14 @@ func ParseProbe(raw []byte) (Probe, error) {
 			if p.Video != nil {
 				continue
 			}
-			rate, ok := parseRational(s.RFrameRate)
-			if !ok {
-				rate, _ = parseRational(s.AvgFrameRate)
-			}
 			v := &Video{
 				ID: s.ID, Index: s.Index, Level: max(0, s.Level), Codec: s.CodecName, Profile: s.Profile, PixFmt: s.PixFmt,
-				Width: s.Width, Height: s.Height, FrameRate: rate,
+				Width: s.Width, Height: s.Height,
 			}
 			if s.FieldOrder != nil {
 				v.Field, v.fieldReported = parseFieldOrder(*s.FieldOrder), true
 			}
+			v.FrameRate = frameRate(s.RFrameRate, s.AvgFrameRate, v.Field)
 			p.Video = v
 		case "audio":
 			rate, _ := strconv.Atoi(s.SampleRate)
@@ -311,6 +309,23 @@ func ParseProbe(raw []byte) (Probe, error) {
 		p.countPackets(doc)
 	}
 	return p, nil
+}
+
+// frameRate is the video's frame rate: r_frame_rate, or avg_frame_rate when
+// r_frame_rate is missing, 0/0 or unreadable. An interlaced source reads them
+// the other way round (ruling R94, issue #553): ffprobe can report an H.264
+// PAFF stream's r_frame_rate as its field rate, 50/1 for 1080i25, which
+// outputRate would double again, while its avg_frame_rate is the frame rate.
+func frameRate(r, avg string, field FieldOrder) Rational {
+	first, fallback := r, avg
+	if field == FieldInterlaced {
+		first, fallback = avg, r
+	}
+	rate, ok := parseRational(first)
+	if !ok {
+		rate, _ = parseRational(fallback)
+	}
+	return rate
 }
 
 // countPackets fills Keyframes, KeyframeInterval and BitRate from the first

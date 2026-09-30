@@ -555,7 +555,11 @@ ffmpeg -hide_banner -loglevel warning -nostats
 
 - `W`, `H` and `R` are fixed at the first generation. `R` is the field rate for an interlaced
   source (1080i at 25 frames or 50 fields per second becomes 50p), or the frame rate for a
-  progressive one, capped at 60. `G` = round(2 × R). For fractional rates (29.97, 59.94) a segment
+  progressive one, capped at 60. The field rate is twice the probe's `avg_frame_rate`, and twice
+  `r_frame_rate` only when `avg_frame_rate` is missing or `0/0` (R94, issue #553): ffprobe can
+  report an H.264 PAFF stream's `r_frame_rate` as its field rate, 50/1 for 1080i25, and doubling
+  that again would cap at 60. A progressive source's frame rate, or one whose field order is
+  unknown (R28), is its `r_frame_rate`, with `avg_frame_rate` as the fallback. `G` = round(2 × R). For fractional rates (29.97, 59.94) a segment
   is then 60 or 120 frames, and `EXTINF` is 2.002 s rather than 2.000 s. That is within
   4a-1a's "2.000 s ± one frame" and within Apple 7.7.
 - Bitrate `B` / `M`: height ≥ 1080 is 6 / 8 Mb/s; ≥ 720 is 4 / 5 Mb/s; otherwise 2.5 / 3 Mb/s.
@@ -2273,6 +2277,13 @@ Filled in as PRs merge.
   § Open questions records CI's measurements: Q9 is answered (hls.js keeps reloading while paused,
   so there is no leave on pause), and Q6's software gap is 7.91-9.97 s over six runs, under the
   10 s threshold every time but at its edge, so the owner's Quick Sync measurement decides.
+- **2026-09-30, amended by the fix for #553** (`docs/superpowers/plans/2026-09-30-fix-553-interlaced-output-rate.md`,
+  written against `a1e9da65`). § Encoder argv only: an interlaced source's `R` is twice its
+  `avg_frame_rate`, falling back to `r_frame_rate` only when `avg_frame_rate` is missing or `0/0`
+  (R94). The relay had read `r_frame_rate` first for every source, so a PAFF 1080i25 source whose
+  `r_frame_rate` is its field rate came out 60p with G = 120 where D8 says 50p. D8 is unchanged:
+  this says how "the field rate" is read. Q7's contingency ("`R` is taken from the field rate") is
+  not decided here.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
