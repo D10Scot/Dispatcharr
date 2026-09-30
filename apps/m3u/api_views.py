@@ -185,7 +185,16 @@ class M3UAccountViewSet(viewsets.ModelViewSet):
 
             request.data._mutable = False  # Make the request data immutable again
 
-            if instance.file_path and os.path.exists(instance.file_path):
+            # The stored path depends only on the uploaded basename, so a
+            # re-upload under the current file's name is the file just
+            # written: removing it would leave the account pointing at
+            # nothing (#556). Compare resolved paths, since the stored one
+            # may spell the same file differently.
+            if (
+                instance.file_path
+                and os.path.exists(instance.file_path)
+                and os.path.realpath(instance.file_path) != os.path.realpath(file_path)
+            ):
                 os.remove(instance.file_path)
 
         # Now call super().update() to update the instance

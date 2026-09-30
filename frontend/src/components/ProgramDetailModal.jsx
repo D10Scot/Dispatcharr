@@ -14,7 +14,6 @@ import {
 import { Calendar, Video } from 'lucide-react';
 import API from '../api';
 import useVideoStore from '../store/useVideoStore';
-import useSettingsStore from '../store/settings';
 import { getShowVideoUrl } from '../utils/cards/RecordingCardUtils';
 import { formatSeasonEpisode } from '../utils/guideUtils';
 import {
@@ -73,7 +72,6 @@ export default function ProgramDetailModal({
   const [detailData, setDetailData] = useState(null);
 
   const showVideo = useVideoStore((s) => s.showVideo);
-  const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const { timeFormat } = useDateTimeFormat();
 
   useEffect(() => {
@@ -106,11 +104,11 @@ export default function ProgramDetailModal({
 
   const handleWatchLive = useCallback(() => {
     if (!channel) return;
-    showVideo(getShowVideoUrl(channel, env_mode), 'live', {
+    showVideo(getShowVideoUrl(channel), 'live', {
       name: channel.name,
     });
     onClose();
-  }, [channel, env_mode, showVideo, onClose]);
+  }, [channel, showVideo, onClose]);
 
   const handleRecord = useCallback(() => {
     if (onRecord) onRecord(program);

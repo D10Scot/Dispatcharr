@@ -811,6 +811,30 @@ describe('StreamsTable', () => {
   // ── handleWatchStream ──────────────────────────────────────────────────────
 
   describe('handleWatchStream (via row actions)', () => {
+    it('stays same-origin in dev mode (#542)', async () => {
+      const mockShowVideo = vi.fn();
+      setupMocks({
+        totalCount: 5,
+        streams: [makeStream()],
+        showVideo: mockShowVideo,
+        envMode: 'dev',
+      });
+      render(<StreamsTable />);
+      await waitFor(() => expect(capturedTableOptions).not.toBeNull());
+      const actionsCell = capturedTableOptions.bodyCellRenderFns?.actions;
+      const row = {
+        original: makeStream({ stream_hash: 'hash-abc', name: 'My Stream' }),
+      };
+      const { getByText } = render(
+        actionsCell({ cell: { column: { id: 'actions' } }, row })
+      );
+      fireEvent.click(getByText('Preview Stream'));
+      expect(
+        mockShowVideo.mock.calls[0][0],
+        'a dev-mode live URL must go through vite, never straight to :5656'
+      ).toBe('/proxy/ts/stream/hash-abc?output_format=mpegts');
+    });
+
     it('calls buildLiveStreamUrl and showVideo via the actions cell renderer', async () => {
       const mockShowVideo = vi.fn();
       setupMocks({ totalCount: 5, streams: [makeStream()], showVideo: mockShowVideo });

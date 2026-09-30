@@ -22,7 +22,6 @@ import ChannelBatchForm from '../forms/ChannelBatch';
 import RecordingForm from '../forms/Recording';
 import { copyToClipboard, useDebounce } from '../../utils';
 import useVideoStore from '../../store/useVideoStore';
-import useSettingsStore from '../../store/settings';
 import {
   ArrowDownWideNarrow,
   ArrowUpDown,
@@ -326,7 +325,6 @@ const ChannelsTable = ({ onReady }) => {
   });
 
   // store/settings
-  const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const outputProfiles = useOutputProfilesStore((s) => s.profiles);
   const showVideo = useVideoStore((s) => s.showVideo);
 
@@ -644,34 +642,25 @@ const ChannelsTable = ({ onReady }) => {
     setRecordingModalOpen(true);
   }, []);
 
-  const getChannelURL = useCallback(
-    (channel) => {
-      if (!channel || !channel.uuid) {
-        console.error('Invalid channel object or missing UUID:', channel);
-        return '';
-      }
+  const getChannelURL = useCallback((channel) => {
+    if (!channel || !channel.uuid) {
+      console.error('Invalid channel object or missing UUID:', channel);
+      return '';
+    }
 
-      const path = `/proxy/ts/stream/${channel.uuid}`;
-      if (env_mode == 'dev') {
-        return `${window.location.protocol}//${window.location.hostname}:5656${path}`;
-      }
-      return `${window.location.protocol}//${window.location.host}${path}`;
-    },
-    [env_mode]
-  );
+    const path = `/proxy/ts/stream/${channel.uuid}`;
+    return `${window.location.protocol}//${window.location.host}${path}`;
+  }, []);
 
   const handleWatchStream = useCallback(
     (channel) => {
       if (!channel || !channel.uuid) return;
       const path = `/proxy/ts/stream/${channel.uuid}`;
       const uri = buildChannelHlsUrl(path);
-      let url = `${window.location.protocol}//${window.location.host}${uri}`;
-      if (env_mode == 'dev') {
-        url = `${window.location.protocol}//${window.location.hostname}:5656${uri}`;
-      }
+      const url = `${window.location.protocol}//${window.location.host}${uri}`;
       showVideo(url, 'live', { name: channel.name, channelId: channel.id });
     },
-    [env_mode, showVideo]
+    [showVideo]
   );
 
   const onRowSelectionChange = (newSelection) => {

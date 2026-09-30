@@ -10,7 +10,6 @@ import React, {
 import useChannelsStore from '../store/channels';
 import useLogosStore from '../store/logos';
 import useVideoStore from '../store/useVideoStore';
-import useSettingsStore from '../store/settings';
 import {
   ActionIcon,
   Badge,
@@ -123,8 +122,6 @@ export default function TVChannelGuide({ startDate, endDate }) {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGroupId, setSelectedGroupId] = useState('all');
   const [selectedProfileId, setSelectedProfileId] = useState('all');
-
-  const env_mode = useSettingsStore((s) => s.environment.env_mode);
 
   const guideRef = useRef(null);
   const timelineRef = useRef(null); // New ref for timeline scrolling
@@ -775,11 +772,11 @@ export default function TVChannelGuide({ startDate, endDate }) {
     (channel, event) => {
       event.stopPropagation();
 
-      showVideo(getShowVideoUrl(channel, env_mode), 'live', {
+      showVideo(getShowVideoUrl(channel), 'live', {
         name: channel.name,
       });
     },
-    [env_mode, showVideo]
+    [showVideo]
   );
 
   const handleProgramClick = useCallback(

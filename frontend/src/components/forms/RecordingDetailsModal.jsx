@@ -284,7 +284,7 @@ const RecordingDetailsModal = ({
       if (!ch) return;
       useVideoStore
         .getState()
-        .showVideo(getShowVideoUrl(ch, env_mode), 'live', { name: ch.name });
+        .showVideo(getShowVideoUrl(ch), 'live', { name: ch.name });
     }
   };
 

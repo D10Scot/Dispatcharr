@@ -821,6 +821,36 @@ describe('StreamConnectionCard', () => {
       });
     });
 
+    it('previews same-origin in dev mode (#542)', async () => {
+      const showVideo = vi.fn();
+      vi.mocked(useVideoStore).mockImplementation((selector) =>
+        selector({ showVideo })
+      );
+      vi.mocked(useSettingsStore).mockImplementation((selector) =>
+        selector({ ...mockSettingsState, environment: { env_mode: 'dev' } })
+      );
+      vi.mocked(getChannelStreams).mockResolvedValue([
+        { id: 10, name: 'Stream A', url: 'http://a.com', m3u_profile: null },
+      ]);
+      const { getStreamOptions } =
+        await import('../../../utils/cards/StreamConnectionCardUtils.js');
+      vi.mocked(getStreamOptions).mockReturnValue([
+        { value: '10', label: 'Stream A' },
+      ]);
+
+      render(<StreamConnectionCard {...defaultProps()} />);
+      await waitFor(() => screen.getByTestId('icon-circle-play'));
+      fireEvent.click(screen.getByTestId('icon-circle-play').closest('button'));
+
+      await waitFor(() => expect(showVideo).toHaveBeenCalled());
+      expect(
+        showVideo.mock.calls[0][0],
+        'a dev-mode live URL must go through vite, never straight to :5656'
+      ).toBe(
+        `${window.location.origin}/proxy/ts/stream/ch-uuid-1?output_format=mpegts`
+      );
+    });
+
     it('calls showVideo with correct url and type when preview is clicked', async () => {
       const showVideo = vi.fn();
       vi.mocked(useVideoStore).mockImplementation((selector) =>

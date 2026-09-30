@@ -210,10 +210,7 @@ const DVRPage = () => {
       // call into child RecordingCard behavior by constructing a URL like there
       const channel = channelsById[rec.channel];
       if (!channel) return;
-      const url = getShowVideoUrl(
-        channel,
-        useSettingsStore.getState().environment.env_mode
-      );
+      const url = getShowVideoUrl(channel);
       useVideoStore.getState().showVideo(url, 'live', { name: channel.name });
     }
   };

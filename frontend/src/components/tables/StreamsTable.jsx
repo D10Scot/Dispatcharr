@@ -51,7 +51,6 @@ import {
   useMantineTheme,
 } from '@mantine/core';
 import { useNavigate } from 'react-router-dom';
-import useSettingsStore from '../../store/settings';
 import useVideoStore from '../../store/useVideoStore';
 import useChannelsTableStore from '../../store/channelsTable';
 import useWarningsStore from '../../store/warnings';
@@ -349,7 +348,6 @@ const StreamsTable = ({ onReady }) => {
   );
   const channelProfiles = useChannelsStore((s) => s.profiles);
   const selectedProfileId = useChannelsStore((s) => s.selectedProfileId);
-  const env_mode = useSettingsStore((s) => s.environment.env_mode);
   const showVideo = useVideoStore((s) => s.showVideo);
   const videoIsVisible = useVideoStore((s) => s.isVisible);
 
@@ -951,10 +949,7 @@ const StreamsTable = ({ onReady }) => {
   };
 
   function handleWatchStream(streamHash, streamName) {
-    let vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
-    if (env_mode == 'dev') {
-      vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
-    }
+    const vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
     showVideo(vidUrl, 'live', streamName ? { name: streamName } : null);
   }
 
