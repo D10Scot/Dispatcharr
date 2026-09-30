@@ -1,6 +1,7 @@
 package hls
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -322,5 +323,55 @@ func TestAnHEVCProbeWithNoFieldOrderIsCompleteAndProgressive(t *testing.T) {
 	}
 	if !needsFullProbe(h264, feedResult{end: feedLimit}, ModeTranscode) {
 		t.Fatal("an H.264 probe with no field_order did not ask for a re-probe")
+	}
+}
+
+// Ruling R94 (issue #553): an interlaced source's rate is its avg_frame_rate,
+// with r_frame_rate only when avg_frame_rate is missing or 0/0, because
+// ffprobe reports an H.264 PAFF stream's r_frame_rate as its FIELD rate (50/1
+// for 1080i25), which outputRate doubles again and caps at 60. A progressive
+// source, and an unknown field order (R28), keep r_frame_rate first. The
+// fallback rows use 29.97, not 25: a missing rate becomes 25 in outputRate,
+// so a 25/1 fallback row would pass with the fallback deleted.
+func TestAnInterlacedSourcesRateIsItsAverageFrameRate(t *testing.T) {
+	cases := []struct {
+		name, field, r, avg string
+		probed, rate        Rational
+		gop                 int
+	}{
+		{"1080i25 PAFF, r_frame_rate the field rate", "tt", "50/1", "25/1", Rational{25, 1}, Rational{50, 1}, 100},
+		{"1080i29.97 PAFF, r_frame_rate the field rate", "bb", "60000/1001", "30000/1001", Rational{30000, 1001}, Rational{60000, 1001}, 120},
+		{"1080i25 as the fixtures report it", "tt", "25/1", "25/1", Rational{25, 1}, Rational{50, 1}, 100},
+		{"1080i29.97, r_frame_rate the frame rate", "tt", "30000/1001", "30000/1001", Rational{30000, 1001}, Rational{60000, 1001}, 120},
+		{"interlaced, avg_frame_rate 0/0", "tt", "30000/1001", "0/0", Rational{30000, 1001}, Rational{60000, 1001}, 120},
+		{"interlaced, avg_frame_rate absent", "tt", "30000/1001", "", Rational{30000, 1001}, Rational{60000, 1001}, 120},
+		{"progressive keeps r_frame_rate first", "progressive", "50/1", "25/1", Rational{50, 1}, Rational{50, 1}, 100},
+		{"an unknown field order keeps r_frame_rate first", "", "50/1", "25/1", Rational{50, 1}, Rational{50, 1}, 100},
+	}
+	for _, c := range cases {
+		stream := `"codec_type": "video", "codec_name": "h264", "width": 1920, "height": 1080, "id": "0x300", "r_frame_rate": "` + c.r + `"`
+		if c.avg != "" {
+			stream += `, "avg_frame_rate": "` + c.avg + `"`
+		}
+		if c.field != "" {
+			stream += `, "field_order": "` + c.field + `"`
+		}
+		p, err := ParseProbe([]byte(`{"streams": [{` + stream + `}]}`))
+		if err != nil {
+			t.Fatalf("%s: ParseProbe: %v", c.name, err)
+		}
+		out, err := Decide(p)
+		if err != nil {
+			t.Fatalf("%s: Decide: %v", c.name, err)
+		}
+		if p.Video.FrameRate != c.probed || out.FrameRate != c.rate || out.GOP != c.gop {
+			t.Errorf("%s: probed %v, R=%v G=%d; want probed %v, R=%v G=%d",
+				c.name, p.Video.FrameRate, out.FrameRate, out.GOP, c.probed, c.rate, c.gop)
+			continue
+		}
+		argv := joinArgs(out.Argv(PlanGeneration(out, p, EngineSoftware), DefaultDevice))
+		if !strings.Contains(argv, "fps="+c.rate.String()+",") || !strings.Contains(argv, fmt.Sprintf(" -g %d ", c.gop)) {
+			t.Errorf("%s: the argv does not carry fps=%v and -g %d: %q", c.name, c.rate, c.gop, argv)
+		}
 	}
 }
