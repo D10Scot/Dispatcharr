@@ -1869,6 +1869,24 @@ PR description draft:
 | Q8 | Are GitHub macOS runners available with an iOS/tvOS 27 runtime? | The app repository, when its CI is set up. | Whether the manual AVPlayer gate moves into the app repository's CI. |
 | Q9 | Does hls.js keep reloading a live playlist while paused, as AVPlayer does (M7)? | 4a-2's E2E records the cadence. | If it stops, the browser player calls leave on pause and re-tunes on play. |
 
+Recorded by CI, 2026-09-28/29:
+
+- **Q6, software half only.** The HLS failover E2E (`e2e/tests/streaming/hls-failover.spec.ts`)
+  logged `q6-failover-gap-seconds` in every E2E run read: 8.68 (run 36495275297, #538 at
+  `30356831`), 8.44 (run 36594151163, #538's final head `79aa09f4`), 9.97 (run 36521034148, #548
+  at `14de042b`), 8.72 (run 36529018759, #548 at `2266db4c`), 8.70 (run 36616628232, #548's final
+  head `3d8e7f11`) and 7.91 (run 36635918319, `main` at `926d2d5e`). Each is measured from the
+  status flip to the first segment after the discontinuity with 250 ms polls; the fault-to-flip time
+  was 0.79-0.81 s. The gap was under 10 s every time, but one draw was 9.97 s, so CI's libx264 sits
+  at the edge of the threshold, and the owner's Quick Sync measurement decides whether a follow-up
+  pre-spawns the next generation.
+- **Q9, answered.** `e2e/tests/frontend/player-hls.spec.ts`'s E2 logged
+  `Q9: {"videoPlaylistReloads":14,"segmentsFetched":12,"windowSeconds":20}` on every run read:
+  E2E runs 36521034148 and 36529018759 (#548's cited runs), 36616628232 (#548's final head
+  `3d8e7f11`) and 36635918319 (`main` at `926d2d5e`). hls.js 1.6.15 keeps reloading `video.m3u8`
+  while paused, so a paused browser viewer keeps its media session, and the browser player needs no
+  leave on pause.
+
 ## Rejected alternatives
 
 - **Remux by default.** ADR 0009.
@@ -1968,11 +1986,11 @@ Filled in as PRs merge.
 | Spec, ADR 0008, ADR 0009, glossary | #523 | 2026-09-27 (`6c985473`) |
 | 4a-0 e2e-upstream fixtures | #526 | 2026-09-27 (`97675e88`) |
 | 4a-1a packager | #529 | 2026-09-28 (`fabc663a`) |
-| 4a-1b live HLS end to end | | |
-| 4a-1c slot reclaim | | |
-| 4a-1d automatic profile | | |
-| 4a-2 browser player | | |
-| 4a-3 rewind window | | |
+| 4a-1b live HLS end to end | #538 | 2026-09-29 (`9ede7296`) |
+| 4a-1c slot reclaim | #546 | 2026-09-29 (`960a8b9f`) |
+| 4a-1d automatic profile | #547 | 2026-09-29 (`a9646bdd`) |
+| 4a-2 browser player | #548 | 2026-09-29 (`7126dc4a`) |
+| 4a-3 rewind window | #551 | 2026-09-29 (`926d2d5e`) |
 
 ## Changelog
 
@@ -2251,6 +2269,10 @@ Filled in as PRs merge.
     one linger per channel;
   - the settings' bounds, the capability document's two fields, the E2E as planned (R86, R87),
     the R79 waivers and the R45 manual gate.
+- **2026-09-30, 4a closed out.** The Done log records 4a-1b to 4a-3, all merged on 2026-09-29.
+  § Open questions records CI's measurements: Q9 is answered (hls.js keeps reloading while paused,
+  so there is no leave on pause), and Q6's software gap is 7.91-9.97 s over six runs, under the
+  10 s threshold every time but at its edge, so the owner's Quick Sync measurement decides.
 
 ## Appendix A — the owner's rulings (2026-09-26/27), restated
 
