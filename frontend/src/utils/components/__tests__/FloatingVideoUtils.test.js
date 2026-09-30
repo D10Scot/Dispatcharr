@@ -16,6 +16,7 @@ import {
   buildLiveHlsConfig,
   getHlsLivePlayerErrorMessage,
   HLS_RELAY_WAIT_MS,
+  HLS_RELAY_READY_WAIT_MS,
   HLS_RELAY_TUNE_BUDGET_MS,
 } from '../FloatingVideoUtils';
 
@@ -568,7 +569,7 @@ describe('FloatingVideoUtils: live channels over HLS', () => {
     it('bounds the entry timeout by the relay and by nginx', () => {
       const entry = config.manifestLoadPolicy.default;
       expect(entry.maxLoadTimeMs).toBeGreaterThan(
-        HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS
+        HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_READY_WAIT_MS
       );
       expect(entry.maxLoadTimeMs).toBeLessThan(300_000);
       expect(entry.timeoutRetry).toBeNull();
@@ -587,6 +588,7 @@ describe('FloatingVideoUtils: live channels over HLS', () => {
 
     it('mirrors the relay bounds as literals', () => {
       expect(HLS_RELAY_WAIT_MS).toBe(43000);
+      expect(HLS_RELAY_READY_WAIT_MS).toBe(58000);
       expect(HLS_RELAY_TUNE_BUDGET_MS).toBe(14100);
     });
 

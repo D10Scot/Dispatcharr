@@ -10,7 +10,7 @@ import FloatingVideo from '../FloatingVideo';
 import {
   HLS_LEAVE_WAIT_MS,
   HLS_RELAY_TUNE_BUDGET_MS,
-  HLS_RELAY_WAIT_MS,
+  HLS_RELAY_READY_WAIT_MS,
 } from '../../utils/components/FloatingVideoUtils.js';
 import useVideoStore from '../../store/useVideoStore';
 
@@ -672,7 +672,7 @@ describe('FloatingVideo', () => {
       expect(
         capturedHlsConfig.manifestLoadPolicy?.default?.maxLoadTimeMs ?? 0,
         'the entry timeout must cover the relay tune budget plus its ready wait'
-      ).toBeGreaterThan(HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_WAIT_MS);
+      ).toBeGreaterThan(HLS_RELAY_TUNE_BUDGET_MS + HLS_RELAY_READY_WAIT_MS);
       expect(capturedHlsConfig.backBufferLength).toBe(120);
     });
 

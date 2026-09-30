@@ -220,9 +220,11 @@ func TestAnAutomaticSessionIsSilentOnlyAfterTwoOfItsTargetDurations(t *testing.T
 
 // The entry's waits cover the longest target's cold start, derived and not
 // hand-added: quick probe + re-probe + the startup allowance at target 6 + the
-// margin, 43 s, under nginx's 60 s.
+// margin, 43 s, under nginx's 60 s; the entry's adds the source's start
+// (issue #560), 58 s.
 func TestTheEntryWaitsCoverTheLongestTargetDuration(t *testing.T) {
 	floor := hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStall(hls.MaxTargetDuration)
+	want := map[string]time.Duration{"ReadyWait": 58 * time.Second, "PlaylistWait": 43 * time.Second}
 	for name, got := range map[string]time.Duration{
 		"ReadyWait":    HLSDeps{}.readyWait(),
 		"PlaylistWait": HLSDeps{}.playlistWait(),
@@ -233,8 +235,8 @@ func TestTheEntryWaitsCoverTheLongestTargetDuration(t *testing.T) {
 		if got >= 60*time.Second {
 			t.Errorf("the default %s is %v: readyWait %v is not under nginx's 60 s", name, got, got)
 		}
-		if got != 43*time.Second {
-			t.Errorf("the default %s is %v, want 43s", name, got)
+		if got != want[name] {
+			t.Errorf("the default %s is %v, want %v", name, got, want[name])
 		}
 	}
 }

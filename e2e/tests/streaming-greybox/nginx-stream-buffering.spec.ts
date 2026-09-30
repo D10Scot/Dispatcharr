@@ -650,9 +650,10 @@ test(
         `location "${block.header}" does not set proxy_http_version 1.1:\n${body}`
       ).toBe(true);
 
-      // Above the relay's own 43 s waits (R57) (the entry's init wait, a media
-      // playlist's first-segment wait), and the byte-path locations' own
-      // connect budget rather than the server block's inherited 75.
+      // Above the relay's 43 s wait for a media playlist's first segment
+      // (R57), the one long wait on /hls/ (the entry's 58 s wait is on the
+      // tune locations, at 300 s; issue #560), and the byte-path locations'
+      // own connect budget rather than the server block's inherited 75.
       expect(
         has(/^\s*proxy_read_timeout\s+60s\s*;/),
         `location "${block.header}" does not set proxy_read_timeout 60s:\n${body}`

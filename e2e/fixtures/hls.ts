@@ -355,13 +355,24 @@ export interface HlsEntry {
 }
 
 /**
+ * The entry request's own timeout, derived as the browser player's is
+ * (frontend/src/utils/components/FloatingVideoUtils.js, HLS_ENTRY_TIMEOUT_MS):
+ * the relay's next-source budget (14.1 s, relay/httpapi/stream.go's tuneBudget)
+ * plus its entry wait (58 s: hls.SourceStartWait 15 s + the 43 s cold start,
+ * issue #560) plus a 7.9 s margin, so a slow entry fails as the relay's own
+ * 503 rather than as a request timeout. Under nginx's 300 s on the tune
+ * locations.
+ */
+const ENTRY_TIMEOUT_MS = 14_100 + 58_000 + 7_900;
+
+/**
  * An HLS tune: `path` is any of the three entry forms. Requires a 200 and
  * returns the parsed multivariant and its session token. A 503 (the relay's
- * own 20 s wait for the encoder's init segments ran out) is an error here,
+ * own 58 s wait for the encoder's init segments ran out) is an error here,
  * not retried: a viewer's first tune failing is a finding, not noise.
  */
 export async function enterHls(request: APIRequestContext, path: string): Promise<HlsEntry> {
-  const response = await request.get(path, { timeout: 60_000 });
+  const response = await request.get(path, { timeout: ENTRY_TIMEOUT_MS });
   const text = await response.text();
   if (response.status() !== 200) {
     throw new Error(`an HLS entry at ${path} answered ${response.status()}, want 200: ${text.slice(0, 300)}`);
