@@ -480,3 +480,66 @@ class FetchOutboundHttpTests(SimpleTestCase):
         second_kwargs = mock_get.call_args_list[1].kwargs
         self.assertEqual(first_kwargs.get("params"), {"token": "abc"})
         self.assertNotIn("params", second_kwargs)
+
+
+class StrictModeNonGlobalAddressTests(SimpleTestCase):
+    """#555: strict mode (allow_private=False) refused addresses by category
+    and never asked is_global, so a range that is none of loopback,
+    unspecified, multicast, link-local, private or reserved passed. Under
+    Python 3.13 that is exactly 100.64.0.0/10 (RFC 6598 shared address
+    space: carrier-grade NAT, Tailscale) and its IPv4-mapped IPv6 form."""
+
+    SHARED_ADDRESS_SPACE = (
+        "100.64.0.1",
+        "100.100.100.100",
+        "100.127.255.254",
+        "::ffff:100.64.0.1",
+    )
+
+    def test_strict_mode_refuses_shared_address_space(self):
+        for addr in self.SHARED_ADDRESS_SPACE:
+            with self.subTest(addr=addr), patch(
+                "core.http_security.socket.getaddrinfo",
+                return_value=_fake_addrinfo(addr),
+            ):
+                with self.assertRaises(ValueError) as ctx:
+                    validate_outbound_http_url("http://cgnat.example.invalid/x")
+                # Same message shape as every other refusal: the address,
+                # never the URL.
+                self.assertIn(addr, str(ctx.exception))
+                self.assertNotIn("cgnat.example.invalid", str(ctx.exception))
+
+    def test_strict_mode_still_admits_the_global_neighbours_of_the_range(self):
+        for addr in ("100.63.255.254", "100.128.0.1"):
+            with self.subTest(addr=addr), patch(
+                "core.http_security.socket.getaddrinfo",
+                return_value=_fake_addrinfo(addr),
+            ):
+                validate_outbound_http_url("http://edge.example.invalid/x")
+
+    @patch(
+        "core.http_security.socket.getaddrinfo",
+        return_value=_fake_addrinfo("100.64.0.1"),
+    )
+    def test_allow_private_still_admits_shared_address_space(self, _mock):
+        # The image proxy's lenient mode admits a LAN host; a tailnet host is
+        # the same trust class and stays admitted there.
+        validate_outbound_http_url("http://cgnat.example.invalid/x", allow_private=True)
+
+    @patch("core.http_security.requests.get")
+    @patch("core.http_security.socket.getaddrinfo")
+    def test_a_redirect_into_shared_address_space_is_refused_in_strict_mode(
+        self, mock_gai, mock_get
+    ):
+        mock_gai.side_effect = _addrinfo_side_effect(
+            {"public.example": "93.184.216.34", "cgnat.example.invalid": "100.64.0.1"}
+        )
+        mock_get.return_value = MagicMock(
+            status_code=302, headers={"Location": "http://cgnat.example.invalid/"}
+        )
+
+        with self.assertRaises(ValueError) as ctx:
+            fetch_outbound_http("http://public.example/m.json", allow_private=False)
+
+        self.assertIn("100.64.0.1", str(ctx.exception))
+        self.assertEqual(mock_get.call_count, 1)
