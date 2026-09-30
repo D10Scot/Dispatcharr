@@ -150,7 +150,7 @@ describe('RecordingCardUtils', () => {
   describe('getShowVideoUrl', () => {
     it('returns the channel HLS entry URL', () => {
       const channel = { uuid: 'channel-123' };
-      const result = getShowVideoUrl(channel, 'production');
+      const result = getShowVideoUrl(channel);
 
       expect(result).toBe('/proxy/ts/stream/channel-123?output_format=hls');
     });
@@ -161,18 +161,19 @@ describe('RecordingCardUtils', () => {
         JSON.stringify({ webPlayerOutputProfileId: 5 })
       );
       const channel = { uuid: 'channel-123' };
-      const result = getShowVideoUrl(channel, 'production');
+      const result = getShowVideoUrl(channel);
 
       expect(result).toBe('/proxy/ts/stream/channel-123?output_format=hls');
     });
 
-    it('prepends dev server URL in dev mode with output params', () => {
+    it('stays same-origin when the caller is in dev mode (#542)', () => {
       const channel = { uuid: 'channel-123' };
       const result = getShowVideoUrl(channel, 'dev');
 
-      expect(result).toMatch(
-        /^https?:\/\/.*:5656\/proxy\/ts\/stream\/channel-123\?output_format=hls$/
-      );
+      expect(
+        result,
+        'a dev-mode live URL must go through vite, never straight to :5656'
+      ).toBe('/proxy/ts/stream/channel-123?output_format=hls');
     });
   });
 

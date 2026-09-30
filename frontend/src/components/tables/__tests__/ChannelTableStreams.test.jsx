@@ -446,12 +446,15 @@ describe('ChannelStreams', () => {
       expect(buildLiveStreamUrl).toHaveBeenCalledWith('/proxy/ts/stream/s-1');
     });
 
-    it('prefixes hostname in dev mode', () => {
+    it('stays same-origin in dev mode (#542)', () => {
       const { mockShowVideo } = setupMocks({ envMode: 'dev' });
       render(<ChannelStreams channel={makeChannel()} />);
       fireEvent.click(screen.getByTestId('icon-eye').closest('button'));
       const calledUrl = mockShowVideo.mock.calls[0][0];
-      expect(calledUrl).toContain(':5656');
+      expect(
+        calledUrl,
+        'a dev-mode live URL must go through vite, never straight to :5656'
+      ).toBe('/proxy/ts/stream/hash-abc?output_format=mpegts');
     });
 
     it('does not prefix hostname in production mode', () => {

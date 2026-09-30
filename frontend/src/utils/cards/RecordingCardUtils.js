@@ -59,13 +59,8 @@ export const getPosterUrl = (posterLogoId, customProperties, posterUrl) => {
   return purl || defaultLogo;
 };
 
-export const getShowVideoUrl = (channel, env_mode) => {
-  let url = `/proxy/ts/stream/${channel.uuid}`;
-  if (env_mode === 'dev') {
-    url = `${window.location.protocol}//${window.location.hostname}:5656${url}`;
-  }
-  return buildChannelHlsUrl(url);
-};
+export const getShowVideoUrl = (channel) =>
+  buildChannelHlsUrl(`/proxy/ts/stream/${channel.uuid}`);
 
 export const runComSkip = async (recording) => {
   await API.runComskip(recording.id);

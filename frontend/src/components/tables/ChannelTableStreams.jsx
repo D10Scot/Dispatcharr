@@ -20,7 +20,6 @@ import './table.css';
 import useChannelsTableStore from '../../store/channelsTable';
 import usePlaylistsStore from '../../store/playlists';
 import useVideoStore from '../../store/useVideoStore';
-import useSettingsStore from '../../store/settings';
 import CatchupIndicator from '../CatchupIndicator';
 import {
   closestCenter,
@@ -397,20 +396,16 @@ const ChannelStreams = ({ channel }) => {
   const authUser = useAuthStore((s) => s.user);
   const showVideo = useVideoStore((s) => s.showVideo);
   const isVideoVisible = useVideoStore((s) => s.isVisible);
-  const env_mode = useSettingsStore((s) => s.environment.env_mode);
 
   const handleWatchStream = useCallback(
     (streamHash, streamName, streamId) => {
-      let vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
-      if (env_mode === 'dev') {
-        vidUrl = `${window.location.protocol}//${window.location.hostname}:5656${vidUrl}`;
-      }
+      const vidUrl = buildLiveStreamUrl(`/proxy/ts/stream/${streamHash}`);
       const meta = {};
       if (streamName) meta.name = streamName;
       if (streamId != null) meta.streamId = streamId;
       showVideo(vidUrl, 'live', Object.keys(meta).length ? meta : null);
     },
-    [env_mode, showVideo]
+    [showVideo]
   );
 
   const [data, setData] = useState(channelStreams || []);
