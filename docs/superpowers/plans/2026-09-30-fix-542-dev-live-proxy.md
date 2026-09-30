@@ -22,6 +22,7 @@
      - State that a dev STREAMS network ACL judges `127.0.0.1`.
      - Pin with a vitest over the proxy table plus same-origin assertions for the builders under `env_mode` `'dev'`, each with a break-check.
      - Specify the live dev-container check.
+   - **R111** (plan review round 1, finding 1): the `/api` and `/ws` keys become `'/api/'` and `'/ws/'`, matching nginx's `^~ /api/` and `^~ /ws/` (`docker/nginx.conf:177`, `:274`). Without the trailing slash an XC username starting with `api` or `ws` (`/wsmith/pass/123.ts`) is caught by the prefix before the XC regex and goes to Django or Daphne rather than relay-go. The XC routing test gains a `/wsmith/…` and an `/apiuser/…` row, and B10 and B11 pin them.
 2. **The code at `a1e9da65`.** The premise is verified below: § Premise.
 3. CLAUDE.md:
    - § Commands and its dev bullets (`CLAUDE.md:43`, `:52`).
@@ -91,7 +92,12 @@ With `ffprobe` wrapped to capture its stderr, the probe (`-probesize 3000000 -an
 1. **Only `frontend/` and `CLAUDE.md` change.** No Go, no Python, no nginx, no workflow, no migration. So neither coverage gate runs and no parity-matrix row is added: the relay behaviour relied on is dev-only and unchanged.
 2. **No new dependency.** `devProxy.js` imports nothing.
 3. **Production is unchanged.** Every site's non-dev branch already built the form it now always builds. vite's `server.proxy` is used only by `vite` / `npm run dev` and never by `npm run build`.
-4. **The VOD, series and recording-file `:5656` rewrites stay.** These are `RecordingCardUtils.js:41`, `:57`, `:106`, `VODModalUtils.js:78`, `SeriesModalUtils.js:147`, plus `ProgramDetailModal.jsx:46`, which resolves API image URLs. Django's api-uwsgi serves those paths on `:5656` in dev, so they are not #542. `api.js:21-23`'s DEV host is not touched either.
+4. **The VOD, series, recording-file and logo/poster API `:5656` rewrites stay.** These are:
+   - `RecordingCardUtils.js:41` and `:57`: the logo/poster API URLs (`/api/channels/logos/<id>/cache/`), gated on `import.meta.env.DEV` rather than `env_mode`;
+   - `RecordingCardUtils.js:106` (the recording file), `VODModalUtils.js:78`, `SeriesModalUtils.js:147`;
+   - `ProgramDetailModal.jsx:46`, which resolves API image URLs.
+
+    Django's api-uwsgi serves those paths on `:5656` in dev, so they are not #542. `api.js:21-23`'s DEV host is not touched either.
 5. **The test-modification rule.** Existing tests change only where the behaviour they pin is what this PR changes. Each change is listed in § Tests changed with its before and after.
 6. **Lint: no new error.** `npx eslint` over the eighteen changed frontend files reports exactly the three errors the seed already has in them:
    - `RecordingCard.jsx:211` `no-empty`
@@ -142,7 +148,7 @@ Then commit, staging and committing in separate calls, with the message from a f
 
 Run, and report each result verbatim:
 
-1. `cd frontend && npx vitest --run` over the whole suite. Expected: all pass. At the prototype: 207 files and 6,246 tests passed.
+1. `cd frontend && npx vitest --run` over the whole suite. Expected: all pass. At the prototype: 207 files and 6,250 tests passed.
 2. `npx eslint` over the eighteen changed frontend files (`git diff --name-only a1e9da65 -- frontend`). Expected: `3 errors`, exactly the seed errors in constraint 6.
 3. `npm run build`. Expected: exit 0. It proves `vite.config.js` still loads with the new import.
 4. Every break-check in § Break-checks. Apply the named wrong edit, confirm the named test reddens with the quoted message, then revert.
@@ -158,7 +164,7 @@ Push the branch and open the PR as a **draft** (`gh pr create --repo D10Scot/Dis
 
 `frontend/src/__tests__/devProxy.test.js` (new, `@vitest-environment node`) pins the table.
 
-**How it matches a URL.** `routeOf()` applies vite's own rule from vite 7.3.6's `doesProxyContextMatchUrl`, in `node_modules/vite/dist/node/chunks/config.js:22085`, and its `for…in` loop at `:22057`:
+**How it matches a URL.** `routeOf()` applies vite's own rule from vite 7.3.5's `doesProxyContextMatchUrl` (the version `package-lock.json` and `package.json`'s `resolutions` pin), in `node_modules/vite/dist/node/chunks/config.js:22085`, and its `for…in` loop at `:22057`:
 
 - keys are tried in insertion order;
 - a key starting with `^` is a `RegExp` tested against the URL including its query string;
@@ -174,9 +180,18 @@ The test encodes vite's documented behaviour. It is not an output of the code un
   - two `/proxy/ts/stream/<uuid>?output_format=…` URLs;
   - `/hls/<token>/video.m3u8` and `/hls/<token>/video/12.m4s`;
   - `/live/user/pass/123.ts`;
-  - `/user/pass/123`, `/user/pass/123.ts` and `/user/pass/123.m3u8?token=x`.
-- `keeps %s on its own backend, not the XC root`: `/api/channels/5` and `/api/channels/recordings/4/hls/index.m3u8` route to `/api`, and `/ws/x/5` routes to `/ws`.
-- `leaves %s to vite`: SPA routes, vite's own module and dependency URLs, `/proxy/ts/status` and `/proxy/vod/movie/1` match no key.
+  - `/user/pass/123`, `/user/pass/123.ts` and `/user/pass/123.m3u8?token=x`;
+  - `/wsmith/pass/123.ts` and `/apiuser/pass/123.ts`: XC usernames that begin with a backend prefix (R111).
+- `keeps %s on its own backend, not the XC root`: `/api/channels/5` and `/api/channels/recordings/4/hls/index.m3u8` route to `/api/`, and `/ws/x/5` routes to `/ws/`.
+- `leaves %s to vite`: SPA routes, `/src/…`, `/node_modules/.vite/deps/…`, vite's own `/@vite/client` and `/@fs/app/frontend/src/main.jsx`, `/proxy/ts/status` and `/proxy/vod/movie/1` match no key.
+
+**No request needs a bare `/api` or `/ws`.** Re-verified at `a1e9da65`:
+- `grep -rnoE "/api[^/a-zA-Z_.']" frontend/src` and `grep -rnoE "/ws[^/a-zA-Z_.]" frontend/src` (non-test) match only `api.js:3458` and `:3487`, which are `/api/accounts/api-keys/…`;
+- every `api.js` request is built as `${host}/api/…`;
+- `WebSocket.jsx:87-94` dials `…/ws/?token=` (directly on `:8001` in dev);
+- Swagger is at `/api/swagger/`.
+
+A developer typing a bare `http://127.0.0.1:9191/api` now gets the SPA rather than Django, which is exactly what nginx does in production.
 - `is nginx's XC live root plus an optional query string`: reads `docker/nginx.conf`, extracts the `location ~ ^/[^/]+/[^/]+/…$` regex, and asserts `XC_LIVE_ROOT` is exactly that with `(?:\?.*)?` inserted before `$`.
 - `lists the XC regex last`.
 - `reads the relay port from %j`: `{}`, `''` and `'abc'` give 5658, and `'6000'` gives 6000, in both `relayGoPort` and the `/hls/` target.
@@ -210,7 +225,7 @@ Each was run at the prototype. The implementer re-runs each, confirms the test r
 
 | # | Wrong edit | Test that reddens | Message (as observed) |
 |---|---|---|---|
-| B1 | In `devProxy.js`, move `[XC_LIVE_ROOT]: relay()` to the top of the returned object | `keeps /api/channels/5 …`, `keeps /ws/x/5 …`, `lists the XC regex last` | `/api/channels/5 is routed by the XC regex: it must come after /api and /ws` |
+| B1 | In `devProxy.js`, move `[XC_LIVE_ROOT]: relay()` to the top of the returned object | `keeps /api/channels/5 …`, `keeps /ws/x/5 …`, `lists the XC regex last` | `/api/channels/5 left its own backend: the XC regex must come after /api/ and /ws/` |
 | B2 | Delete `(?:\\?.*)?` from `XC_LIVE_ROOT` | `sends /user/pass/123.m3u8?token=x to relay-go`, `is nginx's XC live root plus an optional query string` | `/user/pass/123.m3u8?token=x matched the wrong key: expected undefined …`, `devProxy.js has drifted from docker/nginx.conf` |
 | B3 | Restore `frontend/vite.config.js` to the seed (`git show "a1e9da65:frontend/vite.config.js"`) | `is the table vite.config.js serves` | `vite.config.js does not take its proxy table from devProxy()` |
 | B4 | In `devProxy.js`, target `http://127.0.0.1:5656` instead of `relayGoPort(env)` | every `sends … to relay-go` | `/proxy/ts/stream/… does not point at relay-go` |
@@ -219,6 +234,8 @@ Each was run at the prototype. The implementer re-runs each, confirms the test r
 | B7 | Restore `StreamsTable.jsx` to the seed | `stays same-origin in dev mode (#542)` | as B5 |
 | B8 | Restore `StreamConnectionCard.jsx` to the seed | `previews same-origin in dev mode (#542)` | as B5 |
 | B9 | Restore `RecordingCardUtils.js` to the seed | `stays same-origin when the caller is in dev mode (#542)` | as B5 |
+| B10 | In `devProxy.js`, restore the key `'/ws'` (no trailing slash) | `sends /wsmith/pass/123.ts to relay-go`, `keeps /ws/x/5 …` | `/wsmith/pass/123.ts matched the wrong key: expected '/ws' to be '^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?(…'` |
+| B11 | In `devProxy.js`, restore the key `'/api'` (no trailing slash) | `sends /apiuser/pass/123.ts to relay-go`, both `keeps /api/… …` rows | `/apiuser/pass/123.ts matched the wrong key: expected '/api' to be '^/[^/]+/[^/]+/\d+(?:\.[A-Za-z0-9]+)?(…'` |
 
 **Known limit of the nginx drift pin.** `frontend-tests.yml`'s change detector (`:85`) runs the suite only when a `frontend/` path changes. An edit to `docker/nginx.conf` alone therefore does not run it, and a drift is reported on the next frontend PR rather than on the nginx one. This is accepted rather than widening the workflow filter (open question Q3).
 
@@ -233,7 +250,7 @@ E2E runs an AIO image, never dev, so this is the only end-to-end proof. Use priv
 
 Never touch `dispatcharr-testrunner`, `e2e-upstream` or `dispatcharr-e2e`.
 
-**Do not use `docker/docker-compose.dev.yml` as shipped.** Its image is `ghcr.io/dispatcharr/dispatcharr:base`: the upstream namespace, and a base image that carries no `/usr/local/bin/relay-go`. The planner checked `ghcr.io/d10scot/dispatcharr:base` locally and it has none either, because only `docker/Dockerfile`'s final stage copies it in. So `[program:relay-go]` cannot start there and nothing answers on :5658 (open question Q2). Build the fork's own image instead.
+**Do not use `docker/docker-compose.dev.yml` as shipped.** Its image is `ghcr.io/dispatcharr/dispatcharr:base`: the upstream namespace, and a base image that carries no `/usr/local/bin/relay-go`. The planner checked `ghcr.io/d10scot/dispatcharr:base` locally and it has none either, because only `docker/Dockerfile`'s final stage copies it in. So `[program:relay-go]` cannot start there and nothing answers on :5658 (open question Q2, filed as #558). Build the fork's own image instead.
 
 **Mount a scratch export at `/app`, never the worktree.** The dev rung's `99-init-dev.sh` runs `npm install` into `/app/frontend`.
 
@@ -335,7 +352,7 @@ docker rmi dispatcharr-dev-542:local
 ## Open questions, with recommendations
 
 - **Q1. The relay's HLS output fails on local arm64 Docker, in dev and in AIO alike.** ffprobe on the relay's feed reports `pipe:0: End of file`. **Recommendation:** a separate issue, not this PR. It is out of R100's scope, sits on the relay's side of the hop, and has an AIO reproduction. Include the ffprobe-wrapper method in the issue. The planner does not know the cause.
-- **Q2. `docker/docker-compose.dev.yml` cannot run `relay-go`.** Its image is the upstream `ghcr.io/dispatcharr/dispatcharr:base`, and no base image carries the binary. CLAUDE.md's "Inside Docker, `DISPATCHARR_ENV=dev` selects the `all-dev` rung, which DOES start `relay-go`" is true only for an image built from `docker/Dockerfile`. So after this PR, the shipped dev compose still plays nothing live, whereas a bare `npm run dev` + `runserver 5656` + a hand-started `relay-go`, or the fork's full image in dev mode, now does. **Recommendation:** a separate issue, `Refs #542`. Possible fixes are pointing the compose at the fork's image or building `relay-go` in `99-init-dev.sh`. Do not widen this PR.
+- **Q2. `docker/docker-compose.dev.yml` cannot run `relay-go`.** Its image is the upstream `ghcr.io/dispatcharr/dispatcharr:base`, and no base image carries the binary. CLAUDE.md's "Inside Docker, `DISPATCHARR_ENV=dev` selects the `all-dev` rung, which DOES start `relay-go`" is true only for an image built from `docker/Dockerfile`. So after this PR, the shipped dev compose still plays nothing live, whereas a bare `npm run dev` + `runserver 5656` + a hand-started `relay-go`, or the fork's full image in dev mode, now does. **Filed as [#558](https://github.com/D10Scot/Dispatcharr/issues/558)** ("Dev compose runs no relay-go: the :base image carries no relay-go binary", `Refs #542`). Possible fixes are pointing the compose at the fork's image or building `relay-go` in `99-init-dev.sh`. Do not widen this PR. The new CLAUDE.md bullet names #558; the seed's `:52` "DOES start `relay-go`" sentence is left to #558.
 - **Q3. The nginx drift pin runs only on frontend PRs** (§ Break-checks). **Recommendation:** accept it. The regex has not changed since stage 2d-3, and widening `frontend-tests.yml`'s filter is a workflow edit outside R100.
 
 ## PR description
@@ -363,14 +380,14 @@ Plan: `docs/superpowers/plans/2026-09-30-fix-542-dev-live-proxy.md` (this PR's f
 
 - New `frontend/src/__tests__/devProxy.test.js` pins the proxy table:
   - the keys and the relay port;
-  - the XC regex after `/api` and `/ws`;
+  - the XC regex after `/api/` and `/ws/`, which keep nginx's trailing slash so `/wsmith/…` and `/apiuser/…` XC URLs still reach the relay;
   - `/u/p/123.ts` and `/u/p/123?x` routed, `/api/x/5` not;
   - SPA and vite module paths left alone;
   - the regex equal to nginx's plus the query suffix;
   - that `vite.config.js` serves it.
 - One same-origin assertion per call site under `env_mode: 'dev'`.
 - Two existing dev-mode tests changed, because the behaviour they pinned is the defect (listed with before and after in the plan). Two `getShowVideoUrl` calls lose their now-unused second argument.
-- Break-checks B1-B9 in the plan, each re-run.
+- Break-checks B1-B11 in the plan, each re-run.
 
 ## Live check
 
@@ -379,7 +396,7 @@ Plan: `docs/superpowers/plans/2026-09-30-fix-542-dev-live-proxy.md` (this PR's f
 ## Not in this PR
 
 - Q1: relay HLS output fails on local arm64 in dev and AIO alike.
-- Q2: `docker-compose.dev.yml`'s image has no `relay-go` binary.
+- Q2, #558: `docker-compose.dev.yml`'s image has no `relay-go` binary, so this fix needs a running `relay-go` that the `:base`-image dev compose lacks.
 
 Closes #542.
 
@@ -394,7 +411,7 @@ Apply with `git apply`. Generated by `git diff a1e9da65 -- frontend CLAUDE.md` f
 
 ```diff
 diff --git a/CLAUDE.md b/CLAUDE.md
-index d4660b21..5620c33e 100644
+index d4660b21..101c9684 100644
 --- a/CLAUDE.md
 +++ b/CLAUDE.md
 @@ -40,7 +40,7 @@ TEST_USE_SQLITE=1 python manage.py test        # no-Postgres fallback; PG-only t
@@ -410,35 +427,39 @@ index d4660b21..5620c33e 100644
  
  - `manage.py` rewrites `DJANGO_SETTINGS_MODULE` to `dispatcharr.settings_test` for `test` only. **Never pass `--settings=dispatcharr.settings` to `test` on a live instance** — it targets the production database.
  - Since Phase 1 PR 6 the relay asks Django for its source over HTTP, and with `DISPATCHARR_ENV` unset `get_control_plane_base_url()` falls to the AIO branch (`http://127.0.0.1:9191`), which makes every tune answer "Control plane unreachable" against a bare `runserver`. `DISPATCHARR_ENV=dev` points that call at `http://127.0.0.1:5656` unconditionally — the dev branch is hardcoded, not read from a port variable — while a bare `runserver` binds `:8000` by default, so pass the port explicitly (`runserver 5656`, as the Commands block above does) rather than relying on "the dev process's own port"; `DISPATCHARR_INTERNAL_API_BASE_URL=http://127.0.0.1:8000` is the escape hatch when `runserver` must keep its default port instead. An override or a `DISPATCHARR_WEB_HOST` whose host Django's own `get_host()` would refuse (an underscore anywhere in it) is caught at resolve time — using Django's own `split_domain_port`, naming the responsible variable, and never echoing a URL's userinfo — rather than being dialled and failing later as an opaque 400: `next_source()` propagates it as `ImproperlyConfigured` so a misconfigured deployment fails visibly on the first tune, while `release_source()` and `post_events()` catch it, log once per call (the variable name only) and return `False`, since aborting a channel teardown or an event post cannot fix the configuration and would instead leak the channel's Redis keys, its ownership lease and a still-running ffmpeg — reachable in the worker role, which stops channels but never tunes, and in a relay restarted after the tune. The reverse direction (Django asking the relay, `apps/proxy/relay_client.py`) got the same three-way policy once PR 7's fix round named every call site: `Channel._stream_assignment_is_reusable()` (the tune path) lets `ImproperlyConfigured` propagate uncaught, same reasoning as `next_source()`; the five admin views in `apps/proxy/ts_admin_views.py` answer with a fixed body (never the exception text or the rejected value) while logging the variable name only; five callers degrade exactly as they already do for an unreachable relay, logging once (`apps/proxy/stats_views.py`'s `combined_stats` — a 200 with an empty live section, not a 500 — plus `attempt_stream_termination`, `get_user_active_connections`'s live branch, `fetch_channel_stats` and `_stop_dvr_clients`). `relay_client.stop_channels()` also stops looping in a bulk M3U delete rather than repeating a doomed round trip for every remaining identifier, but only on a connection-level failure (`RelayUnavailable(transport=True)`, set at the `requests.ConnectionError` raise site — the narrower branch, checked first; `ConnectTimeout` inherits it, but a `ReadTimeout` from one stuck channel's teardown does not and stays per-channel) or `ImproperlyConfigured` — both mean every remaining identifier would fail the same way. A `RelayRefused`, or a `RelayUnavailable` that is NOT a transport failure (a redirect, a 5xx, a garbled 2xx body — the relay answered at least once and this one request failed), is per-channel and keeps the loop going; the coarser first draft aborted on any `RelayUnavailable` and could strand channels a single slow teardown or transient 5xx would have let stop fine. See spec Amendment S11 rulings 22-23. Since Phase 2 stage 2d-4 the dev process also calls *itself* in the other direction, but the two directions no longer share a port: `Channel.get_stream()`'s reuse check and every other `relay_client` call (`advance`, `stop_channels`, …) resolve through `resolve_base_url(..., dev_url=dev_relay_url())`, so in `dev` they go to `http://127.0.0.1:5658` — the Go relay's own port (`DISPATCHARR_RELAY_GO_PORT`) — never `:5656`, because Django itself serves no `/proxy/relay/…` route in any shape any more (R1 deleted `relay_views.py`/`relay_urls.py` with the package). Under a bare `manage.py runserver 5656` nothing listens on `:5658` unless `relay-go` is started separately, so the call gets a connection refusal: `relay_client.channel_snapshot()` catches it as `RelayUnavailable`, logs one WARNING (`"Relay could not answer for channel %s: %s"`) and returns `present=False, active=False` — not a 500 — so `_stream_assignment_is_reusable()` falls back to a bare Redis `stream_profile`-key check instead of the relay's real answer. Start `relay-go` alongside a bare `runserver`, or point `DISPATCHARR_RELAY_BASE_URL` at wherever one answers, to get the relay's actual state instead of the fallback. Inside Docker, `DISPATCHARR_ENV=dev` selects the `all-dev` rung, which DOES start `relay-go` (`docker/supervisord/all-dev.conf`'s `[include]` lists `relay-go.conf`), so every `relay_client` call there reaches a real out-of-process relay with a real channel registry — `reset_tried` is no longer a silent no-op there, because that was a property of the old in-process Python relay answering on the API process with an empty `stream_managers`, and that process no longer exists in any shape.
-+- Since #542 vite also proxies the live surface to `relay-go`: `/proxy/ts/stream/`, `/live/`, `/hls/` and nginx's XC three-segment root, the last listed after `/api` and `/ws` because it matches their three-segment paths too (`frontend/devProxy.js`, port from `DISPATCHARR_RELAY_GO_PORT`, default 5658). The browser player's live URLs are same-origin in dev as in production; the VOD, series and recording-file URLs still go to `:5656`, where Django serves them. With no nginx there is no `auth_request` hop, so the relay authorizes each tune itself through `POST /_dispatcharr/authorize-internal` (`relay/httpapi/authorize.go`), and because every request reaches it from vite, a STREAMS network ACL judges `127.0.0.1`.
++- Since #542 vite also proxies the live surface to `relay-go`: `/proxy/ts/stream/`, `/live/`, `/hls/` and nginx's XC three-segment root, the last listed after `/api/` and `/ws/` because it matches their three-segment paths too, and those two keep nginx's trailing slash so an XC username such as `wsmith` is not caught by them (`frontend/devProxy.js`, port from `DISPATCHARR_RELAY_GO_PORT`, default 5658). It needs a running `relay-go`, which the `:base`-image dev compose lacks ([#558](https://github.com/D10Scot/Dispatcharr/issues/558)). The browser player's live URLs are same-origin in dev as in production; the VOD, series and recording-file URLs still go to `:5656`, where Django serves them. With no nginx there is no `auth_request` hop, so the relay authorizes each tune itself through `POST /_dispatcharr/authorize-internal` (`relay/httpapi/authorize.go`), and because every request reaches it from vite, a STREAMS network ACL judges `127.0.0.1`.
  - Tests need Postgres and Redis. `scripts/ci_bootstrap_backend.sh` is what CI runs; assumes the base image's layout.
  - Docker: `docker/docker-compose.{dev,aio}.yml` + `docker-compose.yml` (modular); `DISPATCHARR_ENV` picks the deployment shape and `DISPATCHARR_ROLE` (`all`/`api`/`relay`/`worker`) picks which supervisord programs the container runs. `docker/tests/test-puid-pgid.sh` and `test-tls-postgres.sh` are good integration tests, run by `lifecycle-tests.yml`'s `suites` job in full mode.
  
 diff --git a/frontend/devProxy.js b/frontend/devProxy.js
 new file mode 100644
-index 00000000..8e72984f
+index 00000000..40adebcf
 --- /dev/null
 +++ b/frontend/devProxy.js
-@@ -0,0 +1,51 @@
+@@ -0,0 +1,55 @@
 +// The vite dev server's proxy table (#542).
 +//
 +// With DISPATCHARR_ENV=dev there is no nginx: vite serves the SPA on :9191 and
-+// forwards what nginx would have routed elsewhere. /api and /ws go to Django
-+// as before. The live surface -- the TS tune, the XC live roots and the HLS
-+// session resources -- goes to relay-go, which is where nginx sends it in
-+// production (docker/nginx.conf: ^~ /proxy/ts/stream/, ^~ /hls/, ^~ /live/
-+// and the XC three-segment regex). With no nginx there is no auth_request
-+// hop, and the relay asks Django itself (relay/httpapi/authorize.go, the dev
-+// fallback), so nothing here authorizes anything.
++// forwards what nginx would have routed elsewhere. /api/ and /ws/ go to
++// Django and Daphne as before. The live surface -- the TS tune, the XC live
++// roots and the HLS session resources -- goes to relay-go, which is where
++// nginx sends it in production (docker/nginx.conf: ^~ /proxy/ts/stream/,
++// ^~ /hls/, ^~ /live/ and the XC three-segment regex). With no nginx there is
++// no auth_request hop, and the relay asks Django itself
++// (relay/httpapi/authorize.go, the dev fallback), so nothing here authorizes
++// anything.
 +//
 +// ORDER IS LOAD-BEARING. vite tries the keys in insertion order and takes the
 +// first that matches; a key starting with ^ is a RegExp tested against the
 +// request URL WITH its query string. The XC regex also matches three-segment
 +// /api/ and /ws/ paths ending in a number, which nginx settles by preferring
-+// ^~ prefixes over regexes, so here it is listed last.
++// ^~ prefixes over regexes, so here it is listed last. The two prefixes keep
++// nginx's trailing slash (^~ /api/, ^~ /ws/): without it an XC username
++// starting with "api" or "ws" (/wsmith/pass/123.ts) would match them first.
 +
-+// Mirrors docker/init/03-init-dispatcharr.sh: a missing or non-integer
-+// DISPATCHARR_RELAY_GO_PORT means the relay's own default.
++// A missing or non-integer DISPATCHARR_RELAY_GO_PORT means 5658, as
++// docker/init/03-init-dispatcharr.sh does for nginx's upstream. relay-go
++// itself refuses to start on a non-integer value (relay/config/config.go).
 +export const relayGoPort = (env) => {
 +  const raw = env.DISPATCHARR_RELAY_GO_PORT;
 +  return raw && /^\d+$/.test(raw) ? raw : '5658';
@@ -454,12 +475,12 @@ index 00000000..8e72984f
 +    secure: false,
 +  });
 +  return {
-+    '/api': {
++    '/api/': {
 +      target: 'http://127.0.0.1:5656',
 +      changeOrigin: true,
 +      secure: false,
 +    },
-+    '/ws': {
++    '/ws/': {
 +      target: 'http://127.0.0.1:8001',
 +      changeOrigin: true,
 +      secure: false,
@@ -473,10 +494,10 @@ index 00000000..8e72984f
 +};
 diff --git a/frontend/src/__tests__/devProxy.test.js b/frontend/src/__tests__/devProxy.test.js
 new file mode 100644
-index 00000000..a11134ee
+index 00000000..56eaeef4
 --- /dev/null
 +++ b/frontend/src/__tests__/devProxy.test.js
-@@ -0,0 +1,95 @@
+@@ -0,0 +1,99 @@
 +// @vitest-environment node
 +/* global process */
 +import { readFileSync } from 'node:fs';
@@ -518,19 +539,21 @@ index 00000000..a11134ee
 +    ['/user/pass/123', XC_LIVE_ROOT],
 +    ['/user/pass/123.ts', XC_LIVE_ROOT],
 +    ['/user/pass/123.m3u8?token=x', XC_LIVE_ROOT],
++    ['/wsmith/pass/123.ts', XC_LIVE_ROOT],
++    ['/apiuser/pass/123.ts', XC_LIVE_ROOT],
 +  ])('sends %s to relay-go', (url, key) => {
 +    expect(routeOf(table, url), `${url} matched the wrong key`).toBe(key);
 +    expect(table[key].target, `${key} does not point at relay-go`).toBe(RELAY);
 +  });
 +
 +  it.each([
-+    ['/api/channels/5', '/api'],
-+    ['/api/channels/recordings/4/hls/index.m3u8', '/api'],
-+    ['/ws/x/5', '/ws'],
++    ['/api/channels/5', '/api/'],
++    ['/api/channels/recordings/4/hls/index.m3u8', '/api/'],
++    ['/ws/x/5', '/ws/'],
 +  ])('keeps %s on its own backend, not the XC root', (url, key) => {
 +    expect(
 +      routeOf(table, url),
-+      `${url} is routed by the XC regex: it must come after /api and /ws`
++      `${url} left its own backend: the XC regex must come after /api/ and /ws/`
 +    ).toBe(key);
 +  });
 +
@@ -541,6 +564,8 @@ index 00000000..a11134ee
 +    '/plugins/browse',
 +    '/src/pages/Guide.jsx',
 +    '/node_modules/.vite/deps/react.js?v=1234',
++    '/@vite/client',
++    '/@fs/app/frontend/src/main.jsx',
 +    '/proxy/ts/status',
 +    '/proxy/vod/movie/1',
 +  ])('leaves %s to vite', (url) => {
