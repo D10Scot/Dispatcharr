@@ -11,6 +11,7 @@ dependencies = [
     "celery[redis]==5.6.3",
     "djangorestframework==3.17.1",
     "requests==2.34.2",
+    "urllib3>=2.8.0", # CVE-2026-97687 / CVE-2026-97689, fixed in 2.8.0
     "psutil==7.2.2",
     "pillow",
     "drf-spectacular>=0.30.0",
@@ -24,6 +25,7 @@ dependencies = [
     "supervisor==4.3.0", # process supervisor (D2); pin exactly, a version swap changes supervision for every deployment
     "django-cors-headers",
     "djangorestframework-simplejwt",
+    "pyjwt>=2.14.0", # GHSA-ffc3-869f-jxw9 and five High advisories, fixed in 2.14.0
     "m3u8",
     "rapidfuzz==3.14.5",
     "regex",
