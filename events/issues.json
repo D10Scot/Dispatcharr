@@ -1,8 +1,488 @@
 {
  "detail": null,
- "fetched_at": "2026-09-30T12:01:00+00:00",
+ "fetched_at": "2026-10-01T12:33:15+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T21:32:35Z",
+   "id": 576,
+   "label_events": [
+    {
+     "at": "2026-09-30T21:32:36Z",
+     "event": "labeled",
+     "label": "enhancement"
+    },
+    {
+     "at": "2026-09-30T21:32:36Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T21:32:36Z",
+     "event": "labeled",
+     "label": "type:security"
+    }
+   ],
+   "labels": [
+    "enhancement",
+    "needs-triage",
+    "type:security"
+   ],
+   "state": "open",
+   "title": "vuln-scan: Trivy and OSV-Scanner have no dated accepted-risk mechanism (Grype only)",
+   "updated_at": "2026-09-30T21:32:35Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T21:32:33Z",
+   "id": 575,
+   "label_events": [
+    {
+     "at": "2026-09-30T21:32:35Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T21:32:35Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T21:32:35Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "CI: a uv.lock-only PR runs no backend tests on the new dependencies",
+   "updated_at": "2026-09-30T21:32:33Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:55:29Z",
+   "id": 574,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:55:31Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T20:55:31Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T20:55:31Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "Stale HLS test comments: ReadyWait bounded by /hls/'s 60 s timeout, and parity rows 33/36 cite shifted pipeline.go lines",
+   "updated_at": "2026-09-30T20:55:29Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:55:27Z",
+   "id": 573,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:55:29Z",
+     "event": "labeled",
+     "label": "enhancement"
+    },
+    {
+     "at": "2026-09-30T20:55:29Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T20:55:29Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "enhancement",
+    "needs-triage",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "Run more HLS E2E specs on the FFmpeg stream profile, not only Proxy at rate 1",
+   "updated_at": "2026-09-30T20:55:27Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:55:26Z",
+   "id": 572,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:55:27Z",
+     "event": "labeled",
+     "label": "enhancement"
+    },
+    {
+     "at": "2026-09-30T20:55:27Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T20:55:27Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "enhancement",
+    "needs-triage",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "make-asset.sh pins r_frame_rate but not avg_frame_rate, and no fixture is PAFF, so E2E cannot catch a #553-style mismatch",
+   "updated_at": "2026-09-30T20:55:26Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:55:24Z",
+   "id": 571,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:55:26Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T20:55:26Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T20:55:26Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "M3U uploads are stored by basename (accounts can share one file) and update() deletes the old file before validation",
+   "updated_at": "2026-09-30T20:55:24Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:55:22Z",
+   "id": 570,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:55:23Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T20:55:23Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T20:55:24Z",
+     "event": "labeled",
+     "label": "type:security"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "type:security"
+   ],
+   "state": "open",
+   "title": "redact_url and relay/redact.Line leak userinfo containing an unencoded '/'",
+   "updated_at": "2026-09-30T20:55:22Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:55:21Z",
+   "id": 569,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:55:22Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T20:55:22Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T20:55:23Z",
+     "event": "labeled",
+     "label": "type:security"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "type:security"
+   ],
+   "state": "open",
+   "title": "The fork still names upstream's images: Dockerfile defaults REPO_OWNER=dispatcharr and README pulls ghcr.io/dispatcharr",
+   "updated_at": "2026-09-30T20:55:21Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:55:19Z",
+   "id": 568,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:55:20Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T20:55:20Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T20:55:21Z",
+     "event": "labeled",
+     "label": "type:reliability"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "type:reliability"
+   ],
+   "state": "open",
+   "title": "Backup download and status views answer an unauthenticated non-ASCII token with a 500 (compare_digest TypeError outside try)",
+   "updated_at": "2026-09-30T20:55:19Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:55:17Z",
+   "id": 567,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:55:19Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T20:55:19Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-09-30T20:55:20Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage",
+    "type:correctness"
+   ],
+   "state": "open",
+   "title": "get_transformed_credentials returns a profile-transformed server URL unvalidated, so a scheme-stripping pattern yields a scheme-less server_url",
+   "updated_at": "2026-09-30T20:55:17Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T20:51:22Z",
+   "id": 566,
+   "label_events": [
+    {
+     "at": "2026-09-30T20:51:23Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T20:51:24Z",
+     "event": "labeled",
+     "label": "type:test-gap"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:test-gap"
+   ],
+   "state": "open",
+   "title": "relay/httpapi: two session-timing tests flake under load (registry released before settle; departure on its own goroutine)",
+   "updated_at": "2026-09-30T20:51:22Z"
+  },
+  {
+   "closed_at": "2026-09-30T21:05:23Z",
+   "created_at": "2026-09-30T15:57:12Z",
+   "id": 560,
+   "label_events": [
+    {
+     "at": "2026-09-30T15:57:13Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T15:57:14Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "type:correctness"
+   ],
+   "state": "closed",
+   "title": "HLS entry answers 502 on a cold channel whose first chunk takes longer than 3 s (every cold tune on the default FFmpeg profile)",
+   "updated_at": "2026-09-30T21:05:23Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-09-30T15:21:53Z",
+   "id": 558,
+   "label_events": [
+    {
+     "at": "2026-09-30T15:21:55Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T15:21:55Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Dev compose runs no relay-go: the :base image carries no relay-go binary",
+   "updated_at": "2026-09-30T15:21:53Z"
+  },
+  {
+   "closed_at": "2026-09-30T17:59:55Z",
+   "created_at": "2026-09-30T15:07:21Z",
+   "id": 556,
+   "label_events": [
+    {
+     "at": "2026-09-30T15:07:23Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T15:07:23Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-09-30T15:07:24Z",
+     "event": "labeled",
+     "label": "type:correctness"
+    }
+   ],
+   "labels": [
+    "bug",
+    "ready-for-agent",
+    "type:correctness"
+   ],
+   "state": "closed",
+   "title": "M3U re-upload with the same filename deletes the file just uploaded",
+   "updated_at": "2026-09-30T17:59:55Z"
+  },
+  {
+   "closed_at": "2026-09-30T20:08:36Z",
+   "created_at": "2026-09-30T15:07:19Z",
+   "id": 555,
+   "label_events": [
+    {
+     "at": "2026-09-30T15:07:21Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T15:07:21Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-09-30T15:07:21Z",
+     "event": "labeled",
+     "label": "type:security"
+    }
+   ],
+   "labels": [
+    "bug",
+    "ready-for-agent",
+    "type:security"
+   ],
+   "state": "closed",
+   "title": "SSRF validator strict mode admits non-global ranges such as 100.64.0.0/10",
+   "updated_at": "2026-09-30T20:08:36Z"
+  },
+  {
+   "closed_at": "2026-09-30T20:31:03Z",
+   "created_at": "2026-09-30T15:07:17Z",
+   "id": 554,
+   "label_events": [
+    {
+     "at": "2026-09-30T15:07:18Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-09-30T15:07:19Z",
+     "event": "labeled",
+     "label": "ready-for-agent"
+    },
+    {
+     "at": "2026-09-30T15:07:19Z",
+     "event": "labeled",
+     "label": "type:security"
+    }
+   ],
+   "labels": [
+    "bug",
+    "ready-for-agent",
+    "type:security"
+   ],
+   "state": "closed",
+   "title": "timeshift _redact_url leaks a password tail when userinfo contains a literal @",
+   "updated_at": "2026-09-30T20:31:03Z"
+  },
+  {
+   "closed_at": "2026-09-30T17:20:24Z",
+   "created_at": "2026-09-30T14:39:01Z",
+   "id": 553,
+   "label_events": [
+    {
+     "at": "2026-09-30T14:39:03Z",
+     "event": "labeled",
+     "label": "needs-info"
+    }
+   ],
+   "labels": [
+    "needs-info"
+   ],
+   "state": "closed",
+   "title": "HLS re-encode: an interlaced source reporting r_frame_rate 50/1 is output at 60p, not 50p",
+   "updated_at": "2026-09-30T17:20:24Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-29T18:31:55Z",
@@ -19,7 +499,7 @@
    ],
    "state": "open",
    "title": "Base image: ffmpeg 9.0 CVE-2026-75146/75142 (High) \u2014 accepted until a patched linuxserver build ships",
-   "updated_at": "2026-09-29T18:31:55Z"
+   "updated_at": "2026-09-30T14:28:23Z"
   },
   {
    "closed_at": null,
@@ -40,7 +520,7 @@
    "updated_at": "2026-09-29T00:46:21Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T17:44:51Z",
    "created_at": "2026-09-29T00:13:29Z",
    "id": 542,
    "label_events": [
@@ -53,9 +533,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "Dev mode (vite, no nginx) plays no live stream since stage 2d-3",
-   "updated_at": "2026-09-29T00:13:29Z"
+   "updated_at": "2026-09-30T17:44:51Z"
   },
   {
    "closed_at": "2026-09-28T22:53:54Z",
@@ -76,7 +556,7 @@
    "updated_at": "2026-09-28T22:53:54Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:38Z",
    "created_at": "2026-09-28T17:51:01Z",
    "id": 534,
    "label_events": [
@@ -95,12 +575,12 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/backups/api_views.py:194)",
-   "updated_at": "2026-09-28T17:51:01Z"
+   "updated_at": "2026-09-30T15:19:38Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:36Z",
    "created_at": "2026-09-28T17:50:58Z",
    "id": 533,
    "label_events": [
@@ -119,12 +599,12 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/backups/api_views.py:191)",
-   "updated_at": "2026-09-28T17:50:58Z"
+   "updated_at": "2026-09-30T15:19:36Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:34Z",
    "created_at": "2026-09-28T17:50:55Z",
    "id": 532,
    "label_events": [
@@ -143,12 +623,12 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/backups/api_views.py:191)",
-   "updated_at": "2026-09-28T17:50:55Z"
+   "updated_at": "2026-09-30T15:19:34Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:31Z",
    "created_at": "2026-09-28T17:50:53Z",
    "id": 531,
    "label_events": [
@@ -167,12 +647,12 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/backups/api_views.py:185)",
-   "updated_at": "2026-09-28T17:50:53Z"
+   "updated_at": "2026-09-30T15:19:31Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:28Z",
    "created_at": "2026-09-28T17:50:50Z",
    "id": 530,
    "label_events": [
@@ -191,9 +671,9 @@
     "needs-triage",
     "priority:p1"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/full-ssrf: Full server-side request forgery (core/http_security.py:237)",
-   "updated_at": "2026-09-28T17:50:50Z"
+   "updated_at": "2026-09-30T15:19:28Z"
   },
   {
    "closed_at": null,
@@ -1976,7 +2456,7 @@
    "updated_at": "2026-09-23T22:17:59Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:26Z",
    "created_at": "2026-09-21T16:03:16Z",
    "id": 340,
    "label_events": [
@@ -2001,12 +2481,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/backups/api_views.py:214)",
-   "updated_at": "2026-09-23T19:40:27Z"
+   "updated_at": "2026-09-30T15:19:26Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:23Z",
    "created_at": "2026-09-21T16:03:14Z",
    "id": 339,
    "label_events": [
@@ -2031,12 +2511,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/backups/api_views.py:140)",
-   "updated_at": "2026-09-23T19:40:25Z"
+   "updated_at": "2026-09-30T15:19:23Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:21Z",
    "created_at": "2026-09-21T16:03:11Z",
    "id": 338,
    "label_events": [
@@ -2061,12 +2541,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/m3u/api_views.py:168)",
-   "updated_at": "2026-09-23T19:40:23Z"
+   "updated_at": "2026-09-30T15:19:21Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:18Z",
    "created_at": "2026-09-21T16:03:09Z",
    "id": 337,
    "label_events": [
@@ -2091,9 +2571,9 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/m3u/api_views.py:103)",
-   "updated_at": "2026-09-23T19:40:22Z"
+   "updated_at": "2026-09-30T15:19:18Z"
   },
   {
    "closed_at": "2026-09-25T02:24:19Z",
@@ -2414,7 +2894,7 @@
    "updated_at": "2026-09-22T19:55:54Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:16Z",
    "created_at": "2026-09-14T16:01:35Z",
    "id": 293,
    "label_events": [
@@ -2439,12 +2919,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3264)",
-   "updated_at": "2026-09-23T19:40:08Z"
+   "updated_at": "2026-09-30T15:19:16Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:41Z",
    "created_at": "2026-09-14T16:01:33Z",
    "id": 292,
    "label_events": [
@@ -2469,12 +2949,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3263)",
-   "updated_at": "2026-09-23T19:40:06Z"
+   "updated_at": "2026-09-30T15:19:41Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:13Z",
    "created_at": "2026-09-14T16:01:30Z",
    "id": 291,
    "label_events": [
@@ -2499,12 +2979,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3228)",
-   "updated_at": "2026-09-23T19:40:05Z"
+   "updated_at": "2026-09-30T15:19:14Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:11Z",
    "created_at": "2026-09-14T16:01:28Z",
    "id": 290,
    "label_events": [
@@ -2529,12 +3009,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3227)",
-   "updated_at": "2026-09-23T19:40:03Z"
+   "updated_at": "2026-09-30T15:19:11Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T20:31:04Z",
    "created_at": "2026-09-14T16:01:25Z",
    "id": 289,
    "label_events": [
@@ -2559,9 +3039,9 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3214)",
-   "updated_at": "2026-09-23T19:40:01Z"
+   "updated_at": "2026-09-30T20:31:04Z"
   },
   {
    "closed_at": null,
@@ -3793,7 +4273,7 @@
    "updated_at": "2026-09-23T19:39:27Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T20:31:03Z",
    "created_at": "2026-09-07T15:21:32Z",
    "id": 207,
    "label_events": [
@@ -3818,12 +4298,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (apps/timeshift/views.py:3207)",
-   "updated_at": "2026-09-23T19:39:25Z"
+   "updated_at": "2026-09-30T20:31:04Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:09Z",
    "created_at": "2026-09-07T15:21:30Z",
    "id": 206,
    "label_events": [
@@ -3848,9 +4328,9 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] py/clear-text-logging-sensitive-data: Clear-text logging of sensitive information (dispatcharr/utils.py:330)",
-   "updated_at": "2026-09-23T19:39:24Z"
+   "updated_at": "2026-09-30T15:19:09Z"
   },
   {
    "closed_at": "2026-09-25T00:49:37Z",
@@ -3901,7 +4381,7 @@
    "updated_at": "2026-09-25T00:49:36Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:06Z",
    "created_at": "2026-09-07T15:21:22Z",
    "id": 203,
    "label_events": [
@@ -3926,9 +4406,9 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] js/incomplete-url-substring-sanitization: Incomplete URL substring sanitization (frontend/src/components/__tests__/PluginDetailPanel.test.jsx:351)",
-   "updated_at": "2026-09-23T19:39:22Z"
+   "updated_at": "2026-09-30T15:19:06Z"
   },
   {
    "closed_at": "2026-09-25T11:40:32Z",
@@ -4577,7 +5057,7 @@
    "updated_at": "2026-09-25T05:42:28Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:31:46Z",
    "created_at": "2026-09-04T20:28:37Z",
    "id": 166,
    "label_events": [
@@ -4606,9 +5086,9 @@
     "ready-for-agent",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "hooks: start-test-container.sh defaults to upstream's image, breaks Redis on the read-only mount, and hangs when backgrounded",
-   "updated_at": "2026-09-23T19:39:12Z"
+   "updated_at": "2026-09-30T15:31:46Z"
   },
   {
    "closed_at": "2026-09-24T18:37:50Z",
@@ -5322,7 +5802,7 @@
    "updated_at": "2026-09-23T19:39:01Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:04Z",
    "created_at": "2026-08-31T17:16:37Z",
    "id": 107,
    "label_events": [
@@ -5347,12 +5827,12 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] js/incomplete-url-substring-sanitization: Incomplete URL substring sanitization (frontend/src/components/__tests__/PluginDetailPanel.test.jsx:305)",
-   "updated_at": "2026-09-23T19:39:00Z"
+   "updated_at": "2026-09-30T15:19:04Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-09-30T15:19:02Z",
    "created_at": "2026-08-31T17:16:34Z",
    "id": 106,
    "label_events": [
@@ -5377,9 +5857,9 @@
     "priority:p1",
     "re-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "[codeql] js/incomplete-url-substring-sanitization: Incomplete URL substring sanitization (frontend/src/components/__tests__/PluginDetailPanel.test.jsx:293)",
-   "updated_at": "2026-09-23T19:38:58Z"
+   "updated_at": "2026-09-30T15:19:02Z"
   },
   {
    "closed_at": "2026-09-24T23:39:34Z",
