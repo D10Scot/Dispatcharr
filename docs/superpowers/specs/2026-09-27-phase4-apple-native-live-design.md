@@ -210,7 +210,7 @@ exports `LIBVA_DRIVERS_PATH`. The compose files carry `/dev/dri` only as a comme
 | **D1** | **Seven PRs.** 4a-0 (e2e-upstream fixtures). 4a-1a (the packager, inert). 4a-1b (sessions, routes, surfaces: live HLS works end to end, with an explicit session leave). 4a-1c (slot reclaim: a blocked tune takes back a channel nobody is watching). 4a-1d (the *automatic* HLS profile). 4a-2 (browser player). 4a-3 (the rewind window, linger, and lingering windows in the reclaim set). Branches are `migration/phase4-*`, so the full E2E and lifecycle matrix runs on every one (CLAUDE.md § Full E2E runs). The stopping points are after 4a-1c, 4a-1d, 4a-2 and 4a-3. | 4a-0 has its own package, version and guard, and every later PR's E2E depends on it (finding 18). The packager can land inert and be reviewed on its own evidence. 4a-1c follows 4a-1b directly, because an HLS session that nobody ends explicitly would otherwise hold a provider slot for its idle timeout, which is a zap regression against TS (§ Presence). 4a-1d is separable because the default (transcode) needs no schema. The window's slot yield uses 4a-1c's mechanism, so it needs no PR of its own. |
 | **D2** | **HLS is an output format, not a new authorised route.** `hls` joins the resolved formats. `_FORMAT_ALIASES` gains `"hls": "hls"` and `"m3u8": "hls"`. `xcForcedFormat` maps `.m3u8` to `hls`. Any live tune URL whose resolved format is `hls` (`/proxy/ts/stream/<id>?output_format=hls`, `/live/<u>/<p>/<id>.m3u8`, `/<u>/<p>/<id>.m3u8`) is answered **200 with the multivariant playlist**. `hls` is **not** offered as `default_output_format` or as a user's `output_format` (accepted, R23). | The authorize hop, its nginx locations, the XC credential check, the stream limit and every channel check apply unchanged, with no new Django urlconf entry for `_surface_for` to learn. A deployment-wide default of `hls` would turn every byte-stream URL (HDHomeRun, Plex, TS apps) into a playlist. |
 | **D3** | **Everything after the entry lives under a token-authorised root, `/hls/`, and runs no authorize hop.** URL layout: `/hls/<token>/<rendition>.m3u8` (media playlist), `/hls/<token>/<rendition>/init-<gen>.mp4`, `/hls/<token>/<rendition>/<seq>.m4s`, and `DELETE /hls/<token>` (leave, D5). nginx gets `location ^~ /hls/` with `include dispatcharr_api_params_proxy.conf`, `proxy_buffering off`, `proxy_http_version 1.1`, `proxy_connect_timeout 60s` and `proxy_pass http://relay_go`. There is no `auth_request` and no `internal;`. The multivariant references media playlists by **absolute path**, and media playlists reference init and media segments **relatively**. | R13: Django is not asked per segment. Absolute-path URIs need no `Host` or scheme reconstruction, so the six server-level `proxy_set_header` lines need not be re-declared, for the same reason `^~ /proxy/relay/` omits them. Buffering is off because a segment runs to megabytes and buffering it would spool to disk. One cost, recorded: a bare three-segment XC request from a user literally named `hls` now reaches this location. That is the same class of collision the `live`, `movie`, `series` and `timeshift` prefixes already impose, and the `/live/…` form still works for that user. |
-| **D4** | **An opaque media-session token** (§ The media-session token; R22): `v1.<session id>.<MAC>`, where the session id is 128 random bits. The relay mints and verifies it. The channel, client id, user and HLS profile live in the relay's **session table**, never in the token. It is valid exactly while its session is: MAC verifies, **and** the session id is in the table, **and** the session has not ended. A session ends on an explicit leave, on an admin stop or stream-limit termination, on idle departure plus the resume window, or on relay restart. There is **no absolute expiry**, so a continuously watched session is never cut off. It is not bound to an IP address. | A channel UUID in the token would hand every Xtream user the anonymous live capability (finding 2; `authorize.py:77-84`), which Xtream surfaces never expose today. The relay needs the session table anyway, for presence (D5), so holding the claims there costs nothing, and every revocation is simply a table delete: no revoked set. The session id is distinct from the client id, because the client id appears in stats and events, and the token must not. The MAC rejects a forged id before any table lookup and keeps the check constant-time. There is no IP binding because AirPlay hands a URL to an Apple TV that fetches from a different address, and phones roam between access points. |
+| **D4** | **An opaque media-session token** (§ The media-session token; R22): `v1.<session id>.<MAC>`, where the session id is 128 random bits. The relay mints and verifies it. The channel, client id, user and HLS profile live in the relay's **session table**, never in the token. It is valid exactly while its session is: MAC verifies, **and** the session id is in the table, **and** the session has not ended. A session ends on an explicit leave, on an admin stop or stream-limit termination, on idle departure plus the resume window, or on relay restart. There is **no absolute expiry**, so a continuously watched session is never cut off. It is not bound to an IP address. | A channel UUID in the token would hand every Xtream user the anonymous live capability (finding 2; `authorize.py:77-84`), which Xtream surfaces never expose today. The relay needs the session table anyway, for presence (D5), so holding the claims there costs nothing, and every revocation is a table entry ending: a delete, or (since R114) a STOPPED mark that answers 410 until it expires. There is no revoked set. The session id is distinct from the client id, because the client id appears in stats and events, and the token must not. The MAC rejects a forged id before any table lookup and keeps the check constant-time. There is no IP binding because AirPlay hands a URL to an Apple TV that fetches from a different address, and phones roam between access points. |
 | **D5** | **An HLS viewer is a client in the channel's registry for exactly as long as its session is live.** It **arrives** when the multivariant is served (the `Attach` call, a `client_connect` event). It is **active** on every request carrying its token. It **leaves** when it calls `DELETE /hls/<token>` (the Mino app on zap and after the R11 countdown; the browser player on close or switch), or after the **idle timeout**, `max(12 s, 6 × TARGETDURATION)`, with no request in flight (§ Presence thresholds). Leaving emits `client_disconnect` with `duration` and `bytes_sent` and calls the release func. A departed (not left) session may **resume** within 300 s **if its channel is still running** (another viewer, or 4a-3's linger), with a new `client_connect`. When its channel stops, a session becomes **STOPPED**: every request on it gets 410 until it is forgotten 300 s after it stopped (§ Presence; R120 amends "its next request gets 410 and it is then removed"). `output_format` is `hls`, so `/proxy/relay/channels`, `/proxy/ts/status/` and the stats page show it without change. Admin stop, and stream-limit termination, end the session. | M7 measured AVPlayer reloading every target duration (2 s) even while paused, so an idle timeout of six target durations (at least 12 s) cannot mistake a paused viewer for a departed one. The explicit leave is what makes a zap as fast as TS's connection close (finding 1). The idle timeout covers only clients that never call it: third-party apps, a killed app, a closed tab. The per-user stream limit needs no change, because it counts the relay's client list, which now includes HLS sessions (§ Presence says what a limit-1 user gets on zap). |
 | **D6** | **The relay owns packaging.** One ffmpeg per (channel, HLS profile) reads the channel's ring on stdin. It writes **one fragmented-MP4 stream per rendition on its own file descriptor**: video on fd 1, stereo AAC on fd 3, AC-3 on fd 4, E-AC-3 on fd 5, each `-movflags frag_keyframe+delay_moov+default_base_moof`. A new package, `relay/hls`, parses the boxes (stdlib `encoding/binary`), cuts segments, stores them, and renders every playlist. The segmenter accumulates video fragments until the 2 s grid is reached, and checks that each segment's first sample is a sync sample; it does not cut at every fragment. **Rejected:** ffmpeg's own `-f hls` muxer, and one muxed audio-plus-video stream. | M4 shows the shape works, with 2.000 s segments on every rendition. `-f hls` writes files the relay would have to watch (no inotify in the stdlib) and playlists it would have to rewrite: for tokens, for D10's discontinuities across processes, and for 4a-3's on-disk window. A muxed stream cannot carry two alternative audio codecs as HLS renditions. `buffer.Fragments` is not reused, because it is a cursor stream for one long response, and HLS needs random access by media sequence across aligned renditions (`hls.Store`). The spawn helper gains `ExtraFiles` (stdlib `os/exec`); `start()` (`relay/ffmpeg/spawn.go:113-197`) keeps `Setpgid` and `Pdeathsig`. Accumulating to the grid guards against stray non-IDR keyframes the encoder may emit (Q1). |
 | **D7** | **Playlists** (§ Playlists, exact tags). There is one video rendition and one audio group per audio codec: `aac` always; `ac3` when the source carries AC-3 or E-AC-3; `eac3` when it carries E-AC-3. Each group gets its own `EXT-X-STREAM-INF` on the same video playlist. `CODECS` is read from each rendition's **init segment** (`avcC`, `hvcC`, `esds`, `dac3` and `dec3` boxes). `EXT-X-PROGRAM-DATE-TIME` is written on **every** segment, derived from the ring's **arrival time** of the generation's first chunk plus media time (the known drift is § Risks). `TARGETDURATION` is 2 (transcode), with `INDEPENDENT-SEGMENTS`, `VERSION:7`, a media sequence that continues across generations, and `DISCONTINUITY-SEQUENCE`. The live-edge playlist lists 10 segments. A media playlist request **waits** for its rendition's first segment, bounded by 43 s (R57, amends R56), then answers 503 with `Retry-After: 1`. The multivariant waits for every first-generation init segment, bounded by 58 s: the same 43 s plus the 15 s a cold channel's source gets to publish its first chunk (issue #560, R113). | Apple rules 2.3, 2.5-2.6, 7.4, 8.4, 8.11 and 9.11-9.12 (Appendix A). The 2 s target departs **deliberately** from Apple 7.5/7.6's 6 s target (a SHOULD): R8 prefers lower latency, and M4 measured about 7.3 s behind PDT at 2 s against about 24.5 s at 6 s. Codec strings read from init segments stay true in every mode, copy included. Arrival time rather than publish time keeps PDT honest while the encoder catches up the first generation's `JoinBehind` backlog. Holding a request until content exists is simpler for every player than an empty live playlist. |
@@ -338,7 +338,7 @@ marked, and every 410 it answers says so. The four bodies are fixed strings:
 |---|---|---|
 | `stream_limit` | `Table.EndClient` (`relay/session/table.go:336-353`), reached from the client-stop route with `?reason=stream_limit`, which only Django's `attempt_stream_termination` sends (§ Who ends sessions) | `{"error": "stream limit", "ended": "stream_limit"}` |
 | `admin_stop` | `Table.EndClient`, reached from the client-stop route with no `reason`, or any other value: the admin "stop client" action and every other caller | `{"error": "stopped by an administrator", "ended": "admin_stop"}` |
-| `channel_stopped` | `Table.StopChannel` and `Table.StopIfSilent`: an admin channel stop, a reclaim, the drain, the channel's run ending, or the manager's idle stop after the last client; and every 410 a failed resume answers (§ Resume never starts a channel) | `{"error": "channel stopped", "ended": "channel_stopped"}` |
+| `channel_stopped` | `Table.StopChannel` and `Table.StopIfSilent`: an admin channel stop, a reclaim, the drain, the channel's run ending, or the manager's idle stop after the last client; and a failed resume that finds no other reason recorded (§ Resume never starts a channel) | `{"error": "channel stopped", "ended": "channel_stopped"}` |
 | `output_failed` | `Table.StopPipeline`: the channel's HLS output failed (`watchHLS`, `relay/httpapi/hls.go:422-437`) | `{"error": "HLS output failed", "ended": "output_failed"}` |
 
 Both fields are kept (owner ruling R114): `error`, because every other JSON error body the relay
@@ -348,15 +348,29 @@ writes carries one, with the `channel_stopped` body keeping today's text, and `e
 `Gone` with the reason and leaves the entry, so a player fetching its video and audio playlists in
 parallel, and an app that re-reads a playlist URL itself to learn why playback stopped, all see the
 same 410 and the same reason. The entry is forgotten only by the existing expiry, 300 s after
-`stoppedAt` (`Sweep`, `relay/session/table.go:446-449`, and the same check applied lazily in
-`Begin`, `:270-276`); requests do not extend it. A `DELETE` still removes it at once with 204.
-Bounded memory is unchanged: the table already held every STOPPED session for up to 300 s when no
-request came. The reason is never overwritten: a session already
+`stoppedAt`: by the sweeper (`Sweep`, `relay/session/table.go:446-449`), or by `Begin` itself, which
+on a STOPPED session past that point deletes the entry and answers `Unknown`, as it does today
+(`:270-276`; pinned by `relay/session/table_test.go::TestAStoppedSessionUnrequestedPastTheWindowIsUnknownNotGone`).
+Requests do not extend it. A `DELETE` still removes it at once with 204.
+
+*Memory.* The table already held an unrequested STOPPED session for up to 300 s, so its bound is
+unchanged, but a requested one used to be freed by its first 410 and now lives the full 300 s. So
+the STOPPED mark sets the session's `Pipeline` to nil (the pipeline holds the store, up to 64 MiB):
+every read of `Session.Pipeline` is under the table's mutex (`Begin` at `relay/session/table.go:257`,
+`:260`, `:269`, and `StopPipeline`'s match at `:368`), `stopLocked` tests the state before it calls
+the match (`:387`), and neither `EndClient` nor `silentLocked` reads it, so a nil is safe; the
+field's comment moves from "immutable after Add" to "under Table.mu". The session's `Owner` (its
+`*Channel`) is **retained** for the 300 s, as a DEPARTED session's already is: a resume that took
+its lookup before the mark reads `lookup.Session.Owner` with no lock held
+(`relay/httpapi/hls.go:509`), so clearing it would be a data race.
+
+The reason is never overwritten: a session already
 STOPPED is skipped by every later stop (`stopLocked`, `relay/session/table.go:384-398`), so a client
 stop whose release then stops the channel leaves `stream_limit` or `admin_stop` in place. A failed
-resume always says `channel_stopped` on the request that tried it, including the narrow race where
-a pipeline failure marked the session between the resume's lookup and its commit: the app treats `channel_stopped` and
-`output_failed` alike (§ 4b), so the race changes nothing it does. The capability document
+resume answers with the reason the session then records, so consecutive 410s agree: if a stopper
+marked it first (a pipeline failure or a channel stop racing the resume), that stopper's reason;
+otherwise the `channel_stopped` the failed resume itself records; and `channel_stopped` when the
+session was removed meanwhile (a leave or an expiry), after which further requests are 403 anyway. The capability document
 advertises the field as `live_hls.end_reason: true` (§ 4b, R115).
 
 Rendition names are `video`, `aac`, `ac3` and `eac3`. The relay ignores every `X-Relay-*` and
@@ -816,8 +830,13 @@ Transcode mode always has TD = 2. *Automatic* mode may declare up to 6 (4a-1d). 
   the hop, which terminates the other device's session in turn.
 - **An ARRIVED session stopped by `EndClient`** has written no multivariant, so its player holds no
   token. Its entry request finds `Activate` false and answers 503 with `Retry-After: 1`, as it does
-  today for an ARRIVED session whose channel stopped (`relay/httpapi/hls.go:385-396`). The STOPPED
-  entry is never requested and the sweeper removes it after 300 s.
+  today for an ARRIVED session whose channel stopped (`relay/httpapi/hls.go:385-396`). Because no
+  token was ever handed out, nothing could ever be answered 410 on that entry, so on this path the
+  entry now removes its own session with `Abandon` (which returns no releases: `EndClient` took
+  them) rather than leaving a STOPPED entry for the sweeper. The table therefore holds exactly what
+  it held before R114, and
+  `relay/httpapi/hls_test.go::TestAnEntryWhoseClientIsStoppedWhileItWaitsIs503AndOwesItsDisconnect`'s
+  `Len() != 1` (`:1347`) holds unchanged.
 - **Activity** is any request carrying the session's token, **and** the entry request that created
   the session. A request counts from its arrival until its response is complete. So an entry
   waiting up to 58 s (R57, amends R56; #560) for the first init segments, or a media-playlist request long-polling for the
@@ -858,7 +877,10 @@ The resume sequence:
    DEPARTED, and answer **410**. *Amended by R120:* the entry stays STOPPED, with `channel_stopped`,
    and answers 410 on every later request until it is forgotten, where `ResumeFailed`
    (`relay/session/table.go:295-300`) used to remove it; the same holds when the resume fails to
-   re-attach its pipeline. A session a stopper already marked keeps that stopper's reason.
+   re-attach its pipeline. `ResumeFailed` marks the session **only if it is still DEPARTED**: a
+   session a stopper already marked keeps that stopper's reason, one a concurrent request resumed
+   (ACTIVE) is left alone, and an unknown sid is a no-op. It returns the reason the session now
+   records, which the request's 410 carries.
 3. On success, re-take `st.mu` and confirm the session is **still DEPARTED**. If it became STOPPED
    or was removed in the meantime (its channel stopped between step 1 and step 2), release `st.mu`,
    call the new attachment's release func at once, and answer **410**. Otherwise move it to ACTIVE,
@@ -942,7 +964,8 @@ table says is STOPPED never holds a client entry.
   - departs ACTIVE sessions that have gone idle, running each departure's event and releases on a
     goroutine of its own (R51);
   - removes DEPARTED sessions past 300 s;
-  - removes STOPPED sessions left unrequested for 300 s.
+  - removes STOPPED sessions 300 s after they stopped, requested or not (R120; until then a request
+    removed one sooner).
 - Lookups apply the same expiry lazily, so a request never sees a state the sweeper has not yet
   caught up with.
 - The sweeper outlives every pipeline and channel. The table is therefore bounded by the sessions
@@ -1377,10 +1400,13 @@ infer more than is there:
   uses `depth_seconds` only to scale its bar; `depth_seconds` 0 means rewind is off.
 - **A paused session is never ended by the server.** A paused AVPlayer keeps reloading the media
   playlist (M7), so its session stays ACTIVE and keeps its provider slot and its place in the stream
-  limit for as long as the app stays paused. Once the paused playhead is older than the window (at
-  depth 0, older than the live-edge playlist's 10 segments, 20 s at a target of 2), its segments
-  answer 404 (§ Session resources). The app sends the leave at that point and stops; resuming then
-  re-tunes at the live edge.
+  limit for as long as the app stays paused. The app leaves when the paused playhead falls out of
+  the playlist's seekable range (the window, or at depth 0 the live-edge playlist's 10 segments,
+  20 s at a target of 2): it sends the leave and stops, and resuming re-tunes at the live edge. The
+  server's 404 comes later and is not the signal: a segment stays fetchable after leaving the
+  playlist, for as long as the in-memory store holds it (`StoreSegments` = 21,
+  `relay/hls/store.go:25`, about 42 s at a target of 2 and longer at a target of 6) and, with the
+  window on, for a further 22 s at a target of 2 after leaving the window (R83).
 - **End reasons** are in the 410's body only (R114, R115). AVPlayer reports a status code, not a
   body, so an app that wants the reason reads the response itself, for example by re-requesting
   the media playlist URL it was playing: the session answers the same 410 and reason for 300 s
@@ -2005,12 +2031,19 @@ merge before the app repository's milestone 4 review, which builds against it.
     `Departure` (§ Who ends sessions). `StopChannel` and `StopIfSilent` mark `channel_stopped`,
     `StopPipeline` `output_failed`. `Begin`'s `Gone` lookup carries the reason and **no longer
     deletes the entry** (R120): a STOPPED session answers `Gone` until the existing 300 s expiry
-    (`Sweep` and `Begin`'s lazy check, both on `stoppedAt`). `ResumeFailed` marks the session
-    STOPPED with `channel_stopped`, unless a stopper already marked it, instead of deleting it.
-    `stopLocked` still skips a STOPPED session, so the first reason stands.
+    (`Sweep` and `Begin`'s lazy check, both on `stoppedAt`, the latter still deleting the entry).
+    `ResumeFailed` marks the session STOPPED with `channel_stopped` **only if it is still
+    DEPARTED**, instead of deleting it, and returns the reason the session then records;
+    `ResumeCommit`'s refusal likewise reports the recorded reason (§ Resume never starts a
+    channel). Every STOPPED mark sets `Pipeline` to nil (§ Session resources, *Memory*).
+    `stopLocked` still skips a STOPPED session, so the first reason stands. The comments that
+    describe "one 410" are corrected: `relay/session/doc.go:14` ("answering one 410 after a
+    stop"), `relay/session/table.go:27-28` (the `Stopped` state) and `relay/session/table.go:199`
+    (the `Gone` outcome, "and it is removed").
   - `relay/httpapi`: `ClientHandler` reads `reason` from the query string and passes it to
-    `EndClient`; the 410 sites write the reason's body, and every failed resume writes the
-    `channel_stopped` body (`relay/httpapi/hls.go:65`, `:470-471`, `:512`, `:522`, `:540`, `:548`).
+    `EndClient`; the 410 sites write the body of the reason the session records, a failed resume
+    included (`relay/httpapi/hls.go:65`, `:470-471`, `:512`, `:522`, `:540`, `:548`). The entry's
+    `Activate`-false path (`:392-395`) removes its own session with `Abandon` (§ Session states).
   - Django: `relay_client.stop_client(identifier, client_id, *, timeout=…, reason=None)`, and
     `attempt_stream_termination` passing `reason="stream_limit"` (§ Who ends sessions).
     `relay_client.py` is a Gate 2 module, so its new lines are covered and
@@ -2028,6 +2061,18 @@ merge before the app repository's milestone 4 review, which builds against it.
     client-stopped session is STOPPED and still lingers; row 52's "removes its session" becomes
     "ends its session". Their pins gain the new tests below. No new row, so `HIGHEST_ROW_ID` does
     not move.
+  - `e2e/COVERAGE.md:213`: "a client stopped through `/proxy/ts/stop_client/` are refused 403; a
+    session on a stopped channel is refused 410 once and 403 after" becomes the client stop's 410
+    with `admin_stop` and "410 with its reason until it is forgotten", in the same PR as the E2E
+    change.
+  - **The Go coverage floor (D20, R21).** 4b-0 changes linked packages (`relay/session`,
+    `relay/httpapi`), so it runs the ≥12-round CI census. If `scripts/coverage_relay_go.floor`'s
+    `missing` rises, the PR body lists the uncovered statements of its new or changed code per
+    file, shows ≥ 85% statement coverage on its additions from that census, and the floor declares
+    `raise_from=<base missing>` and `raise_listed=<listed total>`, which
+    `scripts/check_floor_raise.sh` checks; a draw above the floor that the listing does not explain
+    gets its own re-measurement PR. If `missing` does not rise, the PR body says so and the floor is
+    untouched.
   - No frontend change. The browser player already handles a 410 from `/hls/` without re-entering
     and shows "The channel stopped, or this idle session was ended."
     (`frontend/src/components/FloatingVideo.jsx:689-712`,
@@ -2042,37 +2087,54 @@ merge before the app repository's milestone 4 review, which builds against it.
     was given; `Begin` is `Gone` with that reason on repeated calls, with an injected clock, until
     300 s after `stoppedAt`, and `Unknown` after it; and a later `StopChannel` on the same channel
     leaves the reason unchanged.
-  - Go unit: a failed resume (`ResumeFailed`) leaves the session STOPPED with `channel_stopped`,
-    and a session a stopper marked first keeps that stopper's reason.
+  - Go unit: a failed resume (`ResumeFailed`) leaves a DEPARTED session STOPPED with
+    `channel_stopped` and returns it; a session a stopper marked first keeps, and returns, that
+    stopper's reason; an ACTIVE session is left ACTIVE; a STOPPED session's `Pipeline` is nil.
+  - Go (`relay/httpapi`): a resume that loses the race to a pipeline failure answers
+    `output_failed`, and the next GET agrees.
   - Go unit: `StopChannel`, `StopIfSilent` and `StopPipeline` each record their reason.
   - Go (`relay/httpapi`): a client stop with `?reason=stream_limit` gives a 410 with the
     `stream_limit` body on two successive GETs, and on a GET to a different rendition's playlist; with no reason, and with an unknown one, `admin_stop`; an admin
     channel stop gives `channel_stopped`; a failed HLS output gives `output_failed`.
   - Go (`relay/httpapi/rewind_test.go`): an admin client stop of the last session lingers its
     pipeline with no grace (R84 holds with the session STOPPED rather than removed).
-  - Python: `stop_client` with a reason signs and sends `?reason=stream_limit`, and without one
-    sends no query string; `attempt_stream_termination` passes `reason="stream_limit"`; the
+  - Python (`apps/proxy/tests/test_relay_client.py`): `stop_client` with a reason signs and sends
+    `?reason=stream_limit`, and without one sends no query string (the existing
+    `test_stop_client_encodes_both_segments` is unchanged); `attempt_stream_termination` passes `reason="stream_limit"`; the
     capability document carries `end_reason: true`.
   - E2E (`streaming`): the client-stop scenario asserts 410 with the `admin_stop` body on two
     successive GETs. The 403 after 300 s is pinned in Go with the injected clock, not waited out.
 - **Tests changed, before → after** (each pins the behaviour being changed):
   - `relay/session/table_test.go::TestEndClientEndsOnlyThatClientsLiveSession`: the ended
     session's next `Begin` is `Unknown` → `Gone` with the reason, and still `Gone` on the next call.
-  - `relay/session/table_test.go`'s STOPPED tests, wherever a second `Begin` on a STOPPED session
-    inside 300 s expects `Unknown` → `Gone` (R120); `Begin` after the 300 s expiry stays `Unknown`.
+  - `relay/session/table_test.go::TestAStoppedSessionIs410OnceThenForgotten`: the second `Begin`
+    (`:358-360`) is `Unknown` ("403 after the one 410") → `Gone`; the sweep and 301 s halves are
+    unchanged. Renamed `TestAStoppedSessionIs410UntilItIsForgotten`.
+  - `relay/session/table_test.go::TestEndAndResumeFailedOnAnUnknownSessionChangeNothing`: the
+    unknown-sid half is unchanged; `ResumeFailed` on the ACTIVE `keep` session (`:592-594`) leaves
+    `Len()` 0 → 1, because `ResumeFailed` now marks only a DEPARTED session.
   - `relay/httpapi/hls_test.go::TestAnAdminClientStopEndsAnHLSSession`: the stopped session's GET
     is 403 → 410 with the `admin_stop` body, twice.
   - `relay/httpapi/hls_test.go::TestAStoppedSessionIs410OnceThen403AndADeleteIs204`: the second GET
     is 403 → 410 with the same body, and the body `{"error": "channel stopped"}` →
     `{"error": "channel stopped", "ended": "channel_stopped"}`; the DELETE stays 204 and a GET after
     it is 403. The test is renamed `TestAStoppedSessionIs410UntilForgottenAndADeleteIs204`.
-  - `relay/httpapi/hls_test.go::TestAResumeNeverStartsAChannel` and
-    `relay/httpapi/reclaim_test.go::TestABlockedTuneReclaimsASilentHLSChannel`: the 410 body
-    `{"error": "channel stopped"}` → `{"error": "channel stopped", "ended": "channel_stopped"}`.
-  - Any resume test asserting that a failed resume leaves no table entry (row 41's pins, e.g.
-    `relay/httpapi/hls_test.go::TestAResumeThatLosesTheRaceToAStopReleasesItsAttachment`): no
-    entry → a STOPPED entry answering 410; "no client" is unchanged. The implementer lists each
-    one it touches, by name, before and after.
+  - `relay/httpapi/hls_test.go::TestAResumeNeverStartsAChannel`: the resume's 410 body (`:895`)
+    `{"error": "channel stopped"}` → `{"error": "channel stopped", "ended": "channel_stopped"}`,
+    and the next GET (`:901`) 403 → 410 with the same body.
+  - `relay/httpapi/hls_test.go::TestAFailedHLSOutputRefusesEntriesUntilTheNextBoundaryAndStartsNothingThere`:
+    the second GET after the failure (`:833-835`) 403 → 410 with the `output_failed` body.
+  - `relay/httpapi/reclaim_test.go::TestABlockedTuneReclaimsASilentHLSChannel`: the 410 body
+    (`:106`) gains `"ended": "channel_stopped"`.
+  - **Unchanged on purpose:**
+    `relay/httpapi/hls_test.go::TestAnEntryWhoseClientIsStoppedWhileItWaitsIs503AndOwesItsDisconnect`
+    keeps `Len() != 1` (`:1347`), because the entry abandons its own STOPPED session (§ Session
+    states); `relay/httpapi/hls_test.go::TestAResumeThatLosesTheRaceToAStopReleasesItsAttachment`
+    asserts only the 410 status and the client snapshot (`:937-947`), neither of which moves;
+    `relay/session/table_test.go::TestAStoppedSessionUnrequestedPastTheWindowIsUnknownNotGone`
+    keeps `Len() == 0`, because the lazy expiry still deletes.
+  - Backstop: any further test the implementer finds pinning "410 once" or a failed resume's
+    missing entry is listed by name, before and after, in the PR body.
   - `apps/proxy/tests/test_stream_limits.py::test_terminating_a_live_client_goes_through_the_relay`:
     `assert_called_once_with("abc", "c1")` → `("abc", "c1", reason="stream_limit")`.
   - `core/tests/test_mino_capabilities.py::test_answers_anonymously_with_the_documented_body`: the
@@ -2093,13 +2155,21 @@ merge before the app repository's milestone 4 review, which builds against it.
     `table_test.go` `EndClient` test reddens on `Unknown`, want `Gone`, and the `hls_test.go` admin
     stop test on 403, want 410.
   - Make `EndClient` discard the releases, as `stopLocked` does, instead of returning a
-    `Departure`. The R84 linger test reddens on a pipeline that stopped instead of lingering.
+    `Departure`. Nothing then releases the pipeline reference or the client entry
+    (`ch.StopClient` only closes a goroutine client's `stop`, `relay/channel/channel.go:293-308`, and
+    an HLS client has none), so the R84 linger test reddens on a pipeline that is **not lingering**
+    with its refcount still 1, and the admin-stop test on the HLS client **still listed** in the
+    channel's clients.
   - Restore the deletion in `Begin`'s STOPPED case (`delete(t.byID, sid)` before returning `Gone`,
     as at `relay/session/table.go:271`). The repeated-`Begin` unit test reddens on `Unknown`, want
     `Gone`, on its second call, and the `hls_test.go` stopped-session test on 403, want 410, on its
     second GET.
   - Restore `ResumeFailed`'s deletion. The failed-resume unit test reddens on `Unknown`, want
     `Gone` with `channel_stopped`.
+  - Make the resume's refused-commit path (`relay/httpapi/hls.go:548`) write the `channel_stopped`
+    body unconditionally. The race-to-a-failure test reddens on `channel_stopped`, want
+    `output_failed`, on the resume's own answer.
+  - Leave `Pipeline` set on the STOPPED mark. The nil-`Pipeline` unit test reddens.
   - Let `stopLocked` overwrite a STOPPED session's reason. The "a later `StopChannel` leaves the
     reason" unit test reddens on `channel_stopped`, want `stream_limit`.
   - Drop `reason="stream_limit"` from `attempt_stream_termination`'s call. The
@@ -2583,6 +2653,14 @@ Filled in as PRs merge.
   4a-1b test notes, § Testing and gates, § 4b-0). A failed resume now leaves a STOPPED entry rather
   than none. The browser player's handling of a repeated 410 is stated: the first disarms it and the
   rest are ignored.
+- **2026-10-03, review round 1 of the amendment** (reviewed at `0e42436e`; one blocking, five
+  should-fix, six nits). § 4b-0's changed-tests list names every test the amendment moves, and the
+  ones it deliberately does not; the entry's own STOPPED session is abandoned, not left for the
+  sweeper; a failed resume's 410 carries the reason the session records, and `ResumeFailed` marks
+  only a DEPARTED session; the STOPPED mark drops its pipeline reference and keeps its `Owner`; the
+  Go coverage floor, `e2e/COVERAGE.md` and the three source comments join 4b-0's scope; the
+  EndClient break-check predicts the right red; the sweeper and lazy-expiry wording, the paused
+  session's leave point and D4's revocation sentence are corrected.
 
 ## Appendix A — the owner's rulings (2026-09-26/27 and 2026-10-03), restated
 
