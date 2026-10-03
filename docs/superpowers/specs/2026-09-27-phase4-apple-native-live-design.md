@@ -832,11 +832,15 @@ Transcode mode always has TD = 2. *Automatic* mode may declare up to 6 (4a-1d). 
   token. Its entry request finds `Activate` false and answers 503 with `Retry-After: 1`, as it does
   today for an ARRIVED session whose channel stopped (`relay/httpapi/hls.go:385-396`). Because no
   token was ever handed out, nothing could ever be answered 410 on that entry, so on this path the
-  entry now removes its own session with `Abandon` (which returns no releases: `EndClient` took
-  them) rather than leaving a STOPPED entry for the sweeper. The table therefore holds exactly what
-  it held before R114, and
+  entry now removes its own session with `Abandon` (which returns no releases: the stopper took
+  them) rather than leaving a STOPPED entry for the sweeper. The path does not ask why `Activate`
+  failed, so it abandons in both cases: a session `EndClient` stopped, and an ARRIVED session whose
+  channel stopped. For the client stop the table holds what it held before R114, so
   `relay/httpapi/hls_test.go::TestAnEntryWhoseClientIsStoppedWhileItWaitsIs503AndOwesItsDisconnect`'s
-  `Len() != 1` (`:1347`) holds unchanged.
+  `Len() != 1` (`:1347`) holds unchanged. For the channel stop it now holds **less**: before R114
+  that session stayed STOPPED until the sweeper removed it. That is harmless, since it never had a
+  token, and `relay/httpapi/hls_test.go::TestAnEntryThatJoinsAStoppingChannelIsRefused` checks
+  only `Len() > 1`.
 - **Activity** is any request carrying the session's token, **and** the entry request that created
   the session. A request counts from its arrival until its response is complete. So an entry
   waiting up to 58 s (R57, amends R56; #560) for the first init segments, or a media-playlist request long-polling for the
@@ -2091,7 +2095,12 @@ merge before the app repository's milestone 4 review, which builds against it.
     `channel_stopped` and returns it; a session a stopper marked first keeps, and returns, that
     stopper's reason; an ACTIVE session is left ACTIVE; a STOPPED session's `Pipeline` is nil.
   - Go (`relay/httpapi`): a resume that loses the race to a pipeline failure answers
-    `output_failed`, and the next GET agrees.
+    `output_failed`, and the next GET agrees. The seam is the `afterResumeAttach` hook
+    (`relay/httpapi/hls.go:543`, between both attaches and `ResumeCommit`). The hook must not
+    return until the session is marked: it calls `StopPipeline` itself, or waits until `watchHLS`'s
+    asynchronous `StopPipeline` has marked the session. Otherwise the resume can reach
+    `AttachHLSExisting` on an already-failed pipeline and take the `:540` path rather than the
+    refused commit at `:548` it is meant to pin.
   - Go unit: `StopChannel`, `StopIfSilent` and `StopPipeline` each record their reason.
   - Go (`relay/httpapi`): a client stop with `?reason=stream_limit` gives a 410 with the
     `stream_limit` body on two successive GETs, and on a GET to a different rendition's playlist; with no reason, and with an unknown one, `admin_stop`; an admin
