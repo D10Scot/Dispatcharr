@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -19,6 +20,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/ffmpeg"
 	"github.com/D10Scot/Dispatcharr/relay/hls"
 	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
+	"github.com/D10Scot/Dispatcharr/relay/session"
 )
 
 // The HLS output's end-to-end tests at the relay's HTTP surface (Phase 4a-1b).
@@ -630,7 +632,10 @@ func TestALeaveEndsTheSessionAtOnceAndIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestAStoppedSessionIs410OnceThen403AndADeleteIs204(t *testing.T) {
+// adminStopBody is the 410 body of a session an admin client stop ended.
+const adminStopBody = `{"error": "stopped by an administrator", "ended": "admin_stop"}`
+
+func TestAStoppedSessionIs410UntilForgottenAndADeleteIs204(t *testing.T) {
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	a := r.session(t, "c-stopped", "client-a")
@@ -641,17 +646,20 @@ func TestAStoppedSessionIs410OnceThen403AndADeleteIs204(t *testing.T) {
 	}
 	stoppedAt := time.Now()
 	status, _, body := r.getHLS(t, a.path("video.m3u8"))
-	if status != http.StatusGone || string(body) != `{"error": "channel stopped"}` {
+	if status != http.StatusGone || string(body) != `{"error": "channel stopped", "ended": "channel_stopped"}` {
 		t.Fatalf("a GET on a stopped channel's session answered %d %q, want 410 and the body", status, body)
 	}
 	if time.Since(stoppedAt) > time.Second {
 		t.Errorf("the 410 took %v after the stop returned", time.Since(stoppedAt))
 	}
-	if status, _, _ := r.getHLS(t, a.path("video.m3u8")); status != http.StatusForbidden {
-		t.Errorf("the second GET answered %d, want 403", status)
+	if status, _, again := r.getHLS(t, a.path("video.m3u8")); status != http.StatusGone || string(again) != string(body) {
+		t.Errorf("the second GET answered %d %q, want 410 and the same body (R120)", status, again)
 	}
 	if status := r.leave(t, b.token); status != http.StatusNoContent {
 		t.Errorf("DELETE on a stopped session answered %d, want 204", status)
+	}
+	if status, _, _ := r.getHLS(t, b.path("video.m3u8")); status != http.StatusForbidden {
+		t.Errorf("a GET after the DELETE answered %d, want 403", status)
 	}
 }
 
@@ -669,8 +677,10 @@ func TestAnAdminClientStopEndsAnHLSSession(t *testing.T) {
 	if body := decodeObject(t, raw); body["locally_processed"] != true {
 		t.Errorf("locally_processed = %v, want true", body["locally_processed"])
 	}
-	if status, _, _ := r.getHLS(t, s.path("video.m3u8")); status != http.StatusForbidden {
-		t.Errorf("the stopped session's GET answered %d, want 403 (the client stop must end the session)", status)
+	for i := 0; i < 2; i++ {
+		if status, _, body := r.getHLS(t, s.path("video.m3u8")); status != http.StatusGone || string(body) != adminStopBody {
+			t.Errorf("the stopped session's GET %d answered %d %q, want 410 and the admin_stop body (the client stop must end the session)", i+1, status, body)
+		}
 	}
 	waitFor(t, "client_disconnect", 10*time.Second, func() bool {
 		for _, e := range r.eventsOf("client_disconnect") {
@@ -830,8 +840,8 @@ func TestAFailedHLSOutputRefusesEntriesUntilTheNextBoundaryAndStartsNothingThere
 		status, _, _ := r.getHLS(t, a.path("video.m3u8"))
 		return status == http.StatusGone
 	})
-	if status, _, _ := r.getHLS(t, a.path("video.m3u8")); status != http.StatusForbidden {
-		t.Errorf("the second GET after the stop answered %d, want 403", status)
+	if status, _, body := r.getHLS(t, a.path("video.m3u8")); status != http.StatusGone || string(body) != `{"error": "HLS output failed", "ended": "output_failed"}` {
+		t.Errorf("the second GET after the stop answered %d %q, want 410 and the output_failed body", status, body)
 	}
 
 	status, _, body := r.enter(t, "c-recover", "client-b")
@@ -892,14 +902,14 @@ func TestAResumeNeverStartsAChannel(t *testing.T) {
 	nextSourceCalls := len(r.Control.RequestsTo("/next-source"))
 
 	status, _, body := r.getHLS(t, a.path("video.m3u8"))
-	if status != http.StatusGone || string(body) != `{"error": "channel stopped"}` {
+	if status != http.StatusGone || string(body) != `{"error": "channel stopped", "ended": "channel_stopped"}` {
 		t.Fatalf("the resume answered %d %q, want 410", status, body)
 	}
 	if got := len(r.Control.RequestsTo("/next-source")); got != nextSourceCalls {
 		t.Fatalf("the resume made %d next-source calls, want none: it must never start a channel", got-nextSourceCalls)
 	}
-	if status, _, _ := r.getHLS(t, a.path("video.m3u8")); status != http.StatusForbidden {
-		t.Errorf("the session is still in the table after a failed resume (%d)", status)
+	if status, _, again := r.getHLS(t, a.path("video.m3u8")); status != http.StatusGone || string(again) != string(body) {
+		t.Errorf("the next GET after a failed resume answered %d %q, want 410 and the same body (R120)", status, again)
 	}
 	if r.Manager.Get("c-resume0") != nil {
 		t.Fatal("a channel is running again after the resume")
@@ -1419,5 +1429,100 @@ func TestAResumeWhoseClientIDIsTakenIs503AndTheSessionStaysResumable(t *testing.
 	})
 	if status, _, _ := r.getHLS(t, a.path("video.m3u8")); status != http.StatusOK {
 		t.Fatalf("the resume once the id was free answered %d, want 200", status)
+	}
+}
+
+// R114: the client-stop route's `reason` decides which of the two client-stop
+// reasons a session records, and every 410 afterwards says so, on every
+// rendition and every request (R120).
+func TestAClientStopRecordsItsReasonAndEvery410SaysSo(t *testing.T) {
+	const streamLimitBody = `{"error": "stream limit", "ended": "stream_limit"}`
+	cases := []struct {
+		name, query, want string
+	}{
+		{"stream_limit", "?reason=stream_limit", streamLimitBody},
+		{"no reason", "", adminStopBody},
+		{"an unknown reason", "?reason=whatever", adminStopBody},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
+			r := hlsRig(t, f, nil)
+			s := r.session(t, "c-reason", "client-a")
+			ts := r.tuneAs(t, "c-reason", "client-ts") // keeps the channel up
+			defer func() { _ = ts.Body.Close() }()
+
+			if status, raw := r.internalCall(t, http.MethodDelete, "/proxy/relay/channels/c-reason/clients/client-a"+tc.query, nil); status != http.StatusOK {
+				t.Fatalf("the client stop answered %d: %s", status, raw)
+			}
+			for _, rest := range []string{"video.m3u8", "video.m3u8", "aac.m3u8", "video/init-0.mp4"} {
+				if status, _, body := r.getHLS(t, s.path(rest)); status != http.StatusGone || string(body) != tc.want {
+					t.Fatalf("GET %s on the stopped session answered %d %q, want 410 %s", rest, status, body, tc.want)
+				}
+			}
+		})
+	}
+}
+
+func TestAnAdminChannelStopAnswersChannelStopped(t *testing.T) {
+	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
+	r := hlsRig(t, f, nil)
+	s := r.session(t, "c-chstop", "client-a")
+	if status, raw := r.internalCall(t, http.MethodDelete, "/proxy/relay/channels/c-chstop", nil); status != http.StatusOK {
+		t.Fatalf("stopping the channel answered %d: %s", status, raw)
+	}
+	if status, _, body := r.getHLS(t, s.path("aac.m3u8")); status != http.StatusGone || string(body) != `{"error": "channel stopped", "ended": "channel_stopped"}` {
+		t.Fatalf("the session's GET answered %d %q, want 410 channel_stopped", status, body)
+	}
+}
+
+// A resume that loses the race to a pipeline failure answers output_failed,
+// and the next GET agrees. The hook marks the session itself, so the resume
+// reaches the refused commit rather than a failed re-attach.
+func TestAResumeThatLosesTheRaceToAPipelineFailureAnswersOutputFailed(t *testing.T) {
+	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
+	r := hlsRig(t, f, nil)
+	ts := r.tuneAs(t, "c-resume-fail", "client-ts")
+	defer func() { _ = ts.Body.Close() }()
+	a := r.session(t, "c-resume-fail", "client-a")
+	b := r.session(t, "c-resume-fail", "client-b") // holds the pipeline, so A's resume gets past both attaches
+	p := r.pipelineOf(t, "c-resume-fail")
+
+	r.SessionClock.Advance(session12s)
+	if status, _, _ := r.getHLS(t, b.path("video.m3u8")); status != http.StatusOK {
+		t.Fatalf("B's GET answered %d", status)
+	}
+	r.tick(t)
+	waitFor(t, "the departure", 10*time.Second, func() bool {
+		return sameIDs(clientIDs(r.listedClients(t, "c-resume-fail")), "client-ts", "client-b")
+	})
+	var fired atomic.Bool
+	f.hooks.afterResumeAttach = func() {
+		fired.Store(true)
+		r.Sessions.StopPipeline(p)
+	}
+
+	want := `{"error": "HLS output failed", "ended": "output_failed"}`
+	status, _, body := r.getHLS(t, a.path("video.m3u8"))
+	if status != http.StatusGone || string(body) != want {
+		t.Fatalf("the resume answered %d %q, want 410 %s", status, body, want)
+	}
+	if !fired.Load() {
+		t.Fatal("the hook never fired: the resume ended before the commit it is meant to race")
+	}
+	if status, _, again := r.getHLS(t, a.path("video.m3u8")); status != http.StatusGone || string(again) != want {
+		t.Fatalf("the next GET answered %d %q, want 410 %s", status, again, want)
+	}
+}
+
+// An empty or unknown reason answers as channel_stopped, the reason the table
+// records when nothing else was.
+func TestWriteEndedFallsBackToChannelStopped(t *testing.T) {
+	for _, reason := range []session.EndReason{"", "no-such-reason"} {
+		rec := httptest.NewRecorder()
+		writeEnded(rec, reason)
+		if rec.Code != http.StatusGone || rec.Body.String() != `{"error": "channel stopped", "ended": "channel_stopped"}` {
+			t.Fatalf("writeEnded(%q) = %d %q, want 410 and the channel_stopped body", reason, rec.Code, rec.Body.String())
+		}
 	}
 }

@@ -27,6 +27,7 @@ class MinoCapabilitiesTests(TestCase):
                     "available": True,
                     "segment_seconds": 2,
                     "session_leave": True,
+                    "end_reason": True,
                     "rewind_window": {"available": True, "depth_seconds": 3600},
                 },
             },

@@ -103,7 +103,7 @@ func TestABlockedTuneReclaimsASilentHLSChannel(t *testing.T) {
 	}
 
 	status, _, body := r.getHLS(t, a1.path("video.m3u8"))
-	if status != http.StatusGone || string(body) != `{"error": "channel stopped"}` {
+	if status != http.StatusGone || string(body) != `{"error": "channel stopped", "ended": "channel_stopped"}` {
 		t.Fatalf("the reclaimed session's next GET answered %d %q, want 410 and the body", status, body)
 	}
 	if status, _, _ := r.getHLS(t, a2.path("video.m3u8")); status != http.StatusOK {

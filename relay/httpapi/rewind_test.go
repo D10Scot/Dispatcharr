@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -420,5 +421,29 @@ func TestTheChannelPayloadsCarryTheRewindFields(t *testing.T) {
 		if _, degraded := payload["rewind_degraded"]; degraded {
 			t.Errorf("%s: a healthy window carries rewind_degraded", name)
 		}
+	}
+}
+
+// R84 holds with the session STOPPED rather than removed: an admin client stop
+// of the last session lingers its pipeline with no grace.
+func TestAnAdminClientStopOfTheLastSessionLingersTheChannel(t *testing.T) {
+	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
+	r := rewindRig(t, f, relaytest.ControlPlaneConfig{}, lingerSettings(nil), hls.OSFS{})
+	s := r.session(t, "A", "cA")
+	if status, raw := r.internalCall(t, http.MethodDelete, "/proxy/relay/channels/A/clients/cA", nil); status != http.StatusOK {
+		t.Fatalf("the client stop answered %d: %s", status, raw)
+	}
+	// The session's own release drops its client entry and the pipeline
+	// reference; an EndClient that discarded them would leave both held.
+	waitFor(t, "the stopped session's client entry to be dropped", 10*time.Second, func() bool {
+		return !slices.Contains(clientIDs(r.listedClients(t, "A")), "cA")
+	})
+	r.waitLingering(t, "A")
+	d := r.detailOf(t, "A")
+	if d["client_count"] != float64(0) {
+		t.Fatalf("client_count = %v, want 0 for a lingering channel", d["client_count"])
+	}
+	if status, _, body := r.getHLS(t, s.path("video.m3u8")); status != http.StatusGone || !strings.Contains(string(body), `"ended": "admin_stop"`) {
+		t.Fatalf("the stopped session's GET answered %d %q, want 410 admin_stop", status, body)
 	}
 }

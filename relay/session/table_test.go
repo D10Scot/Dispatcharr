@@ -346,7 +346,7 @@ func TestStopChannelMarksOnlyThatChannelsSessions(t *testing.T) {
 	}
 }
 
-func TestAStoppedSessionIs410OnceThenForgotten(t *testing.T) {
+func TestAStoppedSessionIs410UntilItIsForgotten(t *testing.T) {
 	r := newRig(t)
 	c1 := r.owner("c1")
 	s := r.active(c1, "a")
@@ -355,8 +355,8 @@ func TestAStoppedSessionIs410OnceThenForgotten(t *testing.T) {
 	if l := r.table.Begin(s.ID); l.Outcome != Gone {
 		t.Fatalf("first Begin on a STOPPED session = %v, want Gone", l.Outcome)
 	}
-	if l := r.table.Begin(s.ID); l.Outcome != Unknown {
-		t.Fatalf("second Begin = %v, want Unknown (403 after the one 410)", l.Outcome)
+	if l := r.table.Begin(s.ID); l.Outcome != Gone {
+		t.Fatalf("second Begin = %v, want Gone (410 on every request until forgotten, R120)", l.Outcome)
 	}
 
 	// Unrequested for ResumeWindow: the sweep forgets it.
@@ -382,13 +382,15 @@ func TestEndClientEndsOnlyThatClientsLiveSession(t *testing.T) {
 	bystander := r.active(c1, "b")
 	elsewhere := r.active(r.owner("c2"), "a")
 
-	d := r.table.EndClient(c1, "a")
+	d := r.table.EndClient(c1, "a", EndAdminStop)
 	if d == nil {
 		t.Fatal("EndClient found no live session for client a on c1")
 	}
 	d.Run()
-	if l := r.table.Begin(live.ID); l.Outcome != Unknown {
-		t.Fatalf("the ended session's next request = %v, want Unknown (403)", l.Outcome)
+	for i := 0; i < 2; i++ {
+		if l := r.table.Begin(live.ID); l.Outcome != Gone || l.Reason != EndAdminStop {
+			t.Fatalf("the ended session's request %d = %v/%q, want Gone/admin_stop", i+1, l.Outcome, l.Reason)
+		}
 	}
 	if l := r.table.Begin(old.ID); l.Outcome != Resume {
 		t.Fatalf("the DEPARTED session with the same client id = %v, want it left alone (Resume)", l.Outcome)
@@ -398,7 +400,7 @@ func TestEndClientEndsOnlyThatClientsLiveSession(t *testing.T) {
 			t.Fatalf("%s session = %v, want Serve", name, l.Outcome)
 		}
 	}
-	if d := r.table.EndClient(c1, "a"); d != nil {
+	if d := r.table.EndClient(c1, "a", EndAdminStop); d != nil {
 		t.Fatal("a second EndClient found a live session")
 	}
 }
@@ -590,8 +592,8 @@ func TestEndAndResumeFailedOnAnUnknownSessionChangeNothing(t *testing.T) {
 		t.Fatalf("the table holds %d sessions after two calls on an unknown sid, want 1", r.table.Len())
 	}
 	r.table.ResumeFailed(keep.ID)
-	if r.table.Len() != 0 {
-		t.Fatal("ResumeFailed left the session in the table")
+	if r.table.Len() != 1 {
+		t.Fatal("ResumeFailed on an ACTIVE session changed the table: it marks only a DEPARTED one")
 	}
 }
 
@@ -682,5 +684,138 @@ func TestTheSweeperWithNoInjectedTickStopsWithItsContext(t *testing.T) {
 	case <-done:
 	case <-time.After(10 * time.Second):
 		t.Fatal("Run did not return after its context ended")
+	}
+}
+
+func TestEndClientMarksTheSessionStoppedWithTheGivenReason(t *testing.T) {
+	r := newRig(t)
+	c1 := r.owner("c1")
+	s := r.active(c1, "a")
+
+	d := r.table.EndClient(c1, "a", EndStreamLimit)
+	if d == nil {
+		t.Fatal("EndClient found no live session")
+	}
+	d.Run()
+	if got := r.j.all(); !slices.Equal(got, []string{"disconnect a", "output a", "client a"}) {
+		t.Fatalf("EndClient's departure did %v: the releases are run, not discarded", got)
+	}
+	for i := 0; i < 3; i++ {
+		if l := r.table.Begin(s.ID); l.Outcome != Gone || l.Reason != EndStreamLimit {
+			t.Fatalf("Begin %d = %v/%q, want Gone/stream_limit", i+1, l.Outcome, l.Reason)
+		}
+	}
+	// Requests do not extend it: 300 s after it stopped, it is forgotten.
+	r.clock.Advance(ResumeWindow)
+	if l := r.table.Begin(s.ID); l.Outcome != Gone {
+		t.Fatalf("Begin at exactly %v = %v, want Gone", ResumeWindow, l.Outcome)
+	}
+	r.clock.Advance(time.Second)
+	if l := r.table.Begin(s.ID); l.Outcome != Unknown {
+		t.Fatalf("Begin 301 s after it stopped = %v, want Unknown", l.Outcome)
+	}
+	if r.table.Len() != 0 {
+		t.Fatal("the expired STOPPED session is still in the table")
+	}
+}
+
+func TestALaterStopLeavesAStoppedSessionsReason(t *testing.T) {
+	r := newRig(t)
+	c1 := r.owner("c1")
+	s := r.active(c1, "a")
+	p := s.Pipeline
+	r.table.EndClient(c1, "a", EndStreamLimit).Run()
+	if got := r.table.stopOwner(c1); len(got) != 0 {
+		t.Fatalf("a channel stop returned %+v for an already STOPPED session", got)
+	}
+	r.table.StopPipeline(p)
+	if l := r.table.Begin(s.ID); l.Outcome != Gone || l.Reason != EndStreamLimit {
+		t.Fatalf("Begin = %v/%q, want Gone/stream_limit (the first reason stands)", l.Outcome, l.Reason)
+	}
+}
+
+func TestEachStopperRecordsItsOwnReason(t *testing.T) {
+	r := newRig(t)
+	c := r.owner("c")
+	byChannel := r.active(c, "ch")
+	p := &hls.Pipeline{}
+	byPipeline := &Session{ID: "sid-p", Owner: r.owner("o"), Key: "hls", Pipeline: p, TD: 2 * time.Second}
+	r.table.Add(byPipeline, &channel.Client{ID: "pl"}, r.releases("pl"))
+	r.table.Activate(byPipeline.ID)
+	c2 := &channel.Channel{}
+	silent := r.active(c2, "silent")
+	r.clock.Advance(5 * time.Second)
+
+	r.table.stopOwner(c)
+	r.table.StopPipeline(p)
+	if _, ok := r.table.StopIfSilent(c2, []string{"silent"}); !ok {
+		t.Fatal("StopIfSilent refused a silent channel")
+	}
+	for s, want := range map[*Session]EndReason{byChannel: EndChannelStopped, byPipeline: EndOutputFailed, silent: EndChannelStopped} {
+		if l := r.table.Begin(s.ID); l.Outcome != Gone || l.Reason != want {
+			t.Fatalf("%s: Begin = %v/%q, want Gone/%s", s.ID, l.Outcome, l.Reason, want)
+		}
+	}
+}
+
+func TestResumeFailedMarksOnlyADepartedSession(t *testing.T) {
+	r := newRig(t)
+	c1 := r.owner("c1")
+
+	departed := r.active(c1, "d")
+	r.departIdle(departed)
+	if got := r.table.ResumeFailed(departed.ID); got != EndChannelStopped {
+		t.Fatalf("ResumeFailed on a DEPARTED session returned %q, want channel_stopped", got)
+	}
+	for i := 0; i < 2; i++ {
+		if l := r.table.Begin(departed.ID); l.Outcome != Gone || l.Reason != EndChannelStopped {
+			t.Fatalf("Begin %d after a failed resume = %v/%q, want Gone/channel_stopped", i+1, l.Outcome, l.Reason)
+		}
+	}
+
+	// A stopper that marked the session first keeps its reason, and the
+	// failed resume reports it.
+	raced := r.active(c1, "r")
+	r.departIdle(raced)
+	r.table.StopPipeline(raced.Pipeline)
+	if got := r.table.ResumeFailed(raced.ID); got != EndOutputFailed {
+		t.Fatalf("ResumeFailed on a session a pipeline failure marked returned %q, want output_failed", got)
+	}
+	if got := r.table.RefusedReason(raced.ID); got != EndOutputFailed {
+		t.Fatalf("RefusedReason = %q, want output_failed", got)
+	}
+
+	// An ACTIVE session is left ACTIVE.
+	live := r.active(c1, "l")
+	r.table.ResumeFailed(live.ID)
+	if l := r.table.Begin(live.ID); l.Outcome != Serve {
+		t.Fatalf("Begin on an ACTIVE session after ResumeFailed = %v, want Serve", l.Outcome)
+	}
+	// An unknown or removed session reports channel_stopped.
+	if got := r.table.RefusedReason("no-such-sid"); got != EndChannelStopped {
+		t.Fatalf("RefusedReason on an unknown sid = %q, want channel_stopped", got)
+	}
+}
+
+func TestAStoppedSessionHoldsNoPipeline(t *testing.T) {
+	r := newRig(t)
+	c1 := r.owner("c1")
+	departed := r.active(c1, "d")
+	r.departIdle(departed)
+	byClient := r.active(c1, "a")
+	byChannel := r.active(c1, "b")
+
+	r.table.EndClient(c1, "a", EndAdminStop).Run()
+	r.table.stopOwner(c1)
+	r.table.ResumeFailed(departed.ID)
+	r.table.mu.Lock()
+	defer r.table.mu.Unlock()
+	for name, s := range map[string]*Session{"EndClient": byClient, "stopOwner": byChannel, "ResumeFailed": departed} {
+		if s.Pipeline != nil {
+			t.Fatalf("a session STOPPED by %s still holds its pipeline", name)
+		}
+		if s.Owner == nil {
+			t.Fatalf("a session STOPPED by %s lost its Owner, which a resume reads with no lock held", name)
+		}
 	}
 }

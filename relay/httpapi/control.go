@@ -9,6 +9,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
+	"github.com/D10Scot/Dispatcharr/relay/session"
 )
 
 // controlLog and controlClock are the two nil-defaults every control handler
@@ -148,7 +149,7 @@ func ClientHandler(deps ControlDeps) http.HandlerFunc {
 		// release drops the entry, after which StopClient finds nothing.
 		signalled := false
 		if deps.Sessions != nil {
-			if departure := deps.Sessions.EndClient(ch, clientID); departure != nil {
+			if departure := deps.Sessions.EndClient(ch, clientID, endReason(r.URL.Query().Get("reason"))); departure != nil {
 				departure.Run()
 				signalled = true
 			}
@@ -167,6 +168,18 @@ func ClientHandler(deps ControlDeps) http.HandlerFunc {
 			EventPublished: &published,
 		})
 	}
+}
+
+// endReason maps the client-stop route's optional `reason` query parameter to
+// the reason an HLS session records (R114). Only Django's stream-limit
+// termination sends stream_limit; an absent or any other value is an admin
+// stop. The internal request signature binds the query string, so the
+// parameter is as authenticated as the path.
+func endReason(v string) session.EndReason {
+	if v == "stream_limit" {
+		return session.EndStreamLimit
+	}
+	return session.EndAdminStop
 }
 
 // advanceRequest is RelayAdvanceRequestSerializer plus the three fields 2c-8

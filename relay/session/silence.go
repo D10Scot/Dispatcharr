@@ -27,7 +27,7 @@ func (t *Table) StopIfSilent(c *channel.Channel, clientIDs []string) ([]channel.
 	if _, ok := t.silentLocked(c, clientIDs, now); !ok {
 		return nil, false
 	}
-	return t.stopLocked(func(s *Session) bool { return s.Owner == Owner(c) }, now), true
+	return t.stopLocked(func(s *Session) bool { return s.Owner == Owner(c) }, EndChannelStopped, now), true
 }
 
 // silentFrom is when a session becomes silent: STRICTLY after its last

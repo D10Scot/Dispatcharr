@@ -11,7 +11,8 @@
 // (Table.Sweep: max(12 s, 6 x TARGETDURATION) with no request in flight). One
 // process-wide sweeper ticks every second (Table.Run), and it is not tied to
 // any channel or pipeline: a session outlives both, being resumable for
-// ResumeWindow after an idle departure and answering one 410 after a stop.
+// ResumeWindow after an idle departure and, after a stop, answering 410 with the
+// reason it stopped until it is forgotten ResumeWindow later.
 //
 // THE LOCK RULE. The table's mutex is the innermost in the process: the order
 // is Manager.mu, then Channel.mu, then this one. Code holding it never takes

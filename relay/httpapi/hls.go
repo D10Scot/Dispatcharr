@@ -62,11 +62,32 @@ const (
 	// The one 403 body, for every way a token can be refused: a forged
 	// token, an unknown session and a left one say the same thing.
 	forbiddenSessionBody = `{"error": "invalid or expired media session"}`
-	channelStoppedBody   = `{"error": "channel stopped"}`
 	noVideoBody          = `{"error": "no video stream in the source"}`
 	outputFailedBody     = `{"error": "HLS output failed"}`
 	startFailedBody      = `{"error": "Failed to start the HLS output"}`
 )
+
+// endedBodies are the four 410 bodies of a STOPPED session, by the reason it
+// records (Phase 4 spec § Session resources; R114). Both fields are kept:
+// `error`, because every other JSON error body the relay writes carries one,
+// and `ended` for the reason.
+var endedBodies = map[session.EndReason]string{
+	session.EndStreamLimit:    `{"error": "stream limit", "ended": "stream_limit"}`,
+	session.EndAdminStop:      `{"error": "stopped by an administrator", "ended": "admin_stop"}`,
+	session.EndChannelStopped: `{"error": "channel stopped", "ended": "channel_stopped"}`,
+	session.EndOutputFailed:   `{"error": "HLS output failed", "ended": "output_failed"}`,
+}
+
+// writeEnded answers a request on a STOPPED session: 410 and the body of the
+// reason it records. An empty or unknown reason is channel_stopped, which is
+// what the table records when nothing else was.
+func writeEnded(w http.ResponseWriter, reason session.EndReason) {
+	body, ok := endedBodies[reason]
+	if !ok {
+		body = endedBodies[session.EndChannelStopped]
+	}
+	writeJSONBody(w, http.StatusGone, body)
+}
 
 // HLSDeps is the HLS output's process-wide state and its test seams.
 type HLSDeps struct {
@@ -390,6 +411,11 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 	// emits itself: no client_disconnect ever precedes its client_connect.
 	ch.EmitClientConnect(client)
 	if !sessions.Activate(sid) {
+		// No token was ever handed out, so nothing could be answered 410 on
+		// this entry: it removes its own session rather than leave a STOPPED
+		// one for the sweeper. The stopper took the releases (Abandon returns
+		// none).
+		sessions.Abandon(sid)
 		ch.EmitClientDisconnect(client, now())
 		writeRetry(w, "the session ended")
 		return
@@ -468,7 +494,7 @@ func HLSHandler(deps StreamDeps) http.HandlerFunc {
 		switch lookup.Outcome {
 		case session.Serve:
 		case session.Gone:
-			writeJSONBody(w, http.StatusGone, channelStoppedBody)
+			writeEnded(w, lookup.Reason)
 			return
 		case session.Busy:
 			writeRetry(w, "the session is settling")
@@ -508,8 +534,7 @@ func resumeHLS(w http.ResponseWriter, deps StreamDeps, sid string, lookup sessio
 
 	ch, isChannel := lookup.Session.Owner.(*channel.Channel)
 	if !isChannel || lookup.Client == nil {
-		deps.Sessions.ResumeFailed(sid)
-		writeJSONBody(w, http.StatusGone, channelStoppedBody)
+		writeEnded(w, deps.Sessions.ResumeFailed(sid))
 		return lookup, false
 	}
 	fresh := *lookup.Client
@@ -518,8 +543,7 @@ func resumeHLS(w http.ResponseWriter, deps StreamDeps, sid string, lookup sessio
 	releaseClient, err := deps.Channels.AttachExisting(ch, &fresh)
 	switch {
 	case errors.Is(err, channel.ErrChannelAbsent):
-		deps.Sessions.ResumeFailed(sid)
-		writeJSONBody(w, http.StatusGone, channelStoppedBody)
+		writeEnded(w, deps.Sessions.ResumeFailed(sid))
 		return lookup, false
 	case errors.Is(err, channel.ErrDuplicateClient):
 		// Unreachable once a departure has settled (Decision 5): the old
@@ -536,8 +560,7 @@ func resumeHLS(w http.ResponseWriter, deps StreamDeps, sid string, lookup sessio
 	releaseOutput, ok := ch.AttachHLSExisting(lookup.Session.Key, lookup.Pipeline)
 	if !ok {
 		releaseClient()
-		deps.Sessions.ResumeFailed(sid)
-		writeJSONBody(w, http.StatusGone, channelStoppedBody)
+		writeEnded(w, deps.Sessions.ResumeFailed(sid))
 		return lookup, false
 	}
 	fire(hooks.afterResumeAttach)
@@ -545,7 +568,7 @@ func resumeHLS(w http.ResponseWriter, deps StreamDeps, sid string, lookup sessio
 	if !deps.Sessions.ResumeCommit(sid, &fresh, session.Releases{Output: releaseOutput, Client: releaseClient}) {
 		releaseOutput()
 		releaseClient()
-		writeJSONBody(w, http.StatusGone, channelStoppedBody)
+		writeEnded(w, deps.Sessions.RefusedReason(sid))
 		return lookup, false
 	}
 	ch.EmitClientConnect(&fresh)

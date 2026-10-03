@@ -445,13 +445,20 @@ def stop_channels(identifiers):
     return stopped
 
 
-def stop_client(identifier, client_id, *, timeout=ADMIN_TIMEOUT):
-    """Stop one client on one channel."""
+def stop_client(identifier, client_id, *, timeout=ADMIN_TIMEOUT, reason=None):
+    """Stop one client on one channel.
+
+    ``reason="stream_limit"`` tells the relay an HLS session's 410 should say
+    why it ended; only the stream-limit termination sends it. Any other value,
+    and none, is an admin stop. It rides the query string, which the signed
+    request header binds.
+    """
     path = (
         f"/proxy/relay/channels/{quote(str(identifier), safe=_PATH_SEGMENT_SAFE)}"
         f"/clients/{quote(str(client_id), safe=_PATH_SEGMENT_SAFE)}"
     )
-    return _request("DELETE", path, timeout=timeout)
+    params = {"reason": reason} if reason else None
+    return _request("DELETE", path, timeout=timeout, params=params)
 
 
 def advance(
