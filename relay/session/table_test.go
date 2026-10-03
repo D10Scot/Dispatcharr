@@ -800,14 +800,18 @@ func TestResumeFailedMarksOnlyADepartedSession(t *testing.T) {
 func TestAStoppedSessionHoldsNoPipeline(t *testing.T) {
 	r := newRig(t)
 	c1 := r.owner("c1")
-	departed := r.active(c1, "d")
+	// The DEPARTED session has an owner of its own, so only ResumeFailed can
+	// mark it: stopOwner(c1) never reaches it.
+	departed := r.active(r.owner("c2"), "d")
 	r.departIdle(departed)
 	byClient := r.active(c1, "a")
 	byChannel := r.active(c1, "b")
 
+	if got := r.table.ResumeFailed(departed.ID); got != EndChannelStopped {
+		t.Fatalf("ResumeFailed on a DEPARTED session returned %q, want channel_stopped", got)
+	}
 	r.table.EndClient(c1, "a", EndAdminStop).Run()
 	r.table.stopOwner(c1)
-	r.table.ResumeFailed(departed.ID)
 	r.table.mu.Lock()
 	defer r.table.mu.Unlock()
 	for name, s := range map[string]*Session{"EndClient": byClient, "stopOwner": byChannel, "ResumeFailed": departed} {

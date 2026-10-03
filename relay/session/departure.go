@@ -14,7 +14,8 @@ type Departure struct {
 	releases  Releases
 	// idle is true for a departure the sweep (or a lazy expiry) made: the
 	// session stays in the table as DEPARTED and settles when the departure
-	// has run. A leave or an admin stop removed its session already.
+	// has run. A leave removed its session already; an admin stop or stream-limit
+	// termination marked it STOPPED.
 	idle bool
 }
 

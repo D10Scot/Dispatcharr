@@ -413,9 +413,9 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 	if !sessions.Activate(sid) {
 		// No token was ever handed out, so nothing could be answered 410 on
 		// this entry: it removes its own session rather than leave a STOPPED
-		// one for the sweeper. The stopper took the releases (Abandon returns
-		// none).
-		sessions.Abandon(sid)
+		// one for the sweeper. The stopper took the releases, so abandon runs
+		// none.
+		abandon()
 		ch.EmitClientDisconnect(client, now())
 		writeRetry(w, "the session ended")
 		return
