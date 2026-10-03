@@ -223,7 +223,7 @@ stays the reap budget after the kill. If the channel has an HLS pipeline, a new 
 | **D12** | ***Automatic* is an Output Profile mode, selected per channel.** `OutputProfile` gains `hls_mode` (blank; `transcode`; `automatic`). Two **locked** rows are seeded, "HLS (Re-encode)" and "HLS (Automatic)", with `command="ffmpeg"` and `parameters="(built by the relay)"`. They are never executed, because every consumer that builds or offers an argv excludes them. Rows with a non-blank `hls_mode` cannot be created or edited through the API. `Channel` gains `hls_output_profile`, a nullable FK with `on_delete=SET_NULL` (null means the built-in transcode). Next-source carries the channel's choice as `hls_profile: {id, mode} \| null`. **Every OutputProfile consumer excludes `hls_mode != ''`:** `resolve_output_profile`, `_resolve_hdhr_output_profile_id`, the next-source `output_profiles` map, the viewset's writes, and the frontend selects (User, HDHR, web player, the M3U-link builder). The only select that offers them is the new channel-form "HLS output" select. On an `hls` tune, `X-Relay-Output` is ignored. | ADR 0009: "reuses the existing Output Profile mechanism… and adds no new one". The per-channel FK is new because R7 says "opt-in per channel", and Output Profiles are selected per client today. A per-client HLS profile would break "one shared encode per channel". The policy is product-owned (an argv the relay builds from a probe), which is why the rows are locked. Without the exclusions, an admin could pick "HLS (Automatic)" as the HDHR profile and get a silent no-op (finding 11). |
 | **D13** | **A Redirect-profile channel is served over HLS through the relay, as Proxy** (accepted, R23). It reserves and holds a provider slot like any Proxy tune. TS clients on the same channel keep their 302 unless the channel is already running, in which case they attach to it, as any client does. | HLS is made by the relay from bytes it holds. A 302 to the provider's endless TS is exactly what AVPlayer cannot play (ADR 0008). `startTune` already takes this path for an internal principal (`relay/httpapi/stream.go:701-713`). |
 | **D14** | **The rewind window is the HLS output's own segments, kept on disk** (4a-3, § The live rewind window). It **starts at the channel's first HLS viewer** (R19). A TS-only channel (DVR, TS apps) keeps no window and triggers no encode. The layout is `/data/cache/rewind/<boot-id>/<channel>/<gen>/<rendition>/<seq>.m4s`, and `docker/init/03-init-dispatcharr.sh` creates the root. The depth is a setting, with a global byte cap. The last `StoreSegments` (21) segments per rendition stay in memory (amended by the 4a-1b plan, R44). A disk error degrades the window and never the live output. The window is deleted on drain, and every boot directory is deleted at start-up. Playlists become a **sliding window with no `EXT-X-PLAYLIST-TYPE`**, listing every segment in the window. | ADR 0008: about 3.6 GB per channel-hour is too big for memory, and a restart discards it rather than recovering it. `EVENT` forbids removing segments from the head, so it cannot express a full window. 60 min (the default) is well past Apple's 15-minute SHOULD (8.11). |
-| **D15** | **The window lingers, and a lingering window holds its channel open** (4a-3). When the channel's last HLS session leaves (by a leave or an idle departure, not by going STOPPED), its HLS pipeline keeps running for `rewind_linger_seconds`, growing the window and holding the channel, its upstream and its provider slot. Lingering is not a client and appears in no client list or stream-limit count. A lingering channel is **reclaimable** (D16) when it has zero clients of any format and its grace has passed. The grace is `rewind_behind_live_grace_seconds` only when the last session **departed without an explicit leave** (idle departure) while **behind live**, meaning its last segment request was more than 5 × TARGETDURATION older than the newest segment (§ Presence thresholds). The grace is 0 in every other case, including **any explicit leave** (R25). For the Mino app's own zap, R11's countdown already was the grace. | R10: zapping back keeps the rewind, and the window stays continuous to live, so the encoder must keep running. A channel with a TS viewer still attached is watched, and is never reclaimed. R25: a grace after the countdown would add 10 s of "no source available" to a behind-live zap on a constrained provider. |
+| **D15** | **The window lingers, and a lingering window holds its channel open** (4a-3). When the channel's last HLS session leaves (by a leave, an admin client stop or stream-limit termination (R84), or an idle departure; not when a channel stop or an output failure marks its sessions STOPPED and discards their releases), its HLS pipeline keeps running for `rewind_linger_seconds`, growing the window and holding the channel, its upstream and its provider slot. Lingering is not a client and appears in no client list or stream-limit count. A lingering channel is **reclaimable** (D16) when it has zero clients of any format and its grace has passed. The grace is `rewind_behind_live_grace_seconds` only when the last session **departed without an explicit leave** (idle departure) while **behind live**, meaning its last segment request was more than 5 × TARGETDURATION older than the newest segment (§ Presence thresholds). The grace is 0 in every other case, including **any explicit leave** (R25). For the Mino app's own zap, R11's countdown already was the grace. | R10: zapping back keeps the rewind, and the window stays continuous to live, so the encoder must keep running. A channel with a TS viewer still attached is watched, and is never reclaimed. R25: a grace after the countdown would add 10 s of "no source available" to a behind-live zap on a constrained provider. |
 | **D16** | **A blocked tune reclaims a channel nobody is watching** (4a-1c; 4a-3 adds lingering windows). When `get_stream()` finds every profile full, next-source answers `capacity: {blocked: true, profile_ids: […]}`: each `profile_full` profile, and each profile sharing a `credential_full` profile's credential counter. The relay reclaims one **reclaimable** channel whose current `m3u_profile_id` is in that list. A channel is reclaimable when it has **no TS or fMP4 client**, and **either** every HLS session on it is **silent**: no request in flight, and more than **2 × TARGETDURATION** since its last request **ended** (§ Presence thresholds), **or** it is a lingering window past its grace (4a-3). Holding the Manager mutex, the relay either picks a channel on those profiles that is already releasing and waits for it, or picks, re-checks under the session-table lock, and removes a reclaimable one, or finds neither (§ Slot reclaim). In **every** case it then retries next-source **once**. At most one reclaim per tune. A zero-client channel held only by a non-zero `channel_shutdown_delay` countdown is reclaimable too, deliberately: under slot pressure that setting keeps a channel warm only until a tune needs its slot. | ADR 0005: slots stay in Django, and the relay does not decide them. Django knows why a tune is blocked; the relay knows which channels are idle. Answering with the blocking profiles keeps both facts where they are, with no Django-to-relay call inside next-source. The silence rule (4 s at the transcode target of 2 s) reclaims a session its client abandoned without a leave, long before the idle timeout. A paused AVPlayer (reloading every 2 s, M7) is never caught, and neither is a viewer whose entry request or first media-playlist long-poll is still in flight. Waiting for in-flight releases covers a leave that has stopped channel A before its release POST lands. Retrying in every case covers a release that completes before B looks at all. The #513 reconciler needs no change: a reclaimable channel is listed with its own `state` and counted as the holder it is, and a reclaim's release is an ordinary release that bumps the version. |
 | **D17** | **Four settings, in the `proxy_settings` group** (4a-3):<br>- `rewind_window_minutes`: default 60; 0 disables the window; at most 120.<br>- `rewind_linger_seconds`: default 300; 0 means drop at once.<br>- `rewind_behind_live_grace_seconds`: default 10.<br>- `rewind_disk_cap_gb`: default 16.<br>They are back-filled by `get_proxy_settings`' defaults, sent on every next-source answer (A1.4), and required by the relay. | `proxy_settings` is the group the relay already receives. The names are neutral (R15). A channel snapshots them at start. The disk cap is process-wide and takes the most recent answer's value. The 120-minute ceiling is Apple's tvOS scrub-back figure. |
 | **D18** | **The browser player plays live *channels* over hls.js, and keeps stream previews on mpegts.js over TS** (4a-2; R18). Playback of a channel, by UUID, from the channels table, the guide, the DVR page and the recording cards and modals, requests `output_format=hls`. It plays through hls.js where MSE or ManagedMediaSource exists (`xhrSetup` sends the `Bearer` JWT), and natively with `?token=` otherwise. When the player closes or switches, it calls the leave route (D5). Stream previews by stream hash, and the stats card's play button (`StreamConnectionCard.jsx:516`, preview-style per R26), keep `output_format=mpegts`, mpegts.js and the web-player Output Profile preference. | R17 for channels, and R18 for previews: an admin previewing a stream wants the stream as it is, with no encode and no slot held after close. R26: the stats card watches a running channel that may have only TS clients, and an HLS play there would start an encode that R19 forbids for a TS-only channel. mpegts.js and the preference therefore stay (the preference applies to the TS previews). |
@@ -327,9 +327,28 @@ time.
 | `GET /hls/<token>/<rendition>/init-<gen>.mp4` | 200 `video/mp4` or `audio/mp4`, `Cache-Control: private, max-age=86400` |
 | `GET /hls/<token>/<rendition>/<seq>.m4s` | 200 with the same types and caching. **404** if the sequence is outside the store (or, in 4a-3, the window). |
 | `DELETE /hls/<token>` | **204**. The session ends at once: `client_disconnect`, release, and 4a-3's linger (with grace 0, R25). **Idempotent**: a valid MAC with an unknown or already-ended sid (after a relay restart, or once forgotten) also gets **204**. Only a MAC or format failure gets 403. |
-| a **GET** with a token whose MAC or format is wrong, or whose sid is unknown (removed: after a leave, a client stop, the resume window, a STOPPED session's one 410, or a relay restart) | **403** `{"error": "invalid or expired media session"}`, with no detail on which condition failed |
-| a **GET** on a **STOPPED** session: its channel stopped (§ Presence › Session states) | **410** `{"error": "channel stopped"}` **once**; the entry is then removed, so a further GET is 403 |
+| a **GET** with a token whose MAC or format is wrong, or whose sid is unknown (removed: after a leave, the resume window, a STOPPED session's one 410, or a relay restart) | **403** `{"error": "invalid or expired media session"}`, with no detail on which condition failed |
+| a **GET** on a **STOPPED** session: its channel stopped, its HLS output failed, or an admin client stop or stream-limit termination ended it (§ Presence › Session states; amended for 4b, R114) | **410** **once**, with a JSON body whose `ended` field says why (below); the entry is then removed, so a further GET is 403 |
 | unknown rendition name | 404 |
+
+*Amended for 4b (R114).* A STOPPED session records why it stopped, once, when it is marked, and
+its one 410 says so. The four bodies are fixed strings:
+
+| `ended` | Marked by | 410 body |
+|---|---|---|
+| `stream_limit` | `Table.EndClient` (`relay/session/table.go:336-353`), reached from the client-stop route with `?reason=stream_limit`, which only Django's `attempt_stream_termination` sends (§ Who ends sessions) | `{"error": "stream limit", "ended": "stream_limit"}` |
+| `admin_stop` | `Table.EndClient`, reached from the client-stop route with no `reason`, or any other value: the admin "stop client" action and every other caller | `{"error": "stopped by an administrator", "ended": "admin_stop"}` |
+| `channel_stopped` | `Table.StopChannel` and `Table.StopIfSilent`: an admin channel stop, a reclaim, the drain, the channel's run ending, or the manager's idle stop after the last client; and every 410 a failed resume answers (§ Resume never starts a channel) | `{"error": "channel stopped", "ended": "channel_stopped"}` |
+| `output_failed` | `Table.StopPipeline`: the channel's HLS output failed (`watchHLS`, `relay/httpapi/hls.go:422-437`) | `{"error": "HLS output failed", "ended": "output_failed"}` |
+
+The `error` field is kept, because every other JSON error body the relay writes carries one, and
+the `channel_stopped` body keeps today's text. The reason is never overwritten: a session already
+STOPPED is skipped by every later stop (`stopLocked`, `relay/session/table.go:384-398`), so a client
+stop whose release then stops the channel leaves `stream_limit` or `admin_stop` in place. A failed
+resume always says `channel_stopped`, including the narrow race where a pipeline failure marked the
+session between the resume's lookup and its commit: the app treats `channel_stopped` and
+`output_failed` alike (§ 4b), so the race changes nothing it does. The capability document
+advertises the field as `live_hls.end_reason: true` (§ 4b, R115).
 
 Rendition names are `video`, `aac`, `ac3` and `eac3`. The relay ignores every `X-Relay-*` and
 `X-Dispatcharr-Authorized` header on `/hls/`: authorisation there is the token and nothing else,
@@ -761,23 +780,34 @@ Transcode mode always has TD = 2. *Automatic* mode may declare up to 6 (4a-1d). 
       │  the entry request stays in flight until the multivariant is written
       ▼
    ACTIVE ── DELETE /hls/<token> ──────────────► removed (client_disconnect; release())
-      │ ── admin client stop / limit termination ► removed (client_disconnect; release())
       │ ── idle departure ──► DEPARTED (client_disconnect; release(); departed_at)
       │                        │ valid request within 300 s AND channel still running
       │                        │   ⇒ re-attach via AttachExisting (client_connect) ⇒ ACTIVE
       │                        └ 300 s elapse ⇒ removed
-      └ ACTIVE or DEPARTED, and its channel stops (admin channel stop, reclaim, drain, the
-        channel's run ending) or its HLS output fails ──► STOPPED (client_disconnect if
-        still a client; client entry dropped)
-                                        │ next GET ⇒ 410, then removed
+      ├ ARRIVED or ACTIVE, and an admin client stop or a stream-limit termination reaches its
+      │ client (EndClient, R114) ──► STOPPED, ended = admin_stop | stream_limit
+      │   (client_disconnect; release(), run exactly as a leave's: the linger starts, R84)
+      └ ARRIVED, ACTIVE or DEPARTED, and its channel stops (admin channel stop, reclaim, drain,
+        the channel's run ending) or its HLS output fails ──► STOPPED, ended = channel_stopped
+        | output_failed (client_disconnect if still a client; client entry dropped; releases
+        discarded)
+                                        │ next GET ⇒ 410 with the reason, then removed
                                         │ DELETE ⇒ 204, removed
                                         └ 300 s with no request ⇒ removed
 ```
 
-- **Status codes.** A GET on a STOPPED session answers **410** once, and the entry is then
-  removed. Any request on a removed (unknown) sid is a GET 403 or a DELETE 204. That is the
-  whole mapping (§ Session resources): 410 means "re-tune", and 403 means "re-request the entry
-  once".
+- **Status codes.** A GET on a STOPPED session answers **410** once, with the reason it stopped
+  (§ Session resources), and the entry is then removed. Any request on a removed (unknown) sid is
+  a GET 403 or a DELETE 204. That is the whole mapping: 410 means "this session ended, and the
+  body says why", and 403 means "re-request the entry once". What a player does with each reason
+  is § 4b's. *Amended for 4b (R114):* until then an admin client stop or stream-limit termination
+  removed the session, so its next GET was a 403, which a player re-requests; with
+  `terminate_on_limit_exceeded` on, a re-requested entry after a stream-limit termination re-runs
+  the hop, which terminates the other device's session in turn.
+- **An ARRIVED session stopped by `EndClient`** has written no multivariant, so its player holds no
+  token. Its entry request finds `Activate` false and answers 503 with `Retry-After: 1`, as it does
+  today for an ARRIVED session whose channel stopped (`relay/httpapi/hls.go:385-396`). The STOPPED
+  entry is never requested and the sweeper removes it after 300 s.
 - **Activity** is any request carrying the session's token, **and** the entry request that created
   the session. A request counts from its arrival until its response is complete. So an entry
   waiting up to 58 s (R57, amends R56; #560) for the first init segments, or a media-playlist request long-polling for the
@@ -862,6 +892,30 @@ table says is STOPPED never holds a client entry.
   deadlock. The HLS-failure path's behaviour is therefore defined, but its wrong edit (a
   synchronous `Manager.release` on the pipeline's goroutine) need not self-wait. That is why the
   break-check's oracle is the run-ended case (§ 4a-1b).
+- **An admin client stop or a stream-limit termination ends its session on the control route's
+  request goroutine** (`ClientHandler`, `relay/httpapi/control.go:128-170`), through
+  `Table.EndClient`. *Amended for 4b (R114):* under `st.mu`, `EndClient` finds the ARRIVED or ACTIVE
+  session of that client id on that channel, marks it STOPPED with `stoppedAt` and its reason, and
+  takes its releases into a `Departure`, which the handler runs after unlocking, as today. It is
+  **not** a channel stop: the releases are run, not discarded, so the pipeline's refcount falls and
+  the linger starts with grace 0 (R84; `lingerEligibleLocked`, `relay/channel/hlsoutput.go:187-204`,
+  keys on the release, never on the session's state), and the client entry is dropped by the
+  session's own release, which may stop an idle channel exactly as a leave's does. A DEPARTED
+  session holds no client entry and is left alone, as today. The silence predicate is unaffected: a
+  STOPPED session is never silent and never holds the behind-live grace (`silentLocked`,
+  `relay/session/silence.go:63-105`), and once its release has dropped the client entry its id is no
+  client's, which is exactly where a removed session left it.
+  - **The reason.** The client-stop route, `DELETE /proxy/relay/channels/<id>/clients/<client>`,
+    takes an optional query parameter `reason`. `reason=stream_limit` gives `stream_limit`; an
+    absent or any other value gives `admin_stop`. The internal request signature already binds the
+    query string (`relay/httpapi/channels.go:337-345`), so the parameter is as authenticated as the
+    path. Django's `relay_client.stop_client` (`apps/proxy/relay_client.py:448-454`) gains a
+    keyword-only `reason=None`, sent as `params={"reason": reason}` when set, and
+    `attempt_stream_termination` (`apps/proxy/utils.py:197`) passes `reason="stream_limit"`. The
+    admin view (`apps/proxy/ts_admin_views.py:366-378`) and the two DVR callers
+    (`apps/channels/api_views.py:3260`, `:3823`) send none. Today the relay cannot tell the two
+    apart: both arrive on the same route with the same body.
+  - A TS or fMP4 client on the same route is unaffected: `ch.StopClient` ignores the reason.
 - **Explicit leaves and idle departures call the session's Attach release func**, exactly as a TS
   client's handler does. It runs on the request goroutine (for a leave) or, for an idle departure,
   on a goroutine of its own that the sweeper starts (ruling R51), never on the channel's: a lone
@@ -898,12 +952,13 @@ table says is STOPPED never holds a client entry.
     is removed, so B's hop counts zero connections: no 429 and no wait.
   - **A third-party app that never calls leave:** with `terminate_on_limit_exceeded` on (the
     default), the hop stops A's session and admits B (`attempt_stream_termination`,
-    `apps/proxy/utils.py:143-254`, which removes it through `DELETE …/clients/<id>`). With it off
+    `apps/proxy/utils.py:143-254`, which ends it through `DELETE …/clients/<id>?reason=stream_limit`;
+    A's next request is a 410 whose `ended` is `stream_limit`, R114). With it off
     (`apps/proxy/utils.py:400-402`), B gets 429 until A's session departs: at most one idle
     timeout (12 s at TD = 2) plus one 1 s sweep tick.
 - **The HLS pipeline's refcount** is the number of ARRIVED and ACTIVE sessions. When it reaches 0,
-  whether by the last departure, the last leave, or the last session going STOPPED, the pipeline
-  stops at once in 4a-1. In 4a-3 it starts the linger (D15), except when the sessions went STOPPED
+  whether by the last departure, the last leave, the last admin client stop or stream-limit
+  termination, or the last session going STOPPED, the pipeline stops at once in 4a-1. In 4a-3 it starts the linger (D15), except when the sessions went STOPPED
   because the HLS output failed or the channel stopped: then it is torn down with no linger. **A
   pipeline never exists with a refcount of 0 outside a linger**, so no encode runs without a
   viewer or a window to feed (R19).
@@ -1267,15 +1322,49 @@ the capability document below:
 
 | Need | Server surface |
 |---|---|
-| Is this a Mino server with 4a? (R16, on "add server") | `GET /api/mino/capabilities/` → 200 JSON. It is AllowAny, gated by the `XC_API` network ACL (403 otherwise), and served by Django under `^~ /api/`. The body is `{"product": "mino", "api_version": 1, "server_version": "<version.py>", "live_hls": {"available": true, "segment_seconds": 2, "session_leave": true, "rewind_window": {"available": <bool>, "depth_seconds": <int>}}}`. `rewind_window.available` is false until 4a-3 lands, and after it whenever `rewind_window_minutes` is 0. The app refuses a server that 404s this or reports `api_version` < 1. |
+| Is this a Mino server with 4a? (R16, on "add server") | `GET /api/mino/capabilities/` → 200 JSON. It is AllowAny, gated by the `XC_API` network ACL (403 otherwise), and served by Django under `^~ /api/`. The body is `{"product": "mino", "api_version": 1, "server_version": "<version.py>", "live_hls": {"available": true, "segment_seconds": 2, "session_leave": true, "end_reason": true, "rewind_window": {"available": <bool>, "depth_seconds": <int>}}}`. `rewind_window.available` is false until 4a-3 lands, and after it whenever `rewind_window_minutes` is 0. `end_reason` is true from 4b-0 (R115): a 410 from `/hls/` carries `ended` (§ Session resources). `api_version` stays 1, because the field is additive; a 4b build reads a missing `end_reason` as false. The app refuses a server that 404s this or reports `api_version` < 1. |
 | Sign in (R13) | `player_api.php?username=&password=` (no action), answering `user_info` and `server_info`. `user_info.allowed_output_formats` includes `"m3u8"` from 4a-1b. |
 | Channel list | `player_api.php?action=get_live_categories`, and `…&action=get_live_streams[&category_id=]` (unchanged). |
 | Playback | `http://<host>:<port>/live/<username>/<password>/<stream_id>.m3u8` → the multivariant (D2). The app never builds `/hls/` URLs itself: they come only from playlists. |
 | **Leaving a channel** | `DELETE` on the token path of any media playlist URL, `/hls/<token>`. The app calls it on zap, after R11's 10 s countdown ends, when playback is dismissed, and when the app is backgrounded without Picture in Picture. It answers 204 (§ Session resources). |
 | Now/next | `player_api.php?action=get_short_epg&stream_id=<id>[&limit=]` (unchanged). |
-| Programme markers inside the window | `player_api.php?action=get_simple_data_table&stream_id=<id>` (unchanged). Times follow `server_info` (`apps/output/views.py`'s `_build_xc_server_info`). |
-| Rewind | Seek within the playlist's range. The depth is the capability document's `depth_seconds`. |
-| Errors | 401/403 from the entry means credentials or ACL. 429 means the stream limit. 403 from `/hls/`: re-request the entry URL once, then show an error. After a channel stops, an app fetching video and audio playlists in parallel may see one 410 and then 403s ("410 once", § Presence): treat both the same, by re-requesting the entry, and do not treat that 403 as a failure. 410: the channel stopped, so re-tune. 503 with `Retry-After`: retry. |
+| Programme markers inside the window | `player_api.php?action=get_simple_data_table&stream_id=<id>&prev_days=1` (R116). Without `prev_days` the lookback is 0 days unless the user's `epg_prev_days` or a catch-up channel widens it (`resolve_xc_epg_prev_days`, `apps/channels/utils.py:83-115`; `apps/output/views.py:992-1004`), and the listing filters on `end_time > now − prev_days` (`apps/output/views.py:1027`, `:1039`), so a programme that has already ended, which is exactly what a rewind window spans, is omitted. An explicit `prev_days` takes precedence over both and is clamped to 0-30; 1 day covers the 120-minute ceiling on the window (D17). Each listing's `start` and `end` are UTC (`%Y-%m-%d %H:%M:%S`), with `start_timestamp` and `stop_timestamp` as epoch seconds, and `title` and `description` are base64 (`apps/output/views.py:1075-1087`). A channel on a dummy EPG with no stored programmes generates them on demand and ignores `prev_days`. |
+| Rewind | Seek within the playlist's range. The window the app can actually use is the player's own (`AVPlayerItem.seekableTimeRanges`); the capability document's `depth_seconds` is the configured ceiling, not a promise (R117, contract notes below). |
+| Errors | 401/403 from the entry means credentials or ACL (contract notes below). 429 means the stream limit. 403 from `/hls/`: re-request the entry URL once, then show an error. 410 from `/hls/` (R114): read `ended`. `channel_stopped` and `output_failed`: re-tune. `stream_limit` and `admin_stop`: do **not** re-tune on your own; with `terminate_on_limit_exceeded` on, a re-tune after `stream_limit` re-runs the hop, which terminates the other device's session in turn. After a stop, an app fetching video and audio playlists in parallel may see one 410 and then 403s ("410 once", § Presence): the 410 is the one that carries the reason. 503 with `Retry-After`: retry. |
+
+**Contract notes (R117).** What the server does and does not tell the app, so the app does not
+infer more than is there:
+
+- **Access denied.** There are three surfaces and they say different things.
+  - *Sign-in* (`player_api.php`): 403 `{"error": "Forbidden"}` is the network ACL, either the
+    global `XC_API` ACL or the per-user network refusal; 401 is the credentials
+    (`apps/output/views.py:490-516`).
+  - *The capability document*: 403 is the `XC_API` ACL (`core/api_views.py:699-700`).
+  - *The playback entry*: the hop's 403 is any of the `STREAMS` ACL, a channel marked
+    `hidden_from_output`, an adult channel under the user's `hide_adult_content`, or a channel the
+    user's level or Channel Profiles do not reach (`apps/proxy/authorize.py:450-476`, `:502-503`).
+    They are deliberately indistinguishable. 404 is an unknown stream id. 429 is the stream limit,
+    either because `terminate_on_limit_exceeded` is off or because the termination failed. Behind
+    nginx **no** hop denial carries a JSON body: 401 and 403 are nginx's own pages, and 404 and 429
+    are restored from `X-Authorize-Status` by `@authorize_denied` as nginx's own pages too
+    (`docker/nginx.conf:744-748`). The relay's own answers (502, 503) are JSON.
+  - There is **no** "live TV not allowed" signal. No per-user live-TV flag exists; a user who can
+    reach no channel sees an empty channel list and, for any channel, the entry's 403.
+- **The rewind depth is global.** `rewind_window_minutes` is one `proxy_settings` value for every
+  channel (D17), and 0 turns the window off server-wide; there is no per-channel depth. A channel
+  snapshots it when it starts, so a change reaches only channels started after it, while the
+  capability document reads the current value. A window also starts empty at the channel's first
+  HLS viewer, is shared, and degrades to the live edge on a disk error with no client-visible signal
+  (a follow-up, not part of 4b-0). So the app reads the usable window from `seekableTimeRanges`, and
+  uses `depth_seconds` only to scale its bar; `depth_seconds` 0 means rewind is off.
+- **A paused session is never ended by the server.** A paused AVPlayer keeps reloading the media
+  playlist (M7), so its session stays ACTIVE and keeps its provider slot and its place in the stream
+  limit for as long as the app stays paused. Once the paused playhead is older than the window (at
+  depth 0, older than the live-edge playlist's 10 segments, 20 s at a target of 2), its segments
+  answer 404 (§ Session resources). The app sends the leave at that point and stops; resuming then
+  re-tunes at the live edge.
+- **End reasons** are in the 410's body only (R114, R115). An app that wants them reads the
+  response itself; how it does so is the app repository's decision.
 
 **App-side, recorded here and owned by the app repository:**
 
@@ -1286,7 +1375,7 @@ the capability document below:
   app repository verifies which one covers IP-literal hosts on iOS/tvOS 27; this spec does not
   claim it.
 - **Local Network permission.** `NSLocalNetworkUsageDescription`, for the first LAN connection.
-- **The R11 countdown.** The app's 10 s "leaving rewind" countdown **is** the grace for its own
+- **The R11 countdown** (unchanged, R118). The app's 10 s "leaving rewind" countdown **is** the grace for its own
   zaps. The leave call is made when the countdown completes, not when it starts, and an explicit
   leave makes the window reclaimable at once (grace 0, R25). The server's 10 s behind-live grace
   applies only when a session departs without a leave. A cancelled countdown sends nothing.
@@ -1388,6 +1477,10 @@ The behaviours, by owning PR:
   - the behind-live grace delays reclaim;
   - the playlist spans the window depth;
   - a disk error degrades the window and not the output.
+- **4b-0** (amends rows 38, 39, 51 and 52 rather than adding one, § 4b-0):
+  - an admin client stop or stream-limit termination answers the session's next GET 410 with its
+    reason, then 403;
+  - every 410 names why the session stopped.
 
 **E2E.**
 
@@ -1465,7 +1558,8 @@ Each PR:
   mechanism, then the revert.
 
 4a-1b and 4a-1c are security-adjacent (a bearer token; slot accounting). The owner's ruling of
-2026-09-27 puts every review on `opus` while it stands.
+2026-09-27 puts every review on `opus` while it stands. 4b-0 is reviewed on `fable` from round one
+(R119).
 
 ### 4a-0 — e2e-upstream fixtures
 
@@ -1874,6 +1968,108 @@ PR description draft:
 - **The manual gate** follows R45: the implementer's own AVPlayer run on macOS 27 and the iOS 27
   Simulator, with a `seek(to: Date)` into the window, in the PR body. The Apple TV run and Q4 are
   owed by the owner and do not gate.
+
+### 4b-0 — the end reason
+
+The one server PR 4b needs (R114, R119). It is not a 4a PR, so D1's seven are unchanged. It must
+merge before the app repository's milestone 4 review, which builds against it.
+
+- **Branch** `migration/phase4-4b0-end-reason`, planned and implemented as every PR here is; reviews
+  on `fable` from round one (R119): it changes what a bearer-token session answers, and adds a
+  parameter to an internally authenticated control route.
+- **Scope.**
+  - `relay/session`: a STOPPED session records its reason (§ Session resources). `EndClient` takes
+    the reason and marks the session STOPPED instead of removing it, still returning its
+    `Departure` (§ Who ends sessions). `StopChannel` and `StopIfSilent` mark `channel_stopped`,
+    `StopPipeline` `output_failed`. `Begin`'s `Gone` lookup carries the reason. `stopLocked` still
+    skips a STOPPED session, so the first reason stands.
+  - `relay/httpapi`: `ClientHandler` reads `reason` from the query string and passes it to
+    `EndClient`; the 410 sites write the reason's body, and every failed resume writes the
+    `channel_stopped` body (`relay/httpapi/hls.go:65`, `:470-471`, `:512`, `:522`, `:540`, `:548`).
+  - Django: `relay_client.stop_client(identifier, client_id, *, timeout=…, reason=None)`, and
+    `attempt_stream_termination` passing `reason="stream_limit"` (§ Who ends sessions).
+    `relay_client.py` is a Gate 2 module, so its new lines are covered and
+    `scripts/coverage_live_path_isolated.sh` runs before push (`missing` stays 33).
+  - The capability document: `LiveHLSCapabilitySerializer` gains `end_reason`
+    (`core/serializers.py:238-242`), and `MinoCapabilitiesView` reports it true
+    (`core/api_views.py:708-716`). `api_version` stays 1 (R115).
+  - Parity rows 38, 39, 51 and 52 are amended in place: row 38's 403 list loses "ended by an
+    admin", and its "410 once and 403 after" names the four reasons; row 39's admin client stop and
+    stream-limit termination become a STOPPED session with its reason; row 51's "a pipeline whose
+    sessions went STOPPED … never lingers" names the channel stop and the output failure, since a
+    client-stopped session is STOPPED and still lingers; row 52's "removes its session" becomes
+    "ends its session". Their pins gain the new tests below. No new row, so `HIGHEST_ROW_ID` does
+    not move.
+  - No frontend change. The browser player already handles a 410 from `/hls/` without re-entering
+    and shows "The channel stopped, or this idle session was ended."
+    (`frontend/src/components/FloatingVideo.jsx:689-712`,
+    `frontend/src/utils/components/FloatingVideoUtils.js:125`). So after 4b-0 an admin client stop
+    or a stream-limit termination of a browser session shows that message where it used to re-enter
+    once on the 403 and play again. That is the intended effect, and it is recorded rather than
+    changed.
+  - CLAUDE.md: re-read § State's HLS-session sentence and the `relay_client` paragraph; neither is
+    expected to become false, since a session still ends on a client stop.
+- **Tests.**
+  - Go unit (`relay/session/table_test.go`): `EndClient` marks the session STOPPED with the reason it
+    was given, its next `Begin` is `Gone` with that reason and the one after is `Unknown`, and a
+    later `StopChannel` on the same channel leaves the reason unchanged.
+  - Go unit: `StopChannel`, `StopIfSilent` and `StopPipeline` each record their reason.
+  - Go (`relay/httpapi`): a client stop with `?reason=stream_limit` gives a 410 with the
+    `stream_limit` body then a 403; with no reason, and with an unknown one, `admin_stop`; an admin
+    channel stop gives `channel_stopped`; a failed HLS output gives `output_failed`.
+  - Go (`relay/httpapi/rewind_test.go`): an admin client stop of the last session lingers its
+    pipeline with no grace (R84 holds with the session STOPPED rather than removed).
+  - Python: `stop_client` with a reason signs and sends `?reason=stream_limit`, and without one
+    sends no query string; `attempt_stream_termination` passes `reason="stream_limit"`; the
+    capability document carries `end_reason: true`.
+  - E2E (`streaming`): the client-stop scenario asserts 410 with the `admin_stop` body, then 403.
+- **Tests changed, before → after** (each pins the behaviour being changed):
+  - `relay/session/table_test.go::TestEndClientEndsOnlyThatClientsLiveSession`: the ended
+    session's next `Begin` is `Unknown` → `Gone` with the reason, then `Unknown`.
+  - `relay/httpapi/hls_test.go::TestAnAdminClientStopEndsAnHLSSession`: the stopped session's GET
+    is 403 → 410 with the `admin_stop` body, then 403.
+  - `relay/httpapi/hls_test.go::TestAStoppedSessionIs410OnceThen403AndADeleteIs204`,
+    `relay/httpapi/hls_test.go::TestAResumeNeverStartsAChannel` and
+    `relay/httpapi/reclaim_test.go::TestABlockedTuneReclaimsASilentHLSChannel`: the 410 body
+    `{"error": "channel stopped"}` → `{"error": "channel stopped", "ended": "channel_stopped"}`.
+  - `apps/proxy/tests/test_stream_limits.py::test_terminating_a_live_client_goes_through_the_relay`:
+    `assert_called_once_with("abc", "c1")` → `("abc", "c1", reason="stream_limit")`.
+  - `core/tests/test_mino_capabilities.py::test_answers_anonymously_with_the_documented_body`: the
+    body gains `"end_reason": true`.
+  - `e2e/tests/streaming/hls-sessions.spec.ts::a tampered token, a left session and a stopped client are refused`:
+    the stopped client's GET is 403 → 410 with the `admin_stop` body, then 403.
+  - `e2e/tests/streaming/hls-sessions.spec.ts::a session on a stopped channel is refused 410 once and 403 after`
+    and `e2e/tests/streaming/hls-slot-reclaim.spec.ts::a session silent for more than two target durations yields its slot`:
+    the 410 body gains `"ended": "channel_stopped"`.
+- **Break-checks.**
+  - Restore `EndClient`'s removal (`delete(t.byID, sid)` in place of the STOPPED mark). The
+    `table_test.go` `EndClient` test reddens on `Unknown`, want `Gone`, and the `hls_test.go` admin
+    stop test on 403, want 410.
+  - Make `EndClient` discard the releases, as `stopLocked` does, instead of returning a
+    `Departure`. The R84 linger test reddens on a pipeline that stopped instead of lingering.
+  - Let `stopLocked` overwrite a STOPPED session's reason. The "a later `StopChannel` leaves the
+    reason" unit test reddens on `channel_stopped`, want `stream_limit`.
+  - Drop `reason="stream_limit"` from `attempt_stream_termination`'s call. The
+    `test_stream_limits.py` test reddens on the call's arguments. No relay test can see this edit,
+    because a client stop without the parameter is a valid `admin_stop`, which is why the Django test
+    carries it.
+  - Send `reason` in `stop_client`'s body instead of its query string. The `test_relay_client.py`
+    test reddens on the signed path, which must carry `?reason=stream_limit`.
+  - Omit `end_reason` from the serializer. The capability test reddens on the body.
+- **Stopping point.** Yes. Nothing else in 4b needs the server.
+
+PR description draft:
+
+> **Phase 4b-0: a stopped HLS session says why.** An admin client stop or a stream-limit
+> termination of an HLS session now leaves it STOPPED rather than forgotten, so its next request is
+> the existing one 410 rather than a 403 a player re-requests, and every 410 from `/hls/` carries
+> `ended`: `stream_limit`, `admin_stop`, `channel_stopped` or `output_failed`. Django's stream-limit
+> termination tells the relay which it is through `?reason=stream_limit` on the client-stop route.
+> The Mino capability document reports `live_hls.end_reason: true`; `api_version` stays 1. The
+> linger after a client stop is unchanged (R84). The browser player now shows its "channel stopped"
+> message after a client stop instead of re-entering once. Spec § Session resources, § Presence and
+> § 4b as amended on 2026-10-03; owner rulings R114, R115, R119. Changed tests, before → after:
+> <list>.
 
 ## Open questions that need a measurement
 
@@ -2310,7 +2506,22 @@ Filled in as PRs merge.
   held a byte, so every cold tune on the built-in FFmpeg stream profile, whose first chunk lands about
   6 s after the tune, answered 502.
 
-## Appendix A — the owner's rulings (2026-09-26/27), restated
+- **2026-10-03, amended for 4b's server contract** (written against `d646f652`; owner rulings
+  R114-R119, Appendix A). § Session resources, § Presence › Session states, § Who ends sessions,
+  § The rest, D15's parenthetical, § 4b, § Testing and gates, § The PRs (a new § 4b-0) and
+  Appendix A:
+  - an admin client stop or a stream-limit termination now leaves its session STOPPED, with its
+    releases run as a leave's are (so the R84 linger is unchanged), and its next GET is the one 410;
+  - every 410 from `/hls/` carries `ended`, one of four reasons, set once when the session is marked;
+  - the client-stop route takes `?reason=stream_limit`, sent only by Django's
+    `attempt_stream_termination`, because the relay could not otherwise tell the two stops apart;
+  - the capability document gains `live_hls.end_reason`, with `api_version` still 1;
+  - the programme-marker row asks for `prev_days=1`, and § 4b gains contract notes on access-denied
+    answers (no hop denial behind nginx carries JSON), the global rewind depth, a paused session and
+    end reasons;
+  - PR 4b-0 is specified, with its tests, its changed tests and its break-checks.
+
+## Appendix A — the owner's rulings (2026-09-26/27 and 2026-10-03), restated
 
 These override any default in this spec.
 
@@ -2408,6 +2619,31 @@ These override any default in this spec.
   Each is listed per file, with ≥ 85% on 4a-1b's own additions and a 12-round CI census. Anything
   else above the floor is a finding. The same rule applies to any later PR that first links a
   package.
+
+Rulings R28-R113 were made on the 4a plans and are recorded in those plans and in this spec's
+Changelog. The rulings of **2026-10-03** (owner, the 4b grilling session) amend the 4b contract:
+
+- **R114** (owner, 2026-10-03). An admin client stop or a stream-limit termination of an HLS
+  session (`Table.EndClient`) marks the session STOPPED with a reason instead of deleting it. Its
+  next request gets the existing one 410, with a JSON body whose `ended` is `stream_limit`,
+  `admin_stop`, `channel_stopped` or `output_failed`; then 403, as today. A channel stop carries
+  `channel_stopped` and a pipeline failure `output_failed`. The session-state diagram gains the edge
+  ARRIVED or ACTIVE → STOPPED by `EndClient`. (How Django tells the relay that a stop is a
+  stream-limit termination, the `?reason=` parameter, and the kept `error` field are the spec's,
+  § Who ends sessions and § Session resources, not the owner's words.)
+- **R115** (owner, 2026-10-03). The capability document gains `live_hls.end_reason: true`.
+  `api_version` stays 1.
+- **R116** (owner, 2026-10-03). The 4b contract's programme markers use `get_simple_data_table`
+  with `&prev_days=1`, because the default lookback of 0 omits programmes that have already ended.
+- **R117** (owner, 2026-10-03). The 4b contract records: what each access-denied answer means, and
+  that no "live TV not allowed" signal exists; that the rewind depth is global
+  (`rewind_window_minutes`), so a depth of 0 means rewind is off server-wide; that the app reads
+  the usable window from `seekableTimeRanges`; that a paused session is left by the app, not ended
+  by the server; and how the app handles each end reason.
+- **R118** (owner, 2026-10-03). R11's 10 s countdown is unchanged.
+- **R119** (owner, 2026-10-03). PR 4b-0 implements R114 and R115 in the Go relay and the capability
+  document. It is reviewed on `fable` from round one, and it must merge before the app repository's
+  milestone 4 review.
 
 Apple rules cited above are from Apple's *HLS Authoring Specification for Apple Devices* (revised
 2025-04-30), as summarised in the research that preceded this spec:
