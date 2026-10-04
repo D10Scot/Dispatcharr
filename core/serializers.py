@@ -239,6 +239,7 @@ class LiveHLSCapabilitySerializer(serializers.Serializer):
     available = serializers.BooleanField()
     segment_seconds = serializers.IntegerField()
     session_leave = serializers.BooleanField()
+    end_reason = serializers.BooleanField()
     rewind_window = RewindWindowCapabilitySerializer()
 
 

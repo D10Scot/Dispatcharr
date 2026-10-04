@@ -52,14 +52,19 @@ test(
     }
     expect((await request.get(`/hls/${first.token}/video.m3u8`)).status()).toBe(403);
 
-    // A client stopped through the admin route ends its session.
+    // A client stopped through the admin route ends its session: 410 with
+    // `admin_stop` on every request, not a 403 a player would re-request (R114, R120).
     const second = await enterHls(request, tune(channel.uuid));
     try {
       const clients = (await readChannelStatus(api, channel.uuid)).clients.filter((c) => c.output_format === 'hls');
       expect(clients, 'the one live hls client').toHaveLength(1);
       const stopped = await api.post(`/proxy/ts/stop_client/${channel.uuid}`, { client_id: clients[0].client_id });
       expect(stopped.status()).toBe(200);
-      expect((await request.get(`/hls/${second.token}/video.m3u8`)).status()).toBe(403);
+      for (const attempt of ['first', 'second']) {
+        const gone = await request.get(`/hls/${second.token}/video.m3u8`);
+        expect(gone.status(), `the ${attempt} GET on a client-stopped session`).toBe(410);
+        expect(await gone.json()).toEqual({ error: 'stopped by an administrator', ended: 'admin_stop' });
+      }
     } finally {
       await leaveHls(request, second.token);
       await stopChannels(api, channel.uuid);
@@ -68,7 +73,7 @@ test(
 );
 
 test(
-  'a session on a stopped channel is refused 410 once and 403 after',
+  'a session on a stopped channel is refused 410 with its reason until it is forgotten',
   { tag: '@contract' },
   async ({ upstream, seed, api, request }) => {
     const channel = await hlsChannel(upstream, seed, api, 'HLS Stopped');
@@ -78,9 +83,13 @@ test(
       expect(stop.status()).toBe(200);
 
       const gone = await request.get(`/hls/${entry.token}/video.m3u8`);
-      expect(gone.status(), 'the one 410').toBe(410);
-      expect(await gone.json()).toEqual({ error: 'channel stopped' });
-      expect((await request.get(`/hls/${entry.token}/video.m3u8`)).status(), 'then 403').toBe(403);
+      expect(gone.status(), 'the first 410').toBe(410);
+      expect(await gone.json()).toEqual({ error: 'channel stopped', ended: 'channel_stopped' });
+      // Every request until the session is forgotten 300 s after it stopped
+      // (R120); the 403 after that is pinned in Go with an injected clock.
+      const again = await request.get(`/hls/${entry.token}/video.m3u8`);
+      expect(again.status(), 'the second 410').toBe(410);
+      expect(await again.json()).toEqual({ error: 'channel stopped', ended: 'channel_stopped' });
     } finally {
       // A session already forgotten is still a 204: the leave is idempotent.
       expect(await leaveHls(request, entry.token)).toBe(204);

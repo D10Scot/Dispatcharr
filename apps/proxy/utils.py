@@ -194,7 +194,9 @@ def attempt_stream_termination(user_id, requesting_client_id, active_connections
                 from apps.proxy import relay_client
 
                 try:
-                    result = relay_client.stop_client(t['media_id'], t['client_id'])
+                    result = relay_client.stop_client(
+                        t['media_id'], t['client_id'], reason="stream_limit"
+                    )
                 except (relay_client.RelayUnavailable, relay_client.RelayRefused) as exc:
                     # Deny the new stream if we cannot stop the old one,
                     # exactly as the timeshift branch below does when

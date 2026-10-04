@@ -499,3 +499,36 @@ class RelayClientCallTests(SimpleTestCase):
         self.assertEqual(
             sent.call_args.args[1], "/proxy/relay/channels/abc/clients/c%201"
         )
+
+    def test_stop_client_with_a_reason_signs_and_sends_it_in_the_query(self):
+        with mock.patch.dict(os.environ, {"DISPATCHARR_ENV": "aio"}, clear=True):
+            with mock.patch.object(
+                requests, "request", return_value=_Response(200)
+            ) as sent:
+                relay_client.stop_client("abc", "c1", reason="stream_limit")
+        path = "/proxy/relay/channels/abc/clients/c1?reason=stream_limit"
+        self.assertTrue(
+            sent.call_args.args[1].endswith(path),
+            f"the dialled URL {sent.call_args.args[1]!r} must end {path!r}: "
+            "the reason rides the signed query string",
+        )
+        self.assertIsNone(sent.call_args.kwargs["data"])
+        header = sent.call_args.kwargs["headers"][
+            internal_auth.HEADER_INTERNAL_REQUEST
+        ]
+        _v, timestamp, digest = header.split(".")
+        self.assertEqual(
+            digest,
+            internal_auth.internal_request_token(
+                "DELETE", path, b"", int(timestamp)
+            ),
+        )
+
+    def test_stop_client_without_a_reason_sends_no_query_string(self):
+        with mock.patch.dict(os.environ, {"DISPATCHARR_ENV": "aio"}, clear=True):
+            with mock.patch.object(
+                requests, "request", return_value=_Response(200)
+            ) as sent:
+                relay_client.stop_client("abc", "c1")
+        self.assertTrue(sent.call_args.args[1].endswith("/clients/c1"))
+        self.assertNotIn("?", sent.call_args.args[1])

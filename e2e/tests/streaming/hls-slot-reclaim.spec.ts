@@ -76,7 +76,7 @@ test(
 
       const gone = await request.get(`/hls/${entryA.token}/video.m3u8`);
       expect(gone.status(), "the reclaimed session's next request").toBe(410);
-      expect(await gone.json()).toEqual({ error: 'channel stopped' });
+      expect(await gone.json()).toEqual({ error: 'channel stopped', ended: 'channel_stopped' });
     } finally {
       for (const token of tokens) await leaveHls(request, token);
       await stopChannels(api, a.uuid, b.uuid);

@@ -171,6 +171,7 @@ test(
         available: true,
         segment_seconds: 2,
         session_leave: true,
+        end_reason: true,
         rewind_window: { available: true, depth_seconds: 3600 },
       },
     });

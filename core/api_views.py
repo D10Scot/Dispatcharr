@@ -709,6 +709,7 @@ class MinoCapabilitiesView(APIView):
                         "available": True,
                         "segment_seconds": 2,
                         "session_leave": True,
+                        "end_reason": True,
                         "rewind_window": {
                             "available": rewind_minutes > 0,
                             "depth_seconds": rewind_minutes * 60,

@@ -401,7 +401,7 @@ class LiveConnectionsComeFromTheRelayTests(TestCase):
                 [{"media_id": "abc", "client_id": "c1", "connected_at": 1.0,
                   "type": "live"}],
             )
-        stopped.assert_called_once_with("abc", "c1")
+        stopped.assert_called_once_with("abc", "c1", reason="stream_limit")
         self.assertTrue(freed)
 
     def test_a_relay_that_cannot_stop_denies_the_new_stream(self):
