@@ -1,8 +1,44 @@
 {
  "detail": null,
- "fetched_at": "2026-10-03T11:11:35+00:00",
+ "fetched_at": "2026-10-04T11:51:39+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-10-03T18:26:59Z",
+   "id": 579,
+   "label_events": [
+    {
+     "at": "2026-10-03T18:27:01Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "No client-visible signal when an HLS pipeline's rewind window degrades to the live edge",
+   "updated_at": "2026-10-03T18:26:59Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-10-03T18:26:57Z",
+   "id": 578,
+   "label_events": [
+    {
+     "at": "2026-10-03T18:26:58Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Capability document hard-codes segment_seconds 2, but HLS (Automatic) can run at 6",
+   "updated_at": "2026-10-03T18:26:57Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-09-30T21:32:35Z",
