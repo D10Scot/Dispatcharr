@@ -1,8 +1,36 @@
 {
  "detail": null,
- "fetched_at": "2026-10-04T11:51:39+00:00",
+ "fetched_at": "2026-10-05T13:44:43+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-10-04T19:25:45Z",
+   "id": 583,
+   "label_events": [],
+   "labels": [],
+   "state": "open",
+   "title": "Channel list: an ungrouped channel's category id is never named in the category list (from mino-apple G1)",
+   "updated_at": "2026-10-04T19:25:45Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-10-04T14:23:34Z",
+   "id": 582,
+   "label_events": [
+    {
+     "at": "2026-10-04T14:23:35Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "TestAGetOnASettlingDepartureIsBusyThenResumes races the departure's settle under load",
+   "updated_at": "2026-10-04T14:23:34Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-10-03T18:26:59Z",
