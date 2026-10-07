@@ -1,8 +1,18 @@
 {
  "detail": null,
- "fetched_at": "2026-10-06T12:51:04+00:00",
+ "fetched_at": "2026-10-07T12:45:16+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-10-07T08:18:05Z",
+   "id": 590,
+   "label_events": [],
+   "labels": [],
+   "state": "open",
+   "title": "Live entry URL: a username or password containing '/' cannot be used (path unquoted before route match)",
+   "updated_at": "2026-10-07T08:18:05Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-10-05T20:32:11Z",
