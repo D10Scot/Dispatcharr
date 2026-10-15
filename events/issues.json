@@ -1,8 +1,18 @@
 {
  "detail": null,
- "fetched_at": "2026-10-14T11:18:22+00:00",
+ "fetched_at": "2026-10-15T10:57:09+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-10-14T20:18:10Z",
+   "id": 596,
+   "label_events": [],
+   "labels": [],
+   "state": "open",
+   "title": "4b contract: state that live media playlists carry PROGRAM-DATE-TIME",
+   "updated_at": "2026-10-14T20:18:10Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-10-12T19:28:24Z",
@@ -307,7 +317,7 @@
    ],
    "state": "open",
    "title": "No client-visible signal when an HLS pipeline's rewind window degrades to the live edge",
-   "updated_at": "2026-10-03T18:26:59Z"
+   "updated_at": "2026-10-14T18:45:59Z"
   },
   {
    "closed_at": null,
