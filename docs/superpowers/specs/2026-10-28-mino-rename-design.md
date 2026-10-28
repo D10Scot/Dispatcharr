@@ -923,7 +923,7 @@ registry name that exists is the legacy one, and the upgrade job already runs on
 - **Other:**
   - `core/tasks.py`: the stable check repointed with its 404 logged at INFO, and the dev-build
     branch disabled, with its tests and break-checks (C-3, C-3a). Both branches call
-    `requests.get` (`core/tasks.py:824,928`) and `__timestamp__` is imported inside the task
+    `requests.get` (`core/tasks.py:824,926`) and `__timestamp__` is imported inside the task
     (`:812`), so `patch("version.__timestamp__", …)` and `patch("core.tasks.requests.get")` are the
     two seams the tests need. Labels, measured for `core/tasks.py`, `apps/output/epg.py` and the new
     `core/tests/` module: `["apps.output.tests", "core.tests"]`.
@@ -1082,10 +1082,15 @@ of its own, so the uncovered part of each is the call line and nothing else:
   level at import. The WARNING goes through `logging` before Django has configured logging, so it
   reaches stderr through Python's last-resort handler, which prints WARNING and above.
 - Go: `relay/config/envalias.go` in the already-linked, already-tested `relay/config` package,
-  `func AliasLegacyEnv() []string` (the warnings it would log, one per variable, so a test reads
-  them without capturing the logger). `main()` gains one line, `config.AliasLegacyEnv()` before
-  `config.Load()` (`relay/main.go:33`), each returned line logged through `log.Printf`. A new
-  package would move the floor's `packages=` and need R27's re-baseline; `relay/config` does not.
+  `func AliasLegacyEnv(sink func(format string, args ...any))`, which writes one warning per
+  variable **through the sink** rather than returning them. `main()` gains exactly one statement,
+  `config.AliasLegacyEnv(log.Printf)` before `config.Load()` (`relay/main.go:33`), and nothing
+  else: a returned slice would make `main()` loop and log, and a `for` statement plus its body is
+  two coverage blocks, not one (measured in round 4 on a scratch package with `go test
+  -covermode=atomic -coverprofile`: a single call adds no block and raises the enclosing block's
+  count by one). The test passes a collector that appends `fmt.Sprintf(format, args...)` to a
+  slice. A new package would move the floor's `packages=` and need R27's re-baseline;
+  `relay/config` does not.
 - Shell: `docker/env-alias.sh`, POSIX `sh` because `docker/healthcheck.sh` is `#!/bin/sh`.
 
 **New tests, one per alias mechanism, each with a break-check. No case supplies a default value:**
@@ -1096,7 +1101,7 @@ with the alias absent.
 | Mechanism | Test | Break-check |
 |---|---|---|
 | Python | `tests/test_env_alias.py` (label `tests`). Each case runs `[sys.executable, "-c", "import dispatcharr, os; print('MINO_LOG_LEVEL=' + str(os.environ.get('MINO_LOG_LEVEL')))"]` with `cwd` at the repository root and an **allowlisted** `env`: `PATH`, `HOME`, `LANG`, `PYTHONPATH` (the repository root) and the case's own variables, never a copy of `os.environ`. The hook and CI set `*_LOG_LEVEL=WARNING` themselves (`pre-commit-tests.sh:163`, `run-affected-tests.sh:121`, `backend-tests.yml:150,193`), and after E1 those lines set `MINO_LOG_LEVEL`, which would make "only the old name set" false and the "`MINO_` wins" case tautological. (a) Only `DISPATCHARR_LOG_LEVEL=warning`: stdout carries `Celery using effective log level: WARNING` (`celery.py:33`) and `MINO_LOG_LEVEL=warning`; stderr carries exactly one WARNING naming `DISPATCHARR_LOG_LEVEL` and `MINO_LOG_LEVEL`. (b) `DISPATCHARR_LOG_LEVEL=warning` and `MINO_LOG_LEVEL=error`: stdout carries `… ERROR` and `MINO_LOG_LEVEL=error`; the WARNING says `MINO_LOG_LEVEL` wins. (c) Neither: `… DEBUG` and no WARNING. `warning` is not the default, and nothing in the tree writes `/tmp/dispatcharr_log_level` (`celery.py:21-22` is its only mention), so the broken chain below ends at the default | Move the call below `from .celery import app`. Case (a) reddens on stdout: `Celery using effective log level: DEBUG` where `WARNING` was expected, which names the mechanism, `celery.py:15` read the level before the alias ran. The `MINO_LOG_LEVEL=warning` line still prints in that state, which is why an assertion on `os.environ` alone could not see this edit |
-| Go | `relay/config/envalias_test.go`, in `config_test.go`'s style (`t.Setenv`; the test registers **both** names with `t.Setenv` before the call so the function's own `os.Setenv` is restored at test end). (a) Only `DISPATCHARR_RELAY_GO_PORT=5999`: afterwards `os.Getenv("MINO_RELAY_GO_PORT") == "5999"` and exactly one returned line names both. (b) `DISPATCHARR_RELAY_GO_PORT=5999` and `MINO_RELAY_GO_PORT=6001`: `6001` survives and the line says `MINO_` wins. (c) No `DISPATCHARR_` variable: no line | A wrong edit **inside** `AliasLegacyEnv`: reverse the precedence so the old name overwrites a set new one. Case (b) reddens, `MINO_RELAY_GO_PORT = 5999, want 6001`. The call line in `main()` is pinned by the reviewer reading `relay/main.go`, not by a test: `go test` never runs `main()` (C-8 point 4), and no stand-in re-exec is added to pretend otherwise |
+| Go | `relay/config/envalias_test.go`, in `config_test.go`'s style (`t.Setenv`; the test registers **both** names with `t.Setenv` before the call so the function's own `os.Setenv` is restored at test end). Each case calls `AliasLegacyEnv(collect)`, where `collect` appends `fmt.Sprintf(format, args...)` to a slice. (a) Only `DISPATCHARR_RELAY_GO_PORT=5999`: afterwards `os.Getenv("MINO_RELAY_GO_PORT") == "5999"` and the slice holds exactly one line naming both. (b) `DISPATCHARR_RELAY_GO_PORT=5999` and `MINO_RELAY_GO_PORT=6001`: `6001` survives and the one line says `MINO_` wins. (c) No `DISPATCHARR_` variable: the slice is empty | A wrong edit **inside** `AliasLegacyEnv`: reverse the precedence so the old name overwrites a set new one. Case (b) reddens, `MINO_RELAY_GO_PORT = 5999, want 6001`. The call line in `main()` is pinned by the reviewer reading `relay/main.go`, not by a test: `go test` never runs `main()` (C-8 point 4), and no stand-in re-exec is added to pretend otherwise |
 | Shell | `docker/tests/test-env-alias.sh`, run by `lint.yml` beside `.claude/hooks/tests/test_hooks.sh` (`lint.yml:226`); no Docker. Each case sources `docker/env-alias.sh` in a fresh `env -i` shell. (a) Only `DISPATCHARR_ROLE=api`: `MINO_ROLE=api` and one warning naming both. (b) `DISPATCHARR_ROLE=api` and `MINO_ROLE=worker`: `MINO_ROLE=worker`. (c) Nothing old: no output. `api` and `worker` are chosen because the role's default is `all` | Reverse the precedence inside `env-alias.sh`: case (b) reddens, naming `MINO_ROLE=api` |
 | Healthcheck | A new case in `docker/tests/test-puid-pgid.sh`, in `test_custom_port`'s shape (`:1618-1655`): run the image with `-e DISPATCHARR_RELAY_GO_PORT=5659` (old name, **non-default**: 5658 is what `healthcheck.sh:33` falls to), `wait_for_ready`, then `docker exec "$name" /bin/sh /app/docker/healthcheck.sh` must exit 0 (the exact `HEALTHCHECK` command, `docker/Dockerfile:117-118`). `wait_for_ready` itself checks `supervisorctl status api-uwsgi` (`:181-193`) and never the healthcheck, so a container that is "ready" says nothing about this script | Drop the `.`-source of `docker/env-alias.sh` from `healthcheck.sh`: it reads an unset `MINO_RELAY_GO_PORT`, probes 5658 where nothing listens, and the `exec` exits non-zero, which the case reports as `healthcheck exited <n> with the legacy port name set` |
 | devProxy | `frontend/src/__tests__/devProxy.test.js:92-94` already tables `relayGoPort` with `DISPATCHARR_RELAY_GO_PORT` (`''`, `'abc'`, `'6000'`); those three rows move to `MINO_RELAY_GO_PORT` (listed under the test-modification rule) and gain `{ DISPATCHARR_RELAY_GO_PORT: '6000' } → '6000'` and `{ MINO_RELAY_GO_PORT: '6001', DISPATCHARR_RELAY_GO_PORT: '6000' } → '6001'` | Drop the `?? env.DISPATCHARR_RELAY_GO_PORT` fallback: the old-name row reddens, `'5658'` where `'6000'` was expected |
@@ -1113,8 +1118,11 @@ with the alias absent.
   `--gate` before pushing. A pure rename moves no statement.
 - **The Go coverage ratchet, with a declared raise** (CLAUDE.md § Testing, ruling R21). Package
   `main` is linked and in the floor (`scripts/coverage_relay_go.floor.packages:1`), and nothing
-  tests `main()`, so the one statement E1 adds to it, the `config.AliasLegacyEnv()` call, is
-  uncovered by construction and `missing` rises by exactly one. `scripts/check_floor_raise.sh`
+  tests `main()`, so the one statement E1 adds to it, the `config.AliasLegacyEnv(log.Printf)`
+  call, is uncovered by construction and `missing` rises by exactly one. **Exactly one because the
+  sink shape keeps `main()` to a single call**: round 4 measured on a scratch package that a
+  returned slice looped and logged in `main()` costs two blocks (the `for` and its body), which
+  `check_floor_raise.sh:50-52` would refuse against `raise_listed=1`. `scripts/check_floor_raise.sh`
   (`go-tests.yml`'s floor step) refuses an undeclared rise, and refuses a declaration whose
   `raise_from` is not the base floor's `missing` (`:42-45`). So E1's `scripts/coverage_relay_go.floor`
   carries `raise_from=<the floor's missing= at E1's base; 705 at 632f1d3d>` and `raise_listed=1`,
@@ -1166,7 +1174,7 @@ above, never a rewrite of one of these). Measured at `632f1d3d` with `git grep -
   `HTTP_X_DISPATCHARR_AUTHORIZED=` kwargs at `:237`), `test_authorize_internal_view.py` (10;
   `PATH = "/_dispatcharr/authorize-internal"` at `:46`), `test_internal_auth.py` (10; `_Req(
   HTTP_X_DISPATCHARR_AUTHORIZED=…)`, `HTTP_X_DISPATCHARR_INTERNAL=…`), `test_authorize.py` (7),
-  `test_internal_relay_permission.py` (6; `HTTP_X_DISPATCHARR_INTERNAL=` at `:185,204,212`),
+  `test_internal_relay_permission.py` (6; `HTTP_X_DISPATCHARR_INTERNAL` / `_REQUEST` at `:28,31,71,86`),
   `test_next_source_api.py:162-163`, `test_control_plane_client.py:325`, `test_hls_format.py:40`,
   `test_tune_path_query_ledger.py:235` (the path the ledger keys its authorize-hop multiset on; the
   multiset itself does not move), `apps/proxy/vod_proxy/tests/test_vod_redirect.py:359`
@@ -1320,26 +1328,41 @@ that the message names `DISPATCHARR_X` and `MINO_X`; the no-old-name case assert
 with no message; and each mechanism gains one case with **two** old names set, asserting that
 both are named, since a refusal that reports only the first would send the owner round the loop
 once per variable. The bodies stay where E1 put them (`dispatcharr/env_alias.py`,
-`relay/config/envalias.go` as `RefuseLegacyEnv() []string`, `docker/env-alias.sh`), so the
-refusal logic is tested directly and each choke point is again a call line. A new entrypoint case
-asserts that a stale `DISPATCHARR_` line in `/etc/environment` is removed at start.
+`docker/env-alias.sh`, and `relay/config/envalias.go`, where `AliasLegacyEnv(sink)` becomes
+`RefuseLegacyEnv() error`), so the refusal logic is tested directly. A new entrypoint case asserts
+that a stale `DISPATCHARR_` line in `/etc/environment` is removed at start.
+
+**The Go refusal adds nothing to `main()`.** `RefuseLegacyEnv() error` returns one error naming
+every `DISPATCHARR_*` variable found and its `MINO_*` name (names only, never values, so
+`main.go:40`'s credential-logging marker, "config.Load's errors name a variable, a port, or the
+secret FILE's path", stays true), and `config.Load()` calls it as its **first statement** and
+returns that error. `main()`'s existing `cfg, err := config.Load(); if err != nil { log.Printf(
+"startup failed: %v", err); os.Exit(1) }` (`relay/main.go:33-42`) already handles it, so E2
+**deletes** E1's `config.AliasLegacyEnv(log.Printf)` line from `main()` and adds no line there.
+Exit status is 1 rather than E1's draft 2; the message is what the owner reads, and `startretries`
+shows it twenty times either way. Unlike `main()`, `Load()` is tested (`config_test.go`), so the
+call site inside it is pinned by a test: `TestLoadRefusesLegacyNames` sets
+`DISPATCHARR_RELAY_GO_PORT=5999` with a valid secret and asserts `Load()` returns an error naming
+`DISPATCHARR_RELAY_GO_PORT` and `MINO_RELAY_GO_PORT`.
 
 **Break-checks:**
 
 - Comment out the refusal call in `dispatcharr/__init__.py`. The Python case reddens with
   "exited 0", and its stdout shows the alias no longer running either.
-- A wrong edit inside `RefuseLegacyEnv`: skip the last variable found. The Go case that sets two
-  old names reddens, naming the one that was not reported. The `main()` lines are pinned by the
-  reviewer reading `relay/main.go`, as in E1.
+- A wrong edit inside `RefuseLegacyEnv`: skip the last variable found. The two-old-names case
+  reddens, naming the one that was not reported.
+- Delete the `RefuseLegacyEnv()` call from `Load()`. `TestLoadRefusesLegacyNames` reddens:
+  `Load()` returned a config where an error was expected.
 
-**Hooks and gates:** as E1, on a `migration/**` branch, including **a second declared Go floor
-raise** (R21): `main()` loses E1's one call line and gains the refusal's call, its loop over the
-returned lines and the `os.Exit(2)`, all uncovered by construction. The implementer counts the
-statements from the census, declares `raise_from=<the floor's missing= at E2's base>` and
-`raise_listed=<that count>` (replacing E1's pair, which `check_floor_raise.sh:42-45` would refuse
-as stale), lists `relay/main.go:<lines>` in the PR body, and sets `missing` to the worst of the
-12-round CI census, ≤ the sum. The refusal body in `relay/config` is covered by its own test, so
-the listed total is the `main()` lines alone.
+**Hooks and gates:** as E1, on a `migration/**` branch. **The Go floor, counted before the census
+rather than from it:** `main()` loses one uncovered statement (E1's call) and gains none, so the
+untested package's `missing` falls by exactly one and no raise is declared. `check_floor_raise.sh:31-33`
+admits `NEW <= OLD` silently. E2 therefore **removes** E1's `raise_from`/`raise_listed` pair from
+`scripts/coverage_relay_go.floor` (as 4a-1d removed 4a-1c's once its own census landed under the
+cap) and sets `missing` to the worst of its 12-round CI census, which must be ≤ E1's floor − 1; a
+draw above that is a finding to attribute per line, never a reason to put the pair back. E1 and E2
+are consistent: both bodies live in `relay/config` and are tested there; E1's one `main()` line is
+declared as `raise_listed=1`, and E2 takes it away again.
 
 **PR description draft:**
 
