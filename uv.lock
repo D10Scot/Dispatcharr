@@ -685,7 +685,7 @@ requires-dist = [
     { name = "streamlink" },
     { name = "supervisor", specifier = "==4.3.0" },
     { name = "torch", specifier = "==2.13.0+cpu", index = "https://download.pytorch.org/whl/cpu" },
-    { name = "twisted", specifier = ">=26.10.0rc1" },
+    { name = "twisted", specifier = "==26.10.0rc2" },
     { name = "tzlocal" },
     { name = "urllib3", specifier = ">=2.8.0" },
     { name = "uwsgi" },

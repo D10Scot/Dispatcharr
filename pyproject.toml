@@ -43,7 +43,7 @@ dependencies = [
     "certifi>=2026.10.18", # GHSA-6q48-6c7w-9gw2, fixed in 2026.10.18
     "filelock>=4.2.1", # GHSA-v4x8-3wr5-3wq8 / CVE-2026-112940, fixed in 4.2.1
     "msgpack>=1.2.3", # GHSA-j586-36cw-2gc2, fixed in 1.2.3
-    "twisted>=26.10.0rc1", # GHSA-3476-c5c2-fr73, GHSA-53xc-49m8-p798, GHSA-cwm5-jh59-mwxr: the fix ships only as a release candidate
+    "twisted==26.10.0rc2", # GHSA-3476-c5c2-fr73, GHSA-53xc-49m8-p798, GHSA-cwm5-jh59-mwxr: the fix ships only as a release candidate
     # Test-only (property-based testing). Lives in the main dependency list because
     # the repo has no dev/test dependency group yet and CI installs with --no-dev;
     # splitting out a [dependency-groups] dev group is a deliberate future refactor.
