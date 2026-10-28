@@ -1,0 +1,1201 @@
+# Renaming Dispatcharr to Mino
+
+**Date:** 2026-10-28
+**Status:** Draft
+**Parent:** [ADR 0010](../../adr/0010-the-product-is-renamed-mino-and-upstream-is-no-longer-tracked.md)
+(the product is renamed Mino, and upstream is no longer tracked). It lands in this spec's own
+branch.
+**Owner rulings** (override any default here): M1 no more syncing with upstream; M2 no deployment
+but the owner's, which must upgrade in place with its data; M3 the repository becomes
+`D10Scot/mino` and the app is `D10Scot/mino-apple` (`scot.d10.mino`); M4 decision records keep the
+old name. Restated in Appendix A.
+**Verified at:** `main` `632f1d3d`. Every `file:line` below was read there. Line numbers drift.
+Identifier names, route shapes and env var names are the durable part of each citation.
+
+Implement this plan task by task with subagents, per CLAUDE.md § Delegation for phase work.
+
+## Goal
+
+Everything a user, an operator or a client sees says **Mino**. The repository is
+`D10Scot/mino`, and the image is `ghcr.io/d10scot/mino`. The owner's instance upgrades in place
+and keeps its PostgreSQL rows, its `/data` volume, recordings, plugins and settings.
+
+Renaming is the whole charter. No PR in this programme refactors, fixes a defect it walks past, or
+"tidies" an identifier this spec keeps. Each PR in § PR sequence is a legitimate stopping point.
+After C1 and C2 the product already *reads* as Mino.
+
+## How to read this spec
+
+- § Scale gives the measured inventory.
+- § The rule says how a category is decided.
+- § Categories decides every category.
+- § PR sequence orders the work. Each PR has its verification and a PR-description draft.
+- § The repository rename covers the owner's settings action and what breaks or redirects.
+- § Owner actions lists everything done by hand, in order.
+- § Open questions holds decisions this spec recommends but cannot settle.
+
+## Scale (measured at `632f1d3d`)
+
+```bash
+git grep -i -c dispatcharr 632f1d3d -- . | awk -F: '{s+=$NF; n++} END {print n" files, "s" lines"}'
+#   694 files, 7200 lines
+git grep -i -o dispatcharr 632f1d3d -- . | wc -l      # 8580 occurrences
+git ls-files | grep -i dispatcharr | wc -l              # 31 paths
+```
+
+The dispatch brief's figures (about 7,200 hits in 694 files, 31 paths) hold. Files with a hit, by
+top-level directory: apps 162, relay 113, docs 110, e2e 81, frontend 41, docker 35, scripts 22,
+e2e-upstream 22, .github 19, `dispatcharr/` 17, root files 15, tests 14, core 14, .claude 14,
+dashboard 9, metrics 3, .idea 3.
+
+**Env var names.** The brief estimated 94 distinct `DISPATCHARR_*` variables. That is not what the
+tree holds. In living files (records excluded), `git grep -h -o -E 'DISPATCHARR_[A-Z0-9_]*[A-Z0-9]'`
+yields 58 distinct tokens:
+
+- 34 are environment variables read by the product (Appendix B lists them).
+- 16 are read only by development tooling: `DISPATCHARR_E2E_*` (12), `DISPATCHARR_TEST_*` (3) and
+  `DISPATCHARR_WRITE_GOLDEN`.
+- 3 are Django setting names read by `getattr(settings, …)`, never env vars:
+  `DISPATCHARR_PLUGIN_IMPORT_MAX_{FILES,BYTES,FILE_BYTES}` (`apps/plugins/api_views.py:57-59`).
+- 5 are fragments, not variables: the three tails of `HTTP_X_DISPATCHARR_*`, the `DISPATCHARR_E2E`
+  prefix, and the local variable `DISPATCHARR_HEADERS` (`core/tasks.py:818`).
+
+**Records.** The record globs below (§ The rule, R-1) hold 5,500 of the 7,200 lines. Nearly all
+of them are in `docs/superpowers/plans/` (3,868 lines) and `docs/superpowers/specs/` (527). The
+work is the remaining 1,700 or so lines in living files.
+
+**Inventory by category.** The script is in the scratch notes. It assigns each hit *line* to the
+first category whose pattern matches it, in the order below, so these are line counts, not
+occurrence counts. "Living" excludes the record globs.
+
+| # | Category | Living lines / files | Records | Representative anchor | Decision | PR |
+|---|---|---|---|---|---|---|
+| 1 | Go module path `github.com/D10Scot/Dispatcharr/relay` | 218 / 107 | 241 | `relay/go.mod:1` | rename | G1 |
+| 2 | Repo identity: `D10Scot/Dispatcharr`, `ghcr.io/d10scot/dispatcharr`, the Pages URL | 221 / 73 | 490 | `docker/docker-compose.aio.yml:6` | rename | D1, D2 |
+| 3 | Upstream identity: `Dispatcharr/Dispatcharr`, its docs site, Open Collective, Docker Hub, Plugins repo | 38 / 18 | 43 | `core/tasks.py:924` | per row (§ C-3) | C1, C2, D2 |
+| 4 | Wire headers `X-Dispatcharr-*` / `HTTP_X_DISPATCHARR_*` | 126 / 37 | 247 | `apps/proxy/internal_auth.py:56-58` | rename, atomic | W1 |
+| 5 | Internal routes `/_dispatcharr/authorize[-internal]` | 35 / 12 | 86 | `dispatcharr/urls.py:47,59` | rename, atomic | W1 |
+| 6 | nginx include *file names* `dispatcharr_api_params*.conf` | 35 / 6 | 105 | `docker/nginx.conf:98` | keep (internal file name) | — |
+| 7 | Tooling env vars `DISPATCHARR_{E2E,TEST}_*`, `_WRITE_GOLDEN` | 134 / 20 | 244 | `.claude/hooks/start-test-container.sh:19` | rename | E1 |
+| 8 | Product env vars `DISPATCHARR_*` | 559 / 88 | 846 | `docker/entrypoint.sh:21` | alias, then refuse | E1, E2 |
+| 9 | Django app labels and table names `dispatcharr_channels`, `dispatcharr_connect` | 137 / 58 | 52 | `apps/channels/apps.py:7` | keep | — |
+| 10 | Python package `dispatcharr` (settings, wsgi, asgi, celery, urls) | 267 / 135 | 516 | `manage.py:13` | keep (owner question Q1) | — |
+| 11 | venv path `/dispatcharrpy` | 30 / 20 | 88 | `docker/DispatcharrBase:10-11` | keep | — |
+| 12 | Test containers, volumes and images (`dispatcharr-testrunner`, `-hookdb`, `-e2e`, …) | 75 / 24 | 395 | `.claude/hooks/_hook_common.sh:121` | keep (owner question Q6) | — |
+| 13 | Hypothesis profile `dispatcharr-ci` | 54 / 28 | 57 | `tests/test_redaction.py:30` | keep | — |
+| 14 | Build file names `docker/DispatcharrBase`, `docker/init/03-init-dispatcharr.sh` | 25 / 10 | 48 | `.github/workflows/base-image.yml:7` | keep | — |
+| 15 | Plugin manifest keys `min_/max_dispatcharr_version` | 86 / 12 | 1 | `apps/plugins/api_views.py:1215-1216` | keep (third-party contract) | — |
+| 16 | DB name and role defaults `dispatcharr` / `dispatch` | 44 / 14 | 40 | `dispatcharr/settings.py:285-286` | keep | — |
+| 17 | Local checkout and memory path `~/git/Dispatcharr` | 6 / 5 | 484 | `.claude/skills/worktree-per-change/evals/evals.json` | owner action H-9 | — |
+| 18 | User-Agent strings and helpers | 45 / 12 | 13 | `core/utils.py:25-33` | rename | U1 |
+| 19 | Browser storage keys | 22 / 7 | 5 | `frontend/src/App.jsx:43` | keep | — |
+| 20 | Backup archive naming | 10 / 3 | 2 | `apps/backups/services.py:246` | rename, read both | P1 |
+| 21 | Other lowercase identifiers (sample compose names, `pyproject` name, Redis keys, Celery app name, …) | 151 / 65 | 195 | `docker/docker-compose.aio.yml:14` | per row (§ C-21) | C1, D2 |
+| 22 | Prose "Dispatcharr" (UI, docs, logs, comments) | 403 / 153 | 276 | `frontend/index.html:27` | rename | C1, C2 |
+
+## The rule
+
+**R-1. Records keep the old name (M4).** A file is a *record* when it describes a decision or event
+as of a date, and is changed after acceptance only by an appended amendment. By path, the records
+are exactly:
+
+- `docs/adr/**`
+- `docs/superpowers/specs/**`, `docs/superpowers/plans/**` and `docs/superpowers/analysis/**`
+- `docs/comparisons/**` (untracked in the root checkout today, and a record when committed)
+- `CHANGELOG.md`, whose entries are upstream's release history and the fork's v0.29.0 baseline
+
+Every other tracked file is *living*. That includes `CLAUDE.md`, `CONTEXT.md`, `README.md`,
+`docs/agents/**`, `docs/supply-chain.md`, `docs/relay-parity-matrix.md`, `e2e/COVERAGE.md`,
+`e2e/README.md`, `metrics/curated/**` and the skills' `references/project.md`. A record is **never
+moved or renamed**: `D10Scot/mino-apple` pins blob URLs to records (for example the Phase 4 spec at
+`86e11fe6`), and GitHub's redirect preserves those pins only if the path is unchanged. R1's checker
+encodes this list. It is the one place the rule is enforced, so editing that list is how the rule
+is amended.
+
+**R-2. Rename what is seen.** An identifier is renamed when a user, an operator, a client or an
+external system sees it, or when it states the repository's or the image's identity.
+
+**R-3. Keep what persists or what a third party holds.** An identifier is kept, and listed in
+`CONTEXT.md` as an internal name, when:
+
+- persisted data depends on it (table names, migration history, the database name, volume names),
+- a party outside this repository depends on it (plugin manifests, Plex's view of the HDHomeRun
+  device id), or
+- it is an internal file or path name whose rename would buy no reader anything but would put a
+  path-matched guard at risk.
+
+CLAUDE.md warns that "a file renamed out of [a path-matched arm] stops being checked with no error
+and no output". So R-3's last clause is deliberate: **this programme renames no tracked file
+path**. Every one of the 31 tracked paths containing "dispatcharr" stays (Appendix C), and
+consequently no hook arm, CI path filter or coverage rcfile entry can silently drop out. The one
+exception would be the logo assets, if the owner supplies new art (Q3). That would be an image
+swap at the same path.
+
+**R-4. Prefer one atomic change to a transition.** Where both sides of a contract ship in the same
+image (headers, internal routes, the DVR User-Agent and its matcher), they change together in one
+PR with no dual acceptance. A transition window exists only where the other side is outside the
+image: the owner's compose file (env vars, E1→E2) and the owner's existing backup files (P1, read
+both forever).
+
+## Categories
+
+### C-1 Go module path — rename (G1)
+
+`relay/go.mod:1` declares `module github.com/D10Scot/Dispatcharr/relay`. 103 files in `relay/`
+import it (203 import lines). The module is stdlib-only and is never fetched by path, so the
+change is purely a name. Even so, it names the repository, and per R-2 it is renamed to
+`github.com/D10Scot/mino/relay`.
+
+Four non-import sites key on the module path, and each fails closed if it is missed:
+
+- `scripts/check_go_stdlib_only.sh:19` (`EXPECTED=`). The stdlib check fails.
+- `scripts/coverage_relay_go.sh:102` (`grep '^github.com/D10Scot/Dispatcharr/relay'`). The linked
+  package list comes back empty and `packages=` mismatches.
+- `scripts/coverage_relay_go.floor.packages:1-12` and the floor's `packages=40d4ba02d7d3` and
+  `gomod=92baf312d30d` (`scripts/coverage_relay_go.floor:265,267`). The gate refuses the shape.
+- **`relay/internal/credlint/check.go:69`**, the sanitizer key
+  `"github.com/D10Scot/Dispatcharr/relay/redact.Error": true`. If it is missed, every
+  `redact.Error` call stops counting as a sanitizer, and credlint reports every guarded error
+  argument. That is loud, but it is the site most likely to be "fixed" wrongly by adding
+  `// credential-logging: ok` markers. G1's reviewer checks that the PR adds no marker.
+
+### C-2 Repository and image identity — rename (D1 before the repo rename, D2 after)
+
+The image name is derived, not written. `base-image.yml:73`, `ci.yml:98`, `docker-build.yml:68-70`,
+`release.yml:202` and `vuln-scan.yml:167,204` compute `ghcr.io/<owner>/<repo>` from
+`github.repository`. **The moment the repository is renamed, every push publishes to
+`ghcr.io/d10scot/mino` and every base lookup asks for `ghcr.io/d10scot/mino:base`**, which does not
+exist until `base-image.yml` first runs on the renamed repository.
+
+The hard-coded sites do *not* follow the rename. Two are silent hazards:
+
+- `e2e-tests.yml:164` and `lifecycle-tests.yml:190` build with `--build-arg REPO_OWNER=…` only.
+  `docker/Dockerfile:3` defaults `REPO_NAME=dispatcharr`, so after the rename the E2E and lifecycle
+  images would keep building on the frozen `ghcr.io/d10scot/dispatcharr:base`. Nothing would fail,
+  but those suites would stop testing the base that production ships on. `docker/tests/test-puid-pgid.sh:2042`
+  has the same shape. **D1 fixes these before the rename.**
+- `metrics.yml:137` runs its coverage job in `ghcr.io/d10scot/dispatcharr:base`, hard-coded. It is
+  not a required check, so between the rename and D2 it runs on the stale base. That is accepted.
+
+The remaining hard-coded identity is moved by D2: compose `image:` lines, docs, scripts, metrics,
+dashboard links, skills' `project.md`, `--repo` mentions and issue links.
+`docker/Dockerfile:2-3` also defaults `REPO_OWNER`/`REPO_NAME` to **upstream's** `dispatcharr/dispatcharr`,
+a default inherited from upstream. D2 sets it to `d10scot/mino`.
+
+### C-3 Upstream identity — per row
+
+Under M1, a link that sends a user to upstream for *this* product's support is wrong, and a link
+that credits upstream is right. Decided per row:
+
+| Site | Decision | PR |
+|---|---|---|
+| `core/tasks.py:924` stable update check → `api.github.com/repos/Dispatcharr/Dispatcharr/releases/latest` | Repoint to `D10Scot/mino`. No release exists yet, and a non-200 answer already logs a WARNING and returns with no notification (`core/tasks.py:931-933`), so this is safe today. | D2 |
+| `core/tasks.py:822,878` dev-build check against upstream's Docker Hub `dispatcharr/dispatcharr` | **Q4.** Repointing it to GHCR is new behaviour, not a rename. | — |
+| `frontend/src/components/AboutModal.jsx:49,62,75,91`, `Sidebar.jsx:44-47`: docs, Discord, GitHub and Open Collective links | Replace with `github.com/D10Scot/mino` for code and issues. Remove the support and funding links (Q5), and add one attribution line: "Mino is derived from Dispatcharr (AGPL-3.0)", linking `github.com/Dispatcharr/Dispatcharr`. | C1 |
+| `README.md:4,87-88,137,145,166,172,181`, `CONTRIBUTING.md:257`, `.github/FUNDING.yml:5` | Same treatment as the About dialog. `FUNDING.yml` per Q5. | C2 |
+| `apps/output/epg.py:1146` `generator-info-url` | Repoint to `github.com/D10Scot/mino`. | D2 |
+| OCI `image.documentation` annotation → `dispatcharr.github.io/Dispatcharr-Docs/` (`base-image.yml:137,208,226`, `ci.yml:197,276`, `release.yml:315,383`) | Repoint to `https://github.com/${{ github.repository }}`. | D2 |
+| `apps/plugins/models.py:39` `OFFICIAL_REPO_URL`, migrations `0002`/`0003`, `apps/plugins/keys/dispatcharr-plugins.pub`, the "Dispatcharr Official" repo row | **Keep.** This is upstream's plugin registry and upstream's signing key. They are correctly named for upstream, and repointing them is a feature decision. | — |
+| `debian_install.sh:228` clone URL | Repoint to `D10Scot/mino`. The script's service names and paths stay (R-3, and Q7). | D2 |
+| `SECURITY.md:3,18-20`: "personal fork of Dispatcharr", upstream's advisory link | Keep, as attribution. Reword the subject to Mino. | C2 |
+
+### C-4/C-5 Wire headers and internal routes — rename atomically (W1)
+
+**Names.** `X-Dispatcharr-Authorized` → `X-Mino-Authorized`, `X-Dispatcharr-Internal` →
+`X-Mino-Internal`, `X-Dispatcharr-Internal-Request` → `X-Mino-Internal-Request`,
+`X-Dispatcharr-Session` → `X-Mino-Session` (a VOD response header, `apps/proxy/vod_proxy/views.py:1118`),
+`/_dispatcharr/authorize` → `/_mino/authorize`, and `/_dispatcharr/authorize-internal` →
+`/_mino/authorize-internal`.
+
+**Sites.** The readers and writers are:
+
+- Django: `apps/proxy/internal_auth.py:56-58,78-80`, `apps/proxy/authorize_views.py`,
+  `apps/proxy/permissions.py`, `apps/proxy/authorize.py`, `apps/channels/tasks.py` (the DVR's
+  ffmpeg `-headers`), and `dispatcharr/urls.py:47,59`.
+- nginx: `docker/nginx.conf` (ten `/_dispatcharr/` lines, ten header lines), the *contents* of
+  `docker/dispatcharr_api_params.conf:23` and `docker/dispatcharr_api_params_proxy.conf:38`, and
+  `docker/init/03-init-dispatcharr.sh` (comment only; it computes `RELAY_TRUST_TOKEN` by value).
+- The Go relay: `relay/control/token.go:29-31`, `relay/control/authorize.go:23`,
+  `relay/httpapi/{stream,authorize,channels,hls}.go`, and `relay/internal/relaytest/controlplane.go:312`.
+- Tests and specs: the tests, `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`,
+  `e2e/tests/streaming/authorize-matrix.spec.ts`, `e2e/tests/dvr/recording-hidden-channel.spec.ts`
+  and `docker/tests/test-puid-pgid.sh`.
+- Docs: `docs/relay-parity-matrix.md` (row 19 text), `e2e/COVERAGE.md`, the `.gitleaks.toml:20`
+  description and `CLAUDE.md`.
+
+**Why it needs no transition.** nginx, Django and the relay ship in one image. In the modular
+compose, every service runs the same tag (`docker/docker-compose.yml:10,146,214`). A container on
+an old image talking to one on a new image disagrees on names and **fails closed**: the relay sees
+no trusted marker and treats the tune as unauthorized, and Django sees no internal header and
+answers 403. No path in which a header is accepted without its HMAC is created at any point,
+because no reader accepts both names.
+
+**What does not change, deliberately.** The HMAC derivation labels `"relay-trust"`,
+`"internal-principal"` and `"media-session"`, and the `v1.<ts>.<hex>` request format, stay as they
+are (`apps/proxy/internal_auth.py:6,13`, `relay/control/token.go:9-14`). Changing a label would
+rotate every token for no gain. It would also invalidate the HMAC parity vectors that
+`.gitleaks.toml:20` allowlists by value. Two consequences follow:
+
+1. **The marker value is unchanged.** A captured `X-Dispatcharr-Authorized` value is a valid
+   `X-Mino-Authorized` value until `SECRET_KEY` rotates. So `SENSITIVE_HEADERS`
+   (`dispatcharr/utils.py:79-80`) **adds** `x-mino-authorized` and `x-mino-internal` and **keeps**
+   the two old names. Redacting a header name nothing sends costs nothing, and a log line carrying
+   an old-named header is still a secret.
+2. **The blank lists rename with the readers.** Every `uwsgi_param HTTP_X_DISPATCHARR_AUTHORIZED ""`
+   and `proxy_set_header X-Dispatcharr-Authorized ""` becomes the Mino name in the same commit.
+   This is what stops a client hand-crafting the new header. The old names need no blanking,
+   because nothing reads them, and W1's tests (below) pin that nothing does.
+
+W1 is security-adjacent. Its review runs on `fable` from round one.
+
+### C-6, C-11, C-14 Internal file and path names — keep
+
+These are kept by R-3:
+
+- `docker/dispatcharr_api_params*.conf` and their `/etc/nginx/` install paths
+  (`docker/Dockerfile:69-70`)
+- `/usr/share/dispatcharr/nginx.conf.template` (`docker/Dockerfile:68`)
+- `/etc/profile.d/dispatcharr.sh` (`docker/entrypoint.sh:299`) and `/run/dispatcharr-role`
+  (`docker/healthcheck.sh:21`)
+- `/dispatcharrpy` (`docker/DispatcharrBase:10-11`, `docker/Dockerfile:57`). Renaming it means a
+  base-image rebuild and 30 living references, for no reader.
+- `docker/DispatcharrBase` (the `paths:` filter at `.github/workflows/base-image.yml:7,14`) and
+  `docker/init/03-init-dispatcharr.sh` (107 references, records included)
+- the migration file `apps/channels/migrations/0034_remove_stream_dispatcharr_stream_id_idx_and_more.py`
+  and the index names it removes (history)
+- `.idea/DispatcharrSM.iml`, `frontend/src/images/dispatcharr.svg` (Q3)
+
+### C-7/C-8 Env vars — alias window, then refusal (E1, E2)
+
+All 50 env var names are renamed `DISPATCHARR_X` → `MINO_X`, tooling included. The three Django
+setting names become `MINO_PLUGIN_IMPORT_*`. Nothing sets them, so they need no alias. Renaming
+the tooling names too is what lets E2's refusal be a plain prefix rule: no process reads any
+`DISPATCHARR_` name at all.
+
+**Why a window, and why a refusal after it.** The owner's compose file is outside the repository
+and sets some of these names. A hard cut would silently ignore an old name, and the code would
+fall back to defaults. Some of those defaults are wrong in the owner's shape:
+
+- `DISPATCHARR_ENV=modular` falls to `aio` (`docker/entrypoint.sh:21`, `relay/control/baseurl.go:58`).
+- `DISPATCHARR_TRUSTED_PROXIES` falls to loopback-only (`dispatcharr/utils.py:27-32`).
+- `DISPATCHARR_SETUP_ALLOWED_IP` falls to private networks only.
+
+So E1 accepts both names, and E2, after the owner has moved, refuses the old ones loudly instead of
+ignoring them.
+
+**E1, the alias.** The alias applies by **prefix**, with no list: for every variable named
+`DISPATCHARR_<rest>` in the environment, if `MINO_<rest>` is unset it is set to the same value, and
+one WARNING per variable names both names. If both are set and they differ, `MINO_` wins and the
+WARNING says so. Every reader in the tree then reads only `MINO_*`.
+
+The alias must run before any reader, in every process that can start without the entrypoint.
+There are five choke points:
+
+1. **`docker/entrypoint.sh`**, before line 11, through a new sourced snippet,
+   `docker/env-alias.sh`. Everything launched from the entrypoint inherits the result:
+   supervisord's `%(ENV_X)s` (27 references in `docker/supervisord.d/*.conf` and
+   `docker/uwsgi*.ini`), uWSGI's `$(X)`, the nginx `sed`, the Go relay, Celery and Daphne. The
+   entrypoint's `variables=(…)` list (`docker/entrypoint.sh:276-287`), which writes
+   `/etc/profile.d/dispatcharr.sh` and `/etc/environment`, switches to the `MINO_` names.
+2. **`docker/healthcheck.sh`** sources the same snippet. Docker runs `HEALTHCHECK` with the
+   container's *configured* environment, not the entrypoint's exports, and this script reads
+   `DISPATCHARR_ROLE`/`_RELAY_GO_PORT` (`docker/healthcheck.sh:25,33`).
+3. **`dispatcharr/__init__.py`**, as its first statement, before `from .celery import app`. The
+   `celery` import reads `DISPATCHARR_LOG_LEVEL` at import time (`dispatcharr/celery.py:15`). This
+   covers `docker exec … python manage.py …`, which also bypasses the entrypoint, and every Django
+   process.
+4. **`relay/main.go`**, first in `main()`. It covers a `relay-go` started by hand in dev and the
+   relay's own tests.
+5. **`frontend/devProxy.js:25`** reads `MINO_RELAY_GO_PORT ?? DISPATCHARR_RELAY_GO_PORT` for a vite
+   started on the host.
+
+Scripts run *by* the entrypoint or supervisord inherit point 1 and need nothing.
+`scripts/e2e_up.sh:373-375` **keeps passing the old names** during the window. The
+lifecycle-upgrade baseline is an ancestor image that knows only the old names, and the new image
+accepts them through the alias, so the old names work for both.
+
+**E2, the refusal.** At the same five points the alias becomes a refusal. Any `DISPATCHARR_*`
+variable present makes the process exit non-zero, naming each variable and its `MINO_` name. The
+two exceptions:
+
+- the healthcheck reports unhealthy rather than exiting differently;
+- `devProxy.js` throws at config load.
+
+E2 also does three other things:
+
+- it switches `scripts/e2e_up.sh` and every remaining passer to `MINO_*`;
+- it deletes `^DISPATCHARR_` lines from `/etc/environment` at entrypoint start, because `su -`
+  through pam_env would otherwise re-inject a stale name inside a restarted container;
+- it removes `docker/env-alias.sh`'s aliasing branch.
+
+The refusal stays. It is a few lines per choke point, and it is the only thing that stops a
+forgotten compose line from silently meaning "use the default".
+
+**Rollback hazard, written into E1's description.** An image from before E1 ignores `MINO_*`. An
+owner who has already renamed their compose variables and then rolls back to such an image must
+rename them back, or the old image runs on defaults.
+
+### C-9 Django app labels and table names — keep
+
+`apps/channels/apps.py:7` sets `label = 'dispatcharr_channels'` and `apps/connect/apps.py:8` sets
+`label = 'dispatcharr_connect'`. Those labels name the tables (`dispatcharr_channels_channel` and so
+on), the `django_migrations` rows, the `django_content_type` rows and every swappable or FK string.
+They appear as `to='dispatcharr_channels.…'` in 47 migration files (`git grep -c -E
+"dispatcharr_(channels|connect)" -- '*/migrations/*.py' | wc -l`). Raw SQL also names the tables:
+`apps/channels/migrations/0038_add_catchup_fields.py:12-47` and `apps/m3u/tasks.py:2013-2048`.
+
+Renaming the labels would require one of two things:
+
+- (a) editing historical migrations, which are themselves records and whose edited form would no
+  longer describe the database the owner's instance migrated through; or
+- (b) a `SeparateDatabaseAndState` relabel with `ALTER TABLE … RENAME`, content-type and
+  migration-row rewrites, and a hand-written reverse.
+
+Option (b) touches the one irreplaceable asset (M2) to change a string no user sees. **Kept.**
+`CONTEXT.md` gains an "Internal names" entry recording this, so that the label is not "finished"
+later. CLAUDE.md's trap note about the label (§ Test hooks: "`apps.channels` has label
+`dispatcharr_channels`, and the guess `channels` hits the *Django Channels library*") stays true
+and is unaffected.
+
+### C-10 The `dispatcharr` Python package — keep (Q1)
+
+The settings package is named in many places:
+
+- 74 import statements in 52 files.
+- `DJANGO_SETTINGS_MODULE` defaults in `manage.py:11,13`, `dispatcharr/{wsgi,asgi,celery,admin}.py`
+  and `.claude/hooks/_pending_migrations.py:20`.
+- `module = dispatcharr.wsgi:application` in five uWSGI inis, and `dispatcharr.asgi` in
+  `docker/supervisord.d/daphne.conf:2`.
+- `DJANGO_SETTINGS_MODULE=dispatcharr.settings` written into the sample modular compose
+  (`docker/docker-compose.yml:187,288`) and therefore, most likely, into the owner's own compose
+  file.
+- The `ENGINE` path `dispatcharr.db.backends.postgresql_psycopg3` (`dispatcharr/settings.py:281`).
+- `.coveragerc:4`, `pyproject.toml:64`, `_SHARED_PATH_PREFIXES` (`dispatcharr/test_discovery.py:11`)
+  and the `dispatcharr/**` path filters in six workflows (`ci.yml:11,26`, `codeql.yml:29`,
+  `docker-build.yml:12`, `e2e-tests.yml:12`, `metrics.yml:21`).
+- Plugins, which run in-process and may import `dispatcharr.utils` (`Plugins.md` § Accessing
+  Dispatcharr APIs from Plugins).
+
+A missed path filter fails silently, and a plugin that imports the package breaks at load. No user
+sees the package name. **Kept**, and recorded as an internal name. If the owner wants it renamed
+anyway, Q1 says what that PR would need.
+
+### C-12 Tooling container, volume and image names — keep (Q6)
+
+The names are `dispatcharr-testrunner`, `dispatcharr-hookdb`, `dispatcharr-e2e`,
+`dispatcharr-e2e-upstream:local`, `dispatcharr-e2e-data` and the `dispatcharr-e2e-image` artifact.
+
+These are dev-loop names that live agents and the shared hook container depend on
+(`.claude/hooks/_hook_common.sh:121`, `.claude/hooks/start-test-container.sh`,
+`e2e/fixtures/instance.ts:68,72`, `e2e-tests.yml:154-338`). Renaming `dispatcharr-hookdb` drops the
+`--keepdb` database. Renaming the test container strands every running agent's hook until it is
+re-pointed. No user sees them. **Kept**, with Q6 asking whether the owner wants them in a final
+optional PR. The *env vars* that override them are renamed in E1 (C-7). Their default values stay
+the same.
+
+### C-13 Hypothesis profile `dispatcharr-ci` — keep
+
+It is registered byte-identically in every `@given` module (`tests/test_redaction.py:30-32`), and
+it is a test-internal label. Kept.
+
+### C-15 Plugin manifest keys — keep
+
+`min_dispatcharr_version` and `max_dispatcharr_version` are fields that third-party plugin
+registries publish (`Plugin_repo.md:70-71,153-154`) and that this server reads
+(`apps/plugins/api_views.py:1215-1258`, `frontend/src/components/cards/AvailablePluginCard.jsx:236-240`,
+`PluginDetailPanel.jsx:107-112`). Renaming them would make every existing manifest
+version-unconstrained. Kept. Their *user-facing text* ("requires Dispatcharr {min}") is renamed in
+C1. Version numbering also continues from `0.29.0` with no reset (`version.py`), because these
+comparisons read it.
+
+### C-16 Database name and role — keep
+
+`dispatcharr/settings.py:285-286` defaults the database to `POSTGRES_DB` → `"dispatcharr"` and the
+role to `POSTGRES_USER` → `"dispatch"`. `docker/entrypoint.sh:11-12` exports the same defaults.
+
+**Changing the default is a data-loss trap.** In AIO, `docker/init/02-postgres.sh:376-401` creates
+`$POSTGRES_DB` when it does not exist. An upgraded container would start against a new, empty
+`mino` database next to the owner's real one, run every migration into it and come up "working"
+with no channels. The data would not be lost, but it would look lost, and the first write would
+fork the history. **Kept.** The sample compose files keep `POSTGRES_DB=dispatcharr` too
+(`docker/docker-compose.yml:58,178,254,306`), and so do CI's `POSTGRES_DB: dispatcharr`
+(`backend-tests.yml:147,190`) and the backup's `pg_dump -d` default
+(`apps/backups/services.py:70`).
+
+### C-17 Local checkout path — owner action (H-9)
+
+Claude Code keys project memory on the checkout path (`~/.claude/projects/-Users-dion-git-Dispatcharr/`).
+Worktrees record absolute gitdir paths, and the shared test container's bind mount is a host path.
+Five living files hard-code `/Users/dion/git/Dispatcharr` (the skills' `evals.json` and
+`references/project.md`). Moving the checkout is optional, and it is the owner's step after the
+programme, when no worktree is live (H-9). The five files are updated in the same sitting.
+
+### C-18 User-Agent strings — rename (U1)
+
+The default User-Agent becomes `Mino/<version>` instead of `Dispatcharr/<version>`
+(`core/utils.py:25-28`). It is the fallback when no User-Agent row is configured
+(`core/models.py:468-471`), and it is what Schedules Direct sees (`apps/epg/sd_api.py:135`,
+`sd_utils.py:652`). The comment at `apps/epg/sd_tasks.py:599-601` records that SD's API asks the
+client to identify itself. Continuing to claim "Dispatcharr" would misidentify this server. See Q2
+for whether the owner tells SD.
+
+The DVR's User-Agent becomes `Mino-DVR/recording-<id>` instead of `Dispatcharr-DVR/…`
+(`core/utils.py:31-33`). It is matched by substring at `apps/channels/api_views.py:3252` and
+`:3821`, and producer and matchers change in one commit (R-4). A recording that is running across
+an upgrade has its ffmpeg killed by the restart anyway, so no live client carries the old string
+into the new matcher.
+
+The helper names `dispatcharr_user_agent`, `dispatcharr_dvr_user_agent` and
+`dispatcharr_http_headers` are renamed in the same PR (`product_user_agent`, `dvr_user_agent`,
+`product_http_headers`), because U1 already touches every call site.
+
+### C-19 Browser storage keys — keep
+
+The keys are `dispatcharr_sidebar_open` (`frontend/src/App.jsx:43`), `dispatcharr_remembered_username`
+and `dispatcharr_saved_password` (`frontend/src/components/forms/LoginForm.jsx:67-127`), and
+`dispatcharr-player-prefs` (`frontend/src/utils/components/FloatingVideoUtils.js:1`). They are
+invisible to users, and renaming them resets every browser's preferences. A read-old-write-new
+migration is new code for no reader. Kept. That `dispatcharr_saved_password` stores a password in
+`localStorage` is a separate concern and out of this charter.
+
+### C-20 Backup archives — rename, read both forever (P1)
+
+New archives are named `mino-backup-<ts>.zip`, with metadata `"format": "mino-backup"`
+(`apps/backups/services.py:246,271`). `list_backups()` globs **both** `mino-backup-*.zip` and
+`dispatcharr-backup-*.zip` (`services.py:343`), so the owner's existing archives stay listed,
+downloadable, deletable and restorable.
+
+The restore path never checks the `format` string (`services.py:285-334`), so it needs no change.
+Reading both prefixes is not a short-lived shim. Old backups are the owner's records, and they stay
+restorable indefinitely. The temp-dir prefixes (`services.py:251,293`) are internal and change with
+the rest.
+
+### C-21 Other lowercase identifiers — per row
+
+| Identifier | Anchor | Decision |
+|---|---|---|
+| AIO service key and `container_name: dispatcharr`, modular `container_name: dispatcharr_{web,relay,celery,db,redis}` | `docker/docker-compose.aio.yml:2,14`, `docker/docker-compose.yml:11,147,215,301,322` | Rename to `mino` / `mino_*` (D2). These are samples. The owner's compose is their own (H-6). |
+| Volume key `dispatcharr_data` | `docker/docker-compose.aio.yml:18,65` | **Keep**, with a comment. Changing a volume key in a compose file creates a new, empty volume. |
+| `pyproject.toml:2` `name = "dispatcharr"`, `uv.lock:606` | | Keep (internal, and it would churn the lockfile). `description` (`pyproject.toml:3`) is prose, and is renamed in C1. `uv.lock` does not record it. |
+| `e2e/package.json:2`, `e2e-upstream/package.json:2` names | | Keep (internal, lockfile churn). |
+| `Celery("dispatcharr")` (`dispatcharr/celery.py:37`), `celery -A dispatcharr` | | Keep (C-10). |
+| Redis cache keys `dispatcharr:ip_lookup_*` (`core/api_views.py:218,220`) | | Keep (internal, transient). |
+| pg `application_name` `Dispatcharr-<role>-<pid>` (`dispatcharr/db/process_label.py:54`) | | Rename to `Mino-…` (C1). Operators see it in `pg_stat_activity`. |
+| `/tmp/dispatcharr_log_level` (`dispatcharr/celery.py:21`) | | Keep (internal path). |
+| `_dispatcharr_plugin_<key>` module prefix (`apps/plugins/loader.py:633`), `_dispatcharr_pool_created_at` | | Keep (internal symbols). |
+| `dispatcharr_stream_id` descriptor field (`apps/timeshift/views.py:660,2248,2960`) | | Keep. It is stored in Redis session descriptors, and an in-flight catch-up session must still read it across an upgrade. |
+| HDHomeRun `DeviceID` `dispatcharr-hdhr-<slug>` (`apps/hdhr/api_views.py:74`) and stored `HDHRDevice.device_id` | | **Keep.** Plex keys a tuner on its DeviceID, so a new id means a new tuner and a lost DVR setup in Plex. The *friendly name* is renamed (P1, C1). |
+
+### C-22 Prose — rename (C1 for code, C2 for docs)
+
+"Dispatcharr", where it names *this* product, becomes "Mino". Where it names *upstream* (the
+project this was derived from), it stays, reworded to "upstream Dispatcharr" if it is ambiguous.
+The implementer decides each line by that test, and the ratchet's allowlist diff makes every kept
+line visible to the reviewer.
+
+## PR sequence
+
+All of these are sequential, under the Main ruleset's strict up-to-date policy. A PR touching the
+env, wire or persistent tiers runs on a `migration/**` branch, so that every Playwright project
+runs, including **`lifecycle-upgrade`**. That project is the in-place-upgrade test (M2): it starts
+an ancestor commit's published image on a fresh volume, seeds durable state, swaps in the PR's
+image on the same volume and asserts the data survived (`e2e/tests/lifecycle/upgrade-migrations.spec.ts:1-20`).
+
+| PR | Tier | One line | Branch |
+|---|---|---|---|
+| **R0** | docs | This spec, ADR 0010, CLAUDE.md's repository paragraph | `docs/mino-rename-spec` |
+| **R1** | tooling | `scripts/check_product_name.py` ratchet with a per-file allowlist, in `lint.yml` | `chore/mino-name-ratchet` |
+| **C1** | cosmetic | UI and client-visible strings, operator-visible log and prose strings in code | `chore/mino-ui-strings` |
+| **C2** | docs | Living docs' prose, `CONTEXT.md` Mino and Internal names entries, attribution | `docs/mino-living-docs` |
+| **D1** | distribution | Make CI independent of the repository name (pre-rename) | `ci/mino-name-agnostic` |
+| — | **owner** | **Rename the repository; publish `mino:base` and `mino:latest`** (§ The repository rename) | — |
+| **D2** | distribution | Move every hard-coded repo, image, Pages and signer reference to Mino | `ci/mino-identity` |
+| **G1** | distribution | Go module path `github.com/D10Scot/mino/relay` | `chore/mino-go-module` |
+| **U1** | wire (outbound) | User-Agent `Mino/<v>` and `Mino-DVR/…` with matchers | `migration/mino-user-agent` |
+| **E1** | env | `MINO_*` everywhere, with the prefix alias at five choke points | `migration/mino-env-alias` |
+| **W1** | wire (internal) | `X-Mino-*` headers and `/_mino/` routes, atomically | `migration/mino-wire` |
+| **P1** | persistent | Row defaults with a data migration; `mino-backup-*` archives, reading both | `migration/mino-persistent` |
+| — | **owner** | **Rename compose variables; confirm no legacy WARNING** (H-7) | — |
+| **E2** | env | Alias becomes refusal; `e2e_up.sh` moves to `MINO_*` | `migration/mino-env-refuse` |
+
+Every PR after R1 lowers counts in R1's allowlist and commits the regenerated allowlist. A PR whose
+allowlist diff *raises* a count says why in its description. W1, for example, adds tests that name
+the old header in order to prove it is ignored.
+
+Every PR also corrects the CLAUDE.md facts it changes, in the same PR, and no others. Each PR's
+"Hooks and gates" line lists what its paths trip, from CLAUDE.md § Test hooks. **No PR renames a
+tracked file path (R-3)**, so no literal-path arm loses its subject. The reviewer confirms this with
+`git diff --name-status -M <base>...<head> | grep '^R'`, which must print nothing.
+
+### R0 — this spec
+
+**Changes:**
+
+- `docs/superpowers/specs/2026-10-28-mino-rename-design.md` (this file)
+- `docs/adr/0010-the-product-is-renamed-mino-and-upstream-is-no-longer-tracked.md`
+- `CLAUDE.md` § Repository and direction, first paragraph only
+
+The CLAUDE.md change states that there is no `upstream` remote and that none is to be added.
+`git remote -v` in the root checkout prints `origin` only, and `gh repo view D10Scot/Dispatcharr
+--json isFork` prints `false`, both read on 2026-10-28. It also states that ideas from upstream are
+reimplemented, never merged (M1), and points at ADR 0010.
+
+**Verification:** docs only, so the `changes` detectors skip the heavy jobs. Run
+`gh pr view <n> --json closingIssuesReferences` and expect `0`.
+
+### R1 — the name ratchet
+
+**Changes:**
+
+- New `scripts/check_product_name.py` (stdlib only):
+  - `git ls-files -z`
+  - skip the R-1 record globs, which are a literal list at the top of the script
+  - skip binary files
+  - count case-insensitive `dispatcharr` per file
+  - compare against `scripts/product_name_allowlist.txt` (`<count>\t<path>` lines)
+  - fail when any file exceeds its entry, or has a hit and no entry
+  - print the files whose count fell, with a reminder to run `--write`
+  - `--write` rewrites the allowlist from the tree
+- New `scripts/product_name_allowlist.txt`, generated at the PR's base.
+- `lint.yml`: one step running the check.
+- `tests/test_check_product_name.py` (label `tests`). It covers a record path ignored, a binary
+  ignored, an increase failing, an unlisted file failing, a decrease passing, and `--write`
+  round-tripping.
+
+**Break-checks:**
+
+- Delete `docs/adr/**` from the record list. The check fails, naming an ADR path.
+- Make the count case-sensitive. The test "uppercase and lowercase both counted" reddens, naming
+  the counted string.
+
+**Hooks and gates:** `*.py` (credential-logging check); `tests/test_*.py` (the whole `tests`
+package); `.github/workflows/lint.yml` (zizmor, blocking on every finding). CI runs lint, actionlint
+and Backend result (label `tests`).
+
+**PR description draft:**
+
+> Adds a ratchet on the old product name, the first implementation step of the Mino rename
+> (spec `docs/superpowers/specs/2026-10-28-mino-rename-design.md`, PR R1).
+> `scripts/check_product_name.py` counts "dispatcharr" per tracked file, skipping the decision
+> records the spec's rule R-1 names and binary files, and fails CI when any file's count rises
+> above `scripts/product_name_allowlist.txt`. Later PRs in the rename lower the counts; what
+> remains at the end is the list of names the spec keeps on purpose.
+> Tests: `tests/test_check_product_name.py`. Break-checks: dropping `docs/adr/**` from the record
+> list fails on an ADR path; a case-sensitive count fails the mixed-case test.
+
+### C1 — UI and client-visible strings
+
+**Changes:** prose and strings in code. No identifier the spec keeps, no env var name, no URL into
+the repository (that is D2), no persisted default (that is P1).
+
+- **Frontend:**
+  - `frontend/index.html:27` `<title>`
+  - `Sidebar.jsx:366-369` (alt and label)
+  - `AboutModal.jsx` (title, text, and links per C-3, with the attribution line)
+  - `PluginWarnings.jsx:41-51`
+  - plugin-compatibility text in `AvailablePluginCard.jsx` and `PluginDetailPanel.jsx` (text only;
+    the keys stay, C-15)
+  - `SuperuserForm.jsx:44,147,153`
+- **API and clients:**
+  - `dispatcharr/settings.py:349-350` (`SPECTACULAR_SETTINGS` title and description)
+  - `apps/output/epg.py:1145` `generator-info-name="Mino"`
+  - the EPG download filename `Mino.xml` (`apps/output/epg.py:1756`, `apps/output/views.py:100`)
+  - XC `user_info.message` `"Mino XC API"` (`apps/output/views.py:468`)
+  - the HDHomeRun computed friendly name (`apps/hdhr/api_views.py:75,226`)
+  - the update notification text (`core/models.py:943`)
+- **Operator-visible:**
+  - pg `application_name` (`dispatcharr/db/process_label.py:54`, and `tests/test_process_label.py`
+    if it asserts the prefix)
+  - log and error message prose naming the product (Python, Go, shell)
+  - `pyproject.toml:3` description
+  - `.gitleaks.toml:1` title
+  - the issue templates' text (`.github/ISSUE_TEMPLATE/*.yml`; the field `id: dispatcharr-version`
+    stays, because it is an internal key)
+- **Comments and docstrings** that name this product, per C-22.
+
+The XC message string: the Mino app's only use of it is a fixture in its stub server
+(`D10Scot/mino-apple:MinoKit/Sources/MinoStubServer/StubScenario.swift:272`). A code search of
+`mino-apple` for "dispatcharr" on 2026-10-28 found no reader that parses it.
+
+**Tests that change** (the test-modification rule: each one listed with before and after in the PR
+body). Any test asserting one of the renamed strings changes, and only its expected string changes.
+The implementer greps `-rn 'Dispatcharr'` across `*/tests/`, `frontend/src/**/__tests__` and
+`e2e/` for the exact strings changed, and lists every hit.
+
+**Break-check:** revert `generator-info-name` alone. The XMLTV test (or a new one, if none asserts
+it) reddens, naming the attribute.
+
+**Hooks and gates:** `*.py` (credential-logging check); `frontend/**/*.test.jsx` (vitest);
+`frontend/**/*.jsx` (eslint, advisory); `*/models.py`: none (C1 changes no model);
+`.github/ISSUE_TEMPLATE` (not workflows, so no zizmor). CI runs Backend result (labels from the
+touched apps), Frontend result, E2E result (the path-gated matrix; `e2e/tests/frontend/*` asserts
+visible text and is exactly what should redden if a string was missed), Go result if any Go log
+prose changed, and lint plus the ratchet.
+
+**PR description draft:**
+
+> Renames the product to Mino in everything a user or operator reads: the page title, sidebar and
+> About dialog (with an attribution line to upstream Dispatcharr, AGPL-3.0), the API schema title,
+> XMLTV `generator-info-name`, the EPG download filename, the Xtream `user_info.message`, the
+> HDHomeRun friendly name, the Postgres `application_name`, and log and error prose.
+> Spec PR C1 (`docs/superpowers/specs/2026-10-28-mino-rename-design.md`). Identifiers the spec
+> keeps (plugin manifest keys, HDHomeRun DeviceID, browser storage keys) are untouched.
+> Tests changed (expected strings only): <list, before → after>.
+
+### C2 — living docs
+
+**Changes:**
+
+- Product prose in `README.md`, `CONTRIBUTING.md`, `SECURITY.md` (subject only; the image and repo
+  identity wait for D2), `Plugins.md`, `Plugin_repo.md` (prose; keys stay), `docs/agents/*.md`,
+  `e2e/README.md`, `e2e/COVERAGE.md` (prose only), `docs/supply-chain.md` (prose; the commands wait
+  for D2) and the skills' `references/project.md` headings.
+- Upstream links per C-3, and `FUNDING.yml` per Q5.
+- **`CONTEXT.md`:** the "Mino" entry is rewritten. Mino is the product's name, and the paragraph
+  saying "until that rename happens" goes. A new **"Internal names"** entry lists every identifier
+  § Categories keeps, with its one-line reason and a pointer to this spec, so that no one
+  "finishes" the rename by changing one.
+
+**Verification:** docs only; the ratchet; `python -m metrics.build --validate-only` if
+`metrics/curated/` changes.
+
+**PR description draft:**
+
+> Renames the product to Mino across the living documentation (README, CONTRIBUTING, SECURITY,
+> Plugins, agent docs, E2E docs) and rewrites `CONTEXT.md`'s Mino entry; adds an "Internal names"
+> entry listing what the rename keeps and why. Decision records (ADRs, specs, plans, analyses,
+> CHANGELOG) are unchanged by design (ADR 0010). Spec PR C2.
+
+### D1 — CI independent of the repository name (merges *before* the rename)
+
+**Changes:**
+
+- `e2e-tests.yml:163-164` and `lifecycle-tests.yml:189-190` pass
+  `--build-arg REPO_NAME="$(basename "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"` beside
+  `REPO_OWNER`. They build on `<owner>/<this repo>:base` both before and after the rename.
+- `docker/tests/test-puid-pgid.sh:2042` does the same from `GITHUB_REPOSITORY` when it is set, and
+  falls back to the current default otherwise.
+- `lifecycle-tests.yml:429`'s `IMAGE_REPO` becomes a list. The baseline search walks back up to
+  50 ancestors, as now, and at each SHA tries `ghcr.io/<owner>/<repo>:<sha>` and then the legacy
+  `ghcr.io/d10scot/dispatcharr:<sha>`. After the rename the first ancestors with an image exist
+  only under the legacy name. Without this fallback the upgrade job fails closed on every PR until
+  a `mino:<sha>` exists, and with it the first post-rename PRs upgrade from the real old image,
+  which is exactly the owner's path.
+- `e2e/tests/lifecycle/upgrade-migrations.spec.ts:34`'s local-only `FALLBACK_BASELINE` is left.
+  It is refused in CI anyway (`:56-67`).
+
+**Break-check:** change the derivation to the literal `dispatcharr`, then simulate the rename.
+`gh workflow run` is not available pre-rename, so instead run the workflow's build line in a shell
+with `GITHUB_REPOSITORY=D10Scot/mino` against a registry where only `dispatcharr:base` exists. The
+build fails on `mino:base` not found. That shows the argument is now live, where before it was
+ignored.
+
+**Hooks and gates:** `.github/workflows/*.yml` (zizmor, blocking); `docker/tests/*.sh` (no hook).
+CI runs actions-lint, lint, E2E result and Lifecycle result. Name the branch `migration/…` only if
+the reviewer wants the upgrade job to exercise the fallback; it cannot fire before the rename
+anyway.
+
+**PR description draft:**
+
+> Makes CI derive the base image and the upgrade baseline from the repository's own name, so the
+> repository rename to `D10Scot/mino` (spec § The repository rename) does not leave the E2E and
+> lifecycle images silently building on the frozen `ghcr.io/d10scot/dispatcharr:base`, which they
+> would today because `docker/Dockerfile:3` defaults `REPO_NAME=dispatcharr` and both workflows
+> pass only `REPO_OWNER`. The upgrade baseline search also tries the legacy image name, so the
+> first PRs after the rename upgrade from the real pre-rename images. Spec PR D1.
+
+### The repository rename (owner, between D1 and D2)
+
+§ The repository rename below holds the procedure, what breaks and what redirects.
+
+### D2 — hard-coded identity
+
+**Changes (living files only):**
+
+- **Compose:** `docker/docker-compose.{aio,dev,debug}.yml` and `docker/docker-compose.yml` `image:`
+  move to `ghcr.io/d10scot/mino:{latest,base}`, with service and container names per C-21. The
+  volume key stays.
+- **Dockerfile:** `docker/Dockerfile:2-3` defaults become `REPO_OWNER=d10scot`, `REPO_NAME=mino`.
+- **Workflows:**
+  - `metrics.yml:137` job container becomes `ghcr.io/d10scot/mino:base`
+  - OCI documentation annotations (C-3)
+  - `lifecycle-tests.yml`'s fallback list keeps the legacy name (it costs one probe per SHA)
+- **Hook:** `.claude/hooks/start-test-container.sh:19` default image becomes
+  `ghcr.io/d10scot/mino:latest`.
+- **Supply chain:** `docs/supply-chain.md` and `SECURITY.md`:
+  - registry `ghcr.io/d10scot/mino`
+  - `cosign verify` identity regex `^https://github\.com/D10Scot/mino/\.github/workflows/<workflow>\.yml@refs/.*$`
+  - a second, labelled command for images published before the rename, which carry
+    `D10Scot/Dispatcharr` in their certificate identity, permanently
+  - `gh attestation verify … --owner D10Scot` is unchanged
+- **Metrics and dashboard:**
+  - `metrics/build/__main__.py:31` `REPO_SLUG`
+  - `scripts/metrics/_gh.py:112-113` and `scripts/metrics/collect_events.py:347` defaults
+  - `scripts/metrics/README.md:43`
+  - `dashboard/pages/defects.js:7`, `dashboard/pages/story.js:6`
+  - dashboard tests' expected hrefs (`dashboard/tests/{defects,story}.test.js`, the expected string
+    only)
+- **Repo name and links:**
+  - `--repo D10Scot/mino` in `docs/agents/issue-tracker.md`, `CLAUDE.md`, the skills'
+    `references/project.md` and the gh-aw `.md` prompts (if any name the repo)
+  - the Pages URL `https://d10scot.github.io/mino/` in `CLAUDE.md` and `docs/agents/metrics.md`
+  - `github.com/D10Scot/Dispatcharr/` → `github.com/D10Scot/mino/` in living files' issue and PR
+    links (mechanical; the redirect makes both work, but the new name removes the dependency on it)
+  - records keep theirs (R-1)
+- **Other:**
+  - `core/tasks.py:924` update check; `apps/output/epg.py:1146`; `debian_install.sh:228` (C-3)
+  - `README.md:97-102` run commands → `ghcr.io/d10scot/mino:latest`, keeping
+    `-v dispatcharr_data:/data` (the volume name stays)
+  - `relay/internal/relaytest/testdata/ffmpeg_stderr/CAPTURE.md`: issue links only. It is a dated
+    capture note, and the spec treats it as living only for its links.
+
+**Not changed:** anything under the record globs.
+
+**Verification after merge (owner, H-5):**
+
+- `docker pull ghcr.io/d10scot/mino:latest`, then run the `cosign verify` command from the updated
+  `docs/supply-chain.md` against it. Expect `Verification for … -- The following checks were
+  performed`, with the `D10Scot/mino` identity.
+- Run the legacy command against `ghcr.io/d10scot/dispatcharr:latest`. Expect it to verify against
+  `D10Scot/Dispatcharr`.
+
+**Hooks and gates:** zizmor on every touched workflow; `dashboard/*.js` and `dashboard/tests`
+(dashboard vitest); `metrics/**` and `scripts/metrics/**` (metrics tests plus `--validate-only`);
+`*.py` (credential-logging check); `.claude/hooks/*.sh` (`lint.yml` runs
+`.claude/hooks/tests/test_hooks.sh`). CI runs all aggregates, `docker-build.yml` (the Dockerfile
+path) and hadolint.
+
+**PR description draft:**
+
+> Moves every hard-coded reference to the repository, image, Pages site and signing identity to
+> `D10Scot/mino` / `ghcr.io/d10scot/mino`, now that the repository has been renamed. Verification
+> docs keep a second command for images signed before the rename, whose certificate identity
+> permanently names `D10Scot/Dispatcharr`. Compose volume names are unchanged so an upgrade keeps
+> its data. Decision records are unchanged by design. Spec PR D2.
+
+### G1 — Go module path
+
+**Changes:**
+
+- `cd relay && go mod edit -module github.com/D10Scot/mino/relay`, then a mechanical rewrite of
+  every import (`gofmt -l` must be empty afterwards).
+- The four sites in C-1: `check_go_stdlib_only.sh:19`, `coverage_relay_go.sh:102`, the credlint
+  sanitizer key, and the floor's shape fields via `scripts/coverage_relay_go.sh --write-floor
+  --shape-only`. That rewrites `packages=`, `gomod=` and `scripts/coverage_relay_go.floor.packages`
+  and never touches `missing` (`scripts/coverage_relay_go.sh:355`).
+- Living docs that print the module path.
+
+`missing` must not move: the rename changes no statement. CI's coverage job is the check, and a
+change in `missing` is a finding, not something to re-baseline.
+
+**Break-checks:**
+
+- Revert only `check.go:69`. `go run ./internal/credlint ./...` reports findings at
+  `redact.Error` call sites, naming `redact.Error`.
+- Revert only `coverage_relay_go.sh:102`. `--gate` refuses with a `packages=` mismatch.
+
+**Hooks and gates:** `*.go` (`run-go-checks.sh`: build, vet, `-race`, credlint and golangci-lint
+under three GOOS); the commit gate's Go section. CI runs Go result (build, vet, race, lint,
+stdlib-only, credlint, coverage gate) and CodeQL `go`. No backend labels: `relay/` maps to none
+(CLAUDE.md § Test hooks).
+
+**PR description draft:**
+
+> Renames the Go module from `github.com/D10Scot/Dispatcharr/relay` to
+> `github.com/D10Scot/mino/relay`. Mechanical import rewrite plus the four places that key on the
+> path: the stdlib-only check, the coverage script's package filter, credlint's `redact.Error`
+> sanitizer key, and the coverage floor's shape fields (`--write-floor --shape-only`; `missing`
+> unchanged). Spec PR G1.
+
+### U1 — outbound User-Agent
+
+**Changes:** C-18, producer and matchers in one commit. The tests change their expected strings
+(`core/tests/test_core.py:263-292,358-378`, `apps/channels/tests/test_dvr_client_teardown.py`,
+`apps/channels/tests/test_recording_stop_cancel.py:307-344`), listed before and after.
+
+**Break-check:** change only the producer back to `Dispatcharr-DVR`.
+`test_dvr_client_teardown` reddens, because the matcher no longer finds the DVR client.
+
+**Hooks and gates:** `*.py` (credential-logging check); `tests/test_*.py` (whole packages
+`core.tests`, `apps.channels.tests`, `apps.epg.tests`). On a `migration/**` branch the full E2E
+runs, including `e2e/tests/dvr/*`, whose recording teardown depends on the DVR matcher.
+
+**PR description draft:**
+
+> The default outbound User-Agent becomes `Mino/<version>` and the DVR's becomes
+> `Mino-DVR/recording-<id>`, with the two DVR-client matchers in `apps/channels/api_views.py`
+> changed in the same commit. Schedules Direct, and any provider without a configured User-Agent,
+> now sees Mino. Spec PR U1. Tests changed (expected strings only): <list>.
+
+### E1 — env vars with the alias
+
+**Changes:** C-7/C-8 as written. Every reader, writer and mention in living files moves to
+`MINO_*`, including:
+
+- the five choke points;
+- `docker/env-alias.sh` (new);
+- the `variables=(…)` list;
+- supervisord and uWSGI interpolations;
+- CI env blocks (`backend-tests.yml:145-193`) and the gh-aw `.md` prompts (`DISPATCHARR_LOG_LEVEL`),
+  recompiled with a bare `gh aw compile`;
+- hooks' `-e DISPATCHARR_LOG_LEVEL` (`.claude/hooks/pre-commit-tests.sh:163`,
+  `run-affected-tests.sh:121`);
+- the sample compose files;
+- `CLAUDE.md` (every env var mention).
+
+`scripts/e2e_up.sh:373-375` keeps the old names (C-8).
+
+**New tests, one per alias mechanism, each with a break-check:**
+
+| Mechanism | Test | Break-check |
+|---|---|---|
+| Python | `tests/test_env_alias.py`: a subprocess `python -c "import dispatcharr, os; print(os.environ.get('MINO_LOG_LEVEL'))"` with only `DISPATCHARR_LOG_LEVEL=debug` set prints `debug` and emits one WARNING naming both; with both set and different, `MINO_` wins | Move the alias below `from .celery import app`: the subprocess shows `celery.py` reading an unset `MINO_LOG_LEVEL` |
+| Go | `relay/env_alias_test.go` (package `main`, the function `main()` calls) | Delete the call in `main()`: the test reddens |
+| Shell | A `docker/tests/` case, or a `lint.yml` bats-free case under `.claude/hooks/tests/`' style: source `docker/env-alias.sh` with `DISPATCHARR_ROLE=api`, assert `MINO_ROLE=api` | Reverse the precedence: the both-set case reddens |
+| Healthcheck | Covered by `docker/tests/test-puid-pgid.sh` running the container healthy with old names | — |
+| devProxy | `frontend/src/__tests__/devProxy.test.js` gains old-name and new-name cases | Drop the fallback: the old-name case reddens |
+
+**Hooks and gates:**
+
+- `*.py` (credential-logging check); `tests/test_*.py`.
+- The commit gate: `dispatcharr/` is a `_SHARED_PATH_PREFIXES` entry, so the **full backend set**
+  runs.
+- `*.go` (Go hook); `.github/workflows/*` (zizmor, `.md` plus `.lock.yml`);
+  `frontend/**/*.test.js` (vitest).
+- `apps/proxy/internal_base_url.py`, `relay_client.py` and `control_plane.py` are Gate 2 modules
+  (`scripts/coverage_live_path.coveragerc`). Run `scripts/coverage_live_path_isolated.sh` and
+  `--gate` before pushing. A pure rename moves no statement.
+- On the `migration/**` branch: every Playwright project, including `lifecycle-upgrade`, run with
+  the old names into the new image. `Lifecycle result`'s `suites` covers PUID/PGID and TLS Postgres
+  with the image's env.
+
+**PR description draft:**
+
+> Renames every `DISPATCHARR_*` environment variable to `MINO_*` (50 names, Appendix B of the
+> spec) and adds a prefix alias at the five places a process can start: the entrypoint and the
+> healthcheck (through `docker/env-alias.sh`), `dispatcharr/__init__.py`, the relay's `main()`, and
+> `frontend/devProxy.js`. An old name still works and logs one WARNING naming its replacement; if
+> both are set, the `MINO_` name wins. The window closes in spec PR E2, which turns the alias into
+> a refusal. **Rollback note:** an image older than this PR ignores `MINO_*`; rolling back after
+> renaming compose variables needs the names reverted too. Spec PR E1.
+
+### W1 — wire headers and internal routes
+
+**Changes:** C-4/C-5 as written.
+
+**New tests.** Each asserts that the old name confers nothing, and each has a break-check that
+re-adds the old name as an accepted alias:
+
+| Site | Test | Break-check |
+|---|---|---|
+| Django `authorize_view` (`apps/proxy/authorize_views.py`) | A request carrying `X-Dispatcharr-Authorized` with the *valid* relay-trust value and X-Relay-* params is treated as untrusted (the X-Relay-* values are ignored) | Read `HTTP_X_DISPATCHARR_AUTHORIZED` as a fallback: the test reddens, naming the trust decision |
+| Django `InternalRelayPermission` (`apps/proxy/permissions.py`) | A valid `X-Dispatcharr-Internal` + `-Internal-Request` pair is refused 403 | Same fallback on `META_INTERNAL`: reddens |
+| Go stream (`relay/httpapi/stream.go`) | A valid old-named marker does not unlock X-Relay-* | Accept `X-Dispatcharr-Authorized`: reddens |
+| Go control (`relay/httpapi/channels.go`) | A valid old-named internal pair is refused | Same: reddens |
+| nginx (`e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`) | Each params file blanks `X-Mino-Authorized` / `HTTP_X_MINO_AUTHORIZED`, and every `auth_request` names `/_mino/authorize` | Leave one `uwsgi_param HTTP_X_DISPATCHARR_AUTHORIZED ""` unrenamed: the spec reddens, naming the file |
+
+The `dispatcharr_api_params*.conf` file names stay (C-6). The e2e spec's include assertions are
+unchanged.
+
+**Hooks and gates:**
+
+- `*.py`, `tests/test_*.py` (`apps.proxy.tests`, `apps.channels.tests`); the commit gate's full
+  set (`dispatcharr/urls.py`, `dispatcharr/utils.py`).
+- `*.go` (Go hook).
+- `e2e/**/*.ts` (`tsc --noEmit`).
+- `docs/relay-parity-matrix.md` (the guards parity-matrix spec). Row 19's anchors must still
+  resolve, and a test file whose line counts grew is re-anchored in the same PR.
+- **Gate 2:** `internal_auth.py`, `authorize.py`, `authorize_views.py` and `permissions.py` are
+  rcfile-listed. Run the isolated coverage script and `--gate`. New tests may *lower* `missing`; a
+  rise is a finding.
+- The Go coverage gate (no statement change expected).
+- On the `migration/**` branch: every Playwright project, especially `streaming`
+  (`authorize-matrix.spec.ts`), `streaming-greybox`, `dvr` (the DVR's internal header) and
+  `lifecycle-upgrade`.
+
+**Review:** `fable` from round one (security-adjacent).
+
+**PR description draft:**
+
+> Renames the internal wire contract: `X-Dispatcharr-Authorized`/`-Internal`/`-Internal-Request`/
+> `-Session` become `X-Mino-*`, and `/_dispatcharr/authorize[-internal]` becomes
+> `/_mino/authorize[-internal]`, in Django, nginx and the Go relay in one commit. nginx, Django and
+> the relay ship in one image, so no reader ever accepts both names; a mixed-version modular
+> deployment fails closed. The HMAC labels are unchanged, so token values are unchanged; the old
+> header names therefore stay in `SENSITIVE_HEADERS`. New tests pin that a valid token under an old
+> name confers nothing, at all four verification sites and in nginx's blank lists. Spec PR W1.
+
+### P1 — persistent defaults and backups
+
+**Changes:**
+
+- `apps/dashboard/models.py:5` `server_name` default becomes `"Mino"`, and
+  `apps/hdhr/models.py:4` `friendly_name` default becomes `"Mino HDHomeRun"`.
+- One migration per app (`apps/dashboard/migrations/0002_…`, `apps/hdhr/migrations/0002_…`). Each
+  has an `AlterField` for the default plus a `RunPython` that rewrites a row only when its value
+  **equals the old default exactly**, so a user-customised name is untouched. The reverse rewrites
+  rows equal to the new default back. Neither migration changes a table name or a column.
+- Backups per C-20.
+
+**Tests:**
+
+- **Fresh DB:** `manage.py test` creates the test database from zero, so both migrations run
+  forward. A model-level test asserts the new default on a newly created row.
+- **Upgraded DB:** a `MigrationExecutor` test in the style of
+  `apps/channels/tests/test_hls_output_profile_migration.py`. It migrates to `0001`, inserts one row
+  at the old default and one with a custom name, migrates to `0002` and asserts that only the first
+  changed. Then it migrates back to `0001` and asserts the first is restored and the second is
+  untouched.
+- **Real upgrade:** `lifecycle-upgrade` on the `migration/**` branch. Ancestor image, seeded
+  volume, this image, durable state asserted.
+- **Backups:** a test with one `dispatcharr-backup-*.zip` and one `mino-backup-*.zip` in the backup
+  dir. Both are listed, and restoring the old one succeeds.
+
+**Break-checks:**
+
+- Make the `RunPython` unconditional. The custom-name assertion reddens.
+- Drop the legacy glob. The old archive disappears from `list_backups()` and the test names it.
+
+**Rollback:** each migration reverses (tested above). The image before P1 also runs fine *without*
+reversing. Django ignores an applied migration it has no file for, and a row reading "Mino" is
+harmless to old code.
+
+**Hooks and gates:**
+
+- `*/models.py` (`makemigrations --check`, which must be clean with the migration shipped).
+- `tests/test_*.py` (`apps.dashboard.tests`, `apps.hdhr.tests`, `apps.backups.tests`).
+- `core/tests/test_no_pending_migrations.py` runs under the `core.tests` label. The PR's labels
+  must include it, which they do, since the commit gate maps `apps/*/migrations` changes per app.
+  The implementer confirms with `FULL_SUITE=0 python3 scripts/ci_backend_test_labels.py <paths>`.
+- On the `migration/**` branch: every project, with `lifecycle-upgrade` and `lifecycle-restore`
+  (backup restore) the ones that matter.
+
+**PR description draft:**
+
+> Persisted product-name defaults move to Mino with reversible data migrations that touch only
+> rows still holding the old default (`dashboard.server_name`, `hdhr.friendly_name`); a
+> user-chosen name is never rewritten. New backups are `mino-backup-*.zip`; existing
+> `dispatcharr-backup-*.zip` archives stay listed and restorable indefinitely. Tested from a fresh
+> database, across a forward-and-back migration with seeded old and custom rows, and by the
+> lifecycle upgrade from an ancestor image. Spec PR P1.
+
+### E2 — the alias becomes a refusal
+
+**Precondition:** the owner has completed H-7, and says so on the PR.
+
+**Changes:** C-8's E2 paragraph. `scripts/e2e_up.sh` and any remaining old-name passer moves to
+`MINO_*`. The lifecycle-upgrade baseline is now an image from E1 or later, which understands
+`MINO_*` through E1's rename, so the upgrade test still works.
+
+**Tests:** E1's alias tests become refusal tests. Each asserts a non-zero exit, or the throw, and
+that the message names `DISPATCHARR_X` and `MINO_X`. A new entrypoint case asserts that a stale
+`DISPATCHARR_` line in `/etc/environment` is removed at start.
+
+**Break-check:** comment out the refusal in `dispatcharr/__init__.py`. The Python case reddens with
+"exited 0".
+
+**Hooks and gates:** as E1, on a `migration/**` branch.
+
+**PR description draft:**
+
+> Closes the env var alias window opened by spec PR E1: any `DISPATCHARR_*` variable now stops the
+> process at start with a message naming its `MINO_*` replacement, instead of being silently
+> ignored (which would fall back to defaults such as `aio` and loopback-only proxy trust). Also
+> scrubs stale `DISPATCHARR_` lines from `/etc/environment`. The owner confirmed their deployment
+> runs with no legacy-name warning before this merged. Spec PR E2.
+
+## The repository rename
+
+**When:** after D1 merges and before D2 opens. Before the owner starts, D1's E2E and Lifecycle
+results must be green on `main`.
+
+**Procedure (owner, H-3 to H-5):**
+
+1. Confirm the name is free: `gh api repos/D10Scot/mino`. It must print HTTP 404; it did on
+   2026-10-28.
+2. Settings → General → Repository name → `mino`, or
+   `gh repo rename mino --repo D10Scot/Dispatcharr --yes`.
+3. Immediately run `gh workflow run base-image.yml --repo D10Scot/mino --ref main` and wait for
+   it. Then run `gh workflow run ci.yml --repo D10Scot/mino --ref main`, or
+   `docker-build.yml`, whichever the owner uses for `:latest`.
+4. Check the new package's visibility: `gh api /users/D10Scot/packages/container/mino --jq
+   .visibility`. It needs `read:packages`; the UI is Your profile → Packages → mino. It must be
+   `public`, because `vuln-scan.yml` and the lifecycle baseline pull anonymously
+   (`lifecycle-tests.yml:420-421`). Set it if not.
+5. `git remote set-url origin git@github.com:D10Scot/mino.git` in the root checkout. Worktrees
+   share the setting.
+6. Open D2.
+
+**What redirects, what breaks, what is unaffected:**
+
+| Thing | After the rename | Action |
+|---|---|---|
+| Git over SSH/HTTPS to `D10Scot/Dispatcharr` | Redirects | Step 5, then forget it |
+| Web, issue and PR URLs, including blob URLs pinned by `mino-apple` to records | Redirect, **as long as no new repository is created as `D10Scot/Dispatcharr`** | **Never re-fork upstream into that name.** A re-fork would break every old link. |
+| REST API `repos/D10Scot/Dispatcharr/…` | Redirects (`gh` follows) | D2 moves the defaults anyway |
+| Image names from workflows | Switch to `ghcr.io/d10scot/mino` on the next run | Step 3 |
+| `ghcr.io/d10scot/dispatcharr` package and its tags | Unchanged; stops receiving pushes | **Keep it.** It is the owner's rollback and the upgrade baseline (D1). Do not delete it. |
+| Jobs needing `:base` (backend-tests, go-tests, ci, docker-build, release) | **Fail** until `mino:base` exists | Step 3, before merging anything |
+| E2E and lifecycle image builds | Use `mino:base` (D1) | — |
+| `metrics.yml` coverage job | Uses the stale `dispatcharr:base` until D2 | Accepted (not required) |
+| cosign certificate identity | New signatures say `…/D10Scot/mino/.github/workflows/…`; old images keep `D10Scot/Dispatcharr` forever | D2 documents both. No in-repo automation verifies identities (`git grep certificate-identity` finds only `docs/supply-chain.md:109`). |
+| `gh attestation verify --owner D10Scot` | Unaffected | — |
+| GitHub Pages | Moves to `https://d10scot.github.io/mino/`. Whether the old URL redirects is not verified here; assume it does not. | `curl -sI https://d10scot.github.io/Dispatcharr/` after step 3, record the answer on D2. D2 updates the links. |
+| `metrics-data` branch, `pages.yml` | Move with the repository; `pages.yml` names no repository | — |
+| Main ruleset (id 21229979), required checks, `release.yml`'s ruleset read | Attached to the repository, not its name; unaffected | Spot-check: open D2 and confirm the required checks are listed |
+| gh-aw workflows, `COPILOT_GITHUB_TOKEN` | Workflows use `${{ github.repository }}`. A fine-grained PAT selects repositories by id, which the rename keeps. | After step 3, dispatch `issue-triage` once and confirm it runs past the engine start. A 400 "no AI credits pricing" means the PAT expired (memory note), not the rename. |
+| Renovate | Not installed (`docs/supply-chain.md` § Maintenance). The app selects repositories by id. | — |
+| Secrets, environments (`github-pages`), webhooks, deploy keys, branch protection | Unaffected | — |
+| Badges | The only README badge is upstream's Open Collective (`README.md:172`). C2 handles it. | — |
+| OpenSSF Scorecard history | Keyed by name, so it starts fresh | Accepted |
+| CodeQL and code-scanning alerts | Stay with the repository | — |
+| `D10Scot/mino-apple` docs | Their links redirect | A later mino-apple docs PR (H-8) |
+
+## Owner actions
+
+In order. Each item has a paste-ready command and its expected output.
+
+- **H-1 (before E1, and again before P1): back up.** In the UI, Settings → Backups → Create, then
+  download the zip. Or:
+
+  ```bash
+  docker exec <your-container> ls /data/backups
+  ```
+
+  Expect a new `dispatcharr-backup-<ts>.zip` (P1 renames future ones). Also snapshot the volume:
+
+  ```bash
+  docker run --rm -v <your-volume>:/data -v "$PWD":/out alpine tar czf /out/data-$(date +%F).tgz -C / data
+  ```
+
+  Expect a non-empty `.tgz`.
+- **H-2 (any time):** say which compose shape the instance runs (AIO or modular) and whether it
+  sets `DJANGO_SETTINGS_MODULE` or any `DISPATCHARR_*` variable. Q1 and E1 depend on the answer.
+- **H-3 to H-5:** § The repository rename, steps 1–6. Afterwards, run the two `cosign verify`
+  commands from the updated `docs/supply-chain.md` (D2 § Verification after merge).
+- **H-6 (after D2 merges): switch the image name.** In your compose file, change `image:` to
+  `ghcr.io/d10scot/mino:latest`. **Keep your existing volume name and `container_name` if your
+  scripts use it.** Then:
+
+  ```bash
+  docker compose pull && docker compose up -d
+  ```
+
+  Expect the container to come up healthy (`docker ps` shows `(healthy)`), with your channels
+  present in the UI.
+- **H-7 (after E1 merges and is deployed): rename your compose variables.** Rename every
+  `DISPATCHARR_X` to `MINO_X`. If you set `DJANGO_SETTINGS_MODULE=dispatcharr.settings`, keep it:
+  the package keeps its name (C-10). Then:
+
+  ```bash
+  docker compose up -d
+  docker logs <your-container> 2>&1 | grep -c 'DISPATCHARR_'
+  ```
+
+  Expect `0`. Then tell the orchestrator, which unblocks E2.
+- **H-8 (any time after D2):** update `D10Scot/mino-apple`'s docs (`CLAUDE.md`, `README.md`,
+  `docs/server-context.md`, the skills' `project.md`) to name `D10Scot/mino`. Pinned blob links
+  keep working through the redirect. This is a mino-apple PR, not one from this repository.
+- **H-9 (optional, after the programme, with no worktree live): move the local checkout.**
+
+  ```bash
+  mv ~/git/Dispatcharr ~/git/mino
+  mv ~/.claude/projects/-Users-dion-git-Dispatcharr ~/.claude/projects/-Users-dion-git-mino
+  cd ~/git/mino && git worktree repair && .claude/hooks/start-test-container.sh
+  ```
+
+  Expect `git worktree list` to show the new paths, and `docker inspect dispatcharr-testrunner
+  --format '{{range .Mounts}}{{if eq .Destination "/repo"}}{{.Source}}{{end}}{{end}}'` to print
+  `/Users/dion/git/mino`. Then update the five living files that hard-code the old path (C-17).
+- **H-10 (any time):** answer § Open questions.
+
+## Open questions for the owner
+
+1. **Q1. Rename the `dispatcharr/` Python package?** Recommendation: **no** (C-10). If yes, it
+   becomes its own PR after E2, and it needs all of the following:
+   - a `dispatcharr` shim package that re-exports the new one, for plugins and for any
+     `DJANGO_SETTINGS_MODULE` still set in your compose;
+   - all six workflow path filters, `_SHARED_PATH_PREFIXES`, `.coveragerc`, `pyproject.toml`
+     `packages`, five uWSGI inis and the Daphne conf, in one commit;
+   - a `git mv`, which is exactly the path rename R-3 avoids, so the reviewer must enumerate every
+     path-matched arm by hand.
+2. **Q2. Schedules Direct.** U1 makes SD see `Mino/<version>`. Do you want to tell SD (a
+   registered-application note), or leave it? Recommendation: tell them. It is a courtesy, not a
+   dependency. No code depends on the answer.
+3. **Q3. Logo.** `frontend/src/images/logo.png`, `frontend/src/assets/logo.png`,
+   `frontend/public/logo.png` and `frontend/src/images/dispatcharr.svg` are upstream's art.
+   Recommendation: keep them until you supply Mino art, then swap the images at the same paths (a
+   swap, not a rename).
+4. **Q4. The dev-build update check** (`core/tasks.py:822-878`) polls upstream's Docker Hub
+   `dispatcharr/dispatcharr:dev`. Under M1 that is meaningless. Recommendation: a separate, small
+   follow-up after this programme deletes the dev branch of the check or repoints it at GHCR. Both
+   are behaviour changes, so neither is in a rename PR.
+5. **Q5. Support and funding links.** `FUNDING.yml`, the Discord and Open Collective links, and
+   the docs site are upstream's community. Recommendation: remove them (C1, C2) and keep only the
+   attribution line. If you want something there instead (your own issue tracker), say so before C1.
+6. **Q6. Dev-loop container names** (`dispatcharr-testrunner`, `-hookdb`, `-e2e…`).
+   Recommendation: **keep** (C-12). If you want them renamed, it is one optional PR after H-9,
+   coordinated with every live agent, accepting a fresh `--keepdb` database.
+7. **Q7. `debian_install.sh`.** It is upstream's bare-metal installer, unused by your deployment.
+   D2 repoints its clone URL only. Deleting it is a separate decision.
+
+## Scope guard
+
+Out of this programme, even when a rename PR walks past them:
+
+- the `localStorage` password (C-19);
+- the dev-build update check (Q4);
+- repointing the official plugin registry (C-3);
+- renaming kept identifiers (§ Categories);
+- any change to HMAC labels (C-4);
+- `metrics.yml`'s stale base between the rename and D2;
+- version renumbering.
+
+## Appendix A — owner rulings
+
+- **M1.** No more syncing with upstream `Dispatcharr/Dispatcharr`. Ideas may be reimplemented,
+  never merged. Merge-conflict cost against upstream is no constraint.
+- **M2.** No deployments exist besides the owner's own. Back-compat shims may be short-lived or
+  skipped, but the owner's instance must upgrade in place with its data preserved (PostgreSQL rows,
+  the `/data` volume, recordings, plugins, settings).
+- **M3.** The repository becomes `D10Scot/mino`; the app is `D10Scot/mino-apple` (bundle
+  `scot.d10.mino`). Renaming the GitHub repository is a settings action the owner performs; the
+  spec says when, and what breaks or redirects.
+- **M4.** Decision records keep the old name as history: ADRs, specs, plans, analyses, Done logs,
+  `docs/comparisons/`.
+
+## Appendix B — env var names (living files, `632f1d3d`)
+
+**Product (34)**, read by `apps/`, `core/`, `dispatcharr/`, `docker/`, `relay/` (non-test) or
+`frontend/devProxy.js`:
+
+`ALLOWED_SCRIPT_DIRS`, `API_HARAKIRI`, `API_MAX_REQUESTS`, `BUILD`, `CELERY_HOME`,
+`CELERY_USER`, `DEBUG`, `ENABLE_IP_LOOKUP`, `ENV`, `HOME`, `INTERNAL_API_BASE_URL`,
+`INTERNAL_TS_BASE_URL`, `LOG_LEVEL`, `PLUGINS_DIR`, `PORT`, `RELAY_BASE_URL`,
+`RELAY_DEFAULT_NAME`, `RELAY_GEVENT`, `RELAY_GO_DEV_ROUTES`, `RELAY_GO_PORT`, `RELAY_HOST`,
+`RELAY_PORT`, `ROLE`, `SCRIPT_MAX_OUTPUT`, `SCRIPT_TIMEOUT`, `SECRET_FILE`, `SETUP_ALLOWED_IP`,
+`SKIP_PLUGIN_AUTODISCOVERY`, `TIMESTAMP`, `TRUSTED_PROXIES`, `UWSGI_EXTRA_ARGS`, `UWSGI_INI`,
+`VERSION`, `WEB_HOST` (each prefixed `DISPATCHARR_`).
+
+**Tooling (16):** `E2E_BASELINE_IMAGE`, `E2E_CONTAINER`, `E2E_IMAGE`, `E2E_NETWORK`, `E2E_PORT`,
+`E2E_READY_ATTEMPTS`, `E2E_REPO_OWNER`, `E2E_SKIP_UPSTREAM_BUILD`, `E2E_UPSTREAM_CONTAINER`,
+`E2E_UPSTREAM_IMAGE`, `E2E_UPSTREAM_PORT`, `E2E_VOLUME`, `TEST_CONTAINER`, `TEST_DB_VOLUME`,
+`TEST_IMAGE`, `WRITE_GOLDEN`.
+
+**Django settings, not env (3):** `PLUGIN_IMPORT_MAX_BYTES`, `PLUGIN_IMPORT_MAX_FILE_BYTES`,
+`PLUGIN_IMPORT_MAX_FILES`.
+
+Only in records, so they are not renamed: `RELAY_GO_BIN`, `RELAY_GO_CHANNEL_BUFFER_BYTES`,
+`E2E_STACK`.
+
+## Appendix C — the 31 tracked paths containing the name, all kept
+
+`.idea/DispatcharrSM.iml`; `apps/channels/migrations/0034_remove_stream_dispatcharr_stream_id_idx_and_more.py`;
+`apps/plugins/keys/dispatcharr-plugins.pub`; the 23 files under `dispatcharr/`
+(`__init__.py`, `admin.py`, `app_initialization.py`, `asgi.py`, `celery.py`, `consumers.py`,
+`db/__init__.py`, `db/backends/__init__.py`, `db/backends/postgresql_psycopg3/{__init__,base,pool}.py`,
+`db/process_label.py`, `gevent_patch.py`, `jwt_ws_auth.py`, `persistent_lock.py`, `routing.py`,
+`settings.py`, `settings_test.py`, `test_discovery.py`, `test_runner.py`, `urls.py`, `utils.py`,
+`wsgi.py`); `docker/DispatcharrBase`; `docker/dispatcharr_api_params.conf`;
+`docker/dispatcharr_api_params_proxy.conf`; `docker/init/03-init-dispatcharr.sh`;
+`frontend/src/images/dispatcharr.svg`.
