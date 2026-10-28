@@ -182,6 +182,9 @@ RUN groupadd -r -g 109 render || true
 # symlink and replacing the IANA UTC zone with the host timezone.
 RUN rm -f /etc/localtime && cp -a /usr/share/zoneinfo/Etc/UTC /etc/localtime
 
+# linuxserver ships an ACME test server (pebble, go1.27.1) that nothing here runs; its Go stdlib carries fixable High/Critical CVEs.
+RUN rm -f /usr/bin/pebble
+
 # /usr/local/lib ahead of the distro multiarch path, for every process (#226).
 # linuxserver's ffmpeg links /usr/local/lib/librist.so.4 (4.12.1); vlc pulls
 # in the distro's 4.4.0 through libavformat62. On arm64 aarch64-linux-gnu.conf
