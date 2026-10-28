@@ -9,11 +9,11 @@ dependencies = [
     "Django==6.0.8", # PYSEC-2026-3717 / CVE-2026-15830, CVSS 6.9, fixed in 6.0.8
     "psycopg[binary]",
     "celery[redis]==5.6.3",
-    "djangorestframework==3.17.1",
+    "djangorestframework==3.18.2", # GHSA-33wh-fxxf-88vv, GHSA-3547-9m27-7rxg, GHSA-xw6w-gcfp-cf8m, fixed in 3.18.2
     "requests==2.34.2",
     "urllib3>=2.8.0", # CVE-2026-97687 / CVE-2026-97689, fixed in 2.8.0
     "psutil==7.2.2",
-    "pillow",
+    "pillow>=13.0.0", # 30+ advisories incl. Critical GHSA-v9pv-5gc8-w2m6, all fixed in 13.0.0
     "drf-spectacular>=0.30.0",
     "streamlink",
     "python-vlc",
@@ -25,7 +25,7 @@ dependencies = [
     "supervisor==4.3.0", # process supervisor (D2); pin exactly, a version swap changes supervision for every deployment
     "django-cors-headers",
     "djangorestframework-simplejwt",
-    "pyjwt>=2.14.0", # GHSA-ffc3-869f-jxw9 and five High advisories, fixed in 2.14.0
+    "pyjwt>=2.15.0", # GHSA-ffc3-869f-jxw9 and five High advisories (2.14.0), PYSEC-2026-4183 / GHSA-x33g-cr3x-6449 (2.15.0)
     "m3u8",
     "rapidfuzz==3.14.5",
     "regex",
@@ -40,6 +40,10 @@ dependencies = [
     "django-celery-beat>=2.9.0",
     "lxml==6.1.1",
     "packaging",
+    "certifi>=2026.10.19", # GHSA-6q48-6c7w-9gw2, fixed in 2026.10.18
+    "filelock>=4.2.1", # GHSA-v4x8-3wr5-3wq8 / CVE-2026-112940, fixed in 4.0.9 and 4.2.1
+    "msgpack>=1.2.3", # GHSA-j586-36cw-2gc2, fixed in 1.2.3
+    "twisted>=26.10.0rc1", # GHSA-3476-c5c2-fr73, GHSA-53xc-49m8-p798, GHSA-cwm5-jh59-mwxr: the fix ships only as a release candidate
     # Test-only (property-based testing). Lives in the main dependency list because
     # the repo has no dev/test dependency group yet and CI installs with --no-dev;
     # splitting out a [dependency-groups] dev group is a deliberate future refactor.
