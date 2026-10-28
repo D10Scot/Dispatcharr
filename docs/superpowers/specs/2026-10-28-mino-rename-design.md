@@ -148,7 +148,12 @@ change is purely a name. Even so, it names the repository, and per R-2 it is ren
 
 Five non-import sites key on the module path, and each fails closed if it is missed. The list is
 complete at `632f1d3d`: `git grep -n 'D10Scot/Dispatcharr/relay' 632f1d3d -- relay scripts
-':!*.md'`, minus `import` lines and `relay/go.mod`, prints exactly these.
+':!*.md'`, minus `import` lines and `relay/go.mod`, prints these five plus one more line. That
+line is `scripts/coverage_relay_go.floor:81`, a comment in the floor's PROVENANCE header that
+quotes a sample coverprofile line. It gates nothing, because `--gate` reads only `key=` fields.
+`--write-floor --shape-only` does **not** rewrite it: `set_field` replaces only lines matching
+`^key=` (`scripts/coverage_relay_go.sh:390-401`). G1 updates the comment by hand so that it shows
+the profile format as it now is.
 
 - `scripts/check_go_stdlib_only.sh:19` (`EXPECTED=`). The stdlib check fails.
 - `scripts/coverage_relay_go.sh:102` (`grep '^github.com/D10Scot/Dispatcharr/relay'`). The linked
@@ -273,9 +278,18 @@ paths that already exist for a missing or mismatched marker:
   other version, that POST goes to a route name the other side does not serve. The answer is a
   404, and the tune fails.
 - **The Python relay** (`relay-uwsgi`: VOD and catch-up), seeing no marker it trusts, authorizes
-  the request inline with `authorize_stream()` and logs one WARNING
-  (`apps/proxy/authorize_views.py:189-200`). It serves the request on its own decision, so the
-  client gains no privilege.
+  the request inline with `authorize_stream()` (`apps/proxy/authorize_views.py:189-200`). It
+  serves the request on its own decision, so the client gains no privilege. In the mixed window
+  this is **silent**: the one-time WARNING at `:195` fires only when a marker is *present under
+  the name the process reads* and mismatches. A marker under the other name reads as absent, so
+  nothing is logged.
+- **The reverse direction**, a client's new-named header passing through an *old* nginx, is
+  harmless. On a relay-bound location the old nginx still sets every `X-Relay-*` value itself
+  (`nginx.conf:337-342` and the `uwsgi_param` twins), so a client-supplied `X-Mino-Authorized`
+  can at most make a new relay trust values that nginx, not the client, wrote. On a location
+  outside the authorize hop, the marker is useful only with a valid HMAC, which the client does not
+  have unless it has already leaked. That is the case the permanent old-name blanks below exist
+  for.
 - **Django's internal surfaces**, seeing no internal header they accept, answer 403.
 
 None of these paths accepts a header without checking its HMAC, and no reader accepts both names,
@@ -684,7 +698,7 @@ the repository (that is D2), no persisted default (that is P1).
 **The authoritative list** is `git grep -n Dispatcharr <base> -- apps core dispatcharr relay
 docker frontend dashboard scripts pyproject.toml .gitleaks.toml .github/ISSUE_TEMPLATE
 ':!**/migrations/**'`, minus the kept identifiers (C-15, C-19, C-21), minus URLs (D2). At
-`632f1d3d` that is 19 non-test frontend files and 33 non-test, non-migration Python files under `apps`, `core` and `dispatcharr`.
+`632f1d3d` that is 19 non-test frontend files and 28 non-test, non-migration Python files under `apps`, `core` and `dispatcharr` (`git grep -l Dispatcharr 632f1d3d -- 'apps/*.py' 'core/*.py' 'dispatcharr/*.py' ':!**/tests/**' ':!**/migrations/**' | wc -l`).
 Among them are files this section does not name: `ConnectionSecurityPanel.jsx:64,82,123,141`
 (with `ConnectionSecurityPanel.test.jsx`), `ChannelsTable.jsx:1339,1351,1475`, `constants.js:29`,
 and the API schema help text at `apps/timeshift/api_views.py:33,84`. The files named below are the ones with a
@@ -1071,9 +1085,14 @@ unchanged.
   (`dispatcharr/test_discovery.py:52`), and an alias *replaces* prefix matching. A change under
   `apps/hdhr/` would therefore never run the new label. P1 changes that row to
   `("apps.hdhr", "apps.output", "apps.channels")`. It keeps the two existing targets, because the
-  HDHomeRun views are exercised from those apps' tests. `tests/test_ci_test_routing.py`'s pin for
-  the `apps/hdhr/` row changes with it, listed with before and after under the test-modification
-  rule. This is the behaviour being changed.
+  HDHomeRun views are exercised from those apps' tests. At `632f1d3d`, `tests/test_ci_test_routing.py`
+  has **no** `apps/hdhr/` pin (`git grep -i hdhr 632f1d3d -- tests/test_ci_test_routing.py` is
+  empty). So P1 **adds** one, in the file's existing style (`self._labels(...)` against a set,
+  as at `:30-49`): `test_hdhr_change_runs_hdhr_output_and_channels_tests` asserts that
+  `self._labels("apps/hdhr/models.py") == {"apps.hdhr.tests", "apps.output.tests",
+  "apps.channels.tests"}`. **No existing assertion in that file changes.** Break-check: drop
+  `"apps.hdhr"` from the alias row, and the new test reddens with a set difference naming
+  `apps.hdhr.tests`.
 
 **Tests:**
 
