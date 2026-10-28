@@ -40,8 +40,8 @@ dependencies = [
     "django-celery-beat>=2.9.0",
     "lxml==6.1.1",
     "packaging",
-    "certifi>=2026.10.19", # GHSA-6q48-6c7w-9gw2, fixed in 2026.10.18
-    "filelock>=4.2.1", # GHSA-v4x8-3wr5-3wq8 / CVE-2026-112940, fixed in 4.0.9 and 4.2.1
+    "certifi>=2026.10.18", # GHSA-6q48-6c7w-9gw2, fixed in 2026.10.18
+    "filelock>=4.2.1", # GHSA-v4x8-3wr5-3wq8 / CVE-2026-112940, fixed in 4.2.1
     "msgpack>=1.2.3", # GHSA-j586-36cw-2gc2, fixed in 1.2.3
     "twisted>=26.10.0rc1", # GHSA-3476-c5c2-fr73, GHSA-53xc-49m8-p798, GHSA-cwm5-jh59-mwxr: the fix ships only as a release candidate
     # Test-only (property-based testing). Lives in the main dependency list because
