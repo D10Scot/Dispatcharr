@@ -291,6 +291,14 @@ paths that already exist for a missing or mismatched marker:
   have unless it has already leaked. That is the case the permanent old-name blanks below exist
   for.
 - **Django's internal surfaces**, seeing no internal header they accept, answer 403.
+- **The third container is a sender, not a reader.** The modular `celery` service (role `worker`,
+  `docker/docker-compose.yml:213-241`) holds no reader on this surface, but
+  `apps/channels/tasks.py:1227` puts the internal header on the DVR's ffmpeg fetch of
+  `/proxy/ts/stream/`. A worker on the other version from `web` loses the internal principal until
+  it restarts: the new nginx blanks the old name, and the old authorize hop ignores the new one.
+  The recording of a hidden channel fails to tune in that window; an ordinary channel records as an
+  anonymous client. It degrades to a client, never to a trusted one, so it is safe, and W1's
+  reviewer should not rediscover it.
 
 None of these paths accepts a header without checking its HMAC, and no reader accepts both names,
 so W1 creates no such path. What W1 must still prevent is the old name passing *through* a new
@@ -394,9 +402,10 @@ There are five choke points:
 3. **`dispatcharr/__init__.py`**, as its first statement, before `from .celery import app`. The
    `celery` import reads `DISPATCHARR_LOG_LEVEL` at import time (`dispatcharr/celery.py:15`). This
    covers `docker exec … python manage.py …`, which also bypasses the entrypoint, and every Django
-   process.
-4. **`relay/main.go`**, first in `main()`. It covers a `relay-go` started by hand in dev. `go test`
-   never runs `main()`, so the relay's tests set the new names themselves.
+   process. The body is `dispatcharr/env_alias.py` (E1).
+4. **`relay/main.go`**, first in `main()`, as one call into `relay/config`'s `AliasLegacyEnv` (E1).
+   It covers a `relay-go` started by hand in dev. `go test` never runs `main()`, so the relay's
+   tests set the new names themselves, and the call line is pinned by review, not by a test.
 5. **`frontend/devProxy.js:25`** reads `MINO_RELAY_GO_PORT ?? DISPATCHARR_RELAY_GO_PORT` for a vite
    started on the host.
 
@@ -640,7 +649,12 @@ tracked file path (R-3)**, so no literal-path arm loses its subject. The reviewe
 
 - `docs/superpowers/specs/2026-10-28-mino-rename-design.md` (this file)
 - `docs/adr/0010-the-product-is-renamed-mino-and-upstream-is-no-longer-tracked.md`
-- `CLAUDE.md` § Repository and direction, first paragraph only
+- `CLAUDE.md` § Repository and direction, first paragraph, and the one-sentence `CONTRIBUTING.md`
+  pointer at the end of § Conventions (`CLAUDE.md:197` at `632f1d3d`: "See `CONTRIBUTING.md` for
+  the upstream PR process and fuller style guide"). The upstream PR process is what M1 retires, so
+  the sentence now points at the style guide only and says the process no longer applies. It is
+  folded into R0 so that it is not the one CLAUDE.md sentence no PR owns; `CONTRIBUTING.md` itself
+  is reworded in C2.
 
 The CLAUDE.md change states that there is no `upstream` remote and that none is to be added.
 `git remote -v` in the root checkout prints `origin` only, and `gh repo view D10Scot/Dispatcharr
@@ -731,6 +745,18 @@ decision attached.
   - the issue templates' text (`.github/ISSUE_TEMPLATE/*.yml`; the field `id: dispatcharr-version`
     stays, because it is an internal key)
 - **Comments and docstrings** that name this product, per C-22.
+- **One e2e pin, the oracle for the two strings every user sees first.** At `632f1d3d` nothing in
+  `e2e/tests/frontend/` asserts a product string: its only "Dispatcharr" hits are a User-Agent the
+  test itself types and reads back (`settings.spec.ts:122,140`), a fixture plugin's description
+  (`plugin-zip.ts:135,171`), a backup filename regex (`backups.spec.ts:162`, P1's) and issue links.
+  So C1 adds one `@contract` test to the existing `e2e/tests/frontend/render.spec.ts`, after the
+  nine surface loops: `gotoSurface(adminPage, SURFACES[0])`, then
+  `await expect(adminPage).toHaveTitle('Mino')` (`frontend/index.html:27`) and
+  `await expect(adminPage.getByRole('img', { name: 'Mino' })).toBeVisible()` (the sidebar logo's
+  `alt`, `Sidebar.jsx:366`), plus the sidebar brand text (`Sidebar.jsx:369`, via
+  `getByText('Mino', { exact: true })`). `helpers.ts:17-19` says the project never selects by text
+  because text couples a test to UI copy; this pin couples to copy on purpose, because the copy is
+  its subject, and the test's comment says so.
 
 The XC message string: the Mino app's only use of it is a fixture in its stub server
 (`D10Scot/mino-apple:MinoKit/Sources/MinoStubServer/StubScenario.swift:272`). A code search of
@@ -739,17 +765,41 @@ The XC message string: the Mino app's only use of it is a fixture in its stub se
 **Tests that change** (the test-modification rule: each one listed with before and after in the PR
 body). Any test asserting one of the renamed strings changes, and only its expected string changes.
 The implementer greps `-rn 'Dispatcharr'` across `*/tests/`, `frontend/src/**/__tests__` and
-`e2e/` for the exact strings changed, and lists every hit.
+`e2e/` for the exact strings changed, and lists every hit. Measured at `632f1d3d` as the starting
+list, not the full one:
 
-**Break-check:** revert `generator-info-name` alone. The XMLTV test (or a new one, if none asserts
-it) reddens, naming the attribute.
+- vitest files whose expectations name the product (`git grep -l Dispatcharr 632f1d3d --
+  'frontend/src/**/*.test.js' 'frontend/src/**/*.test.jsx'`): `Sidebar.test.jsx:195,204,211`
+  (`getByText('Dispatcharr')`), `AboutModal.test.jsx`, `PluginWarnings.test.jsx`,
+  `SuperuserForm.test.jsx`, `ConnectionSecurityPanel.test.jsx`, `Login.test.jsx` and
+  `RecordingCardUtils.test.js` (the last only if its string is one C1 changes).
+- `apps/output/tests/test_hdhr_device_xml.py:64`, which asserts the *computed* fallback
+  `<FriendlyName>Dispatcharr HDHomeRun</FriendlyName>` when no `HDHRDevice` row exists
+  (`apps/hdhr/api_views.py:226`, C1's), not the model default (P1's).
+- `apps/output/tests/test_views.py:37` is a helper that mirrors the download filename, not an
+  assertion; it changes with `apps/output/views.py:100` for consistency.
+
+**Break-checks:**
+
+- No test at `632f1d3d` asserts `generator-info-name` (`git grep generator-info 632f1d3d --
+  apps/output/tests` is empty), so C1 adds one in `apps/output/tests/test_views.py` that renders the
+  XMLTV header and asserts `generator-info-name="Mino"`. Revert `apps/output/epg.py:1145` alone,
+  and it reddens naming the attribute.
+- Revert `frontend/index.html:27` alone. The `render.spec.ts` pin reddens on `toHaveTitle`, with
+  Playwright's message quoting the title it found.
 
 **Hooks and gates:** `*.py` (credential-logging check); `frontend/**/*.test.jsx` (vitest);
 `frontend/**/*.jsx` (eslint, advisory); `*/models.py`: none (C1 changes no model);
-`.github/ISSUE_TEMPLATE` (not workflows, so no zizmor). CI runs Backend result (labels from the
-touched apps), Frontend result, E2E result (the path-gated matrix; `e2e/tests/frontend/*` asserts
-visible text and is exactly what should redden if a string was missed), Go result if any Go log
-prose changed, and lint plus the ratchet.
+`.github/ISSUE_TEMPLATE` (not workflows, so no zizmor); `e2e/**/*.ts` (`tsc --noEmit`). **Backend
+labels, measured** with `python3 -I scripts/ci_backend_test_labels.py` at `632f1d3d`: C1's app
+files alone give `["apps.channels.tests", "apps.output.tests", "apps.timeshift.tests",
+"core.tests"]`, but C1 also edits `dispatcharr/settings.py:349-350`,
+`dispatcharr/db/process_label.py:54` and `pyproject.toml:3`, each a `_SHARED_PATH_PREFIXES` entry
+(`dispatcharr/test_discovery.py:11`), so the real set is the **full fifteen labels**. CI runs
+Backend result (full), Frontend result, E2E result (the `frontend` project runs because C1 touches
+`frontend/**`, which `e2e-tests.yml:13,110`'s change filter names; the new `render.spec.ts` pin is
+the only E2E oracle for a missed product string, and the ratchet's allowlist diff is the other),
+Go result if any Go log prose changed, and lint plus the ratchet.
 
 **PR description draft:**
 
@@ -814,9 +864,10 @@ This fails, with `ghcr.io/d10scot/mino:base` not found. That shows the argument 
 same command with `REPO_NAME=dispatcharr` proceeds past the `FROM`.
 
 **Hooks and gates:** `.github/workflows/*.yml` (zizmor, blocking); `docker/tests/*.sh` (no hook).
-CI runs actions-lint, lint, E2E result and Lifecycle result. Name the branch `migration/…` only if
-the reviewer wants the upgrade job to exercise the fallback; it cannot fire before the rename
-anyway.
+CI runs actions-lint, lint, E2E result and Lifecycle result. The branch is `ci/mino-name-agnostic`,
+**not** `migration/**`: the legacy-name fallback cannot fire before the rename, because the only
+registry name that exists is the legacy one, and the upgrade job already runs on
+`lifecycle-tests.yml`'s own path filter, which the workflow edit trips.
 
 **PR description draft:**
 
@@ -871,7 +922,11 @@ anyway.
   - records keep theirs (R-1)
 - **Other:**
   - `core/tasks.py`: the stable check repointed with its 404 logged at INFO, and the dev-build
-    branch disabled, with its tests and break-checks (C-3, C-3a). Labels: `core.tests`.
+    branch disabled, with its tests and break-checks (C-3, C-3a). Both branches call
+    `requests.get` (`core/tasks.py:824,928`) and `__timestamp__` is imported inside the task
+    (`:812`), so `patch("version.__timestamp__", …)` and `patch("core.tasks.requests.get")` are the
+    two seams the tests need. Labels, measured for `core/tasks.py`, `apps/output/epg.py` and the new
+    `core/tests/` module: `["apps.output.tests", "core.tests"]`.
   - `apps/output/epg.py:1146`; `debian_install.sh:228` (C-3)
   - `README.md:97-102` run commands → `ghcr.io/d10scot/mino:latest`, keeping
     `-v dispatcharr_data:/data` (the volume name stays)
@@ -926,7 +981,12 @@ change in `missing` is a finding, not something to re-baseline.
 - Revert only `check.go:69`. `go run ./internal/credlint ./...` reports findings at
   `redact.Error` call sites, naming `redact.Error`, **and** `TestTheRedactorIsExactlyRedactError`
   (`check_test.go:105`) reddens, naming the sanitizer key.
-- Revert only `coverage_relay_go.sh:102`. `--gate` refuses with a `packages=` mismatch.
+- Revert only `coverage_relay_go.sh:102`. The script stops **before** it measures anything: the
+  `grep` matches no line of the renamed `go list -deps .` output, and under `set -uo pipefail`
+  (`:56`) the pipeline's `|| die` fires with `could not list the binary's dependencies.`
+  (`:101-104`). It never reaches the `packages=` comparison (`:265-267`), so "a `packages=`
+  mismatch" is not the message; that would be the message of a *partial* edit of the grep that still
+  matched some packages.
 
 **Hooks and gates:** `*.go` (`run-go-checks.sh`: build, vet, `-race`, credlint and golangci-lint
 under three GOOS); the commit gate's Go section. CI runs Go result (build, vet, race, lint,
@@ -944,15 +1004,44 @@ stdlib-only, credlint, coverage gate) and CodeQL `go`. No backend labels: `relay
 
 ### U1 — outbound User-Agent
 
-**Changes:** C-18, producer and matchers in one commit. The tests change their expected strings
-(`core/tests/test_core.py:263-292,358-378`, `apps/channels/tests/test_dvr_client_teardown.py`,
-`apps/channels/tests/test_recording_stop_cancel.py:307-344`), listed before and after.
+**Changes:** C-18, producer and matchers in one commit. The helper function names stay (C-18,
+C-21). U1 touches `core/utils.py`'s two return strings (`:28,:33`), the two matchers
+(`apps/channels/api_views.py:3252`, in `_stop_dvr_clients`, and `:3821`, in
+`RecordingViewSet.destroy`'s background thread), the tests below, and nothing else.
 
-The helper function names stay (C-18, C-21). U1 touches `core/utils.py`'s two return strings, the
-two matchers and the tests, and nothing else.
+**Tests that change** (the test-modification rule: expected strings only, each listed before →
+after in the PR body). Every one of them feeds the matcher a **literal** string, so none of them
+observes the producer; that is why the coupling test below is new rather than one of these:
 
-**Break-check:** change only the producer back to `Dispatcharr-DVR`.
-`test_dvr_client_teardown` reddens, because the matcher no longer finds the DVR client.
+- `core/tests/test_core.py:259-292` (`DispatcharrUserAgentTests`: `'Dispatcharr/1.2.3'` →
+  `'Mino/1.2.3'` at `:263,:274,:284,:292`; `'Dispatcharr-DVR/recording-42'` →
+  `'Mino-DVR/recording-42'` at `:267`) and `:358,:375,:378` (`"Dispatcharr/9.9.9"`,
+  `"Dispatcharr/1.2.3"`, the `CoreSettings.get_default_user_agent()` fallback).
+- `apps/channels/tests/test_dvr_client_teardown.py:24,38-39` (payload literals
+  `"Dispatcharr-DVR/recording-7"`, `-8`).
+- `apps/channels/tests/test_recording_stop_cancel.py:307-344` (payload literals
+  `"Dispatcharr-DVR/recording-42"`, `-99`, `-1`).
+
+**New test, the producer/matcher coupling.** In `apps/channels/tests/test_dvr_client_teardown.py`,
+in the file's own style (`_channel()` payload, `relay_client.get_channel` and `stop_client`
+patched): `test_the_matcher_recognises_what_the_producer_sends` builds the payload from the
+producer, `{"client_id": "c1", "user_agent": dispatcharr_dvr_user_agent(7)}` beside a
+`"VLC/3.0"` client, calls `api_views._stop_dvr_clients("abc", recording_id=7)`, and asserts the
+count is 1 and `stop_client` was called once with `("abc", "c1")`, with `msg=` naming the
+mechanism ("the DVR matcher does not recognise the User-Agent the DVR producer sends"). The
+`destroy` matcher at `:3821` is the same substring test in a background thread; U1 changes it in
+the same hunk, and the reviewer reads both sites, since no test drives `destroy` with a DVR
+payload at `632f1d3d`.
+
+**Break-checks**, each on the final tree:
+
+- Revert only the **matcher** (`api_views.py:3252` back to `"Dispatcharr-DVR"`). The coupling test
+  reddens (`0 != 1`, with the `msg=` above), because the producer still sends `Mino-DVR/…`. The
+  literal-payload tests stay green, which is the point: they cannot see this edit.
+- Revert only the **producer** (`core/utils.py:33` back to `Dispatcharr-DVR/…`). The coupling
+  test reddens the same way, and `test_core.py:267`'s `test_dispatcharr_dvr_user_agent` reddens
+  with the string inequality. Either half reverted alone is caught by the coupling test; the
+  literal tests catch neither.
 
 **Hooks and gates:** `*.py` (credential-logging check); `tests/test_*.py`. The labels measured by
 `scripts/ci_backend_test_labels.py` for `core/utils.py`, `apps/channels/api_views.py` and the
@@ -984,15 +1073,33 @@ runs, including `e2e/tests/dvr/*`, whose recording teardown depends on the DVR m
 
 `scripts/e2e_up.sh:373-375` keeps the old names (C-8).
 
-**New tests, one per alias mechanism, each with a break-check:**
+**Where the alias bodies live.** Each choke point is a one-line call into a body that has a test
+of its own, so the uncovered part of each is the call line and nothing else:
+
+- Python: `dispatcharr/env_alias.py`, a leaf module importing `os` and `logging` only, exposing
+  `alias_legacy_env(environ=os.environ)`. `dispatcharr/__init__.py:7` is `from .celery import
+  app as celery_app` and the call goes **above** it, because `dispatcharr/celery.py:15` reads the
+  level at import. The WARNING goes through `logging` before Django has configured logging, so it
+  reaches stderr through Python's last-resort handler, which prints WARNING and above.
+- Go: `relay/config/envalias.go` in the already-linked, already-tested `relay/config` package,
+  `func AliasLegacyEnv() []string` (the warnings it would log, one per variable, so a test reads
+  them without capturing the logger). `main()` gains one line, `config.AliasLegacyEnv()` before
+  `config.Load()` (`relay/main.go:33`), each returned line logged through `log.Printf`. A new
+  package would move the floor's `packages=` and need R27's re-baseline; `relay/config` does not.
+- Shell: `docker/env-alias.sh`, POSIX `sh` because `docker/healthcheck.sh` is `#!/bin/sh`.
+
+**New tests, one per alias mechanism, each with a break-check. No case supplies a default value:**
+`celery.py:10`'s `DEFAULT_LOG_LEVEL` is `DEBUG`, `relay/config`'s default port is 5658, the role
+defaults to `all`, and `devProxy.js:25-28` falls to `'5658'`, so a pin on any of those would pass
+with the alias absent.
 
 | Mechanism | Test | Break-check |
 |---|---|---|
-| Python | `tests/test_env_alias.py`: a subprocess `python -c "import dispatcharr, os; print(os.environ.get('MINO_LOG_LEVEL'))"` with only `DISPATCHARR_LOG_LEVEL=debug` set prints `debug` and emits one WARNING naming both; with both set and different, `MINO_` wins | Move the alias below `from .celery import app`: the subprocess shows `celery.py` reading an unset `MINO_LOG_LEVEL` |
-| Go | `relay/env_alias_test.go` (package `main`, the function `main()` calls) | Delete the call in `main()`: the test reddens |
-| Shell | A `docker/tests/` case, or a `lint.yml` bats-free case under `.claude/hooks/tests/`' style: source `docker/env-alias.sh` with `DISPATCHARR_ROLE=api`, assert `MINO_ROLE=api` | Reverse the precedence: the both-set case reddens |
-| Healthcheck | Covered by `docker/tests/test-puid-pgid.sh` running the container healthy with old names | — |
-| devProxy | `frontend/src/__tests__/devProxy.test.js` gains old-name and new-name cases | Drop the fallback: the old-name case reddens |
+| Python | `tests/test_env_alias.py` (label `tests`). Each case runs `[sys.executable, "-c", "import dispatcharr, os; print('MINO_LOG_LEVEL=' + str(os.environ.get('MINO_LOG_LEVEL')))"]` with `cwd` at the repository root and an **allowlisted** `env`: `PATH`, `HOME`, `LANG`, `PYTHONPATH` (the repository root) and the case's own variables, never a copy of `os.environ`. The hook and CI set `*_LOG_LEVEL=WARNING` themselves (`pre-commit-tests.sh:163`, `run-affected-tests.sh:121`, `backend-tests.yml:150,193`), and after E1 those lines set `MINO_LOG_LEVEL`, which would make "only the old name set" false and the "`MINO_` wins" case tautological. (a) Only `DISPATCHARR_LOG_LEVEL=warning`: stdout carries `Celery using effective log level: WARNING` (`celery.py:33`) and `MINO_LOG_LEVEL=warning`; stderr carries exactly one WARNING naming `DISPATCHARR_LOG_LEVEL` and `MINO_LOG_LEVEL`. (b) `DISPATCHARR_LOG_LEVEL=warning` and `MINO_LOG_LEVEL=error`: stdout carries `… ERROR` and `MINO_LOG_LEVEL=error`; the WARNING says `MINO_LOG_LEVEL` wins. (c) Neither: `… DEBUG` and no WARNING. `warning` is not the default, and nothing in the tree writes `/tmp/dispatcharr_log_level` (`celery.py:21-22` is its only mention), so the broken chain below ends at the default | Move the call below `from .celery import app`. Case (a) reddens on stdout: `Celery using effective log level: DEBUG` where `WARNING` was expected, which names the mechanism, `celery.py:15` read the level before the alias ran. The `MINO_LOG_LEVEL=warning` line still prints in that state, which is why an assertion on `os.environ` alone could not see this edit |
+| Go | `relay/config/envalias_test.go`, in `config_test.go`'s style (`t.Setenv`; the test registers **both** names with `t.Setenv` before the call so the function's own `os.Setenv` is restored at test end). (a) Only `DISPATCHARR_RELAY_GO_PORT=5999`: afterwards `os.Getenv("MINO_RELAY_GO_PORT") == "5999"` and exactly one returned line names both. (b) `DISPATCHARR_RELAY_GO_PORT=5999` and `MINO_RELAY_GO_PORT=6001`: `6001` survives and the line says `MINO_` wins. (c) No `DISPATCHARR_` variable: no line | A wrong edit **inside** `AliasLegacyEnv`: reverse the precedence so the old name overwrites a set new one. Case (b) reddens, `MINO_RELAY_GO_PORT = 5999, want 6001`. The call line in `main()` is pinned by the reviewer reading `relay/main.go`, not by a test: `go test` never runs `main()` (C-8 point 4), and no stand-in re-exec is added to pretend otherwise |
+| Shell | `docker/tests/test-env-alias.sh`, run by `lint.yml` beside `.claude/hooks/tests/test_hooks.sh` (`lint.yml:226`); no Docker. Each case sources `docker/env-alias.sh` in a fresh `env -i` shell. (a) Only `DISPATCHARR_ROLE=api`: `MINO_ROLE=api` and one warning naming both. (b) `DISPATCHARR_ROLE=api` and `MINO_ROLE=worker`: `MINO_ROLE=worker`. (c) Nothing old: no output. `api` and `worker` are chosen because the role's default is `all` | Reverse the precedence inside `env-alias.sh`: case (b) reddens, naming `MINO_ROLE=api` |
+| Healthcheck | A new case in `docker/tests/test-puid-pgid.sh`, in `test_custom_port`'s shape (`:1618-1655`): run the image with `-e DISPATCHARR_RELAY_GO_PORT=5659` (old name, **non-default**: 5658 is what `healthcheck.sh:33` falls to), `wait_for_ready`, then `docker exec "$name" /bin/sh /app/docker/healthcheck.sh` must exit 0 (the exact `HEALTHCHECK` command, `docker/Dockerfile:117-118`). `wait_for_ready` itself checks `supervisorctl status api-uwsgi` (`:181-193`) and never the healthcheck, so a container that is "ready" says nothing about this script | Drop the `.`-source of `docker/env-alias.sh` from `healthcheck.sh`: it reads an unset `MINO_RELAY_GO_PORT`, probes 5658 where nothing listens, and the `exec` exits non-zero, which the case reports as `healthcheck exited <n> with the legacy port name set` |
+| devProxy | `frontend/src/__tests__/devProxy.test.js:92-94` already tables `relayGoPort` with `DISPATCHARR_RELAY_GO_PORT` (`''`, `'abc'`, `'6000'`); those three rows move to `MINO_RELAY_GO_PORT` (listed under the test-modification rule) and gain `{ DISPATCHARR_RELAY_GO_PORT: '6000' } → '6000'` and `{ MINO_RELAY_GO_PORT: '6001', DISPATCHARR_RELAY_GO_PORT: '6000' } → '6001'` | Drop the `?? env.DISPATCHARR_RELAY_GO_PORT` fallback: the old-name row reddens, `'5658'` where `'6000'` was expected |
 
 **Hooks and gates:**
 
@@ -1004,9 +1111,21 @@ runs, including `e2e/tests/dvr/*`, whose recording teardown depends on the DVR m
 - `apps/proxy/internal_base_url.py`, `relay_client.py` and `control_plane.py` are Gate 2 modules
   (`scripts/coverage_live_path.coveragerc`). Run `scripts/coverage_live_path_isolated.sh` and
   `--gate` before pushing. A pure rename moves no statement.
+- **The Go coverage ratchet, with a declared raise** (CLAUDE.md § Testing, ruling R21). Package
+  `main` is linked and in the floor (`scripts/coverage_relay_go.floor.packages:1`), and nothing
+  tests `main()`, so the one statement E1 adds to it, the `config.AliasLegacyEnv()` call, is
+  uncovered by construction and `missing` rises by exactly one. `scripts/check_floor_raise.sh`
+  (`go-tests.yml`'s floor step) refuses an undeclared rise, and refuses a declaration whose
+  `raise_from` is not the base floor's `missing` (`:42-45`). So E1's `scripts/coverage_relay_go.floor`
+  carries `raise_from=<the floor's missing= at E1's base; 705 at 632f1d3d>` and `raise_listed=1`,
+  **replacing** the `raise_from=691` / `raise_listed=14` pair 4a-3 left (a stale pair is refused),
+  lists `relay/main.go:<line>` in the PR body, and sets `missing` to the worst of the 12-round CI
+  census, which must be ≤ `raise_from + 1` and must show ≥ 85% on E1's added statements. The
+  alias body being in `relay/config` is what makes the listed total one line: everything else E1
+  adds is covered by `envalias_test.go`.
 - On the `migration/**` branch: every Playwright project, including `lifecycle-upgrade`, run with
-  the old names into the new image. `Lifecycle result`'s `suites` covers PUID/PGID and TLS Postgres
-  with the image's env.
+  the old names into the new image. `Lifecycle result`'s `suites` runs `test-puid-pgid.sh`, with
+  the healthcheck case above, and TLS Postgres with the image's env.
 
 **PR description draft:**
 
@@ -1033,13 +1152,50 @@ re-adds the old name as an accepted alias:
 | Go control (`relay/httpapi/channels.go`) | A valid old-named internal pair is refused | Same: reddens |
 | nginx (`e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`) | Asserts **both** marker names blanked in each params file (`HTTP_X_MINO_AUTHORIZED` and `HTTP_X_DISPATCHARR_AUTHORIZED` in the uwsgi include; `X-Mino-Authorized` and `X-Dispatcharr-Authorized` in the proxy include), and the old internal pair blanked in both. Asserts that every location which sets `X-Mino-Authorized` also sets the old marker and the old internal pair to `""`, that neither include blanks the new internal pair, and that every `auth_request` names `/_mino/authorize` | Delete the old-name marker blank from one include: the spec reddens, naming the file and the missing name. Then add `X-Mino-Internal ""` to the proxy include: it reddens, naming the forbidden blank |
 
-The `dispatcharr_api_params*.conf` file names stay (C-6). The e2e spec's include assertions are
-unchanged.
+The `dispatcharr_api_params*.conf` file names stay (C-6). The e2e spec's include *file name*
+assertions (`nginx-stream-buffering.spec.ts:471,489`) are unchanged; its header-name assertions
+are not, and they are listed next.
+
+**Tests that change** (the test-modification rule: expected strings only, each listed before →
+after in the PR body; a test that proves the *old* name confers nothing is new, in the table
+above, never a rewrite of one of these). Measured at `632f1d3d` with `git grep -n -E
+'X-Dispatcharr-|HTTP_X_DISPATCHARR|_dispatcharr/authorize' 632f1d3d` over test trees:
+
+- **Python tests naming the literal rather than a constant:** `apps/proxy/tests/test_authorize_view.py`
+  (13 hits: `/_dispatcharr/authorize` request paths and the schema assertion at `:138`,
+  `HTTP_X_DISPATCHARR_AUTHORIZED=` kwargs at `:237`), `test_authorize_internal_view.py` (10;
+  `PATH = "/_dispatcharr/authorize-internal"` at `:46`), `test_internal_auth.py` (10; `_Req(
+  HTTP_X_DISPATCHARR_AUTHORIZED=…)`, `HTTP_X_DISPATCHARR_INTERNAL=…`), `test_authorize.py` (7),
+  `test_internal_relay_permission.py` (6; `HTTP_X_DISPATCHARR_INTERNAL=` at `:185,204,212`),
+  `test_next_source_api.py:162-163`, `test_control_plane_client.py:325`, `test_hls_format.py:40`,
+  `test_tune_path_query_ledger.py:235` (the path the ledger keys its authorize-hop multiset on; the
+  multiset itself does not move), `apps/proxy/vod_proxy/tests/test_vod_redirect.py:359`
+  (`response["X-Dispatcharr-Session"]`) and `apps/channels/tests/test_dvr_internal_principal.py:43,53`
+  (the `X-Dispatcharr-Internal: ` prefix of the redacted `-headers` value).
+- **e2e:** `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts:307` (`auth_request
+  /_dispatcharr/authorize`), `:344-345` (the marker regexes; the new "old marker blanked"
+  assertions sit **beside** these, which keep asserting the live marker under its new name),
+  `:417-418` (the `= /_dispatcharr/authorize` block), `:445` (the blanked-locations list) and
+  `:475,:495` (the two include blank lists); `e2e/tests/streaming/authorize-matrix.spec.ts:126`
+  (the forged marker becomes `X-Mino-Authorized`, and a second forged request under the **old**
+  name is a new case); `e2e/tests/dvr/recording-hidden-channel.spec.ts:15` (a comment).
+- **Shell:** `docker/tests/test-puid-pgid.sh:715,722,725`, which grep
+  `HTTP_X_DISPATCHARR_AUTHORIZED "<hex>"` out of the rendered nginx config to prove the trust
+  token is re-derived after `/data/jwt` rotation.
+- **Go:** `relay/internal/relaytest/controlplane.go:312`, the harness's `AuthorizePath` twin of
+  `control.AuthorizePath` (`:310-311` says a test naming it cannot drift from the real one, and the
+  two change together). `relay/httpapi/authorize_test.go:18` and `redirect_test.go:120` are
+  comments. Go tests reach the header names through `relay/control/token.go`'s constants, so no
+  Go test expectation changes.
+- **Docs the guards project pins:** `docs/relay-parity-matrix.md` rows 19, 30 and 38 (§ C-4/C-5).
 
 **Hooks and gates:**
 
-- `*.py`, `tests/test_*.py` (`apps.proxy.tests`, `apps.channels.tests`); the commit gate's full
-  set (`dispatcharr/urls.py`, `dispatcharr/utils.py`).
+- `*.py`, `tests/test_*.py`. Labels, measured at `632f1d3d`: W1's `apps/proxy/` and
+  `apps/channels/` files alone give `["apps.channels.tests", "apps.proxy.tests",
+  "apps.proxy.vod_proxy.tests"]` (the third from `apps/proxy/vod_proxy/views.py:1118`'s
+  `X-Dispatcharr-Session`); with `dispatcharr/urls.py` and `dispatcharr/utils.py` the commit gate
+  and CI run the **full set**.
 - `*.go` (Go hook).
 - `e2e/**/*.ts` (`tsc --noEmit`).
 - `docs/relay-parity-matrix.md` (the guards parity-matrix spec). The anchors of rows 19, 30 and 38
@@ -1085,7 +1241,10 @@ unchanged.
   (`dispatcharr/test_discovery.py:52`), and an alias *replaces* prefix matching. A change under
   `apps/hdhr/` would therefore never run the new label. P1 changes that row to
   `("apps.hdhr", "apps.output", "apps.channels")`. It keeps the two existing targets, because the
-  HDHomeRun views are exercised from those apps' tests. At `632f1d3d`, `tests/test_ci_test_routing.py`
+  HDHomeRun views are exercised from those apps' tests. The comment above the table
+  (`dispatcharr/test_discovery.py:31-32`, "`apps/hdhr/` no tests of its own; …") goes stale with
+  that edit and is rewritten in the same hunk to say the app now has its own tests package and why
+  the other two targets stay. At `632f1d3d`, `tests/test_ci_test_routing.py`
   has **no** `apps/hdhr/` pin (`git grep -i hdhr 632f1d3d -- tests/test_ci_test_routing.py` is
   empty). So P1 **adds** one, in the file's existing style (`self._labels(...)` against a set,
   as at `:30-49`): `test_hdhr_change_runs_hdhr_output_and_channels_tests` asserts that
@@ -1155,14 +1314,32 @@ harmless to old code.
 `MINO_*`. The lifecycle-upgrade baseline is now an image from E1 or later, which understands
 `MINO_*` through E1's rename, so the upgrade test still works.
 
-**Tests:** E1's alias tests become refusal tests. Each asserts a non-zero exit, or the throw, and
-that the message names `DISPATCHARR_X` and `MINO_X`. A new entrypoint case asserts that a stale
-`DISPATCHARR_` line in `/etc/environment` is removed at start.
+**Tests:** E1's alias tests become refusal tests, in the same files, with the same allowlisted
+environments and the same non-default values. Each asserts a non-zero exit, or the throw, and
+that the message names `DISPATCHARR_X` and `MINO_X`; the no-old-name case asserts a clean start
+with no message; and each mechanism gains one case with **two** old names set, asserting that
+both are named, since a refusal that reports only the first would send the owner round the loop
+once per variable. The bodies stay where E1 put them (`dispatcharr/env_alias.py`,
+`relay/config/envalias.go` as `RefuseLegacyEnv() []string`, `docker/env-alias.sh`), so the
+refusal logic is tested directly and each choke point is again a call line. A new entrypoint case
+asserts that a stale `DISPATCHARR_` line in `/etc/environment` is removed at start.
 
-**Break-check:** comment out the refusal in `dispatcharr/__init__.py`. The Python case reddens with
-"exited 0".
+**Break-checks:**
 
-**Hooks and gates:** as E1, on a `migration/**` branch.
+- Comment out the refusal call in `dispatcharr/__init__.py`. The Python case reddens with
+  "exited 0", and its stdout shows the alias no longer running either.
+- A wrong edit inside `RefuseLegacyEnv`: skip the last variable found. The Go case that sets two
+  old names reddens, naming the one that was not reported. The `main()` lines are pinned by the
+  reviewer reading `relay/main.go`, as in E1.
+
+**Hooks and gates:** as E1, on a `migration/**` branch, including **a second declared Go floor
+raise** (R21): `main()` loses E1's one call line and gains the refusal's call, its loop over the
+returned lines and the `os.Exit(2)`, all uncovered by construction. The implementer counts the
+statements from the census, declares `raise_from=<the floor's missing= at E2's base>` and
+`raise_listed=<that count>` (replacing E1's pair, which `check_floor_raise.sh:42-45` would refuse
+as stale), lists `relay/main.go:<lines>` in the PR body, and sets `missing` to the worst of the
+12-round CI census, ≤ the sum. The refusal body in `relay/config` is covered by its own test, so
+the listed total is the `main()` lines alone.
 
 **PR description draft:**
 

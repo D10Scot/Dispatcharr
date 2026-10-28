@@ -194,7 +194,7 @@ Backend: DRF serializers for every endpoint (never raw dicts); routes in the app
 
 Tests: `CELERY_TASK_ALWAYS_EAGER` is deliberately **off** globally — `post_save` on `M3UAccount`/`EPGSource` calls `.delay()`, and eager mode runs it inside the `TestCase` transaction and poisons the connection. Opt in per-test with `@override_settings(CELERY_TASK_ALWAYS_EAGER=True)`. `settings_test` forces plain `postgresql` (geventpool breaks `TestCase` isolation).
 
-See `CONTRIBUTING.md` for the upstream PR process and fuller style guide.
+See `CONTRIBUTING.md` for the fuller style guide. The upstream PR process it describes no longer applies: nothing is sent to or merged from `Dispatcharr/Dispatcharr` (ADR 0010).
 
 ## Agent skills
 
