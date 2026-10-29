@@ -2,7 +2,7 @@
 
 ## Repository and direction
 
-Fork. `origin` = `D10Scot/Dispatcharr` (push here); `upstream` = `Dispatcharr/Dispatcharr` (fetch-only; push URL is the literal string `DISABLED`). Upstream targets `dev`; this fork works on `main`.
+Derived from `Dispatcharr/Dispatcharr` (AGPL-3.0) and no longer tracking it: `origin` = `D10Scot/Dispatcharr` (push here) is the only remote, GitHub records the repository as standalone rather than a fork, and **no `upstream` remote is kept or added** — an idea from upstream is reimplemented here, never merged or cherry-picked (`docs/adr/0010-the-product-is-renamed-mino-and-upstream-is-no-longer-tracked.md`). This fork works on `main`. The product is being renamed **Mino** (repository `D10Scot/mino`, image `ghcr.io/d10scot/mino`) by the PR sequence in `docs/superpowers/specs/2026-10-28-mino-rename-design.md`; until each of its PRs lands, the names this file uses for that PR's subject are still the live ones.
 
 Purpose: **extract the streaming relay from the Django web workers into its own process** (control/data plane split), not a rewrite. Phase 0 harden in place → 1 extract the boundary, still Python → 2 optionally Go → 3 remove Redis from the data path. **Phases 0, 1 and 2 are complete**: stage 2d-4 deleted `apps/proxy/live_proxy/` and the Go relay in `relay/` has carried every live viewer since stage 2d-3's nginx flip. Phase 3 is closed without being executed: `docs/adr/0007-phase-3-is-closed-because-phase-2-met-its-charter.md` records that Phase 2 met its charter, that what Redis still holds on the streaming surfaces is coordination, and why porting VOD and catch-up to Go or moving the slot counters to Postgres were rejected. Phase 4 reopens the programme for one charter, Apple-native live playback (`docs/adr/0008-phase-4-reopens-the-programme-for-apple-native-live-playback.md`): 4a is the server half (an HLS output, the live rewind window, the browser player on HLS), 4b the Apple app in its own repository, 4c paired-device auth; `docs/adr/0009-the-hls-output-re-encodes-by-default.md` records why the HLS output re-encodes by default. **Resist widening scope — that is the main way this fails.**
 
@@ -194,7 +194,7 @@ Backend: DRF serializers for every endpoint (never raw dicts); routes in the app
 
 Tests: `CELERY_TASK_ALWAYS_EAGER` is deliberately **off** globally — `post_save` on `M3UAccount`/`EPGSource` calls `.delay()`, and eager mode runs it inside the `TestCase` transaction and poisons the connection. Opt in per-test with `@override_settings(CELERY_TASK_ALWAYS_EAGER=True)`. `settings_test` forces plain `postgresql` (geventpool breaks `TestCase` isolation).
 
-See `CONTRIBUTING.md` for the upstream PR process and fuller style guide.
+See `CONTRIBUTING.md` for the fuller style guide. The upstream PR process it describes no longer applies: nothing is sent to or merged from `Dispatcharr/Dispatcharr` (ADR 0010).
 
 ## Agent skills
 
