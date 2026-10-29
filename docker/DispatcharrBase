@@ -4,7 +4,7 @@
 # builds the legacy (CPU-baseline=none) NumPy wheel. None of these compilers end
 # up in the final image — only the artifacts below are copied forward.
 # ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:version-9.0-cli@sha256:47fbdc93828be04d7c52ca9a9a95f7957f887b80369f3581b8ff661873ed77a0 AS builder
+FROM lscr.io/linuxserver/ffmpeg:version-9.0.2-cli@sha256:6547359fac23a2747e606d380e10267b2923a38f68485d9cacefd039e74d3aa8 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
@@ -112,7 +112,7 @@ RUN apt-get update && apt-get install --no-install-recommends -y \
 # Same ffmpeg base, but installs only the runtime system libraries (no compilers)
 # and copies the prebuilt virtual environment + NumPy wheel from the builder.
 # ==============================================================================
-FROM lscr.io/linuxserver/ffmpeg:version-9.0-cli@sha256:47fbdc93828be04d7c52ca9a9a95f7957f887b80369f3581b8ff661873ed77a0 AS final
+FROM lscr.io/linuxserver/ffmpeg:version-9.0.2-cli@sha256:6547359fac23a2747e606d380e10267b2923a38f68485d9cacefd039e74d3aa8 AS final
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV UV_PROJECT_ENVIRONMENT=/dispatcharrpy
@@ -181,6 +181,9 @@ RUN groupadd -r -g 109 render || true
 # the host's /etc/localtime then overlays this path instead of following the
 # symlink and replacing the IANA UTC zone with the host timezone.
 RUN rm -f /etc/localtime && cp -a /usr/share/zoneinfo/Etc/UTC /etc/localtime
+
+# linuxserver ships an ACME test server (pebble, go1.27.1) that nothing here runs; its Go stdlib carries fixable High/Critical CVEs.
+RUN rm -f /usr/bin/pebble
 
 # /usr/local/lib ahead of the distro multiarch path, for every process (#226).
 # linuxserver's ffmpeg links /usr/local/lib/librist.so.4 (4.12.1); vlc pulls
