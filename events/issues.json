@@ -1,8 +1,80 @@
 {
  "detail": null,
- "fetched_at": "2026-10-28T12:13:06+00:00",
+ "fetched_at": "2026-10-29T12:23:35+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-10-28T23:02:01Z",
+   "id": 611,
+   "label_events": [
+    {
+     "at": "2026-10-28T23:02:03Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-10-28T23:02:03Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Swap twisted 26.10.0rc2 for the final 26.10.0 release once it ships",
+   "updated_at": "2026-10-28T23:44:36Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-10-28T23:02:00Z",
+   "id": 610,
+   "label_events": [
+    {
+     "at": "2026-10-28T23:02:01Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-10-28T23:02:01Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Align relay/go.mod go directive to 1.27.3 with a gomod= rebaseline; update ffmpeg 9.0 text to 9.0.2",
+   "updated_at": "2026-10-28T23:02:00Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-10-28T23:01:58Z",
+   "id": 609,
+   "label_events": [
+    {
+     "at": "2026-10-28T23:01:59Z",
+     "event": "labeled",
+     "label": "bug"
+    },
+    {
+     "at": "2026-10-28T23:01:59Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "bug",
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "DRF 3.18.2 applies DATA_UPLOAD_MAX_MEMORY_SIZE (2.5 MiB) to JSON bodies: large bulk edits now 400",
+   "updated_at": "2026-10-28T23:01:58Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-10-26T16:20:45Z",

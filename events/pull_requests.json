@@ -1,8 +1,50 @@
 {
  "detail": null,
- "fetched_at": "2026-10-28T12:10:47+00:00",
+ "fetched_at": "2026-10-29T12:21:14+00:00",
  "kind": "pull_requests",
  "records": [
+  {
+   "additions": 1650,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 3,
+   "closed_at": null,
+   "created_at": "2026-10-28T22:28:58Z",
+   "deletions": 2,
+   "files": [
+    "CLAUDE.md",
+    "docs/adr/0010-the-product-is-renamed-mino-and-upstream-is-no-longer-tracked.md",
+    "docs/superpowers/specs/2026-10-28-mino-rename-design.md"
+   ],
+   "head_ref": "docs/mino-rename-spec",
+   "id": 608,
+   "merged_at": null,
+   "title": "docs(spec): rename Dispatcharr to Mino, and stop tracking upstream",
+   "updated_at": "2026-10-28T23:50:14Z"
+  },
+  {
+   "additions": 178,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 7,
+   "closed_at": null,
+   "created_at": "2026-10-28T22:22:35Z",
+   "deletions": 156,
+   "files": [
+    ".github/workflows/vuln-scan.yml",
+    "docker/DispatcharrBase",
+    "docker/Dockerfile",
+    "frontend/package-lock.json",
+    "frontend/package.json",
+    "pyproject.toml",
+    "uv.lock"
+   ],
+   "head_ref": "fix/vuln-scan-oct",
+   "id": 607,
+   "merged_at": null,
+   "title": "fix(deps): clear main's red vuln scan (pillow 13, DRF 3.18.2, twisted, ffmpeg 9.0.2 base)",
+   "updated_at": "2026-10-28T23:44:38Z"
+  },
   {
    "additions": 510,
    "author": "Dionmm",
