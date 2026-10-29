@@ -499,11 +499,14 @@ rename R-3 avoids, so the reviewer enumerates every path-matched arm by hand.
 
 The names are `dispatcharr-testrunner`, `dispatcharr-hookdb`, `dispatcharr-e2e`,
 `dispatcharr-e2e-data`, `dispatcharr-e2e-net`, `dispatcharr-e2e:local`,
-`dispatcharr-e2e-upstream:local`, the `dispatcharr-e2e-image` artifact, the two suite tags
-`dispatcharr:puid-test` and `dispatcharr:tls-test`, and the isolated-coverage prefix
-`dispatcharr-testrunner-2a7`. Each becomes `mino-…` (`mino-testrunner`, `mino-hookdb`, `mino-e2e`,
-`mino-e2e-data`, `mino-e2e-net`, `mino-e2e:local`, `mino-e2e-upstream:local`, `mino-e2e-image`,
-`mino:puid-test`, `mino:tls-test`, `mino-testrunner-2a7`).
+`dispatcharr-e2e-upstream:local`, the `dispatcharr-e2e-image` and `dispatcharr-lifecycle-image`
+artifacts with their tarballs `/tmp/dispatcharr-{e2e,lifecycle}.tar.gz`, the two suite tags
+`dispatcharr:puid-test` and `dispatcharr:tls-test`, the isolated-coverage prefix
+`dispatcharr-testrunner-2a7`, and the coverage scratch directories `/tmp/dispatcharr-coverage`,
+`-coverage-live-path`, `-coverage-isolated` and `-coverage-relay-go`. Each becomes `mino-…`
+(`mino-testrunner`, `mino-hookdb`, `mino-e2e`, `mino-e2e-data`, `mino-e2e-net`, `mino-e2e:local`,
+`mino-e2e-upstream:local`, `mino-e2e-image`, `mino-lifecycle-image`, `/tmp/mino-{e2e,lifecycle}.tar.gz`,
+`mino:puid-test`, `mino:tls-test`, `mino-testrunner-2a7`, `/tmp/mino-coverage…`).
 
 These are dev-loop names that live agents and the shared hook container depend on. No user sees
 them, which is why the first draft kept them; the owner ruled on 2026-10-29 that they are renamed
@@ -515,9 +518,9 @@ worktree is live, and § T1 says what is run by hand afterwards. It is not block
 container's bind mount is a host path the rename does not touch, and nothing keys a container name
 on the checkout path.
 
-**Every living site at `632f1d3d`** (`git grep -n -E 'dispatcharr-(testrunner|hookdb|e2e)|dispatcharr:(puid|tls)-test'
+**Every living site at `632f1d3d`** (`git grep -n -E 'dispatcharr-(testrunner|hookdb|e2e|lifecycle|coverage)|dispatcharr:(puid|tls)-test'
 632f1d3d -- . ':!docs/adr/**' ':!docs/superpowers/**' ':!docs/comparisons/**' ':!CHANGELOG.md'`,
-plus the two `IMAGE_NAME=` lines), grouped by what T1 does with it:
+100 lines, plus the two `IMAGE_NAME=` lines), grouped by what T1 does with it:
 
 - **Hooks:** `.claude/hooks/run-affected-tests.sh:36` and `pre-commit-tests.sh:21`
   (`CONTAINER="${…TEST_CONTAINER:-dispatcharr-testrunner}"`), `start-test-container.sh:11-12`
@@ -536,14 +539,27 @@ plus the two `IMAGE_NAME=` lines), grouped by what T1 does with it:
   a message) and `:285` (a comment); `e2e/fixtures/seed.ts:171` (a comment). `scripts/e2e_up.sh:27-29,43,51`
   (the five defaults).
 - **Workflows:** `e2e-tests.yml:154,164,177,182-183,246,250,262-263,324,338` and
-  `lifecycle-tests.yml:190,200,208,272,372,485,503,526,577,594`. Line 272 tags the suite image
-  `dispatcharr:${SUITE_TAG}`, which `docker/tests/test-puid-pgid.sh:64` and `test-tls-postgres.sh:43`
-  hard-code as `IMAGE_NAME="dispatcharr:puid-test"` / `"dispatcharr:tls-test"` (their `--skip-build`
-  usage lines, `:18` and `:17`, name the same tags); all five lines change together.
+  `lifecycle-tests.yml:190,200,208,213-214,260,264,272,369,372,375,485,503,523,526,529,577,594`.
+  The lifecycle workflow carries the same artifact pair as the e2e one, `dispatcharr-lifecycle-image`
+  and `/tmp/dispatcharr-lifecycle.tar.gz` (`:208,213-214,260,264,369,375,523,529`), renamed with
+  `dispatcharr-e2e-image` and `/tmp/dispatcharr-e2e.tar.gz` so the two workflows agree on what a
+  CI artifact is called. Line 272 tags the suite image `dispatcharr:${SUITE_TAG}`, which
+  `docker/tests/test-puid-pgid.sh:64` and `test-tls-postgres.sh:43` hard-code as
+  `IMAGE_NAME="dispatcharr:puid-test"` / `"dispatcharr:tls-test"` (their `--skip-build` usage
+  lines, `:18` and `:17`, name the same tags); all five lines change together.
 - **Bash suites:** `docker/tests/test-puid-pgid.sh:1205-1206,1252,2024,2030-2033`
   (`dispatcharr-e2e-upstream:local`, which `test_role_split` seeds its channel from).
 - **Scripts:** `scripts/coverage_live_path_isolated.sh:16` (the `COVERAGE_ISOLATED_PREFIX`
   default) and `scripts/capture_ffmpeg_stderr.py:6` (a usage docstring).
+- **Coverage scratch directories**, dev-loop tooling by the same rule: `/tmp/dispatcharr-coverage`
+  is written by `scripts/ci_coverage_backend.sh:12` and read back by `.coveragerc:14,20` and
+  `metrics.yml:183-184` (the `metrics.yml:159` runner), so those five lines move together to
+  `/tmp/mino-coverage`; its siblings `/tmp/dispatcharr-coverage-live-path`
+  (`scripts/coverage_live_path.sh:121`), `-coverage-isolated` (`coverage_live_path_isolated.sh:15`
+  and the comment at `:95`) and `-coverage-relay-go` (`coverage_relay_go.sh:12,66`) move with
+  it. None of them is a hash input: the Python gate hashes the rcfile's bytes
+  (`scripts/coverage_live_path.coveragerc`, not `.coveragerc`), and the Go gate hashes
+  `relay/go.mod`, so no floor's shape field moves.
 - **Living docs:** `e2e/README.md:16,18,39,66-68,97,146,148,296,642` and
   `e2e-upstream/README.md:13,199`.
 - **The fake provider's and the fixture plugin's self-identification:**
@@ -669,6 +685,8 @@ the rest.
 | `dispatcharr_stream_id` descriptor field (`apps/timeshift/views.py:660,2248,2960`) | | Keep. It is stored in Redis session descriptors, and an in-flight catch-up session must still read it across an upgrade. |
 | HDHomeRun `DeviceID` `dispatcharr-hdhr-<slug>` (`apps/hdhr/api_views.py:74`) and stored `HDHRDevice.device_id` | | **Keep.** Plex keys a tuner on its DeviceID, so a new id means a new tuner and a lost DVR setup in Plex. The *friendly name* is renamed (P1, C1). |
 | Helpers `dispatcharr_user_agent`, `dispatcharr_dvr_user_agent`, `dispatcharr_http_headers` (`core/utils.py:25,31,36`) and local `DISPATCHARR_HEADERS` (`core/tasks.py:818`) | | Keep (internal symbols; C-18). Only their returned strings change, in U1. |
+| Backup and restore temp-dir prefixes `dispatcharr-backup-` and `dispatcharr-restore-` (`apps/backups/services.py:251,293`) | | Rename to `mino-backup-` / `mino-restore-` in **P1**, with the archive name (C-20 already names both lines). A `tempfile` prefix outlives nothing, so no transition is needed. |
+| Coverage scratch directories `/tmp/dispatcharr-coverage*` (`.coveragerc:14,20`, `metrics.yml:183-184`, `scripts/ci_coverage_backend.sh:12`, `scripts/coverage_{live_path,live_path_isolated,relay_go}.sh`) | | Rename to `/tmp/mino-coverage*` in **T1** (C-12): dev-loop tooling, never seen by a user. |
 | Migration contents and index names `dispatcharr_stream_id_idx` and `dispatcharr_stream_chno_idx` (created at `apps/channels/migrations/0033_stream_id_stream_chno.py:199,203`, and both removed by `0034_remove_stream_dispatcharr_stream_id_idx_and_more.py:15,19`, so neither exists in a fully migrated database) | | Keep. Migration files are history. Editing them would make them no longer describe the database the owner's instance migrated through, and neither index is live state that a rename could reach. |
 
 ### C-22 Prose — rename (C1 for code, C2 for docs)
@@ -845,12 +863,15 @@ The XC message string: the Mino app's only use of it is a fixture in its stub se
 
 **The logo and icons (M7).** The owner ruled on 2026-10-29 that C1 ships a new Mino logo rather
 than carrying upstream's art until later. The logo is Appendix D's SVG, a 1024-viewBox rounded
-square in a blue gradient with a white lowercase "m" and a red live dot; its colours are
-mino-apple's design tokens (`MinoKit/Sources/MinoKit/DesignSystem/Tokens.swift`). C1 commits it
+square in a blue gradient with a white lowercase "m" and a red live dot. One colour is
+mino-apple's: `#4DA3FF` is its `tintedLabel` token (`MinoKit/Sources/MinoKit/DesignSystem/Tokens.swift:41`
+at mino-apple `05dd7b9`); the gradient's `#0058B8` and the dot's `#FF3B30` (iOS system red) were
+chosen beside it and appear nowhere in that repository. C1 commits it
 **at the same paths as today's art** (R-3: a swap, not a rename), and deletes the one file nothing
 references.
 
-At `632f1d3d` the art is eleven binaries plus the SVG, in three directories, and every pair across
+At `632f1d3d` the art is fifteen binaries plus the SVG, in three directories (seven names in each
+of `public/` and `src/assets/`, plus `src/images/logo.png`), and every pair across
 `frontend/public/` and `frontend/src/assets/` is the same blob (`git ls-tree -r 632f1d3d --
 frontend/public frontend/src/assets frontend/src/images`): `logo.png` (1024×1024 RGBA, three
 copies: `frontend/public/`, `frontend/src/assets/`, `frontend/src/images/`),
@@ -914,10 +935,14 @@ was run there on 2026-10-29 with the output stated.
 
    `file` prints `MS Windows icon resource - 3 icons, 16x16 with PNG image data, …, 32x32 …`
    (Pillow stores PNG-compressed entries, which every current browser and Windows accept; the
-   base file's entries are the same three sizes, uncompressed).
+   base file's entries are the same three sizes, uncompressed). One caveat: `command -v uv` must
+   resolve in the shell that runs this. On the owner's Mac `uv` is a pyenv shim
+   (`~/.pyenv/shims/uv`), which resolved in the shell these commands were measured in but did not
+   in the reviewer's non-interactive one; if it prints nothing, call the version's own binary,
+   `~/.pyenv/versions/3.13.2/bin/uv`, with the same arguments.
 4. Copy into the tree at the existing paths: `logo-1024.png` → the three `logo.png`; each other
    file → its name under both `frontend/public/` and `frontend/src/assets/`. Then `git rm
-   frontend/src/images/dispatcharr.svg`. `git status` shows eleven binaries modified, one SVG
+   frontend/src/images/dispatcharr.svg`. `git status` shows fifteen binaries modified, one SVG
    added, one deleted, and **no rename**.
 
 **What verifies the swap.**
@@ -1120,9 +1145,10 @@ registry name that exists is the legacy one, and the upgrade job already runs on
   - **`debian_install.sh`, every product use (M10).** D2 carries the whole file rather than
     splitting it with C1: its one hard dependency is the repository name in the clone URL, which
     exists only after the rename, and a bare-metal installer half-renamed between two PRs would be
-    a worse state than either. At `632f1d3d` the file has 52 lines matching `dispatcharr`
-    (`git grep -n -i dispatcharr 632f1d3d -- debian_install.sh`). They sort into three groups:
-    - **Renamed** (46 lines): the warning text `:42`; the configuration block `:58-60,67-68`
+    a worse state than either. At `632f1d3d` the file has 48 lines matching `dispatcharr`
+    (`git grep -c -i dispatcharr 632f1d3d -- debian_install.sh` prints `48`). They sort into
+    three groups, 42 + 5 + 1:
+    - **Renamed** (42 lines): the warning text `:42`; the configuration block `:58-60,67-68`
       (`DISPATCH_USER`/`DISPATCH_GROUP` → `mino`, `APP_DIR` → `/opt/mino`, `UWSGI_RUNTIME_DIR`
       → `mino`, the socket `mino.sock`); the function names `create_dispatcharr_user` and
       `clone_dispatcharr_repo` (`:159,206`) and their calls (`:569,571`), renamed because they are
@@ -1131,7 +1157,8 @@ registry name that exists is the legacy one, and the upgrade job already runs on
       → `https://github.com/D10Scot/mino.git`; the unit files `:373,402,430,458` → `mino.service`,
       `mino-celery.service`, `mino-celerybeat.service`, `mino-daphne.service`, with their
       `Description=` `:375,404,432,460`, `Requires=` `:406,434,462`, `EnvironmentFile=`
-      `:384,412,440,468` (which follow `APP_DIR`) and `SyslogIdentifier=` `:394,422,450,477`; the
+      `:384,412,440,468` (four literal `/opt/dispatcharr/.env` lines, **not** `${APP_DIR}`, so each
+      is edited by hand to `/opt/mino/.env`) and `SyslogIdentifier=` `:394,422,450,477`; the
       nginx site `:485,517` → `mino.conf`; `systemctl enable --now` `:532`; the summary `:543` and
       its four `journalctl -u` lines `:549-552`.
     - **Kept, Python-package identifiers (M5)** (5 lines): `module = dispatcharr.wsgi:application`
@@ -1148,10 +1175,14 @@ registry name that exists is the legacy one, and the upgrade job already runs on
     - **What makes "still working" checkable** with no CI job running the script: `bash -n
       debian_install.sh` exits 0 (a syntax pass); `git grep -c -i dispatcharr HEAD --
       debian_install.sh` prints exactly `6` (the kept lines above, which is also the file's
-      allowlist entry); every renamed name is derived from the configuration block or spelt once,
-      so `grep -n -E 'mino(\.service|-celery|-celerybeat|-daphne|\.conf)' debian_install.sh` lists
-      the unit and site names the `systemctl enable` line (`:532`) and the `ln -sf` line (`:517`)
-      must match. The reviewer reads those two lines against the four `cat <<EOF >` targets. A
+      allowlist entry). The unit names are literals spelt four times each (the heredoc target,
+      `Requires=`, `systemctl enable`, `journalctl`) and the `EnvironmentFile=` path four times,
+      so the grep is what carries the consistency check, not the script's structure:
+      `grep -n -E 'mino(\.service|-celery|-celerybeat|-daphne|\.conf)|/opt/mino/\.env' debian_install.sh`
+      lists every spelling, and the reviewer reads the `systemctl enable` line (`:532`), the
+      `ln -sf` line (`:517`), the three `Requires=` lines and the four `journalctl` lines against
+      the four `cat <<EOF >` targets and the four `EnvironmentFile=` lines. The socket, runtime
+      dir, user, group and `APP_DIR` are `${…}`-derived and need no such reading. A
       bare-metal run in a throwaway VM is the owner's to do if they ever use the script (M2 says
       they do not today).
   - `README.md:97-102` run commands → `ghcr.io/d10scot/mino:latest`, keeping
@@ -1615,14 +1646,21 @@ consumed, and they run only in full mode.
 **New test, in `.claude/hooks/tests/test_hooks.sh`.** Both of its helpers set
 `…TEST_CONTAINER=hooktest-absent` (`:55,61` at `632f1d3d`), so no existing case can see the
 default, and the default is what T1 changes. T1 adds a second edit helper that **unsets** the
-override and prepends a fake `docker` to `PATH`, and one case through it:
+override and runs the hook under a **constructed** `PATH`, and one case through it:
 
-- The fake is `$TMP/fakebin/docker`, a two-line `sh` script that appends its arguments to
-  `$TMP/docker.log` and exits 1, so the hook takes its "not running" branch and never reaches a
-  real daemon. Following the project's fake rule (`AGENTS.md` § Tests), the harness asserts
-  **before the case runs** that `PATH="$TMP/fakebin:$PATH" command -v docker` resolves to the
-  fake, and aborts the run if it does not, so a missing fake cannot fall through to the real
-  `docker` and a real `mino-testrunner` on the developer's machine.
+- The fake is `$TMP/fakebin/docker`, a two-line `sh` script (`chmod +x`) that appends its
+  arguments to `$TMP/docker.log` and exits 1, so the hook takes its "not running" branch and never
+  reaches a real daemon.
+- `PATH` is built from an allowlist, never inherited (`AGENTS.md` § Tests): `$TMP/fakebin` first,
+  then the directory of each tool the edit hook and `_hook_common.sh` call, resolved with
+  `command -v` in the harness's own environment and appended once each — `jq`, `git`, `python3`,
+  `bash`, `sed`, `awk`, `grep`, `head`, `tail`, `dirname`, `find`, `cat` (the list is the external
+  commands those two scripts invoke at `632f1d3d`; `cd`, `pwd` and `printf` are builtins). The
+  harness then asserts, **before the case runs**, that `command -v docker` under that `PATH` prints
+  `$TMP/fakebin/docker`, and aborts the whole run if it does not: a missing or non-executable fake
+  cannot fall through to the real `docker` and a real `mino-testrunner` on the developer's machine,
+  and a `PATH` built from the allowlist cannot reach `/usr/local/bin/docker` at all unless one of
+  those tools lives beside it, which the assertion covers.
 - `test_edit_hook_defaults_to_the_mino_testrunner_container`: edit `$A/apps/foo/models.py`
   (created by the harness; the `models.py` arm is the one that calls `container_ok()` with no
   other precondition, `run-affected-tests.sh:148-159`). Expect exit 0 and the output to contain
@@ -1641,37 +1679,79 @@ container: dispatcharr-e2e` (or `mino-e2e`), and `test_role_split` fails with
 `dispatcharr-e2e-upstream:local not available` if `test-puid-pgid.sh` and the workflow's build
 line disagree.
 
-**After merge, by hand (H-11).** From the merged tree, with no other worktree live:
+**After merge, by hand (H-11).** With no other worktree live. The old E2E stack is torn down
+**from the pre-T1 tree, before pulling**, because that tree's `scripts/e2e_up.sh` still carries
+the old names and its `--down` removes the container, the volume and the network in one step
+(`destroy()`, `e2e_up.sh:90-102` at `632f1d3d`), and the provider too when no other stack's
+network is attached, which the precondition guarantees. Left in place, the old `dispatcharr-e2e`
+holds `127.0.0.1:9191` and the first post-T1 `scripts/e2e_up.sh` fails with `port is already
+allocated` (`:369-371`), and `docker rmi` of its image refuses with `image is being used by
+container` (`e2e/README.md:39`).
 
 ```bash
-cd ~/git/Dispatcharr && git pull && .claude/hooks/start-test-container.sh
+cd <checkout> && scripts/e2e_up.sh --down
+git pull && .claude/hooks/start-test-container.sh
 docker ps --filter name=mino-testrunner --format '{{.Names}}'
 docker rm -f dispatcharr-testrunner; docker volume rm dispatcharr-hookdb
-docker rmi dispatcharr-e2e:local dispatcharr-e2e-upstream:local
+docker rm -f dispatcharr-e2e; docker volume rm dispatcharr-e2e-data; docker network rm dispatcharr-e2e-net
+docker rmi -f dispatcharr-e2e:local dispatcharr-e2e-upstream:local dispatcharr:puid-test dispatcharr:tls-test
 ```
 
-Expect `mino-testrunner` from the second line; the third prints the old names as it removes them
-(or `No such container` / `No such volume` if they were already gone); the fourth prints
-`Untagged: …` twice, or `No such image`. The old image would otherwise sit on disk forever, since
-nothing under the new name ever reuses it. The first backend run after this migrates a fresh
-`mino-hookdb` and is slower by the migration time, once.
+Expected output, line by line: (1) `Removing container and volume...` then `Removed
+dispatcharr-e2e and dispatcharr-e2e-data.` (`e2e_up.sh:212-216`; a `Leaving e2e-upstream running
+for: …` line in between means another stack's network is still attached, which contradicts the
+precondition — stop and find it); (2) `start-test-container.sh`'s own start-up lines, ending with
+the container running; (3) `mino-testrunner`; (4) `dispatcharr-testrunner` then
+`dispatcharr-hookdb`, each printed as it is removed, or `Error response from daemon: No such
+container: dispatcharr-testrunner` / `Error: No such volume: dispatcharr-hookdb` if already
+gone; (5) the same shape for the three E2E names — after a successful `--down` all three print
+`No such …`, so this line is the belt to `--down`'s braces and costs nothing; (6) `Untagged: …`
+and `Deleted: …` lines per image that existed, and `Error response from daemon: No such image:
+…` for each that did not (the two suite tags exist only if a bash suite was ever run locally;
+`-f` is what `e2e/README.md:39` prescribes when a stopped container still references the image).
+The old images would otherwise sit on disk forever, since nothing under the new names ever reuses
+them. The first backend run after this migrates a fresh `mino-hookdb` and is slower by the
+migration time, once.
 
 **Hooks and gates:** `.claude/hooks/*.sh` (`lint.yml` runs `test_hooks.sh`, which carries the new
-case); `.github/workflows/*.yml` (zizmor, blocking, both workflows); `e2e/**/*.ts` and
+case); `.github/workflows/*.yml` (zizmor, blocking, all three workflows); `e2e/**/*.ts` and
 `e2e-upstream/**/*.ts` (`tsc --noEmit`); `*.py` (credential-logging check, for
-`scripts/capture_ffmpeg_stderr.py`); `docker/tests/*.sh` (no hook). No backend label: none of
-T1's paths maps to one. On the `migration/**` branch CI runs lint, actions-lint, E2E result (every
-project) and Lifecycle result (every project plus both bash suites).
+`scripts/capture_ffmpeg_stderr.py`); `docker/tests/*.sh` (no hook). **Backend labels, measured**
+with `python3 -I scripts/ci_backend_test_labels.py` at `632f1d3d` over T1's whole path set:
+`["apps.channels.tests", "apps.proxy.tests"]`, both from one file —
+`scripts/coverage_live_path_isolated.sh`, which `dispatcharr/test_discovery.py:53`'s
+`scripts/coverage_live_path` alias routes to Gate 2's two labels; without that file the set is
+`[]`, and `.coveragerc`, `scripts/ci_coverage_backend.sh` and `scripts/coverage_relay_go.sh` each
+map to nothing. So the commit gate runs both labels (`--keepdb`, after a Redis flush) against the
+shared container, and in CI `backend-tests.yml`'s `plan` reports `has_tests=true`, which runs
+`test` for both labels **and** `coverage-label` plus `coverage-gate` (`backend-tests.yml:126,174,246`,
+the `if: needs.plan.outputs.has_tests == 'true'` gates), so `Backend result` is a draw against
+the Python Gate 2 floor on a PR that moves no statement: a round that differs from the floor is a
+finding to attribute per line, not noise (CLAUDE.md § Testing). On the `migration/**` branch CI
+also runs lint, actions-lint, E2E result (every project) and Lifecycle result (every project plus
+both bash suites).
+
+**Keeping the hooks working on the branch.** The `PostToolUse` hooks run the *edited* copy
+(`settings.json` invokes `${CLAUDE_PROJECT_DIR}/.claude/hooks/…`), so from the edit to
+`run-affected-tests.sh:36` onward every hook in the T1 worktree looks for `mino-testrunner`, which
+does not exist until something starts it. The implementer either starts it from the branch —
+`cd <T1 worktree> && .claude/hooks/start-test-container.sh` with `MINO_TEST_CONTAINER` and
+`MINO_TEST_DB_VOLUME` unset, which creates `mino-testrunner` on a fresh `mino-hookdb` (the
+precondition says no other agent needs the old one) — or runs the two labels by hand in a container
+of their own and says in the PR body that the hooks did not run. A report that says "verified" with
+neither is the thing `implement-review-escalate` tells the reviewer to test.
 
 **PR description draft:**
 
 > Renames the development-loop names from `dispatcharr-*` to `mino-*`: the shared hook container
-> and its database volume, the E2E container, volume, network and image tags, the E2E image
-> artifact, the two bash-suite image tags, and the isolated-coverage prefix, in the hooks, the
-> skills' project notes, CLAUDE.md, the E2E fixtures and specs, both workflows and both bash
-> suites. The override variable names are unchanged (spec PR E1 renamed them). After merge the
-> shared container is restarted under its new name and the old container, volume and images are
-> removed by hand (spec H-11); the first backend run migrates a fresh database. Spec PR T1.
+> and its database volume, the E2E container, volume, network and image tags, the E2E and
+> lifecycle image artifacts and tarballs, the two bash-suite image tags, the isolated-coverage
+> prefix and the `/tmp/…-coverage*` scratch directories, in the hooks, the skills' project notes,
+> CLAUDE.md, the E2E fixtures and specs, three workflows, both bash suites and the coverage
+> scripts. The override variable names are unchanged (spec PR E1 renamed them). After merge the
+> old E2E stack is torn down from the pre-merge tree, the shared container is restarted under its
+> new name and the old container, volumes, network and images are removed by hand (spec H-11);
+> the first backend run migrates a fresh database. Spec PR T1.
 
 ## The repository rename
 
@@ -1801,9 +1881,10 @@ In order. Each item has a paste-ready command and its expected output.
   spec is a record.)
 - **H-10 — answered 2026-10-29.** § Open questions carries each answer; Appendix A records them as
   M5–M11.
-- **H-11 (after T1 merges, with no other worktree live):** restart the shared hook container under
-  its new name and remove the old one, its volume and the stale E2E images, with the four commands
-  in § T1 "After merge, by hand".
+- **H-11 (after T1 merges, with no other worktree live):** tear down the old E2E stack from the
+  pre-merge tree (`scripts/e2e_up.sh --down`), pull, restart the shared hook container under its
+  new name, and remove the old container, the old volumes and network and the stale images, with
+  the six commands and their expected output in § T1 "After merge, by hand".
 
 ## Open questions for the owner
 
@@ -1874,14 +1955,16 @@ Rulings of 2026-10-29, answering § Open questions and H-2:
   on what a reversal would need stays short, in C-10.
 - **M6 (Q2).** No notification to Schedules Direct. U1 changes only the User-Agent string.
 - **M7 (Q3).** A new Mino logo ships now, in C1, rather than upstream's art until later. The logo
-  is Appendix D's SVG (colours from mino-apple's `MinoKit/Sources/MinoKit/DesignSystem/Tokens.swift`),
-  committed at `frontend/src/images/mino.svg`; every raster icon is regenerated from it at the
+  is Appendix D's SVG (its blue `#4DA3FF` is mino-apple's `tintedLabel` token,
+  `MinoKit/Sources/MinoKit/DesignSystem/Tokens.swift:41`; the other two colours were chosen to sit
+  beside it), committed at `frontend/src/images/mino.svg`; every raster icon is regenerated from it at the
   existing paths (a swap, R-3); `frontend/src/images/dispatcharr.svg` is deleted.
 - **M8 (Q5).** Upstream's support and funding links are removed (C1, C2); the attribution line
   is what remains.
 - **M9 (Q6).** The dev-loop names (`dispatcharr-testrunner`, `dispatcharr-hookdb`,
   `dispatcharr-e2e`, `dispatcharr-e2e-upstream:local`, `dispatcharr-e2e-data`, the
-  `dispatcharr-e2e-image` artifact, and the rest of C-12's list) are renamed, in a scheduled PR of
+  `dispatcharr-e2e-image` and `dispatcharr-lifecycle-image` artifacts, the `/tmp/dispatcharr-coverage*`
+  scratch directories, and the rest of C-12's list) are renamed, in a scheduled PR of
   their own (T1), coordinated with live agents, accepting a fresh `--keepdb` database, and not
   blocked on H-9.
 - **M10 (Q7).** `debian_install.sh` renames every product use of the name (service and unit
@@ -1937,8 +2020,9 @@ Deleted, not renamed: `frontend/src/images/dispatcharr.svg` (C1, M7). Nothing re
 Byte-exact. The file is the fenced block below plus one trailing newline after `</svg>`: 748
 bytes, `shasum -a 256` = `8d1f5f8989bad0bce92829848e9fe5716d524ffdc5ee38db714807fa3c1a6059`. C1
 commits it from this appendix and the reviewer checks the hash. Colours: `#4DA3FF` → `#0058B8`
-(the gradient), `#FFFFFF` (the mark) and `#FF3B30` (the live dot), from mino-apple's
-`MinoKit/Sources/MinoKit/DesignSystem/Tokens.swift`.
+(the gradient), `#FFFFFF` (the mark) and `#FF3B30` (the live dot). Only `#4DA3FF` is a mino-apple
+token (`tintedLabel`, `MinoKit/Sources/MinoKit/DesignSystem/Tokens.swift:41` at `05dd7b9`); the
+other two were chosen to match it, `#FF3B30` being iOS system red.
 
 ```svg
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
