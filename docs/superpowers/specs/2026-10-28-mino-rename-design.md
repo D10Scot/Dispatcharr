@@ -83,7 +83,7 @@ occurrence counts. "Living" excludes the record globs.
 | 9 | Django app labels and table names `dispatcharr_channels`, `dispatcharr_connect` | 137 / 58 | 52 | `apps/channels/apps.py:7` | keep | — |
 | 10 | Python package `dispatcharr` (settings, wsgi, asgi, celery, urls) | 267 / 135 | 516 | `manage.py:13` | keep (M5) | — |
 | 11 | venv path `/dispatcharrpy` | 30 / 20 | 88 | `docker/DispatcharrBase:10-11` | keep | — |
-| 12 | Test containers, volumes, networks and images (`dispatcharr-testrunner`, `-hookdb`, `-e2e`, …) | 75 / 24 | 395 | `.claude/hooks/_hook_common.sh:121` | rename (M9) | T1 |
+| 12 | Dev-loop names: test containers, volumes, networks, image tags, CI artifacts and tarballs, coverage scratch directories (`dispatcharr-testrunner`, `-hookdb`, `-e2e…`, `-lifecycle-image`, `/tmp/dispatcharr-coverage*`, `dispatcharr:puid-test`) | 100 / 35 (C-12's widened grep, which overlaps row 7 where a tooling variable's default value is one of these names) | 523 | `.claude/hooks/_hook_common.sh:121` | rename (M9) | T1 |
 | 13 | Hypothesis profile `dispatcharr-ci` | 54 / 28 | 57 | `tests/test_redaction.py:30` | keep | — |
 | 14 | Build file names `docker/DispatcharrBase`, `docker/init/03-init-dispatcharr.sh` | 25 / 10 | 48 | `.github/workflows/base-image.yml:7` | keep | — |
 | 15 | Plugin manifest keys `min_/max_dispatcharr_version` | 86 / 12 | 1 | `apps/plugins/api_views.py:1215-1216` | keep (third-party contract) | — |
@@ -1652,10 +1652,19 @@ override and runs the hook under a **constructed** `PATH`, and one case through 
   arguments to `$TMP/docker.log` and exits 1, so the hook takes its "not running" branch and never
   reaches a real daemon.
 - `PATH` is built from an allowlist, never inherited (`AGENTS.md` § Tests): `$TMP/fakebin` first,
-  then the directory of each tool the edit hook and `_hook_common.sh` call, resolved with
-  `command -v` in the harness's own environment and appended once each — `jq`, `git`, `python3`,
-  `bash`, `sed`, `awk`, `grep`, `head`, `tail`, `dirname`, `find`, `cat` (the list is the external
-  commands those two scripts invoke at `632f1d3d`; `cd`, `pwd` and `printf` are builtins). The
+  then the directory of each external command on the path this case takes through the edit hook
+  and `_hook_common.sh` at `632f1d3d`, resolved with `command -v` in the harness's own environment
+  and appended once each: `mktemp` and `rm` (the prelude, `run-affected-tests.sh:56-59`, runs
+  both on every edit before any arm — without `mktemp` the `2>"$RR_ERR_FILE"` redirect fails,
+  `hook_repo_root` never runs and the hook exits 0 silently, failing the case for the wrong reason;
+  without `rm`, `command not found` lands in the captured output and the case passes with an
+  error in its transcript), `cat`, `jq`, `git`, `bash`, `dirname`, `sed`, `awk`, `grep`, `head`,
+  `tail` and `find` — thirteen, plus the fake `docker`, fourteen entries. `cd`, `pwd`, `printf`,
+  `command` and `[` are builtins, and the fake's `#!/bin/sh` is resolved by the kernel, not by
+  `PATH`. `python3`, `npm`, `npx`, `zizmor`, `gh`, `env` and `python` are invoked only in arms
+  this case never reaches (the credential guard is absent in repo-a, `:128-130`), so they are left
+  out; a tool whose `command -v` resolves to nothing contributes nothing to the constructed `PATH`
+  either way, so an absent `zizmor` on `lint.yml`'s runner is not a failure. The
   harness then asserts, **before the case runs**, that `command -v docker` under that `PATH` prints
   `$TMP/fakebin/docker`, and aborts the whole run if it does not: a missing or non-executable fake
   cannot fall through to the real `docker` and a real `mino-testrunner` on the developer's machine,
@@ -1702,13 +1711,18 @@ dispatcharr-e2e and dispatcharr-e2e-data.` (`e2e_up.sh:212-216`; a `Leaving e2e-
 for: …` line in between means another stack's network is still attached, which contradicts the
 precondition — stop and find it); (2) `start-test-container.sh`'s own start-up lines, ending with
 the container running; (3) `mino-testrunner`; (4) `dispatcharr-testrunner` then
-`dispatcharr-hookdb`, each printed as it is removed, or `Error response from daemon: No such
-container: dispatcharr-testrunner` / `Error: No such volume: dispatcharr-hookdb` if already
-gone; (5) the same shape for the three E2E names — after a successful `--down` all three print
-`No such …`, so this line is the belt to `--down`'s braces and costs nothing; (6) `Untagged: …`
-and `Deleted: …` lines per image that existed, and `Error response from daemon: No such image:
-…` for each that did not (the two suite tags exist only if a bash suite was ever run locally;
-`-f` is what `e2e/README.md:39` prescribes when a stopped container still references the image).
+`dispatcharr-hookdb`, each printed as it is removed; if the container is already gone `docker rm
+-f` prints **nothing** and exits 0 (force-removing a missing container has been silent since
+Docker 23), and if the volume is already gone `docker volume rm` prints `Error response from
+daemon: get dispatcharr-hookdb: no such volume`; (5) the same shape for the three E2E names —
+after a successful `--down` all three are already gone, so the line prints nothing for the
+container, `Error response from daemon: get dispatcharr-e2e-data: no such volume` for the volume
+and `Error response from daemon: network dispatcharr-e2e-net not found` for the network; it is the
+belt to `--down`'s braces and costs nothing; (6) `Untagged: …` and `Deleted: …` lines per image
+that existed, and `Error response from daemon: No such image: …` for each that did not (the two
+suite tags exist only if a bash suite was ever run locally; `-f` is what `e2e/README.md:39`
+prescribes when a stopped container still references the image). All four strings were measured
+on the owner's Mac with Docker 29.9.2 on 2026-10-29.
 The old images would otherwise sit on disk forever, since nothing under the new names ever reuses
 them. The first backend run after this migrates a fresh `mino-hookdb` and is slower by the
 migration time, once.
@@ -1718,11 +1732,12 @@ case); `.github/workflows/*.yml` (zizmor, blocking, all three workflows); `e2e/*
 `e2e-upstream/**/*.ts` (`tsc --noEmit`); `*.py` (credential-logging check, for
 `scripts/capture_ffmpeg_stderr.py`); `docker/tests/*.sh` (no hook). **Backend labels, measured**
 with `python3 -I scripts/ci_backend_test_labels.py` at `632f1d3d` over T1's whole path set:
-`["apps.channels.tests", "apps.proxy.tests"]`, both from one file —
-`scripts/coverage_live_path_isolated.sh`, which `dispatcharr/test_discovery.py:53`'s
-`scripts/coverage_live_path` alias routes to Gate 2's two labels; without that file the set is
-`[]`, and `.coveragerc`, `scripts/ci_coverage_backend.sh` and `scripts/coverage_relay_go.sh` each
-map to nothing. So the commit gate runs both labels (`--keepdb`, after a Redis flush) against the
+`["apps.channels.tests", "apps.proxy.tests"]`, both from the two files that share the
+`scripts/coverage_live_path` prefix — `scripts/coverage_live_path.sh` and
+`scripts/coverage_live_path_isolated.sh` — which `dispatcharr/test_discovery.py:53`'s alias routes
+to Gate 2's two labels (each file alone gives the same pair); without both the set is `[]`, and
+`.coveragerc`, `scripts/ci_coverage_backend.sh`, `scripts/coverage_relay_go.sh` and `metrics.yml`
+each map to nothing. So the commit gate runs both labels (`--keepdb`, after a Redis flush) against the
 shared container, and in CI `backend-tests.yml`'s `plan` reports `has_tests=true`, which runs
 `test` for both labels **and** `coverage-label` plus `coverage-gate` (`backend-tests.yml:126,174,246`,
 the `if: needs.plan.outputs.has_tests == 'true'` gates), so `Backend result` is a draw against
