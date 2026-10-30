@@ -1,4 +1,4 @@
-// Built-in commands supported by Dispatcharr out of the box.
+// Built-in commands supported by Mino out of the box.
 import { yupResolver } from '@hookform/resolvers/yup';
 import API from '../../api.js';
 import * as Yup from 'yup';

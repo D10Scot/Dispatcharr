@@ -1336,7 +1336,7 @@ const ChannelsTable = ({ onReady }) => {
                     />
                     <Switch
                       label="Use cached logos"
-                      description="Proxy channel logos through Dispatcharr"
+                      description="Proxy channel logos through Mino"
                       size="sm"
                       checked={m3uParams.cachedlogos}
                       onChange={(event) =>
@@ -1348,7 +1348,7 @@ const ChannelsTable = ({ onReady }) => {
                     />
                     <Switch
                       label="Direct stream URLs"
-                      description="Bypass the Dispatcharr proxy; client connects directly to the source"
+                      description="Bypass the Mino proxy; client connects directly to the source"
                       size="sm"
                       checked={m3uParams.direct}
                       onChange={(event) =>
@@ -1472,7 +1472,7 @@ const ChannelsTable = ({ onReady }) => {
                     />
                     <Switch
                       label="Use cached logos"
-                      description="Proxy channel logos through Dispatcharr"
+                      description="Proxy channel logos through Mino"
                       size="sm"
                       checked={epgParams.cachedlogos}
                       onChange={(event) =>

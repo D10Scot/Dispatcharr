@@ -180,9 +180,9 @@ export DISPATCHARR_TIMESTAMP=$(python -c "import sys; sys.path.append('/app'); i
 
 # Display version information with timestamp if available
 if [ -n "$DISPATCHARR_TIMESTAMP" ]; then
-    echo "📦 Dispatcharr version: ${DISPATCHARR_VERSION} (build: ${DISPATCHARR_TIMESTAMP})"
+    echo "📦 Mino version: ${DISPATCHARR_VERSION} (build: ${DISPATCHARR_TIMESTAMP})"
 else
-    echo "📦 Dispatcharr version: ${DISPATCHARR_VERSION}"
+    echo "📦 Mino version: ${DISPATCHARR_VERSION}"
 fi
 export DISPATCHARR_LOG_LEVEL
 # Set log level with default if not provided
@@ -235,7 +235,7 @@ export DISPATCHARR_RELAY_PORT=${DISPATCHARR_RELAY_PORT:-5657}
 # Exported here so all three see one value.
 export DISPATCHARR_RELAY_GO_PORT=${DISPATCHARR_RELAY_GO_PORT:-5658}
 
-# Translate Dispatcharr POSTGRES_SSL_* env vars into libpq-recognized PGSSL*
+# Translate Mino POSTGRES_SSL_* env vars into libpq-recognized PGSSL*
 # env vars. Called once before any external PostgreSQL connection; all child
 # processes (psql, pg_dump, pg_isready, createdb, dropdb) inherit these
 # automatically. No-op when POSTGRES_SSL is not "true".
@@ -318,7 +318,7 @@ chmod +x /etc/profile.d/dispatcharr.sh
 if ! grep -q "profile.d/dispatcharr.sh" /root/.bashrc 2>/dev/null; then
     cat >> /root/.bashrc << 'EOF'
 
-# Source Dispatcharr environment variables
+# Source Mino environment variables
 if [ -f /etc/profile.d/dispatcharr.sh ]; then
     . /etc/profile.d/dispatcharr.sh
 fi

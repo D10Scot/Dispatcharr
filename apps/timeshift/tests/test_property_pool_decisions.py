@@ -230,7 +230,7 @@ class ArchiveScrubProperties(SimpleTestCase):
 
     @given(requested=st.text(max_size=24),
            descriptor=st.fixed_dictionaries({}, optional={
-               # Pool hashes hold what Dispatcharr wrote: UTF-8 text, as str or as bytes.
+               # Pool hashes hold what Mino wrote: UTF-8 text, as str or as bytes.
                "final_url": st.none() | st.text(max_size=8)
                | st.text(max_size=8).map(str.encode),
                "content_length": st.none() | st.text(max_size=6) | st.integers(-5, 10**9),

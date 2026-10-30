@@ -26,7 +26,7 @@ export const NETWORK_ACCESS_OPTIONS = {
   },
   UI: {
     label: 'UI',
-    description: 'Limit access to the Dispatcharr UI',
+    description: 'Limit access to the Mino UI',
   },
 };
 

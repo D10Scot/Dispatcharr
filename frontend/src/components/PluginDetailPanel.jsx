@@ -295,7 +295,7 @@ const PluginDetailPanel = ({
         >
           This plugin has been marked as deprecated by its maintainer. It may no
           longer receive updates or fixes, and could stop working with future
-          versions of Dispatcharr. Consider looking for an alternative.
+          versions of Mino. Consider looking for an alternative.
         </Alert>
       )}
 
@@ -359,7 +359,7 @@ const PluginDetailPanel = ({
                         : `Max ${selectedVersionData.max_dispatcharr_version}`;
                       return (
                         <Tooltip
-                          label={`Incompatible: requires Dispatcharr ${tooltip} (you have v${appVersion})`}
+                          label={`Incompatible: requires Mino ${tooltip} (you have v${appVersion})`}
                         >
                           <Group gap={4} align="center" wrap="nowrap">
                             <AlertTriangle

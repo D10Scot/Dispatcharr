@@ -512,7 +512,7 @@ class RedisBackedVODConnection:
                 allow_redirects=allow_redirects
             )
 
-            # If the cached final_url returned an error (e.g. an ephemeral dispatcharr session
+            # If the cached final_url returned an error (e.g. an ephemeral Mino session
             # that has since expired), clear it and retry from the original stream_url.
             if response.status_code >= 400 and state.final_url:
                 logger.warning(

@@ -346,8 +346,8 @@ REST_FRAMEWORK = {
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "Dispatcharr API",
-    "DESCRIPTION": "API documentation for Dispatcharr",
+    "TITLE": "Mino API",
+    "DESCRIPTION": "API documentation for Mino",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }

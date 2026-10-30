@@ -75,7 +75,7 @@ describe('PluginWarnings', () => {
       render(<PluginSupportDisclaimer />);
       expect(
         screen.getByText(
-          /Dispatcharr community support cannot assist with third-party plugin issues/i
+          /Mino community support cannot assist with third-party plugin issues/i
         )
       ).toBeInTheDocument();
     });
@@ -94,16 +94,16 @@ describe('PluginWarnings', () => {
       ).toBeInTheDocument();
     });
 
-    it('renders the Dispatcharr logo image', () => {
+    it('renders the Mino logo image', () => {
       render(<PluginSupportDisclaimer />);
-      const logo = screen.getByAltText('Dispatcharr');
+      const logo = screen.getByAltText('Mino');
       expect(logo).toBeInTheDocument();
       expect(logo).toHaveAttribute('src', 'mocked-logo.png');
     });
 
     it('renders logo as non-draggable', () => {
       render(<PluginSupportDisclaimer />);
-      const logo = screen.getByAltText('Dispatcharr');
+      const logo = screen.getByAltText('Mino');
       expect(logo).toHaveAttribute('draggable', 'false');
     });
 
@@ -240,7 +240,7 @@ describe('PluginWarnings', () => {
     it('PluginSupportDisclaimer renders xs Text', () => {
       render(<PluginSupportDisclaimer />);
       const text = screen.getByText(
-        /Dispatcharr community support cannot assist/i
+        /Mino community support cannot assist/i
       );
       expect(text).toHaveAttribute('data-size', 'xs');
     });

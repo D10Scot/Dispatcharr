@@ -1,7 +1,7 @@
 import React from 'react';
 import { Box, Text } from '@mantine/core';
 import { AlertTriangle, Info, OctagonAlert } from 'lucide-react';
-import dispatcharrLogo from '../images/logo.png';
+import minoLogo from '../images/logo.png';
 
 export const PluginSecurityWarning = ({ children }) => (
   <Box
@@ -38,8 +38,8 @@ export const PluginSupportDisclaimer = () => (
   >
     <Box style={{ flexShrink: 0, paddingTop: 1 }}>
       <img
-        src={dispatcharrLogo}
-        alt="Dispatcharr"
+        src={minoLogo}
+        alt="Mino"
         width={16}
         height={16}
         draggable={false}
@@ -47,7 +47,7 @@ export const PluginSupportDisclaimer = () => (
       />
     </Box>
     <Text size="xs" style={{ color: '#4db8a8' }}>
-      Dispatcharr community support cannot assist with third-party plugin
+      Mino community support cannot assist with third-party plugin
       issues. For help, use the plugin&apos;s Discord thread or submit an issue
       on the plugin&apos;s repository.
     </Text>

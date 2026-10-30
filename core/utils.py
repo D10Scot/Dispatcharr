@@ -35,7 +35,7 @@ def dispatcharr_dvr_user_agent(recording_id):
 
 def dispatcharr_http_headers(*, token=None, content_type='application/json', route_to=None):
     """
-    Build HTTP headers for outbound Dispatcharr requests.
+    Build HTTP headers for outbound Mino requests.
 
     content_type=None omits Content-Type (e.g. simple GET proxies).
     token is included when authenticating with Schedules Direct.
