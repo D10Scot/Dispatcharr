@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4DA3FF"/>
+      <stop offset="1" stop-color="#0058B8"/>
+    </linearGradient>
+  </defs>
+  <rect x="32" y="32" width="960" height="960" rx="216" fill="url(#bg)"/>
+  <!-- a lowercase m drawn as two arches, the stroke a single continuous path -->
+  <path d="M272 724 V452 a120 120 0 0 1 240 0 V724 M512 452 a120 120 0 0 1 240 0 V724"
+        fill="none" stroke="#FFFFFF" stroke-width="104" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- the live dot -->
+  <circle cx="752" cy="272" r="64" fill="#FF3B30" stroke="#FFFFFF" stroke-width="20"/>
+</svg>
