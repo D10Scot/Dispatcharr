@@ -243,7 +243,7 @@
 10	docker/docker-compose.aio.yml
 9	docker/docker-compose.debug.yml
 12	docker/docker-compose.dev.yml
-40	docker/docker-compose.yml
+38	docker/docker-compose.yml
 143	docker/entrypoint.sh
 4	docker/healthcheck.sh
 8	docker/init/02-postgres.sh
@@ -261,7 +261,7 @@
 3	docker/supervisord.d/relay-go.conf
 2	docker/supervisord.d/relay-uwsgi.conf
 1	docker/supervisord.d/vite.conf
-68	docker/tests/test-puid-pgid.sh
+69	docker/tests/test-puid-pgid.sh
 26	docker/tests/test-tls-postgres.sh
 6	docker/tests/validate-supervisord-conf.py
 7	docker/uwsgi.debug.ini

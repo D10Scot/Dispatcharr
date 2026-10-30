@@ -165,7 +165,9 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
         self.assertEqual(response.status_code, 200)
         root = ET.fromstring(_response_text(response))
         self.assertEqual(root.tag, "tv")
-        self.assertEqual(root.get("generator-info-name"), "Mino")
+        self.assertEqual(
+            root.get("generator-info-name"), "Mino", "<tv> generator-info-name attribute"
+        )
 
     def test_channel_id_with_ampersand(self):
         """Test channel ID with ampersand is properly escaped"""

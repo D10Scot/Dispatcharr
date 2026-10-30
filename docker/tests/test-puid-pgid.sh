@@ -7,7 +7,7 @@
 # Prerequisites:
 #   - Docker Desktop (or Docker Engine) running
 #   - Internet access (pulls postgres:16, postgres:17, redis:latest,
-#     and the Mino release image for upgrade tests)
+#     and the upstream Dispatcharr release image for upgrade tests)
 #   - ~10-15 minutes for a full run (PG upgrade scenarios dominate)
 #
 # Usage:

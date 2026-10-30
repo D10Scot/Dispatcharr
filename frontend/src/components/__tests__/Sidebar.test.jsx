@@ -61,7 +61,6 @@ vi.mock('lucide-react', async (importOriginal) => {
     Webhook: () => <div data-testid="webhook-icon" />,
     ChevronRight: () => <div data-testid="chevron-right-icon" />,
     MonitorCog: () => <div data-testid="monitor-cog-icon" />,
-    Heart: () => <div data-testid="heart-icon" />,
     Package: () => <div data-testid="package-icon" />,
     Download: () => <div data-testid="download-icon" />,
     HelpCircle: () => <div data-testid="help-circle-icon" />,

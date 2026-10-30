@@ -10,6 +10,8 @@ import { SURFACES, gotoSurface } from './helpers';
 // the server refuses.
 //
 // They deliberately do NOT assert on content: that is each surface's own spec.
+// The one exception is the tenth test at the end of this file, which pins the
+// product name on purpose (see its comment).
 for (const surface of SURFACES) {
   test(`${surface.name} renders clean at ${surface.route}`, { tag: '@contract' }, async ({
     adminPage,
