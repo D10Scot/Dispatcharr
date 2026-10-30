@@ -118,7 +118,7 @@ def timeshift_proxy(request, username, password, duration, timestamp, channel_id
         ``duration``: programme length in minutes from the client's guide.
         ``timestamp``: UTC programme start (``YYYY-MM-DD:HH-MM`` or XC colon form
             ``YYYY-MM-DD:HH:MM:SS``).
-        ``channel_id``: Dispatcharr ``Channel.id`` (often with a ``.ts`` suffix).
+        ``channel_id``: Mino ``Channel.id`` (often with a ``.ts`` suffix).
 
     Session handling (``?session_id=``):
         First request with no ``session_id`` and no matching pool entry → if the
@@ -267,7 +267,7 @@ def _timeshift_proxy_impl(
                 "Redirect to a provider timeshift URL when Redirect is the "
                 "default stream profile, the client did not supply a "
                 "``session_id``, and no fingerprint-matched pool entry exists. "
-                "No Dispatcharr session is minted."
+                "No Mino session is minted."
             ),
         },
         401: {"description": "Missing or expired authentication / session."},
@@ -391,7 +391,7 @@ def _serve_catchup(request, user, channel, timestamp, client_duration_hint=None)
             session_id = matched
         else:
             # No pool match: Redirect hands the client a provider URL (mirroring
-            # their PATH/QUERY shape) instead of minting a Dispatcharr session.
+            # their PATH/QUERY shape) instead of minting a Mino session.
             # Established session_id requests keep proxying below.
             from core.models import CoreSettings
 

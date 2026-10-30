@@ -1142,7 +1142,7 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
 
         yield '<?xml version="1.0" encoding="UTF-8"?>\n'
         yield (
-            '<tv generator-info-name="Dispatcharr" '
+            '<tv generator-info-name="Mino" '
             'generator-info-url="https://github.com/Dispatcharr/Dispatcharr">\n'
         )
 
@@ -1753,5 +1753,5 @@ def generate_epg(request, profile_name=None, user=None, *, xc_catchup_prev_days=
         content_cache_key,
         build_epg_stream,
         content_type="application/xml",
-        filename="Dispatcharr.xml",
+        filename="Mino.xml",
     )

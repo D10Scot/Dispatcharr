@@ -19,7 +19,7 @@ const LoginLoadingCard = () => (
       <Stack align="center" justify="center" spacing="lg" mih={280}>
         <Image
           src={logo}
-          alt="Dispatcharr Logo"
+          alt="Mino Logo"
           width={120}
           height={120}
           fit="contain"

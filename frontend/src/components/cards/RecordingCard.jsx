@@ -89,7 +89,7 @@ const RecordingCard = ({
   const description = program.description || customProps.description || '';
   const isRecurringRule = customProps?.rule?.type === 'recurring';
 
-  // Poster or channel logo (getPosterUrl falls back to Dispatcharr default logo)
+  // Poster or channel logo (getPosterUrl falls back to Mino default logo)
   const posterUrl = getPosterUrl(
     customProps.poster_logo_id,
     customProps,

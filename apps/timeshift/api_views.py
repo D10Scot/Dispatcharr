@@ -30,7 +30,7 @@ _MAX_POSITION_SECS = MAX_DURATION_MINUTES * 60
 
 class CatchupSessionCreateSerializer(serializers.Serializer):
     channel_uuid = serializers.UUIDField(
-        help_text="Dispatcharr channel UUID to play catch-up from.",
+        help_text="Mino channel UUID to play catch-up from.",
     )
     start = serializers.CharField(
         help_text=(
@@ -81,7 +81,7 @@ class CatchupSessionCreateAPIView(APIView):
             "fetch, not when the viewer pressed play.\n\n"
             "**``duration``** is optional programme length in minutes. Native "
             "clients should send it when their guide knows the programme "
-            "length. Dispatcharr uses it before local EPG duration, adds a "
+            "length. Mino uses it before local EPG duration, adds a "
             "short provider-lag buffer, and falls back to EPG duration, then "
             "the default archive window when omitted.\n\n"
             f"The player should open ``playback_url`` within "

@@ -547,7 +547,7 @@ const AvailablePluginCard = ({
               : `Max ${plugin.max_dispatcharr_version}`;
             return (
               <Tooltip
-                label={`Incompatible: requires Dispatcharr ${tooltip} (you have v${appVersion})`}
+                label={`Incompatible: requires Mino ${tooltip} (you have v${appVersion})`}
               >
                 <Group gap={4} align="center" wrap="nowrap">
                   <AlertTriangle
@@ -740,11 +740,11 @@ const AvailablePluginCard = ({
           </Text>
           <Text size="sm" c="dimmed">
             Deprecated plugins may no longer receive updates or fixes, and could
-            stop working with future versions of Dispatcharr. It is recommended
+            stop working with future versions of Mino. It is recommended
             to look for an alternative.
           </Text>
           <PluginSecurityWarning>
-            Plugins run server-side code with full access to your Dispatcharr
+            Plugins run server-side code with full access to your Mino
             instance and its data. Only install plugins from developers you
             trust. Malicious plugins could read or modify data, call internal
             APIs, or perform unwanted actions.
@@ -846,7 +846,7 @@ const AvailablePluginCard = ({
               </Text>
               <PluginSecurityWarning>
                 Plugins run server-side code with full access to your
-                Dispatcharr instance and its data. Only install plugins from
+                Mino instance and its data. Only install plugins from
                 developers you trust. Malicious plugins could read or modify
                 data, call internal APIs, or perform unwanted actions.
               </PluginSecurityWarning>
@@ -955,7 +955,7 @@ const AvailablePluginCard = ({
             <b>{plugin.name}</b> has been uninstalled successfully.
           </Text>
           <Text size="sm">
-            A restart of Dispatcharr may be required to fully unload the plugin.
+            A restart of Mino may be required to fully unload the plugin.
           </Text>
           <Group justify="flex-end">
             <Button
@@ -995,7 +995,7 @@ const AvailablePluginCard = ({
             successfully.
           </Text>
           <Text size="sm">
-            A restart of Dispatcharr may be required for the plugin to be fully
+            A restart of Mino may be required for the plugin to be fully
             loaded.
           </Text>
           {pluginIsDisabled && (

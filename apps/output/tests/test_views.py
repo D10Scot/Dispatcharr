@@ -34,7 +34,7 @@ def _epg_response_without_redis(cache_key, source, **kwargs):
     from django.http import StreamingHttpResponse
 
     response = StreamingHttpResponse(source(), content_type="application/xml")
-    response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
+    response["Content-Disposition"] = 'attachment; filename="Mino.xml"'
     response["Cache-Control"] = "no-cache"
     return response
 
@@ -155,6 +155,19 @@ class OutputEPGXMLEscapingTest(OutputEndpointTestMixin, TestCase):
     def _epg_url(self, query="tvg_id_source=tvg_id&days=0&prev_days=0"):
         base = reverse("output:epg_endpoint", kwargs={"profile_name": self.profile.name})
         return f"{base}?{query}"
+
+    def test_xmltv_header_names_the_generator_mino(self):
+        """The <tv> element's generator-info-name is the product name."""
+        self._add_channel(channel_number=1.0, name="Test Channel", tvg_id="chan1")
+
+        response = self.client.get(self._epg_url())
+
+        self.assertEqual(response.status_code, 200)
+        root = ET.fromstring(_response_text(response))
+        self.assertEqual(root.tag, "tv")
+        self.assertEqual(
+            root.get("generator-info-name"), "Mino", "<tv> generator-info-name attribute"
+        )
 
     def test_channel_id_with_ampersand(self):
         """Test channel ID with ampersand is properly escaped"""

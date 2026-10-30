@@ -165,13 +165,13 @@ const LoginForm = () => {
         <Stack align="center" spacing="lg">
           <Image
             src={logo}
-            alt="Dispatcharr Logo"
+            alt="Mino Logo"
             width={120}
             height={120}
             fit="contain"
           />
           <Title order={2} align="center">
-            Dispatcharr
+            Mino
           </Title>
           <Text size="sm" color="dimmed" align="center">
             Welcome back! Please log in to continue.

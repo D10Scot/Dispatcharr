@@ -240,7 +240,7 @@ def sd_auth_failure_message(code, sd_message=None):
     if code == SD_CODE_APP_NOT_AUTHORIZED:
         return (
             "Schedules Direct: this application is not authorized. Please "
-            "contact the Dispatcharr maintainers."
+            "contact the Mino maintainers."
         )
     if code == SD_CODE_ACCOUNT_INACTIVE:
         return (

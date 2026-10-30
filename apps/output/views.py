@@ -97,7 +97,7 @@ def epg_endpoint(request, profile_name=None, user=None):
     if request.method == "HEAD":
         logger.debug("Handling HEAD request for EPG")
         response = HttpResponse(content_type="application/xml")
-        response["Content-Disposition"] = 'attachment; filename="Dispatcharr.xml"'
+        response["Content-Disposition"] = 'attachment; filename="Mino.xml"'
         response["Cache-Control"] = "no-cache"
         return response
 
@@ -465,7 +465,7 @@ def xc_get_info(request, full=False):
         "user_info": {
             "username": request.GET.get("username"),
             "password": request.GET.get("password"),
-            "message": "Dispatcharr XC API",
+            "message": "Mino XC API",
             "auth": 1,
             "status": "Active",
             "exp_date": str(int(time.time()) + (90 * 24 * 60 * 60)),

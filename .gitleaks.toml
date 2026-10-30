@@ -1,4 +1,4 @@
-title = "Dispatcharr gitleaks config"
+title = "Mino gitleaks config"
 
 # Keep every default rule; only add allowlist entries below for confirmed
 # false positives, each with a reason. Don't broaden this to silence real

@@ -61,7 +61,6 @@ vi.mock('lucide-react', async (importOriginal) => {
     Webhook: () => <div data-testid="webhook-icon" />,
     ChevronRight: () => <div data-testid="chevron-right-icon" />,
     MonitorCog: () => <div data-testid="monitor-cog-icon" />,
-    Heart: () => <div data-testid="heart-icon" />,
     Package: () => <div data-testid="package-icon" />,
     Download: () => <div data-testid="download-icon" />,
     HelpCircle: () => <div data-testid="help-circle-icon" />,
@@ -192,7 +191,7 @@ describe('Sidebar', () => {
     it('should render logo and brand name when expanded', () => {
       const { container } = renderSidebar();
 
-      expect(screen.getByText('Dispatcharr')).toBeInTheDocument();
+      expect(screen.getByText('Mino')).toBeInTheDocument();
       const logo = container.querySelectorAll(
         'img[src="/src/images/logo.png"]'
       );
@@ -201,14 +200,14 @@ describe('Sidebar', () => {
 
     it('should hide brand name when collapsed', () => {
       renderSidebar({ collapsed: true });
-      expect(screen.queryByText('Dispatcharr')).not.toBeInTheDocument();
+      expect(screen.queryByText('Mino')).not.toBeInTheDocument();
     });
 
     it('should toggle drawer when brand is clicked', () => {
       const toggleDrawer = vi.fn();
       renderSidebar({ toggleDrawer });
 
-      const brand = screen.getByText('Dispatcharr').closest('div');
+      const brand = screen.getByText('Mino').closest('div');
       fireEvent.click(brand);
 
       expect(toggleDrawer).toHaveBeenCalledTimes(1);

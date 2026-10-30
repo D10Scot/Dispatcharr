@@ -72,7 +72,7 @@ class DiscoverAPIView(APIView):
 
         slug_parts = [p for p in [channel_profile, str(output_profile_id) if output_profile_id is not None else None] if p]
         device_ID = f"dispatcharr-hdhr-{'-'.join(slug_parts)}" if slug_parts else "12345678"
-        friendly_name = f"Dispatcharr HDHomeRun - {' / '.join(slug_parts)}" if slug_parts else "Dispatcharr HDHomeRun"
+        friendly_name = f"Mino HDHomeRun - {' / '.join(slug_parts)}" if slug_parts else "Mino HDHomeRun"
 
         if not device:
             data = {
@@ -223,7 +223,7 @@ class HDHRDeviceXMLAPIView(APIView):
         # two documents agree on the device's identity (#83).
         device = HDHRDevice.objects.first()
         device_id = escape(device.device_id) if device else "12345678"
-        friendly_name = escape(device.friendly_name) if device else "Dispatcharr HDHomeRun"
+        friendly_name = escape(device.friendly_name) if device else "Mino HDHomeRun"
 
         xml_response = f"""<?xml version="1.0" encoding="utf-8"?>
         <root>

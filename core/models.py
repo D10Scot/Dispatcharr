@@ -940,7 +940,7 @@ class SystemNotification(models.Model):
                 'notification_type': cls.NotificationType.VERSION_UPDATE,
                 'priority': cls.Priority.HIGH,
                 'title': f'Version {version} Available',
-                'message': f'A new version of Dispatcharr ({version}) is available.',
+                'message': f'A new version of Mino ({version}) is available.',
                 'action_data': {
                     'version': version,
                     'release_url': release_url,

@@ -1253,7 +1253,7 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
             if dash_key != plugin_key:
                 existing_cfg = PluginConfig.objects.filter(key=dash_key).first()
 
-        # Version compatibility check against the running Dispatcharr version
+        # Version compatibility check against the running Mino version
         min_version = request.data.get("min_dispatcharr_version")
         max_version = request.data.get("max_dispatcharr_version")
         if min_version or max_version:
@@ -1261,12 +1261,12 @@ class PluginInstallFromRepoAPIView(PluginAuthMixin, APIView):
             try:
                 if min_version and _compare_versions(app_version, min_version) < 0:
                     return Response(
-                        {"error": f"This plugin version requires Dispatcharr {min_version} or newer (you have {app_version})"},
+                        {"error": f"This plugin version requires Mino {min_version} or newer (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
                 if max_version and _compare_versions(app_version, max_version) > 0:
                     return Response(
-                        {"error": f"This plugin version requires Dispatcharr {max_version} or older (you have {app_version})"},
+                        {"error": f"This plugin version requires Mino {max_version} or older (you have {app_version})"},
                         status=status.HTTP_400_BAD_REQUEST,
                     )
             except (ValueError, TypeError):

@@ -10,16 +10,11 @@ vi.mock('../../images/logo.png', () => ({ default: 'mocked-logo.png' }));
 
 // ── Custom icons mock ──────────────────────────────────────────────────────────
 vi.mock('../icons.jsx', () => ({
-  DiscordIcon: ({ size }) => (
-    <svg data-testid="discord-icon" data-size={size} />
-  ),
   GitHubIcon: ({ size }) => <svg data-testid="github-icon" data-size={size} />,
 }));
 
 // ── lucide-react mock ──────────────────────────────────────────────────────────
 vi.mock('lucide-react', () => ({
-  BookOpen: ({ size }) => <svg data-testid="icon-book-open" data-size={size} />,
-  Heart: ({ size }) => <svg data-testid="icon-heart" data-size={size} />,
   Users: ({ size }) => <svg data-testid="icon-users" data-size={size} />,
 }));
 
@@ -114,7 +109,7 @@ describe('AboutModal', () => {
       setupStore();
       render(<AboutModal isOpen={true} onClose={vi.fn()} />);
       expect(screen.getByTestId('modal-title')).toHaveTextContent(
-        'About Dispatcharr'
+        'About Mino'
       );
     });
   });
@@ -158,57 +153,30 @@ describe('AboutModal', () => {
   // ── Logo & branding ──────────────────────────────────────────────────────────
 
   describe('logo and branding', () => {
-    it('renders the Dispatcharr logo', () => {
+    it('renders the Mino logo', () => {
       setupStore();
       render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      const logo = screen.getByAltText('Dispatcharr');
+      const logo = screen.getByAltText('Mino');
       expect(logo).toBeInTheDocument();
       expect(logo).toHaveAttribute('src', 'mocked-logo.png');
     });
 
-    it('renders the app name "Dispatcharr"', () => {
+    it('renders the app name "Mino"', () => {
       setupStore();
       render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getByText('Dispatcharr')).toBeInTheDocument();
+      expect(screen.getByText('Mino', { exact: true })).toBeInTheDocument();
     });
   });
 
   // ── Action buttons ───────────────────────────────────────────────────────────
 
   describe('action buttons', () => {
-    it('renders the Documentation button with correct href', () => {
-      setupStore();
-      render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getByText('Documentation').closest('a')).toHaveAttribute(
-        'href',
-        'https://dispatcharr.github.io/Dispatcharr-Docs/'
-      );
-    });
-
-    it('renders the Discord button with correct href', () => {
-      setupStore();
-      render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getByText('Discord').closest('a')).toHaveAttribute(
-        'href',
-        'https://discord.gg/Sp45V5BcxU'
-      );
-    });
-
     it('renders the GitHub button with correct href', () => {
       setupStore();
       render(<AboutModal isOpen={true} onClose={vi.fn()} />);
       expect(screen.getByText('GitHub').closest('a')).toHaveAttribute(
         'href',
-        'https://github.com/Dispatcharr/Dispatcharr'
-      );
-    });
-
-    it('renders the Donate button with correct href', () => {
-      setupStore();
-      render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getByText('Donate').closest('a')).toHaveAttribute(
-        'href',
-        'https://opencollective.com/dispatcharr/contribute'
+        'https://github.com/D10Scot/mino'
       );
     });
 
@@ -230,38 +198,20 @@ describe('AboutModal', () => {
       });
     });
 
-    it('renders 4 action buttons', () => {
+    it('renders 1 action button', () => {
       setupStore();
       render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getAllByTestId('button')).toHaveLength(4);
+      expect(screen.getAllByTestId('button')).toHaveLength(1);
     });
   });
 
   // ── Icons ────────────────────────────────────────────────────────────────────
 
   describe('icons', () => {
-    it('renders BookOpen icon for Documentation button', () => {
-      setupStore();
-      render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getByTestId('icon-book-open')).toBeInTheDocument();
-    });
-
-    it('renders DiscordIcon for Discord button', () => {
-      setupStore();
-      render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getByTestId('discord-icon')).toBeInTheDocument();
-    });
-
     it('renders GitHubIcon for GitHub button', () => {
       setupStore();
       render(<AboutModal isOpen={true} onClose={vi.fn()} />);
       expect(screen.getByTestId('github-icon')).toBeInTheDocument();
-    });
-
-    it('renders Heart icon for Donate button', () => {
-      setupStore();
-      render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(screen.getByTestId('icon-heart')).toBeInTheDocument();
     });
 
     it('renders Users icon in Contributors section', () => {
@@ -283,11 +233,16 @@ describe('AboutModal', () => {
     it('renders the contributors description text', () => {
       setupStore();
       render(<AboutModal isOpen={true} onClose={vi.fn()} />);
-      expect(
-        screen.getByText(
-          /Dispatcharr is built by the community, for the community/i
-        )
-      ).toBeInTheDocument();
+      expect(screen.getByText(/Mino is derived from/i)).toBeInTheDocument();
+    });
+
+    it('credits upstream Dispatcharr with a link', () => {
+      setupStore();
+      render(<AboutModal isOpen={true} onClose={vi.fn()} />);
+      expect(screen.getByText('Dispatcharr').closest('a')).toHaveAttribute(
+        'href',
+        'https://github.com/Dispatcharr/Dispatcharr'
+      );
     });
   });
 

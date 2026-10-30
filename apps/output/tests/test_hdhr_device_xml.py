@@ -1,7 +1,7 @@
 """device.xml reads the configured HDHRDevice row.
 
 #83 - HDHRDeviceXMLAPIView.get (apps/hdhr/api_views.py) hardcoded
-<DeviceID>12345678</DeviceID> and <FriendlyName>Dispatcharr HDHomeRun</FriendlyName>
+<DeviceID>12345678</DeviceID> and <FriendlyName>Mino HDHomeRun</FriendlyName>
 unconditionally, while DiscoverAPIView.get read HDHRDevice.objects.first() and
 preferred its fields when a row exists. A configured HDHRDevice row made the
 two documents permanently disagree about the device's own identity.
@@ -61,5 +61,5 @@ class HDHRDeviceXMLTests(TestCase):
 
         self.assertIn("<DeviceID>12345678</DeviceID>", body)
         self.assertIn(
-            "<FriendlyName>Dispatcharr HDHomeRun</FriendlyName>", body
+            "<FriendlyName>Mino HDHomeRun</FriendlyName>", body
         )

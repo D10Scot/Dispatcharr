@@ -1,5 +1,5 @@
-# Dispatcharr - Modular Deployment Configuration
-# This compose file runs Dispatcharr in modular mode with separate containers
+# Mino - Modular Deployment Configuration
+# This compose file runs Mino in modular mode with separate containers
 # for web, celery workers, PostgreSQL database, and Redis cache.
 
 services:
