@@ -140,6 +140,19 @@ jobs:
           printf '  %s\n' "$@"
           python3 ./scripts/check_credential_logging.py "$@"
 
+  product-name:
+    name: product name ratchet
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: check the old product name against its allowlist
+        # Counts the old name per tracked file (decision records excepted) and
+        # fails when a count rises above scripts/product_name_allowlist.txt.
+        run: python3 scripts/check_product_name.py
+
   lockfile-fresh:
     name: uv.lock freshness
     runs-on: ubuntu-latest
