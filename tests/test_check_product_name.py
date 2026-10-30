@@ -90,7 +90,7 @@ class CheckProductNameTests(SimpleTestCase):
         self.put("a.txt", "dispatcharr\ndispatcharr\n")
         result = self.run_check()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("a.txt: 2 occurrences, allowed 1", result.stdout)
+        self.assertIn("a.txt: count 2, allowed 1", result.stdout)
 
     def test_unlisted_file_fails(self):
         self.put("a.txt", "dispatcharr\n")
@@ -98,7 +98,7 @@ class CheckProductNameTests(SimpleTestCase):
         self.put("b.txt", "dispatcharr\n")
         result = self.run_check()
         self.assertEqual(result.returncode, 1)
-        self.assertIn("b.txt: 1 occurrences, allowed 0", result.stdout)
+        self.assertIn("b.txt: count 1, allowed 0", result.stdout)
 
     def test_decrease_passes_and_asks_for_write(self):
         self.put("a.txt", "dispatcharr dispatcharr\n")
@@ -123,3 +123,44 @@ class CheckProductNameTests(SimpleTestCase):
         self.put("a.txt", "Dispatcharr DISPATCHARR dispatcharr\n")
         self.write_allowlist()
         self.assertEqual((self.root / ALLOWLIST).read_text(), "3\ta.txt\n")
+
+    def test_every_record_glob_is_ignored_at_depth(self):
+        records = [
+            "docs/adr/sub/x.md",
+            "docs/superpowers/specs/a/x.md",
+            "docs/superpowers/plans/a/b.md",
+            "docs/superpowers/analysis/a/b.md",
+            "docs/comparisons/run/d.csv",
+            "CHANGELOG.md",
+        ]
+        for path in records:
+            self.put(path, "dispatcharr\n")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.write_allowlist()
+        self.assertEqual((self.root / ALLOWLIST).read_text(), "")
+
+    def test_near_miss_record_paths_are_still_counted(self):
+        near = ["docs/adr.md", "docs/superpowers/other/x.md", "sub/CHANGELOG.md"]
+        for path in near:
+            self.put(path, "dispatcharr\n")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        for path in near:
+            self.assertIn(f"{path}: count 1, allowed 0", result.stdout)
+
+    def test_allowlist_does_not_count_against_itself(self):
+        self.put("dispatcharr/x.py", "dispatcharr\n")
+        self.write_allowlist()
+        self.git("add", ALLOWLIST)
+        self.assertIn("dispatcharr/x.py", (self.root / ALLOWLIST).read_text())
+        result = self.run_check()
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn(ALLOWLIST, (self.root / ALLOWLIST).read_text())
+
+    def test_malformed_allowlist_line_exits_1_naming_the_line(self):
+        self.put("a.txt", "dispatcharr\n")
+        self.put(ALLOWLIST, "1\ta.txt\nnot a valid line\n")
+        result = self.run_check()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(f"{ALLOWLIST}:2: expected `<count>\\t<path>`", result.stdout)

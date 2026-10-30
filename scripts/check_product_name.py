@@ -79,10 +79,15 @@ def read_allowlist(root):
     allow = Path(root) / ALLOWLIST
     if not allow.is_file():
         return entries
-    for line in allow.read_text(encoding="utf-8").splitlines():
-        if line.strip():
-            count, path = line.split("\t", 1)
-            entries[path] = int(count)
+    for number, line in enumerate(allow.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        count, sep, path = line.partition("\t")
+        if not sep or not count.isdigit() or not path:
+            raise ValueError(
+                f"{ALLOWLIST}:{number}: expected `<count>\\t<path>`, got {line!r}"
+            )
+        entries[path] = int(count)
     return entries
 
 
@@ -102,9 +107,13 @@ def main(argv):
         print(f"wrote {len(counts)} entries to {ALLOWLIST}")
         return 0
 
-    allowed = read_allowlist(root)
+    try:
+        allowed = read_allowlist(root)
+    except ValueError as err:
+        print(err)
+        return 1
     failures = [
-        f"{path}: {n} occurrences, allowed {allowed.get(path, 0)}"
+        f"{path}: count {n}, allowed {allowed.get(path, 0)}"
         for path, n in sorted(counts.items())
         if n > allowed.get(path, 0)
     ]

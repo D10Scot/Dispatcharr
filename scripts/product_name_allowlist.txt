@@ -571,7 +571,7 @@
 1	scripts/standalone_debug.py
 2	tests/test_boot_db_cleanup.py
 6	tests/test_celery_plugin_discovery.py
-18	tests/test_check_product_name.py
+24	tests/test_check_product_name.py
 4	tests/test_ci_test_routing.py
 5	tests/test_credential_logging_guard.py
 9	tests/test_geventpool_conn_lifetime.py
