@@ -338,7 +338,7 @@
 4	e2e/tests/seeded/auto-channel-sync.spec.ts
 2	e2e/tests/seeded/catchup-m3u-advertisement.spec.ts
 1	e2e/tests/seeded/channel-bulk-ops.spec.ts
-7	e2e/tests/seeded/hdhr.spec.ts
+5	e2e/tests/seeded/hdhr.spec.ts
 2	e2e/tests/seeded/m3u-ingest.spec.ts
 6	e2e/tests/seeded/m3u-refresh-failure.spec.ts
 12	e2e/tests/seeded/network-acl.spec.ts
@@ -353,7 +353,6 @@
 1	e2e/tests/seeded/vod-ingest-fidelity.spec.ts
 1	e2e/tests/seeded/ws-fixture.spec.ts
 2	e2e/tests/seeded/ws-product-events.spec.ts
-1	e2e/tests/seeded/xc-auth.spec.ts
 4	e2e/tests/seeded/xc-ingest.spec.ts
 1	e2e/tests/seeded/xc-output.spec.ts
 4	e2e/tests/seeded/xc-vod-catalogue.spec.ts
