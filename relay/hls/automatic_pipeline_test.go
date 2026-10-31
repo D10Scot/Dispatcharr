@@ -105,6 +105,7 @@ func runToEOF(s *segmenter) {
 // per GOP: 1.92 s GOPs at a target of 2 are 1.920 s segments, where the 2 s
 // grid alone would make them 3.84 s.
 func TestACopiedGenerationCutsWithinTheTargetDuration(t *testing.T) {
+	t.Parallel()
 	t.Run("1.92 s GOPs at target 2", func(t *testing.T) {
 		s, store := newCopySegmenter(true, 2)
 		for i := 0; i < 5; i++ {
@@ -159,6 +160,7 @@ func TestACopiedGenerationCutsWithinTheTargetDuration(t *testing.T) {
 // wake, and both queued before the segmenter's first wake (which is where a
 // cleared `ready` would lose the segment already cut).
 func TestAnOverLongCopiedFragmentEndsTheGeneration(t *testing.T) {
+	t.Parallel()
 	for _, queued := range []bool{false, true} {
 		name := "each fragment on its own wake"
 		if queued {
@@ -223,6 +225,7 @@ func TestAnOverLongCopiedFragmentEndsTheGeneration(t *testing.T) {
 // An encoded generation never takes the copy cut or the over-long check: the
 // same 2.5 s fragment is published as it always was.
 func TestAnEncodedGenerationIgnoresTheCopyCut(t *testing.T) {
+	t.Parallel()
 	s, store := newCopySegmenter(false, 2)
 	var fired atomic.Int32
 	s.onOverlong = func() { fired.Add(1) }
@@ -245,6 +248,7 @@ func TestAnEncodedGenerationIgnoresTheCopyCut(t *testing.T) {
 // generation ends at once, and the next spawn is an encode into the declared
 // family, never a copy, with the 3 s segment never listed.
 func TestAnOverLongCopiedSegmentRestartsTheRunEncoded(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	long := file(t, "long.mp4", gopStream(75))
 	good := file(t, "good.mp4", gopStream(50, 50))
@@ -289,6 +293,7 @@ func TestAnOverLongCopiedSegmentRestartsTheRunEncoded(t *testing.T) {
 // need a fourth. (The plan's "three over-long generations" cannot arise: the
 // first sets forceEncode for the rest of the run, so no later generation copies.)
 func TestOverLongRestartsCountTowardTheRestartBound(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	long := file(t, "long.mp4", gopStream(75))
 	dying := file(t, "dying.mp4", gopStream(50, 50))
@@ -312,6 +317,7 @@ func TestOverLongRestartsCountTowardTheRestartBound(t *testing.T) {
 // segment is encoded into the declared family on the same input, and the
 // channel is not marked. The stand-in fails whenever the argv copies.
 func TestAFailedCopyFallsBackToAnEncode(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	initOnly := file(t, "init.mp4", videoInit(0))
 	good := file(t, "good.mp4", gopStream(50, 50))
@@ -360,6 +366,7 @@ func TestAFailedCopyFallsBackToAnEncode(t *testing.T) {
 // R74: only when the encode fails too does the generation, and so the channel's
 // HLS output, fail: attempts 1 and 2 copy, 3 and 4 encode.
 func TestAFailedCopyAndAFailedEncodeFailTheOutput(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	initOnly := file(t, "init.mp4", videoInit(0))
 	p := h.startAutomatic(probeAutomatic("2.000000"), func(Spawn) []string {
@@ -385,6 +392,7 @@ func TestAFailedCopyAndAFailedEncodeFailTheOutput(t *testing.T) {
 // Ruling R42 and Decision 14: the watchdog's limits follow the pipeline's own
 // target, and a test override wins in the seed's order.
 func TestTheStallLimitsFollowTheTargetDuration(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		target         int
 		stall, startup time.Duration
@@ -426,6 +434,7 @@ func TestTheStallLimitsFollowTheTargetDuration(t *testing.T) {
 // reset attempt 2's aac init completes the map with attempt 1's stale video
 // string and Ready adopts it. (Transcode mode: no ceiling rewrites a string.)
 func TestEachAttemptStartsWithNoCodecsFromTheLastOne(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	dir := t.TempDir()
 	stale := filepath.Join(dir, "stale.mp4")
@@ -472,6 +481,7 @@ func TestEachAttemptStartsWithNoCodecsFromTheLastOne(t *testing.T) {
 // The copied rendition's bandwidth is the maximum, never the replacement: the
 // table's video rate stays the floor.
 func TestTheMultivariantBandwidthCoversACopiedRendition(t *testing.T) {
+	t.Parallel()
 	out := Output{
 		Width: 640, Height: 360, FrameRate: Rational{25, 1},
 		VideoMaxrate: 8_000_000, VideoBitrate: 6_000_000,
@@ -504,6 +514,7 @@ func TestTheMultivariantBandwidthCoversACopiedRendition(t *testing.T) {
 // after their first segment and a third that is over-long are three events
 // within a minute, and the output fails.
 func TestAnOverLongEndingAsTheThirdEventFailsTheOutput(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	long := file(t, "long.mp4", gopStream(75))
 	dying := file(t, "dying.mp4", gopStream(50, 50))
@@ -529,6 +540,7 @@ func TestAnOverLongEndingAsTheThirdEventFailsTheOutput(t *testing.T) {
 // A copy whose first attempt exits early and whose second succeeds stays a
 // copy: no fallback encode is made.
 func TestACopyThatSucceedsOnItsSecondAttemptIsNotEncoded(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	initOnly := file(t, "init.mp4", videoInit(0))
 	good := file(t, "good.mp4", gopStream(50, 50))
@@ -554,6 +566,7 @@ func TestACopyThatSucceedsOnItsSecondAttemptIsNotEncoded(t *testing.T) {
 // A codec string the ceiling cannot read is declared as it is, with a warning
 // naming the string (never a URL).
 func TestAnUnreadableVideoCodecIsDeclaredAsItIs(t *testing.T) {
+	t.Parallel()
 	out, _ := DecideFor(copyProbe(nil), ModeAutomatic)
 	logs := &logBuffer{}
 	p := &Pipeline{store: NewStore(time.Now), readyCh: make(chan struct{}), output: &out, log: logs.logger()}
@@ -569,6 +582,7 @@ func TestAnUnreadableVideoCodecIsDeclaredAsItIs(t *testing.T) {
 }
 
 func TestTheStartupStallIsThirtySecondsAtEveryTarget(t *testing.T) {
+	t.Parallel()
 	for target := 2; target <= MaxTargetDuration; target++ {
 		if got := StartupStall(target); got != 30*time.Second {
 			t.Errorf("StartupStall(%d) = %v, want 30s (R58)", target, got)
@@ -578,6 +592,7 @@ func TestTheStartupStallIsThirtySecondsAtEveryTarget(t *testing.T) {
 
 // A segmenter nothing set a target on cuts against the default.
 func TestASegmenterWithNoTargetUsesTheDefault(t *testing.T) {
+	t.Parallel()
 	s, store := newCopySegmenter(true, 0)
 	s.fragment(RenditionVideo, vfrag(0, 1.9))
 	s.fragment(RenditionVideo, vfrag(1.9, 1.9))

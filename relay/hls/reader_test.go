@@ -21,6 +21,7 @@ func collect(t *testing.T, data []byte) (inits, frags [][]byte, err error) {
 }
 
 func TestTheSplitterHandsOnTheInitAtTheMoovAndEachMoofWithItsMdat(t *testing.T) {
+	t.Parallel()
 	init := videoInit(0)
 	f1 := fragSpec{seq: 1, trackID: 1, durations: []uint32{512}, sync: true}.build()
 	f2 := fragSpec{seq: 2, trackID: 1, start: 512, durations: []uint32{512}, sync: true}.build()
@@ -41,6 +42,7 @@ func TestTheSplitterHandsOnTheInitAtTheMoovAndEachMoofWithItsMdat(t *testing.T) 
 // A process that dies mid-fragment leaves a partial box on its pipe: every
 // whole fragment before it is handed on, and the partial one is not.
 func TestEOFMidFragmentHandsOnOnlyWholeFragments(t *testing.T) {
+	t.Parallel()
 	f1 := fragSpec{seq: 1, trackID: 1, durations: []uint32{512}, sync: true}.build()
 	f2 := fragSpec{seq: 2, trackID: 1, start: 512, durations: []uint32{512}, sync: true}.build()
 	_, frags, err := collect(t, cat(videoInit(0), f1, f2[:len(f2)-3]))
@@ -59,6 +61,7 @@ func TestEOFMidFragmentHandsOnOnlyWholeFragments(t *testing.T) {
 }
 
 func TestTheSplitterRefusesWhatIsNotFragmentedMP4(t *testing.T) {
+	t.Parallel()
 	f1 := fragSpec{seq: 1, trackID: 1, durations: []uint32{512}, sync: true}.build()
 	if _, _, err := collect(t, cat(box("ftyp", nil), f1)); !errors.Is(err, errNoInit) {
 		t.Errorf("a moof before any moov: %v, want errNoInit", err)
@@ -91,6 +94,7 @@ func TestTheSplitterRefusesWhatIsNotFragmentedMP4(t *testing.T) {
 }
 
 func TestTheSplitterStopsAtItsCallbacksError(t *testing.T) {
+	t.Parallel()
 	stop := errors.New("stop")
 	sp := splitter{onInit: func([]byte) error { return stop }, onFrag: func([]byte) error { return nil }}
 	if err := sp.read(bytes.NewReader(videoInit(0))); !errors.Is(err, stop) {

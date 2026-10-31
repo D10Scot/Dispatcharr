@@ -243,6 +243,7 @@ func (r *realRun) renditions() []string {
 // with a sync sample -- here on 12 s of the 1080i AAC + AC-3 fixture, on
 // three renditions, with the CODECS its init segments carry.
 func TestRealThe1080iFixtureGivesAligned2sSegmentsOnThreeRenditions(t *testing.T) {
+	t.Parallel()
 	r := runReal(t, seconds(fixture(t, "h264-1080i-aac-ac3"), 12))
 	r.ok(t)
 	if got := strings.Join(r.renditions(), ","); got != "video,aac,ac3" {
@@ -300,6 +301,7 @@ func TestRealThe1080iFixtureGivesAligned2sSegmentsOnThreeRenditions(t *testing.T
 // measured at 0.86 s: the first segment starts well after 0, and every
 // whole segment is still 2.000 s.
 func TestRealAMidGOPJoinKeepsTheGridOnTheKeyframes(t *testing.T) {
+	t.Parallel()
 	data := fixture(t, "h264-1080i-aac-ac3")
 	cut := 3_000_000 - 3_000_000%buffer.TSPacketSize
 	rest := data[cut:]
@@ -327,6 +329,7 @@ func TestRealAMidGOPJoinKeepsTheGridOnTheKeyframes(t *testing.T) {
 // The E-AC-3 fixture gives three audio renditions (R20): AAC and AC-3
 // encoded from the E-AC-3, which is copied.
 func TestRealTheEAC3FixtureGivesThreeAudioRenditions(t *testing.T) {
+	t.Parallel()
 	r := runReal(t, seconds(fixture(t, "h264-eac3"), 6))
 	r.ok(t)
 	if got := strings.Join(r.renditions(), ","); got != "video,aac,ac3,eac3" {
@@ -355,6 +358,7 @@ func TestRealTheEAC3FixtureGivesThreeAudioRenditions(t *testing.T) {
 // still declares carries no packets; ffprobe reports it with 0 channels, and
 // mapping it would fail every output of the generation (finding 7).
 func TestRealADeclaredButEmptyAudioPIDIsNotMapped(t *testing.T) {
+	t.Parallel()
 	r := runReal(t, withoutPID(seconds(fixture(t, "h264-1080i-aac-ac3"), 6), 0x302))
 	r.ok(t)
 	probe, _ := r.p.GenerationProbe(0)
@@ -377,6 +381,7 @@ func TestRealADeclaredButEmptyAudioPIDIsNotMapped(t *testing.T) {
 // EOF, and each silent segment's duration equals its video segment's to
 // within one audio frame.
 func TestRealTheNoAudioFixtureGetsRelaySynthesisedSilence(t *testing.T) {
+	t.Parallel()
 	r := runReal(t, seconds(fixture(t, "h264-noaudio"), 6))
 	r.ok(t)
 	if after := exitAfterInputClosed(t, r.logs.String()); after >= time.Second {
@@ -396,6 +401,7 @@ func TestRealTheNoAudioFixtureGetsRelaySynthesisedSilence(t *testing.T) {
 // fixture declares aac, ac3 and eac3; generation 1 on the no-audio fixture
 // fills all three from canned frames, E-AC-3's included.
 func TestRealEAC3SilenceAfterABoundary(t *testing.T) {
+	t.Parallel()
 	r := runReal(t, seconds(fixture(t, "h264-eac3"), 6), seconds(fixture(t, "h264-noaudio"), 6))
 	r.ok(t)
 	if got := strings.Join(r.renditions(), ","); got != "video,aac,ac3,eac3" {
@@ -462,6 +468,7 @@ func assertSilenceMatchesVideo(t *testing.T, r *realRun, name string, gen int, s
 // fixtures have different PIDs, the case one surviving encoder silently
 // drops (M3). The later source adds E-AC-3, which declares no new rendition.
 func TestRealABoundaryGivesTwoGenerationsAndADiscontinuity(t *testing.T) {
+	t.Parallel()
 	r := runReal(t, seconds(fixture(t, "mpeg2-576i-mp2"), 6), seconds(fixture(t, "h264-eac3"), 6))
 	// The probe first: a generation-1 plan made from the wrong source maps
 	// PIDs its input does not have, and the pipeline fails; the probe is the
@@ -510,6 +517,7 @@ func describe(p Probe) string {
 // every later generation fills every declared rendition -- after a boundary
 // onto an MP2-only source the ac3 rendition keeps growing, encoded from MP2.
 func TestRealTheRenditionSetSurvivesABoundaryAndIsFilled(t *testing.T) {
+	t.Parallel()
 	r := runReal(t, seconds(fixture(t, "h264-1080i-aac-ac3"), 6), seconds(fixture(t, "mpeg2-576i-mp2"), 6))
 	r.ok(t)
 	ac3, tracks := r.segments(t, RenditionAC3)
@@ -536,6 +544,7 @@ func TestRealTheRenditionSetSurvivesABoundaryAndIsFilled(t *testing.T) {
 // D11: with no usable Quick Sync the detection gives software -- against the
 // real ffmpeg, with a device path that opens but is no render node.
 func TestRealDetectionWithoutQuickSyncGivesSoftware(t *testing.T) {
+	t.Parallel()
 	requireRealFFmpeg(t)
 	d := &Detector{Device: os.DevNull}
 	if got := d.Engine(context.Background()); got != EngineSoftware {
@@ -547,6 +556,7 @@ func TestRealDetectionWithoutQuickSyncGivesSoftware(t *testing.T) {
 // the bitrate table names gives an init with no edit list and a steady-state
 // frame of its codec's frame size.
 func TestRealEveryCannedSilenceEncodes(t *testing.T) {
+	t.Parallel()
 	requireRealFFmpeg(t)
 	for _, r := range []Rendition{
 		{Name: RenditionAAC, Channels: 2},
@@ -651,6 +661,7 @@ func presentationStart(t *testing.T, data []byte, track Track) (int64, bool) {
 // video's reorder delay into an edit list the relay strips, and the video
 // would present late by it.
 func TestRealABFrameEncodeStaysInSyncWithItsAudio(t *testing.T) {
+	t.Parallel()
 	requireRealFFmpeg(t)
 	src := newTestSource()
 	src.write(t, seconds(fixture(t, "h264-eac3"), 6))
@@ -706,6 +717,7 @@ func TestRealABFrameEncodeStaysInSyncWithItsAudio(t *testing.T) {
 // re-probe reaches the keyframe at 10 s, and the encoder, analysing its input
 // at the same full bound, produces the run.
 func TestRealALongGOPIsReprobedAtTheFullBound(t *testing.T) {
+	t.Parallel()
 	data := fixture(t, "h264-gop10-aac")
 	from := len(data) * 3 / 20
 	from -= from % buffer.TSPacketSize
@@ -806,6 +818,7 @@ func assertSegmentsAre(t *testing.T, r *realRun, want, frame float64) {
 // through the bitstream filter. The multivariant declares the family's
 // ceiling (level 4.1 at least) while the init carries the source's own string.
 func TestRealAutomaticCopiesTheHEVCFixture(t *testing.T) {
+	t.Parallel()
 	r := runRealWith(t, automatic, seconds(fixture(t, "hevc-aac"), 8))
 	r.ok(t)
 	probe, ok := r.p.GenerationProbe(0)
@@ -860,6 +873,7 @@ func mustInit(t *testing.T, r *realRun, rendition string, gen int) []byte {
 // reason logged as field_order; its AAC is copied and its AC-3 is copied as
 // in transcode.
 func TestRealAutomaticEncodesTheInterlacedFixtureAndCopiesItsAudio(t *testing.T) {
+	t.Parallel()
 	r := runRealWith(t, automatic, seconds(fixture(t, "h264-1080i-aac-ac3"), 6))
 	r.ok(t)
 	argv := strings.Join(r.spawnsOf(0)[0].Argv, " ")
@@ -886,6 +900,7 @@ func TestRealAutomaticEncodesTheInterlacedFixtureAndCopiesItsAudio(t *testing.T)
 // records ffprobe's argv: the second carries the full bound and its
 // read interval.
 func TestRealAutomaticEncodesTheLongGOPFixtureJoinedMidGOP(t *testing.T) {
+	t.Parallel()
 	requireRealFFmpeg(t)
 	data := fixture(t, "h264-gop10-aac")
 	from := len(data) * 3 / 20
@@ -954,6 +969,7 @@ func fourSecondGOPSource(t *testing.T) []byte {
 // window, so automatic mode re-probes at 8 s, sees two (K = 4 s), copies, and
 // its target duration is 4, in the playlist too.
 func TestRealAutomaticCopiesAFourSecondGOPAtTargetDurationFour(t *testing.T) {
+	t.Parallel()
 	r := runRealWith(t, automatic, fourSecondGOPSource(t))
 	r.ok(t)
 	if !strings.Contains(r.logs.String(), "re-probing at the full bound") {
@@ -976,6 +992,7 @@ func TestRealAutomaticCopiesAFourSecondGOPAtTargetDurationFour(t *testing.T) {
 // libx265 at level-idc 4.1 (no Quick Sync here), never libx264, tagged hvc1,
 // scaled and rated to the run's fixed 640x360 at 25.
 func TestRealAnHEVCRunEncodesItsMPEG2GenerationAsHEVC(t *testing.T) {
+	t.Parallel()
 	r := runRealWith(t, automatic, seconds(fixture(t, "hevc-aac"), 6), seconds(fixture(t, "mpeg2-576i-mp2"), 6))
 	r.ok(t)
 	spawns := r.spawnsOf(1)
@@ -1014,6 +1031,7 @@ func TestRealAnHEVCRunEncodesItsMPEG2GenerationAsHEVC(t *testing.T) {
 // H.264: libx264, scaled to the fixed 640x360 at the fixed 25/1, with an
 // avc1 High init.
 func TestRealAnH264CopyRunEncodesItsInterlacedGenerationAsH264(t *testing.T) {
+	t.Parallel()
 	r := runRealWith(t, automatic, seconds(fixture(t, "h264-eac3"), 6), seconds(fixture(t, "h264-1080i-aac-ac3"), 6))
 	r.ok(t)
 	if argv := strings.Join(r.spawnsOf(0)[0].Argv, " "); !strings.Contains(argv, "-c:v copy") {

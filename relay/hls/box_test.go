@@ -7,6 +7,7 @@ import (
 )
 
 func TestParseInitReadsTheTrackAndItsCodec(t *testing.T) {
+	t.Parallel()
 	for _, version1 := range []bool{false, true} {
 		init := initSpec{trackID: 7, handler: "vide", timescale: 12800, movieTimescale: 1000,
 			entry: avc1Entry(0x64, 0x00, 0x2a), trexDuration: 512, trexSize: 99, trexFlags: 0x01010000, version1: version1}.build()
@@ -23,6 +24,7 @@ func TestParseInitReadsTheTrackAndItsCodec(t *testing.T) {
 }
 
 func TestCodecStringsComeFromTheInitSegment(t *testing.T) {
+	t.Parallel()
 	hvcC := box("hvcC", []byte{1, 0x01, 0x60, 0, 0, 0, 0xb0, 0, 0, 0, 0, 0, 93, 0xf0})
 	cases := []struct {
 		name  string
@@ -55,6 +57,7 @@ func TestCodecStringsComeFromTheInitSegment(t *testing.T) {
 // 9.0.1); the offset is converted from the movie timescale to the media one,
 // less any media_time, and never negative.
 func TestStartOffsetIsTheEmptyEditInMediaTicks(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		movie     uint32
@@ -89,6 +92,7 @@ func TestStartOffsetIsTheEmptyEditInMediaTicks(t *testing.T) {
 }
 
 func TestStripEditsRemovesTheEditListAndFixesTheSizes(t *testing.T) {
+	t.Parallel()
 	init := initSpec{trackID: 1, handler: "soun", timescale: 48000, movieTimescale: 48000,
 		entry: audioEntry("ac-3", box("dac3", []byte{0x10, 0x3d, 0xe0})), emptyEdit: 256}.build()
 	stripped, err := StripEdits(init)
@@ -115,6 +119,7 @@ func TestStripEditsRemovesTheEditListAndFixesTheSizes(t *testing.T) {
 }
 
 func TestParseInitRefusesWhatIsNotAnInit(t *testing.T) {
+	t.Parallel()
 	good := initSpec{trackID: 1, handler: "vide", timescale: 12800, entry: avc1Entry(0x64, 0, 0x2a)}.build()
 	cases := map[string][]byte{
 		"empty":                     nil,
@@ -131,6 +136,7 @@ func TestParseInitRefusesWhatIsNotAnInit(t *testing.T) {
 }
 
 func TestParseFragmentReadsTheTimingAndTheSyncSample(t *testing.T) {
+	t.Parallel()
 	track := Track{ID: 1, Timescale: 12800, DefaultDuration: 512}
 	f, err := ParseFragment(fragSpec{seq: 1, trackID: 1, start: 25600, durations: []uint32{512, 512, 256}, sync: true}.build(), track)
 	if err != nil {
@@ -154,6 +160,7 @@ func TestParseFragmentReadsTheTimingAndTheSyncSample(t *testing.T) {
 // The defaults a fragment leaves implicit come from tfhd, then trex, and a
 // first sample's flags from the trun's first-sample-flags or its own flags.
 func TestParseFragmentFallsBackToTheDefaults(t *testing.T) {
+	t.Parallel()
 	track := Track{ID: 1, Timescale: 48000, DefaultDuration: 1024, DefaultFlags: 0x02000000}
 	tfhd := fullBoxBytes("tfhd", 0, 0x020000|tfhdBaseDataOffset|tfhdSampleDescIndex, cat(be32(1), be64(0), be32(1)))
 	tfdt := fullBoxBytes("tfdt", 1, 0, be64(48000))
@@ -179,6 +186,7 @@ func TestParseFragmentFallsBackToTheDefaults(t *testing.T) {
 }
 
 func TestParseFragmentRefusesAMalformedFragment(t *testing.T) {
+	t.Parallel()
 	track := Track{ID: 1}
 	good := fragSpec{seq: 1, trackID: 1, durations: []uint32{1, 1}}.build()
 	tfhd := fullBoxBytes("tfhd", 0, 0, be32(1))
@@ -211,6 +219,7 @@ func TestParseFragmentRefusesAMalformedFragment(t *testing.T) {
 }
 
 func TestShiftStartMovesTheTfdt(t *testing.T) {
+	t.Parallel()
 	track := Track{ID: 1, Timescale: 12800}
 	f, _ := ParseFragment(fragSpec{seq: 1, trackID: 1, start: 100, durations: []uint32{512}, sync: true}.build(), track)
 	if err := shiftStart(&f, 11008); err != nil {
@@ -239,6 +248,7 @@ func TestShiftStartMovesTheTfdt(t *testing.T) {
 // A synthesised fragment is exactly what the box reader reads back: count
 // copies of the frame, each dur ticks, at start.
 func TestSynthFragmentRoundTrips(t *testing.T) {
+	t.Parallel()
 	frame := []byte{0xde, 0xad, 0xbe, 0xef, 0x01, 0x02}
 	data := synthFragment(9, 1, 96000, frame, 94, 1024)
 	track := Track{ID: 1, Timescale: 48000}

@@ -25,6 +25,7 @@ func publishN(s *Store, gen, n int, from time.Time) {
 // map per generation, a discontinuity before every later generation's first
 // segment, PDT on every segment, and no ENDLIST.
 func TestTheMediaPlaylist(t *testing.T) {
+	t.Parallel()
 	clock := t0
 	s := NewStore(func() time.Time { return clock })
 	if _, _, ok := s.MediaPlaylist(RenditionVideo); ok {
@@ -94,6 +95,7 @@ video/7.m4s
 // written, so a segment's discontinuity sequence never changes between
 // reloads.
 func TestTheDiscontinuitySequenceCountsWhatLeftTheList(t *testing.T) {
+	t.Parallel()
 	s := NewStore(nil)
 	publishN(s, 0, 2, t0)
 	publishN(s, 1, 2, t0)
@@ -121,6 +123,7 @@ func TestTheDiscontinuitySequenceCountsWhatLeftTheList(t *testing.T) {
 // past the live edge) and the init segments of the generations they belong to;
 // anything else is a 404.
 func TestTheStoreIsBoundedAndServesBySequence(t *testing.T) {
+	t.Parallel()
 	s := NewStore(nil)
 	s.SetInit(RenditionVideo, 0, []byte("init0"))
 	publishN(s, 0, 1, t0)
@@ -157,6 +160,7 @@ func TestTheStoreIsBoundedAndServesBySequence(t *testing.T) {
 }
 
 func TestWaitSegment(t *testing.T) {
+	t.Parallel()
 	s := NewStore(nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
@@ -182,6 +186,7 @@ func TestWaitSegment(t *testing.T) {
 // CHANNELS the declared layout, LANGUAGE only when the probe had one, and
 // one EXT-X-STREAM-INF per group with CODECS from the init segments.
 func TestTheMultivariant(t *testing.T) {
+	t.Parallel()
 	o := Output{Width: 1920, Height: 1080, FrameRate: Rational{50, 1}, GOP: 100, VideoBitrate: 6_000_000, VideoMaxrate: 8_000_000,
 		Audio: []Rendition{{Name: "aac", Channels: 2, Language: "eng"}, {Name: "ac3", Channels: 6}, {Name: "eac3", Channels: 6}}}
 	codecs := map[string]string{"video": "avc1.64002a", "aac": "mp4a.40.2", "ac3": "ac-3", "eac3": "ec-3"}
@@ -217,6 +222,7 @@ func TestTheMultivariant(t *testing.T) {
 // TestARemovedSegmentStaysAvailableForItsDurationPlusThePlaylists pins that
 // half.
 func TestEverySegmentAListedPlaylistNamesIsStored(t *testing.T) {
+	t.Parallel()
 	s := NewStore(nil)
 	s.SetInit(RenditionVideo, 0, []byte("init0"))
 	var previous []byte
@@ -245,6 +251,7 @@ func TestEverySegmentAListedPlaylistNamesIsStored(t *testing.T) {
 // its own duration plus the playlist's (RFC 8216 § 6.2.2): 2 s + 20 s, which
 // is 11 publications after it leaves.
 func TestARemovedSegmentStaysAvailableForItsDurationPlusThePlaylists(t *testing.T) {
+	t.Parallel()
 	s := NewStore(nil)
 	s.SetInit(RenditionVideo, 0, []byte("init0"))
 	publishN(s, 0, 1, t0)        // segment 0: the one under test
@@ -271,6 +278,7 @@ func TestARemovedSegmentStaysAvailableForItsDurationPlusThePlaylists(t *testing.
 var targetLine = regexp.MustCompile(`#EXT-X-TARGETDURATION:(\d+)`)
 
 func TestTheMediaPlaylistCarriesThePipelinesTargetDuration(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		set  int
 		want string
@@ -291,6 +299,7 @@ func TestTheMediaPlaylistCarriesThePipelinesTargetDuration(t *testing.T) {
 // (189 MiB) are all kept; at the default target the same run keeps only the
 // newest 7 (63 MiB, under 64 MiB).
 func TestTheByteCeilingScalesWithTheTargetDuration(t *testing.T) {
+	t.Parallel()
 	publish := func(store *Store) {
 		for i := 0; i < 21; i++ {
 			store.publish(0, time.Now(), map[string]part{RenditionVideo: {data: make([]byte, 9<<20), duration: 2}})

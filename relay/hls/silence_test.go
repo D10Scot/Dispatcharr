@@ -16,6 +16,7 @@ func testCanned(spf uint32) *Canned {
 // frame of its video segment's end and the error never accumulates -- over
 // an hour of 2 s segments as over one.
 func TestSilenceIsExactAndNeverAccumulates(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		tv      uint32
@@ -56,6 +57,7 @@ func TestSilenceIsExactAndNeverAccumulates(t *testing.T) {
 // A segment shorter than one frame still gets one, and the next segment's
 // count, computed from the absolute index, takes it back.
 func TestSilenceShortSegmentsGetOneFrame(t *testing.T) {
+	t.Parallel()
 	clock := &silenceClock{canned: testCanned(1024)}
 	for i, end := range []uint64{1, 2} {
 		if _, ticks := clock.segment(end, 12800); ticks != 1024 {
@@ -70,6 +72,7 @@ func TestSilenceShortSegmentsGetOneFrame(t *testing.T) {
 }
 
 func TestCannedFromNeedsASteadyStateFrame(t *testing.T) {
+	t.Parallel()
 	track := initSpec{trackID: 1, handler: "soun", timescale: 48000, entry: audioEntry("mp4a", esdsAAC(2)), emptyEdit: 21}.build()
 	steady := []byte{9, 9, 9}
 	var frags []byte
@@ -99,6 +102,7 @@ func TestCannedFromNeedsASteadyStateFrame(t *testing.T) {
 }
 
 func TestSilenceArgvIsBoundedAndHasNoOtherInput(t *testing.T) {
+	t.Parallel()
 	argv := SilenceArgv(Rendition{Name: RenditionEAC3, Channels: 6})
 	want := "-hide_banner -loglevel error -f lavfi -i anullsrc=r=48000:cl=5.1 -t 1 -c:a eac3 -ac 6 -b:a 640000 -f mp4 -movflags frag_keyframe+delay_moov+default_base_moof -frag_duration 200000 pipe:1"
 	if got := joinArgs(argv); got != want {

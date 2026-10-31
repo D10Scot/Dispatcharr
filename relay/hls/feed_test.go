@@ -19,6 +19,7 @@ func chunkOf(b byte) []byte { return bytes.Repeat([]byte{b}, testChunk) }
 // boundary index is never written -- and a boundary at the generation's own
 // first chunk is its start, not a reason to stop.
 func TestFeedStopsAtTheNextBoundary(t *testing.T) {
+	t.Parallel()
 	src := newTestSource()
 	src.mark() // the channel's first connection: index 1
 	src.write(t, chunkOf('a'))
@@ -43,6 +44,7 @@ func TestFeedStopsAtTheNextBoundary(t *testing.T) {
 }
 
 func TestFeedLimitStopAndWriteFailure(t *testing.T) {
+	t.Parallel()
 	src := newTestSource()
 	src.write(t, chunkOf('a'))
 	src.write(t, chunkOf('a'))
@@ -66,6 +68,7 @@ type failingWriter struct{}
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("broken pipe") }
 
 func TestArrival(t *testing.T) {
+	t.Parallel()
 	src := newTestSource()
 	at := time.Date(2026, 9, 27, 1, 2, 3, 0, time.UTC)
 	ring := buffer.New(buffer.Config{BudgetBytes: 10 * testChunk, ChunkBytes: testChunk, Now: func() time.Time { return at }})
@@ -107,6 +110,7 @@ func (s *hookSource) NextBoundary(after uint64) (uint64, bool) {
 // taken BEFORE the Read would miss this boundary while the Read returned the
 // new connection's chunks with the old ones.
 func TestFeedNeverCarriesANewConnectionsChunksPastItsBoundary(t *testing.T) {
+	t.Parallel()
 	base := newTestSource()
 	base.mark()
 	base.write(t, chunkOf('a'))
