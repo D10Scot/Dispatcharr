@@ -45,6 +45,10 @@ Admins and users sign in to the web UI, and so obtain REST API credentials, thro
 | D14 | Break-glass: `MINO_PASSWORD_LOGIN_FORCE=1` (env, wins over the DB) and `manage.py password_login --enable/--disable/--status` (writes the DB). |
 | D15 | RP-initiated logout, SAML, SCIM, Graph lookups, multi-tenant Entra and paired-device auth are **out of scope**. |
 | D16 | E2E uses a **fake OIDC provider added to `e2e-upstream`** (node stdlib crypto, no new image, no new npm dependency) and a new `sso` Playwright project with its own container. |
+| D17 | (Ruling Q1) Refreshing an OIDC token **re-evaluates the level cheaply, with no IdP call**. When the provider's version has changed since the token was minted, the level is recomputed from the mapping-claim values stored on the identity at its last login, under the current mappings. A lower level demotes the user, and no match refuses the refresh. Refresh never promotes. |
+| D18 | (Ruling Q4) Provider and `auth_settings` changes write an audit `SystemEvent`, `auth_config_changed`, after commit. It names the changed fields, never their values. |
+| D19 | (Ruling Q7) While password login is off, a Django session no longer authorizes streams (`_session_user`). |
+| D20 | (Ruling Q8) An admin-only active/inactive control on the Users page (PR S0). Admins cannot deactivate themselves or the last active admin. The CLI one-liner stays as the break-glass path. |
 
 ## 1. Current auth surface (verified at the seed SHA)
 
@@ -165,9 +169,10 @@ Each check refuses with a 302 to `<public_base_url>/login?sso_error=<code>`, a f
    - `refresh["oidc_provider"] = provider.id`
    - `refresh["oidc_provider_version"] = provider.version`
    - `refresh["oidc_level"] = <the level the mapping produced at § 4.2 step 1>`. This is what the IdP granted at this sign-in, not the user's stored level, which a local admin can change later.
+   - `refresh["oidc_identity"] = identity.id`, which D17's refresh re-evaluation reads
    - `refresh["oidc_redirect"] = sha256_hex(redirect_uri)`, the exact `redirect_uri` string sent in step 6, which is built from `public_base_url` and `slug`
 
-   That makes five claims in all, and every one of them survives refresh. Update `last_login`.
+   That makes six claims in all, and every one of them survives refresh. Update `last_login`.
 10. Store the handoff at `oidc:handoff:<code>`, where `code` is 32 random bytes. TTL 60 s, value `{access, refresh, binding_hash, next, intent}`.
 11. Re-set `mino_oidc_tx` with the same binding and `Max-Age=120`. 302 to `<public_base_url>/login/sso#code=<code>`. A fragment is never sent to a server, a proxy log or a `Referer` header.
 
@@ -243,6 +248,7 @@ The mapping claim path is a dotted path into the ID token's claims. Each segment
 - `provider` FK, `on_delete=PROTECT`
 - `issuer`, `subject`
 - `email_at_last_login`, `display_name`, `extra` (JSON: `tid`/`oid` for Entra)
+- `mapping_claim_values` (JSON list of strings): the values of the provider's mapping claim from the last successful login, at most 200 entries (Entra's JWT group limit). D17 recomputes from these. It is never logged, and never sent in an event or an API response other than the admin `identities/` detail.
 - `created`, `last_login`
 
 A unique constraint covers `(provider, issuer, subject)`. A provider with identities cannot be deleted (`PROTECT`); the admin disables it, or unlinks the identities first. While identities exist, the provider's **`issuer`, Entra tenant and `client_id`** cannot be changed. The save is refused with a message saying to create a new provider, then have each person link it (§ 4.2) or unlink and re-provision. Any of the three edits would silently JIT a duplicate user for every person: `sub` is scoped to the issuer, and Entra's `sub` is pairwise per application, so a new client id means new subjects.
@@ -287,20 +293,21 @@ Authorization is decided **before any write**. `ATOMIC_REQUESTS` is `False` (`di
 
      The identity conflict is caught **outside** the attempt savepoint, so rolling that savepoint back removes this attempt's user row. The winner lookup then runs inside the still-open outer transaction. Any other `IntegrityError` propagates, and the outer transaction rolls back.
    - **No email-based matching of an existing local user, ever.**
-6. **Apply the level.** Set `user.user_level` from step 1 if it changed (D9). Commit.
+6. **Apply the level.** Set `user.user_level` from step 1 if it changed (D9), and store this login's mapping-claim values on the identity (`mapping_claim_values`). Commit.
 
 SSO never writes `channel_profiles`, `stream_limit`, `custom_properties`, `api_key` or `is_active` after creation. Those stay local admin decisions.
 
 ### 4.3 Lifecycle consequences, stated for the owner
 
-- **Mapping removed or role unassigned in the IdP.** The next SSO login is refused. An already-issued pair keeps working until its refresh token expires, at most 1 day (`SIMPLE_JWT`). To stop it at once, an operator deactivates the local user. `JWTAuthentication` refuses inactive users (simplejwt 5.5.1 `authentication.py:138`), and so does refresh. There is no UI or API control for this today: `UserSerializer` does not expose `is_active` (`apps/accounts/serializers.py:60-77`), the Django admin fieldsets omit it (`apps/accounts/admin.py:13-17`), and S4 closes the admin site while password login is off. So the operator doc page (S4) gives the paste-ready command:
+- **Mapping removed or role unassigned in the IdP.** The next SSO login is refused. An already-issued pair keeps working until its refresh token expires, at most 1 day (`SIMPLE_JWT`). To stop it at once, an operator deactivates the local user. `JWTAuthentication` refuses inactive users (simplejwt 5.5.1 `authentication.py:138`), and so does refresh. At the seed SHA there is no UI or API control for this: `UserSerializer` does not expose `is_active` (`apps/accounts/serializers.py:60-77`), the Django admin fieldsets omit it (`apps/accounts/admin.py:13-17`), and S4 closes the admin site while password login is off. From PR S0 an admin deactivates the user on the Users page (D20, § 5.8). The operator doc page (S4) keeps a paste-ready command as the break-glass path, for when no admin can sign in:
 
 ```bash
 docker exec <container> python manage.py shell -c "from apps.accounts.models import User; print(User.objects.filter(username='<name>').update(is_active=False))"
 ```
 
-It prints `1` when the user existed. An admin-only `is_active` control in the Users page is left to the owner (Q8). S2 pins the effect: `apps.accounts.tests.test_oidc_flow.DeactivationTests.test_inactive_user_access_and_refresh_refused` deactivates an SSO user by queryset `update()`, then asserts 401 on both their access token and their refresh token.
-- **Role changed in the IdP.** Applied at the next SSO login, not mid-session.
+It prints `1` when the user existed. S0 pins the effect through the API (§ 5.8), and S2 pins it for SSO tokens: `apps.accounts.tests.test_oidc_flow.DeactivationTests.test_inactive_user_access_and_refresh_refused` deactivates an SSO user by queryset `update()`, then asserts 401 on both their access token and their refresh token.
+- **Role changed in the IdP.** Applied at the next SSO login, not mid-session. Refresh makes no IdP call, so it cannot see this.
+- **Mapping changed in this app** (an admin edits the provider's mappings or claim path). This bumps the provider version, so the next refresh of each user's token recomputes their level from their stored claim values (D17). A lower level demotes at once, and no match refuses the refresh, so the user must sign in again and is then refused with `no_mapping`. A higher level waits for the next login.
 - **Local user deleted.** The identity cascades, and the next SSO login JIT-creates a **new** user with a new id and no history. To block a person, deactivate them; do not delete them. The Users page says this on the delete dialog for a user with linked identities.
 - **Provider disabled.** Its start and callback 404, and its refresh tokens are refused (§ 5.4). Its users can still use the password, if they have one and password login is on.
 
@@ -358,13 +365,29 @@ When `password_login_enabled` is false and the break-glass is not active:
 | API keys (`X-API-Key`, `Authorization: ApiKey`) | unchanged, keep working |
 | XC, M3U, EPG, HDHomeRun and stream credentials | unchanged |
 | Existing access tokens | valid until expiry, at most 30 minutes |
-| Existing Django **session** cookies used as a stream principal (`apps/proxy/authorize.py:345-363`, `_session_user`) | unchanged, and a residual: a session made by a pre-switch admin-site login keeps authorizing streams until it expires (`SESSION_COOKIE_AGE` is not set in `dispatcharr/settings.py`, so Django's two-week default applies). Out of scope here (Q7) |
+| Existing Django **session** cookies used as a stream principal (`apps/proxy/authorize.py:345-363`, `_session_user`) | **refused** (D19): while password login is off and break-glass is not active, `_session_user` returns `None`. Every Django session comes from the admin site's password login (the OIDC flow never creates one, D3), so a session that outlives the switch would otherwise keep authorizing streams for Django's default two weeks (`SESSION_COOKIE_AGE` is unset). See § 5.4a. |
 | `manage.py changepassword` / `createsuperuser` | unchanged (CLI) |
 | Login page | the password form is hidden, and SSO buttons are shown |
 
 ### 5.4 Refresh and password rules that hold regardless of the toggle
 
 - A refresh token with `auth_method == "oidc"` is refused when its provider is disabled or deleted.
+- **D17, refresh re-evaluation.** For a refresh token with `auth_method == "oidc"`, `TokenRefreshView` first reads the provider row by `oidc_provider`, a primary-key read it already needs for the rule above.
+  - **If `provider.version == oidc_provider_version`**, nothing else is read, and refresh proceeds as today. This is the common case, and it costs one indexed read.
+  - **Otherwise** it reads the identity by `oidc_identity`, refusing if the identity is missing or belongs to another user. It recomputes the level by applying the provider's **current** mapping and `claim_path` to `identity.mapping_claim_values`.
+  - **No match**: refuse with 401 `token_not_valid`. The stored level is not changed.
+  - **A level below `user.user_level`**: set it, demoting the user, then refresh.
+  - **Equal or higher**: refresh unchanged. Refresh never promotes.
+
+  The refresh token's claims are not rewritten. `ROTATE_REFRESH_TOKENS` is false, so every later refresh repeats the check, which stays cheap. A stale `oidc_level` in that token cannot pass the § 5.5 proof, because the proof also requires the current version.
+
+  Why this is sound without the IdP: it re-applies a changed local mapping to what the IdP asserted at the last login. It cannot see a role the IdP has since withdrawn; that still waits for the next login, or for deactivation (§ 4.3).
+
+### 5.4a Sessions on the streaming surfaces (D19)
+
+`_session_user` (`apps/proxy/authorize.py:345-363`) gains one check. Once `get_user(http_request)` has returned an authenticated user, read `auth_settings` fresh (§ 5.1). If password login is disabled and `settings.PASSWORD_LOGIN_FORCE` is false, return `None`.
+
+The check sits **after** `get_user`, so a request with no session cookie, and a session with no logged-in user, run no extra query. The tune-path query ledger (`apps/proxy/tests/test_tune_path_query_ledger.py`) drives the authorize hop without a session, and stays green **unchanged**. That is evidence the anonymous path did not grow. `apps/proxy/authorize.py` is a Gate 2 module (`scripts/coverage_live_path.coveragerc:41`), and the Python floor allows no rise. So the new statements must be covered by the new tests, and the PR runs `scripts/coverage_live_path_isolated.sh` before pushing.
 - `PATCH users/me/` refuses `password` for a user whose `has_usable_password()` is false. This lands in **S2**, the same PR that first creates such users, so there is never a release in which an SSO-only user can give themselves a password. An SSO-only user cannot give themselves a password path that bypasses the IdP. An admin can still set a password for that user through `PATCH users/<id>/`, a deliberate local decision.
 
 ### 5.5 The lockout guard (D12)
@@ -446,6 +469,17 @@ The lock is taken whether password login is currently on or off. Each write firs
 - **Users page**: a user's linked identities with Unlink, and a "Link SSO account" action on the current user's own profile.
 - `data-testid`s are registered per ADR 0003 for every new surface the e2e project selects.
 
+### 5.8 Activating and deactivating users (D20, PR S0)
+
+- **API.** `UserSerializer` gains `is_active`, writable only through `UserViewSet`'s admin actions (`update`/`partial_update`, `IsAdmin`). `me` keeps dropping it, because it is not in `ALLOWED_FIELDS` (`apps/accounts/api_views.py:292`).
+- **Guards.** These run in `UserViewSet.perform_update` inside `transaction.atomic()`, with `select_for_update()` on every active `user_level >= 10` row, so two concurrent deactivations cannot each leave the other as "the last admin". A PATCH setting `is_active: false` answers 400 when:
+  - the target is the requesting user (`{"code": "cannot_deactivate_self"}`)
+  - the target is the last active admin (`{"code": "last_active_admin"}`)
+
+  Demoting the last active admin is not in this ruling's scope and is unchanged.
+- **UI.** `frontend/src/components/forms/User.jsx` gains an admin-only "Active" switch, hidden for the current user. `frontend/src/components/tables/UsersTable.jsx` gains an "Active" badge column. HTTP goes through `api.js` as usual.
+- **Break-glass.** The CLI one-liner in § 4.3 stays, for when no admin can sign in.
+
 ## 6. Out of scope (D15)
 
 - Xtream, M3U, EPG, HDHomeRun and stream credentials, and `xc_password` storage.
@@ -462,7 +496,10 @@ The lock is taken whether password login is currently on or off. Each write firs
 - **Success**: `log_system_event('login_success', user=<username>, client_ip=…, user_agent=…, method='oidc', provider=<slug>)`.
 - **Failure**: `login_failed`, with `user` set to `'sso'` (or the resolved username when one exists) and `reason` taken from the fixed vocabulary of § 3.3 plus `provider=<slug>`.
 - **Link and unlink**: `login_success`, with `method='oidc_link'` or `'oidc_unlink'` and `admin=<username>`.
-- **Settings changes**: this spec adds no event for provider or settings writes. A new event type is a scope decision for the owner (Q4).
+- **Configuration changes (D18)**: every provider create, update and delete, every `auth_settings` change (through `PATCH settings/` or the `password_login` command), and every link or unlink by an admin writes `log_system_event('auth_config_changed', user=<acting username, or 'cli'>, action=<provider_created|provider_updated|provider_deleted|auth_settings_updated>, provider=<slug or None>, fields=<sorted list of changed field names>)`.
+  - It is registered in `SystemEvent.EVENT_TYPES` (`core/models.py:816-839`) and in `SUPPORTED_EVENTS` (`apps/connect/models.py:3-22`), so Connect integrations can subscribe. Both are `choices`, so S1 ships a migration for `core` and one for `connect`.
+  - `fields` holds **names only**. `client_secret` can appear as a name, but no value of any field is ever in the payload, `public_base_url` included.
+  - The event is written from `transaction.on_commit`, so a write refused by the guard, or rolled back, leaves no event.
 
 No event payload and no **application** log line (Django's `logging`, any logger) ever carries `code`, `state`, `nonce`, `code_verifier`, the binding, an ID token, an access token, a refresh token, the client secret, a raw claim set or `sub`. Failure reasons name the check, never the value. The uWSGI, nginx and `runserver` (`django.server`) request logs are outside this guarantee, for the callback's `code` and `state` only. § 3.3 states that residual and why it is accepted.
 
@@ -487,7 +524,12 @@ No event payload and no **application** log line (Django's `logging`, any logger
 | T13 | Lockout | D12 guard, last-provider guard, break-glass | each guard reason individually yields 409; env force re-enables; command `--enable` re-enables live (S4) |
 | T14 | Guard bypass through the generic settings endpoint | refusal of `auth_settings` in `CoreSettingsViewSet`, every direction, before serializer validation (§ 5.1) | `core.tests.test_auth_settings_guard.AuthSettingsGenericEndpointTests`, each case asserting the exact body `{"code": "use_auth_settings_endpoint"}`, not just the status. On `/api/core/settings/`: `PATCH`, `PUT` and `DELETE` of the `auth_settings` row; `POST` with that key; `PATCH` renaming the `auth_settings` row to another key; `PATCH` renaming another row to `auth_settings`. All → 400, and the row is unchanged (S1) |
 | T15 | Client secret disclosure | write-only field, encrypted at rest, not in `CoreSettings` | GET list/detail never contains the secret or ciphertext; a Standard user's `GET /api/core/settings/` lacks it; DB column ≠ plaintext (S1) |
-| T16 | Credential logging | `CREDENTIAL_RE` extended with `client_secret`, `id_token`, `access_token`, `refresh_token`, `code_verifier` and `\bnonce\b`; `SENSITIVE_QUERY_KEYS` extended (§ 3.3); exceptions logged by class only; `error_description` never logged; request-log residual documented (§ 3.3) | `tests/test_credential_logging_guard.py` gains a case per name; `tests/test_redaction.py` gains `redact_url` cases for each new query key; with distinctive sentinel values for code, state, secret, ID token, tokens and `sub` (with `preferred_username` and `email` both absent from the ID token), capture by `assertLogs` on **each** configured logger, not the root alone. `apps`, `core.utils` and `apps.proxy` set `propagate: False` with handlers of their own (`dispatcharr/settings.py:584-604`), and `settings_test` inherits that (`dispatcharr/settings_test.py:22`). So the test enters `assertLogs(name, level="DEBUG")` for `apps`, `core`, `core.utils`, `django` and the root (`assertLogs` attaches its handler to, and lowers the level of, exactly the logger it names), over a happy callback, a token endpoint 500, a token endpoint connection error, and an IdP `error=access_denied&error_description=<sentinel>` finds no sentinel. Test: `apps.accounts.tests.test_oidc_logging.OidcLoggingTests.test_no_sentinel_in_any_logger`. Break-check S2(h) proves the capture sees the OIDC module's own logger (S2) |
+| T16 | Credential logging | `CREDENTIAL_RE` extended with `client_secret`, `id_token`, `access_token`, `refresh_token`, `code_verifier` and `\bnonce\b`; `SENSITIVE_QUERY_KEYS` extended (§ 3.3); exceptions logged by class only; `error_description` never logged; request-log residual documented (§ 3.3) | `tests/test_credential_logging_guard.py` gains a case per name; `tests/test_redaction.py` gains `redact_url` cases for each new query key; with distinctive sentinel values for code, state, secret, ID token, tokens and `sub` (with `preferred_username` and `email` both absent from the ID token), capture by a **recording handler on each configured logger**, not the root alone. `apps`, `core.utils` and `apps.proxy` set `propagate: False` with handlers of their own (`dispatcharr/settings.py:584-604`), and `settings_test` inherits that (`dispatcharr/settings_test.py:22`). So a test helper context manager does the following for each of `apps`, `core`, `core.utils`, `django` and the root:
+  - attaches a `logging.Handler` subclass that appends every formatted record to a list
+  - sets that logger's level to DEBUG
+  - on exit removes the handler and restores the original level, in `finally`
+
+  It is not `assertLogs`, which fails when a logger emits nothing, as `core.utils` may on a successful flow. An empty capture is a pass. Break-check S2(h) is what proves the OIDC module's own logger is actually observed. The test runs over a happy callback, a token endpoint 500, a token endpoint connection error, and an IdP `error=access_denied&error_description=<sentinel>` finds no sentinel. Test: `apps.accounts.tests.test_oidc_logging.OidcLoggingTests.test_no_sentinel_in_any_logger`. Break-check S2(h) proves the capture sees the OIDC module's own logger (S2) |
 | T17 | Secrets in SystemEvent and Connect payloads | § 7 field whitelist | after a success and each failure, every `SystemEvent.details` JSON is searched for the code, state, ID token, tokens, secret and `sub`, and none is present. One case has both `preferred_username` and `email` absent, and asserts that the created username matches `^sso-[0-9a-f]{8}$` (S2) |
 | T18 | Ambient session principal on streaming surfaces | D3: no `login()` | after a completed callback, the response sets no `sessionid` cookie and no session row holds `_auth_user_id` (S2) |
 | T19 | Token leakage via URL, and handoff replay | fragment handoff; `GETDEL` single use with a 60 s TTL; `no-store` (§ 3.3a) | the callback Location has `#code=`, never `?code=`; the exchange response shape is exactly `{access, refresh, next, intent}` with `Cache-Control: no-store` and the cookie deleted; a sequential second exchange → 400; **two concurrent exchanges** of one code (two threads, real Redis, barrier) → exactly one 200; an exchange after the TTL → 400 (S2) |
@@ -498,12 +540,37 @@ No event payload and no **application** log line (Django's `logging`, any logger
 | T24 | Partial writes on refusal or a lost race | mapping decided before any write; one transaction; savepoints told apart by constraint (§ 4.2) | an unmapped first login leaves the `User` and `OIDCIdentity` counts unchanged; two concurrent first logins for one `sub` (`TransactionTestCase`, two threads, barrier) yield one user and one identity; **forced losing branch**: before the attempt, a second connection commits the winner's `OIDCIdentity` for the same `(provider, iss, sub)`, with the identity insert patched to wait on a barrier until that commit lands. The attempt ends logged in as the winner's user, and the `User` count rises by exactly one (the winner's); a username collision with an unrelated user yields `name-2`, not a refusal (S2) |
 | T25 | Username edge cases | per-candidate truncation; `sso-<hex>` fallback (§ 4.2) | a 150-character `preferred_username` colliding with an existing user yields a 150-character `…-2`, not a DB length error; a `preferred_username` of only filtered-out characters yields `sso-<hex>` (S2) |
 | T26 | Concurrent linking of two local users to one identity | link-branch savepoint plus constraint-specific recovery (§ 4.2 step 4) | `ProvisioningAtomicityTests.test_concurrent_links_one_wins`: two `TransactionTestCase` threads, local users A and B, both linking the same `(provider, iss, sub)`, with the identity insert patched to wait on a `Barrier(2)`. One gets the handoff and the other `link_conflict`. The loser's `user_level` and identity count are unchanged (S2) |
+| T27 | Privilege retained after a local mapping change (D17) | refresh re-evaluation from stored claim values | `apps.accounts.tests.test_oidc_flow.RefreshReevaluationTests`: <br>• `test_mapping_change_demotes_on_refresh`: mapped Admin → mapping edited to Standard → refresh 200 and `user_level == 1` <br>• `test_mapping_removed_refuses_refresh`: no match → 401, level unchanged <br>• `test_refresh_never_promotes` <br>• `test_unchanged_version_reads_only_provider`: `assertNumQueries` on a refresh with an unchanged version is the password-refresh baseline plus exactly one provider read (S2) |
+| T28 | Pre-switch Django session authorizing streams (D19) | `_session_user` refuses while password login is off | `apps.proxy.tests.test_authorize_session_principal.SessionPrincipalPasswordOffTests`, with a client `force_login`'d before the switch, against `authorize_stream` on the catch-up surface, which requires a principal: <br>• password on → principal resolved <br>• off → `AuthorizeDenied(401)` <br>• off with `PASSWORD_LOGIN_FORCE` → resolved <br>The tune-path query ledger passes unchanged (S4) |
+| T29 | Secrets in audit events (D18) | names-only payload, `on_commit` | `apps.accounts.tests.test_oidc_audit.AuthConfigAuditTests`: <br>• creating and updating a provider with a sentinel secret, and changing `public_base_url` to a sentinel URL, writes `auth_config_changed` rows whose `details` JSON contains neither sentinel, with `fields` listing `client_secret` and `public_base_url` <br>• a guard-refused write (409) leaves no `auth_config_changed` row (S1; S4 for the guard case and the CLI's `user='cli'`) |
+| T30 | Deactivation control abuse (D20) | admin-only field, self and last-admin guards, row locks | `apps.accounts.tests.test_user_activation.UserActivationTests`: <br>• a Standard user's `PATCH users/<id>/ {is_active: false}` → 403 <br>• `PATCH users/me/ {is_active: false}` leaves the user active <br>• an admin deactivating themselves → 400 `cannot_deactivate_self` <br>• deactivating the last active admin → 400 `last_active_admin` <br>• a deactivated user's access token → 401 and refresh → 401 <br>• reactivation restores both <br>• two concurrent deactivations of the only two admins (barrier, as § 5.5) → exactly one succeeds (S0) |
 
 Out of the threat model: an admin who is already malicious (they can point a provider at their own IdP and map themselves to Admin, which they already are), and in-process plugins (unsandboxed by design, CLAUDE.md § Events and plugins).
 
 ## 9. PR breakdown
 
-Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from round one: security-adjacent), and lands with `Backend result` / `Frontend result` / `E2E result` green. Test labels: `apps.accounts.tests` (all backend here), `core.tests` (S1's `CoreSettings` refusal and the no-pending-migrations check), and `tests` (S2's credential-logging checker).
+Six PRs in order, S0 to S5. Each opens as a draft, gets a pinned review (`fable` from round one: security-adjacent), and lands with `Backend result` / `Frontend result` / `E2E result` green. Test labels: `apps.accounts.tests` (all backend here), `core.tests` (S1's `CoreSettings` refusal and the no-pending-migrations check), and `tests` (S2's credential-logging checker).
+
+### S0: Admin-only user activation control (D20)
+
+**Changes:** § 5.8: the `is_active` serializer field and guards, plus the `User.jsx` switch and `UsersTable.jsx` column. Independent of SSO, so it lands first, and the deactivation lever § 4.3 relies on exists before any SSO user does.
+
+**Tests:** T30. Vitest: `frontend/src/components/forms/__tests__/User.test.jsx` › `active switch hidden for the current user` and › `active switch sends is_active`.
+
+**Break-checks:**
+
+- (a) Drop the self check. `apps.accounts.tests.test_user_activation.UserActivationTests.test_admin_cannot_deactivate_self` reddens: it expects 400 `cannot_deactivate_self` and gets 200.
+- (b) Count admins without `select_for_update()`. `UserActivationTests.test_concurrent_last_admin_deactivations_one_wins` reddens, deterministically through the § 5.5 barrier wrapper: both 200, and no active admin remains, which the message names.
+- (c) Add `is_active` to `me`'s `ALLOWED_FIELDS`. `UserActivationTests.test_me_cannot_change_is_active` reddens on `is_active` false.
+
+**PR description draft:**
+
+> Adds an admin-only active/inactive control for users (SSO spec PR S0, ruling Q8): an `is_active`
+> field writable only by admins through `/api/accounts/users/<id>/`, guarded so an admin cannot
+> deactivate themselves or the last active admin, plus a switch in the user form and a column in
+> the Users table. A deactivated user's access and refresh tokens are refused. The CLI one-liner in
+> the spec stays as the break-glass path.
+> Tests: `apps.accounts.tests`, frontend vitest. Break-checks listed in the spec's S0 section.
 
 ### S1: Models, settings group and admin API (no login yet)
 
@@ -512,6 +579,7 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 - `OIDCProvider` and `OIDCIdentity` models plus migration.
 - A data migration seeding `auth_settings`, plus `AUTH_SETTINGS_KEY` and `CoreSettings.get_auth_settings()` beside the eight group keys at `core/models.py:227-234`.
 - The `CoreSettingsViewSet` refusal for that key, and the `CoreSettingsAdmin` restrictions (§ 5.1).
+- The `auth_config_changed` audit event (D18, § 7), with the `core` and `connect` choices migrations.
 - `apps/accounts/oidc/secrets.py` (HKDF + Fernet).
 - Serializers with the write-only secret and mapping validation.
 - Entra preset validation (tenant GUID, derived issuer).
@@ -520,7 +588,7 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 - `identities/` list and delete.
 - CLAUDE.md § State: "eight groups" becomes "nine", naming `auth_settings`. The `e2e/tests/guards/global-mutation.spec.ts` header lists the ninth group.
 
-**Tests:** model constraints; `issuer`, Entra tenant and `client_id` immutability with identities present, including changing an Entra `client_id` with a linked identity (400); `version` bumped by a mapping edit and not by a `display_name` edit; the unconditional `password_toggle_unavailable` refusal; T23; T12a's S1 half; delete-PROTECT; secret round-trip and the unreadable-after-key-change path; no secret in any response; T14, T15; Entra refusals (T9 part); mapping validation; the `test` action against an in-process `http.server` thread serving discovery and JWKS (no network).
+**Tests:** model constraints; `issuer`, Entra tenant and `client_id` immutability with identities present, including changing an Entra `client_id` with a linked identity (400); `version` bumped by a mapping edit and not by a `display_name` edit; T29 (S1 half); the unconditional `password_toggle_unavailable` refusal; T23; T12a's S1 half; delete-PROTECT; secret round-trip and the unreadable-after-key-change path; no secret in any response; T14, T15; Entra refusals (T9 part); mapping validation; the `test` action against an in-process `http.server` thread serving discovery and JWKS (no network).
 
 **Break-checks:**
 
@@ -528,6 +596,7 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 - (b) Check only the stored key in the `CoreSettingsViewSet` refusal, not the proposed one. `core.tests.test_auth_settings_guard.AuthSettingsGenericEndpointTests.test_rename_other_row_into_auth_settings_refused` reddens. The status is still 400, from the serializer's uniqueness error on `key`, but the body is that error rather than `{"code": "use_auth_settings_endpoint"}`, and the assertion on the body names the difference.
 - (c) Accept `organizations` as a tenant. `apps.accounts.tests.test_oidc_providers.EntraPresetTests.test_multi_tenant_aliases_refused` reddens: it expects 400 with `{"entra_tenant_id": ["must be a tenant GUID"]}` for each of `common`, `organizations` and `consumers`, and gets 201 for `organizations`.
 - (d) Drop `client_id` from the immutable-with-identities set. `apps.accounts.tests.test_oidc_providers.ProviderImmutabilityTests.test_client_id_change_refused_with_identities` reddens: it expects 400 and an unchanged `client_id` after a PATCH on an Entra provider with one linked identity, and gets 200.
+- (f) Put the new value of each changed field into the audit payload. `apps.accounts.tests.test_oidc_audit.AuthConfigAuditTests.test_audit_payload_names_fields_only` reddens: it finds the secret sentinel in `details`.
 - (e) Make `CoreSettingsAdmin.has_change_permission` return `True` for every row. `core.tests.test_auth_settings_guard.AuthSettingsDjangoAdminTests.test_change_form_post_leaves_row_unchanged` reddens: after the change-form POST, the row's `value` differs from its value before.
 
 **Hooks:** `apps/accounts/models.py` and `core/models.py` (`makemigrations --check`); `*.py` (credential logging); `apps/accounts/tests/test_*.py` and `core/tests/test_*.py`.
@@ -553,15 +622,16 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 - `apps/accounts/oidc/provisioning.py` (§ 4).
 - The `oidc` throttle scope at `settings.py:343-345`.
 - § 5.4's `me` password rule for users without a usable password (T12).
+- D17's refresh re-evaluation (§ 5.4), the `oidc_identity` claim, and `mapping_claim_values` on the identity.
 - The `auth_method`/`oidc_provider`/`oidc_provider_version`/`oidc_level`/`oidc_redirect` claims, the `providers/` public endpoint, and § 5.4's first rule (refresh of an OIDC token refused when its provider is disabled or deleted).
 - `SENSITIVE_QUERY_KEYS` extension (`dispatcharr/utils.py:63`), `Referrer-Policy`/`no-store` headers, and class-only exception logging (§ 3.3).
 - The `CREDENTIAL_RE` extension (`scripts/check_credential_logging.py:111-113`) and its tests.
 - § 7 events.
 
-**Tests:** T1-T3a, T4-T8, T9 (runtime part), T10, T11, T12 (S2 half), T16-T22, T24-T26, all against an in-process fake OP: a `http.server` thread plus RSA and EC keys generated with `cryptography` in `setUpClass`, issuing tokens with PyJWT. The suite also covers:
+**Tests:** T1-T3a, T4-T8, T9 (runtime part), T10, T11, T12 (S2 half), T16-T22, T24-T27, all against an in-process fake OP: a `http.server` thread plus RSA and EC keys generated with `cryptography` in `setUpClass`, issuing tokens with PyJWT. The suite also covers:
 
 - the happy path, end to end through the Django test client, including that the exchanged access token authenticates `GET /api/accounts/users/me/` **and** `_drf_user` in `apps/proxy/authorize.py` (the D2 claim that streaming needs nothing new);
-- that all five custom claims (`auth_method`, `oidc_provider`, `oidc_provider_version`, `oidc_level`, `oidc_redirect`) survive `POST token/refresh/`;
+- that all six custom claims (`auth_method`, `oidc_provider`, `oidc_provider_version`, `oidc_level`, `oidc_identity`, `oidc_redirect`) survive `POST token/refresh/`;
 - the concurrent JIT path and the username-collision path (T24).
 
 **Break-checks:**
@@ -573,6 +643,7 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 - (b4) Drop the Entra `tid` comparison. `apps.accounts.tests.test_oidc_flow.EntraRuntimeTests.test_configured_iss_other_tid_refused` reddens the same way.
 - (f) Move the JIT user insert **out of the transaction**, before the mapping is evaluated: a bare `User.objects.create(...)` ahead of step 1, outside `transaction.atomic()`. `apps.accounts.tests.test_oidc_provisioning.ProvisioningAtomicityTests.test_unmapped_first_login_writes_nothing` reddens on a `User` count of N+1. Merely reordering statements inside the atomic block would not leave a row after the refusal's rollback, which is why the break moves the insert outside it.
 - (f2) Move the user insert (and its username-retry loop) **out of the attempt savepoint**, so it runs directly in the outer transaction, just before the attempt savepoint. Keep the identity-conflict handler where it is, outside the attempt savepoint. Rolling the savepoint back now leaves the loser's user row in place, and the outer transaction commits it. T24's forced-losing-branch test, `ProvisioningAtomicityTests.test_losing_identity_insert_leaves_no_orphan_user`, reddens on its assertion that the `User` count rose by exactly one: it rose by two, and the extra row is the loser's `sso-…` or claim-derived user with no `OIDCIdentity`, which the assertion message names.
+- (i) Skip the recompute when the version differs, and just refresh. `apps.accounts.tests.test_oidc_flow.RefreshReevaluationTests.test_mapping_change_demotes_on_refresh` reddens: it expects `user_level == 1` and finds 10.
 - (h) Add `logger.debug("token response %s", token_json)` to the token-exchange step in `apps/accounts/oidc/flow.py`, whose logger is `apps.accounts.oidc.flow`. `OidcLoggingTests.test_no_sentinel_in_any_logger` reddens, naming the ID-token sentinel and the logger `apps.accounts.oidc.flow`. A root-only capture would have stayed green, because `apps` does not propagate.
 - (g) In the callback, skip the binding comparison (step 3) when the transaction's `intent` is `link`. `apps.accounts.tests.test_oidc_flow.LinkCsrfTests.test_forwarded_link_authorize_url_does_not_link` reddens, asserting `OIDCIdentity.objects.filter(user=attacker).exists()` is false and finding it true. That test uses two Django test clients: the attacker client calls `POST link/start` and receives `authorize_url` and its own binding cookie; the victim client, holding a different binding cookie from its own `GET start`, drives the fake OP and the callback with the attacker's `state`. The path is fully exercised. Break-check (a), which removes the comparison for every intent, is caught by T3 instead.
 - (c) Look up an existing user by email before JIT. `apps.accounts.tests.test_oidc_provisioning.EmailTakeoverTests.test_matching_email_creates_new_user` reddens: it asserts that the resolved user id differs from the existing admin's, and names the admin's id when it is equal.
@@ -632,6 +703,8 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 - § 5.3 enforcement in `TokenObtainPairView`, `TokenRefreshView`, the admin login wrapper and `UserViewSet.me`.
 - § 5.3's "refused for every user while password login is off" row for `me`. The `has_usable_password()` rule landed in S2.
 - The `admin.site.has_permission` wrap (§ 5.3).
+- The `_session_user` check (D19, § 5.4a), with the isolated Gate 2 coverage run.
+- The `password_login` command's `auth_config_changed` event, with `user='cli'`.
 - § 5.5's guard, proof, guarded provider writes and serialization. This replaces S1's unconditional `password_toggle_unavailable` refusal, so the toggle, its enforcement and the break-glass become usable in one merge.
 - Every gate reads `auth_settings` fresh (§ 5.1).
 - `PASSWORD_LOGIN_FORCE` read in settings.
@@ -641,7 +714,7 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 
 **Tests:**
 
-- every row of § 5.3; T12 (S4 half), T12a (S4 half), T13
+- every row of § 5.3; T12 (S4 half), T12a (S4 half), T13, T28, T29 (S4 half)
 - all nine § 5.5 tests, in `apps.accounts.tests.test_password_login_toggle.LockoutGuardTests`:
   - `test_stale_proof_refused`
   - `test_standard_at_issuance_promoted_later_refused`
@@ -666,7 +739,15 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 - (d2) Drop the `oidc_redirect` comparison from the proof check. `apps.accounts.tests.test_password_login_toggle.LockoutGuardTests.test_base_url_change_then_disable_refused` and `test_combined_patch_refused` redden the same way.
 - (d3) Drop the `oidc_level == 10` comparison from the proof check. `apps.accounts.tests.test_password_login_toggle.LockoutGuardTests.test_standard_at_issuance_promoted_later_refused` reddens the same way.
 - (e) Remove the `select_for_update()` on the `auth_settings` and provider rows. `apps.accounts.tests.test_password_login_toggle.LockoutGuardTests.test_concurrent_disables_one_wins` reddens with two 200s, deterministically, because of the barrier described in § 5.5.
-- (e2) Take the `auth_settings` lock only when the pre-lock read says password login is off. `apps.accounts.tests.test_password_login_toggle.LockoutGuardTests.test_disable_racing_provider_edit_serialized` reddens: both requests return 200, and the final state has password login off with Q disabled. The assertion message names that state.
+- (h) Remove the `_session_user` password-off check. `apps.proxy.tests.test_authorize_session_principal.SessionPrincipalPasswordOffTests.test_session_principal_refused_when_password_login_off` reddens: it expects `AuthorizeDenied` with status 401 and gets a resolved principal.
+- (h2) Put the check **before** `get_user`. `apps.proxy.tests.test_tune_path_query_ledger` reddens on an extra `core_coresettings` query keyed `auth_settings` in the authorize-hop ledger.
+- (e2) Decide whether the guard applies from a read made **before** any lock. When that read says password login is on, skip the **whole** lock-and-reload sequence, both the `auth_settings` lock and the provider-row locks, and write directly. `apps.accounts.tests.test_password_login_toggle.LockoutGuardTests.test_disable_racing_provider_edit_serialized` reddens:
+  - Thread B (disable Q) reads "on", takes no lock and waits at the barrier.
+  - Thread A (disable password, proof from Q) locks, reloads, finds Q enabled, passes the guard and waits at the barrier.
+  - Both pass. A commits. B's `UPDATE` on Q, which was blocked by A's row lock, then proceeds and commits.
+  - Both requests return 200.
+
+  The test asserts `not (auth_settings.password_login_enabled is False and Q.enabled is False)`, the forbidden state of password login off while the provider that proved the switch is disabled, and its message names that state. Making only the `auth_settings` lock conditional would not redden it, because the unconditional provider-row lock and reload would still serialize the two writes.
 
 **PR description draft:**
 
@@ -705,7 +786,7 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
   4. writes the pair to `playwright/.auth/sso-tokens.json` through `writeAuthFileAtomically` (`e2e/setup/auth-files.ts:81`, mode 0600)
 
   Each spec builds `new ApiClient(request, pair)` from that file (`e2e/fixtures/api.ts:60-83`; a client handed a pair never touches `tokens.json`). The browser half signs in through the SSO button, and a test that needs the SSO admin's own pair (the § 5.5 proof) reads it from the page's `localStorage` after sign-in.
-- **Password-request budget.** `POST /api/accounts/token/` allows 3 requests per minute per IP, and failed requests count too (`apps/accounts/api_views.py:58`; `e2e/README.md` § "The login throttle"). The whole `sso` run spends at most **3**: at most one in setup (cold only), plus the break-glass spec's two probes. No other `sso` spec sends a password. The project runs `workers: 1`, `fullyParallel: false`, and the break-glass spec runs last (`testMatch` order). A cold run therefore sits exactly on the cap, and a warm run spends 2.
+- **Password-request budget.** `POST /api/accounts/token/` allows 3 requests per minute per IP, and failed requests count too (`apps/accounts/api_views.py:58`; `e2e/README.md` § "The login throttle"). The whole `sso` run spends at most **3**: at most one in setup (cold only), plus the break-glass spec's two probes. No other `sso` spec sends a password. The project runs `workers: 1` and `fullyParallel: false`, so no two password requests overlap. **The specs are order-independent**, and nothing relies on execution order. The break-glass spec leaves password login on when it finishes (it ends with `--enable` and a successful login), and no other `sso` spec sends a password or depends on the toggle's state. A cold run therefore sits exactly on the cap, and a warm run spends 2, in any order.
 - **The negative probe is never retried.** The password-off `POST token/` probe is a raw `request.post` with no backoff helper, asserting `status() === 403` and `code === 'password_login_disabled'`, so a retry can never turn a real 200 into a pass. A 429 fails the test with a message naming the budget. The positive probe after break-glass goes through `loginWithThrottleBackoff`, so a budget overlap only waits. The project timeout allows one 60 s throttle window: 180 s, the streaming projects' order of magnitude.
 - **CI.** `.github/workflows/e2e-tests.yml:100` adds `"sso"` to the explicit `projects` list. Its job sets the four scoped-stack variables, `E2E_BASE_URL` and `E2E_OIDC_ALLOW_HTTP=1`. It runs on the same change-detector pattern (`e2e-tests.yml`'s `changes` job, which already includes `apps/`, `frontend/`, `e2e/` and `e2e-upstream/`), so `E2E result` requires it.
 - **Local development.** Because this PR changes `e2e-upstream/`, the implementer runs it with a **private provider** and a scoped stack, per `e2e/README.md:86-99`: `DISPATCHARR_E2E_UPSTREAM_CONTAINER`, `_PORT` and `_IMAGE`, plus `E2E_UPSTREAM_CONTROL_URL` and `E2E_UPSTREAM_INTERNAL_URL`. The PR description lists the exact exports used.
@@ -746,13 +827,17 @@ Five PRs in order. Each opens as a draft, gets a pinned review (`fable` from rou
 | Mino rename E1 | `DISPATCHARR_*` → `MINO_*` env alias | The two new env vars are born `MINO_*` and need no alias. |
 | Mino rename W1 | `X-Dispatcharr-*` headers | None used. |
 
-## Open questions for the owner
+## Recorded owner rulings on the open questions (2026-10-31)
 
-- **Q1.** On a mapping change, should SSO also **demote on refresh** rather than only at the next login? This spec re-evaluates at login only. The worst case is a 1-day refresh lifetime, and deactivating the local user is the immediate lever.
-- **Q2.** Should a provider's mapping also assign **Channel Profiles** (claim value → profiles)? This spec leaves JIT users unrestricted with no profiles, the same as a user created in the UI with none, and leaves profiles to admins.
-- **Q3.** Is **single-tenant-only** Entra acceptable? Guests invited into your tenant work; "any organisation" does not.
-- **Q4.** Should provider and settings changes write an audit `SystemEvent` (a new event type)? Not included.
-- **Q5.** **RP-initiated logout** is out (D15). Confirm, or ask for it as a follow-up.
-- **Q6.** Should **API keys** be disable-able alongside password login? This spec keeps them working, per the brief.
-- **Q8.** Should the Users page get an admin-only **`is_active` toggle**? Today deactivation, the immediate lever in § 4.3, is a documented CLI one-liner, because no UI or API exposes `is_active`.
-- **Q7.** Should switching password login off also stop `_session_user` honouring Django sessions on the streaming surfaces? Such sessions are created only by the Django admin site's password login. That login is reachable directly on `:5656` in dev and debug, and was reachable everywhere before password login was switched off. A session created before the switch keeps working on the streaming surfaces, wherever the admin site is reachable, until it expires. This spec cuts off the admin site itself (§ 5.3) but leaves the streaming-principal path in `apps/proxy/authorize.py` untouched, because changing it is a decision about the streaming surface, which the brief excludes.
+The owner answered "accept defaults except 8", with these specifics:
+
+| Q | Ruling | Where it is applied |
+|---|---|---|
+| Q1 | **Yes**: a mapping change also demotes on token refresh, only if that is cheap. No IdP call on refresh; re-evaluate from what the server already holds. | D17, § 5.4, § 4.3, T27, S2 |
+| Q2 | **No**: mappings do not assign Channel Profiles (later). | § 4.2 step 5 (JIT users get no profiles) |
+| Q3 | **Yes**: single-tenant Entra only. | D10, § 3.6, T9 |
+| Q4 | **Yes**: provider and auth-settings changes write an audit `SystemEvent`, with no secret in the payload. | D18, § 7, T29, S1, S4 |
+| Q5 | **Out**: RP-initiated and federated logout stay out of scope. | D15, § 6 |
+| Q6 | **Yes**: API keys keep working when password login is off. | § 5.3 |
+| Q7 | **Yes**: switching password login off also stops pre-existing Django sessions authorizing streams through `_session_user`. | D19, § 5.3, § 5.4a, T28, S4 |
+| Q8 | **In scope now**: an admin-only Users-page deactivate/activate control, with tests that a deactivated user's access and refresh are refused. The CLI one-liner stays as break-glass. | D20, § 5.8, § 4.3, T30, S0 |
