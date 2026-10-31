@@ -201,7 +201,7 @@ how the corpus is built without one).
 | **D7** | **Ordering control is two new columns on existing tables**: `Channel.stream_order_mode` (`auto` / `manual`, default `manual`) and `ChannelStream.pinned` (bool, default false). Under `auto`, pinned streams keep their relative admin order at the top, and every other stream is placed by D8. Under `manual`, nothing in this spec writes the channel's order. **An admin reorder of an `auto` channel switches it to `manual`.** A reorder is a request that changes the relative order of the streams kept on the channel. A **membership-only** edit (adding or removing streams, with the retained streams' relative order unchanged) keeps the mode. The response says when the mode flipped, and the UI shows the badge and a one-click "back to Auto". **Restoring a snapshot sets the channel to `manual`** under the same lock. | R3 says admin pins override everything. "Never destroy an admin's manual ordering silently" is met three ways. Every existing channel starts `manual`. A later drag is never overwritten, because it flips the channel visibly. A restore sticks. |
 | **D8** | **The ordering function, `rank_members(channel)`**, is shared by the reorder pass and by acceptance (§ Proposals). The sort key for unpinned streams is: (1) **effective tier**, best first: `UHD > FHD > HD > UNKNOWN > SD`; (2) **health band**: `good > fair > unknown > poor` (§ Reliability); (3) `backup` marker last; (4) `fps_hint` descending; (5) the stream's current `order` value, then its current position. Inactive accounts and stale streams sort last. | R4: tier, then reliability. `UNKNOWN` sits above `SD` and below `HD` because an unlabelled provider stream is more often 720p or 1080p than 576i (confirmed by R7). Key 5 is explicit rather than left to the stability of the sort. |
 | **D9** | **The relay's switch policy does not change.** The failover keeps "the next candidate after the current one, wrapping" (`order_alternates_from_current`). On a tier-sorted list that already walks down in quality, and it wraps back up to the top tier only once the lower ones are exhausted. **No climb-back** (returning to a higher tier while a lower one still plays) and **no same-tier-before-lower preference** for the streams *before* the current one in its own tier. Both are non-goals (§ Non-goals). | A switch-policy change is a live-path behaviour change. It needs a parity-matrix row and a pinned E2E, and the owner did not ask for one. The headline behaviour, best first and down in quality on failure, follows from the order alone. |
-| **D10** | **One lock order for everything that writes channel membership or order: member `Stream` rows first (`FOR KEY SHARE`, in id order), then catalog rows (identity, then proposal), then the `Channel` row (`FOR UPDATE`), then that channel's `ChannelStream` rows.** The writers that take the Channel lock are: the reorder pass, the serializer update (`apps/channels/serializers.py:700-729`), the bulk edit (`api_views.py:1460-1489`), acceptance, and snapshot restore. Each writer that inserts a `ChannelStream` row first key-share-locks the referenced streams. **The rehash merge takes no Channel lock.** It already holds `FOR UPDATE` on its batch of `Stream` rows (`core/tasks.py:561-568`, `skip_locked=True`, batches of 1,000), and updates the `ChannelStream` rows it moves in place, so it already follows the Stream-first order. Its one change is that a collision keeps `pinned = source.pinned or target.pinned` on the surviving row (`core/tasks.py:726-736`). | Round 3 found that putting a Channel lock inside rehash's Stream-locked batch inverts the order acceptance uses, and holds Channel locks for a whole batch. With Stream rows first everywhere, no writer waits on a Stream while holding a Channel or `ChannelStream` row that rehash needs. Rehash skips streams a writer has key-share-locked (`skip_locked`), and they are picked up on its next run. An order rehash leaves out of rank is corrected by the next reorder pass. |
+| **D10** | **One transaction-scoped Postgres advisory lock, `catalog_membership`, serialises every writer of channel membership, order or pins.** Each such writer runs `SELECT pg_advisory_xact_lock(<catalog_membership>)` as the first statement of its transaction. The lock blocks until it is free, and is released at commit or rollback. The writers are: the reorder pass (one transaction per channel); the serializer update, inside its existing atomic block (`apps/channels/serializers.py:663-729`); the bulk edit (`api_views.py:1460-1489`, wrapped in one atomic block); acceptance; snapshot restore; and **each rehash batch transaction** (`core/tasks.py:561`). Inside the lock, writers take the `Channel` row `FOR UPDATE` and re-read its rows before writing (D7's compare-and-set). The rehash merge keeps its own behaviour, plus one change: a collision keeps `pinned = source.pinned or target.pinned` on the surviving row (`core/tasks.py:726-736`). | Round 4 showed that row-lock ordering cannot be proved for rehash. It fetches duplicate partners outside its locked batch, unlocked (`core/tasks.py:603-618`, `:633-644`). And every `ChannelStream` save or delete fires a signal that updates the `Channel` row **after** the relationship write (`apps/channels/signals.py:392-406`). Under one global lock, all of that runs while no other lock-taking writer is mid-transaction, so no cycle can form among them. Auto sync and other writers outside the list hold no row lock across statements: `sync_auto_channels` has no enclosing transaction (`apps/m3u/tasks.py:2058-3070`), so a statement of theirs can wait but cannot complete a cycle. The cost is that a rehash batch of 1,000 streams delays channel edits until it commits. Rehash is a rare admin action that already refuses to run during refreshes (`core/tasks.py:491-518`). |
 | **D11** | **Reliability is counted per exposure, at ingest, deduplicated per event.** An **exposure** is a stream being started (`channel_start`) or switched in (`stream_switch`). A **failure** is a failover away from it or a connection failure on it, plus a quarter-weight for each buffering episode. A receiver on the `relay_event_applied` signal handles each relevant event in its own transaction. It first inserts a `RelayEventReceipt(relay_boot, seq)`, which is unique. **Only if the insert succeeds** does it decay and update the stream's two counters. Receipts are kept for 30 days. The band is computed when it is read. | Round 3 showed a high-water mark is unsafe: a batch whose HTTP attempts timed out can still be applied by Django **after** a later batch, so a watermark would discard it. A unique receipt per event is order-free. Exposure counting needs no playback segments, and R4 asks only for "observed health (recent failovers, buffering events, connect failures)". |
 | **D12** | **Everything is off until the owner turns it on, in two switches**, in a new settings group `catalog_settings`: `classify_enabled` (parse, tier, identities, review queue; it never writes a channel) and `auto_order_enabled` (D8 writes for `auto` channels). Turning `classify_enabled` on **backfills**: it dispatches classification for every active account, then one resolve. Turning `auto_order_enabled` on goes through a **preview** endpoint. The preview lists every channel whose order would change, and the owner picks which channels to set to `auto`. Before the first write, each chosen channel's prior order is saved in `ChannelOrderSnapshot`. | R3 asks for automatic reordering of existing channels. The no-silent-destruction rule asks for it to be visible and reversible. |
 | **D13** | **New channels and new members are proposals, never automatic, and the target channel is always explicit.** A `ChannelProposal` has `kind` `new_channel` (the identity has no bound channel) or `add_streams` (the identity has a bound channel that lacks some of its members). Several existing channels can belong to one identity: these **candidate channels** are computed and shown, never stored. **Binding the identity to one channel is an explicit admin act**, and changes no channel. Accepting `add_streams` **keeps the target's `stream_order_mode`**, unless the admin ticks "order this channel automatically". A channel created from `new_channel` starts `auto`, and is ranked by D8 **before acceptance commits**. Adult content is propagated conservatively (§ Proposals). | R3: propose new, admin accepts. Adding a stream to a channel changes what clients may receive, so it needs acceptance. Choosing among several candidates is a judgement about which channel the admin's clients use, and the spec must not make it. |
@@ -240,9 +240,14 @@ beside it, and no PR's migration references a table a later PR creates.**
 - **`IdentityMember`**: `stream` (OneToOne, CASCADE), `identity` (FK, CASCADE), `how` (`decided` / `auto_tvg` /
   `auto_key`). Each resolve run rewrites it. A stream with no row is unplaced, and the API gives the reason:
   `conflict`, `unknown_region`, `empty_key`, `excluded`, `ambiguous_key`, `fuzzy_pending` or `review`.
-- **`IdentityMatch`**, the review queue: `stream` (FK), `identity` (FK, null), `source` (`fuzzy` /
-  `region_conflict` / `unknown_region` / `same_key`), `score` (0-100), `suggested_region`, `state` (`open` /
-  `accepted` / `rejected`), `created_at`; `unique(stream, identity, source)`.
+- **`IdentityMatch`**, the review queue: `stream` (FK), `identity` (FK, null), `related_key` (char, null; the
+  near-matching key when no identity holds it), `source` (`fuzzy` / `region_conflict` / `unknown_region` /
+  `same_key`), `score` (0-100), `suggested_region`, `state` (`open` / `accepted` / `rejected`), `created_at`.
+  Each resolve pass rewrites a stream's open machine-generated rows (it deletes them and inserts afresh), so no
+  unique constraint over nullable columns is needed.
+- **`FuzzyBlockResult`**: `region`, `variant`, `first_token`, `signature` (sha1 of the block's sorted key set),
+  `near_keys` (JSON list of the block's keys that have a near match), `checked_at`;
+  `unique(region, variant, first_token)`.
 - **`StreamAssignment`** (`stream_key` **unique**, `account`, `kind` `assign`/`exclude`, and `identity`, which
   a check constraint requires when `kind = assign`), **`StreamRegionPin`** (`stream_key` **unique**, `account`,
   `region`) and **`PairRejection`** (`unique(stream_key, identity)`). Each records `decided_by` and
@@ -252,8 +257,7 @@ beside it, and no PR's migration references a table a later PR creates.**
 - **`ChannelProposal`**: `identity` (FK), `kind`, `channel` (FK, null), `stream_ids` (JSON list),
   `members_hash`, `revision`, `state` (`open` / `accepted` / `dismissed` / `withdrawn`), `created_at`,
   `decided_at`, `decided_by`. A partial unique index allows at most one `open` row per `(identity, kind)`.
-- **`CatalogResolveState`**, a single row: `requested` (bigint), `completed` (bigint), `fuzzy_cursor` (int),
-  `last_run_at`.
+- **`CatalogResolveState`**, a single row: `requested` (bigint), `completed` (bigint), `last_run_at`.
 
 **S5**
 
@@ -267,9 +271,10 @@ beside it, and no PR's migration references a table a later PR creates.**
 
 **S6**
 
-- `Channel.stream_order_mode` (char(8), default `"manual"`) and `ChannelStream.pinned` (bool, default `False`), in
+- `Channel.stream_order_mode` (char(8), default `"manual"`), `Channel.sync_detached` (bool, default `False`;
+  § Proposals, Detach) and `ChannelStream.pinned` (bool, default `False`), in
   `apps/channels/migrations/0040_*`. The tip at the base is `0039_channel_hls_output_profile.py`, and the plan
-  re-checks the number at its seed. Both columns have defaults, so the migration needs no data pass.
+  re-checks the number at its seed. All three columns have defaults, so the migration needs no data pass.
 - **`ChannelOrderSnapshot`**: `channel` (FK, CASCADE), `stream_ids`, `pinned_ids`, `reason` (`enable_auto` /
   `accept_proposal`), `created_at`. The last five per channel are kept.
 
@@ -423,9 +428,10 @@ A pass that lost its session fails its final transaction, so `completed` does no
 from current inputs, so a partial pass leaves nothing a later pass cannot overwrite. A crash leaves
 `requested > completed`, and the next trigger or the backstop finishes the work.
 
-**Identity anchors.** Membership is a pure function of the current classifications and decisions, so a reversed
-or incremental build gives the same result as a clean rebuild. An identity's natural key is
-`(anchor, region, variant)`:
+**Identity anchors.** Membership is a pure function of the current classifications and decisions **at
+quiescence**, meaning once no fuzzy block awaits a re-check (pass 4). A reversed or incremental build then gives
+the same result as a clean rebuild. Existing identity rows never influence which streams are eligible; they are
+found by their anchor and reused. An identity's natural key is `(anchor, region, variant)`:
 
 - **`tvg:<tvg_id>`**, with the tvg_id case-folded, for streams that have a tvg_id. Streams sharing a tvg_id, a
   known region and a variant are one identity, **whatever their names** (R2: match on tvg_id).
@@ -448,24 +454,41 @@ conflict, its variant is in conflict, or its key is empty.
 2. **tvg anchors.** Every stream with a tvg_id joins `(tvg:<id>, region, variant)` (`auto_tvg`). The same
    tvg_id under a different region or variant is a separate identity, and both sides get an
    `IdentityMatch(source=region_conflict)`.
-3. **Key anchors.** A stream without a tvg_id joins the single `tvg:` identity holding its key, if there is
-   exactly one. If there are several, it stays unplaced (`ambiguous_key`), with an `IdentityMatch(source=same_key)`
-   against each. Otherwise it joins `(key:<k>, region, variant)` (`auto_key`) **only if pass 4 has checked it**
-   (below).
-4. **Fuzzy, blocked and budgeted.** This pass only produces suggestions. Every stream that pass 3 would place
-   under a **new** `key:` identity (that is, its key matches no existing identity) is first compared within its
-   block: identities with the same region, variant and first key token. The scorer is `rapidfuzz`
-   `token_sort_ratio` at `fuzzy_threshold` (default 90).
-   - **Checked, with no candidate**: the stream is placed under its new `key:` identity.
-   - **Checked, with candidates**: the stream stays unplaced (`review`), and each candidate becomes an
-     `IdentityMatch(source=fuzzy)`.
-   - **Not checked**, because the budget (`fuzzy_max_comparisons`, default 5,000,000) ran out: the stream stays
-     unplaced (`fuzzy_pending`). The cursor is saved and `requested` is incremented, so a later pass resumes.
+3. **Key groups.** Group the remaining streams that have no tvg_id by `(canonical_key, region, variant)`.
+   - A group whose key is held by **exactly one** `tvg:` identity of the same region and variant joins it
+     (`auto_key`).
+   - A group whose key is held by several such identities stays unplaced (`ambiguous_key`), with an
+     `IdentityMatch(source=same_key)` against each.
+   - Every other group is a **candidate key group**.
+4. **Fuzzy eligibility, order-independent and budgeted.** Blocks are `(region, variant, first key token)`. A
+   block's **comparison set** is the keys of every candidate key group plus the member keys of every `tvg:`
+   identity in that block. It is built from current streams only: undecided ones, and never existing identity
+   rows.
+   - **Computing a block.** One `rapidfuzz` `process.cdist` with `token_sort_ratio` at `fuzzy_threshold`
+     (default 90) over the set gives `near_keys`: every key that near-matches **any other** key in the set. The
+     result is stored in `FuzzyBlockResult` with the set's signature.
+   - **Re-checking.** A block is recomputed only when its signature changes. Changed blocks are taken in
+     signature order until the pass's budget (`fuzzy_max_comparisons`, default 5,000,000) is spent. If any
+     changed block is left, `requested` is incremented, so the next pass continues.
+   - **Oversized blocks.** A block over 2,000 keys is split by the second key token. One still over that has
+     every key put in `near_keys` (review).
+   - **Placing a candidate key group.** It depends on its block's result:
+     - **Current result, key not in `near_keys`**: its streams join `(key:<k>, region, variant)` (`auto_key`).
+       The row is created if missing, and reused by anchor if present.
+     - **Current result, key in `near_keys`**: its streams stay unplaced (`review`), until an admin decides. Each
+       gets an `IdentityMatch(source=fuzzy)` against the identity holding each near key, or `related_key` when
+       no identity holds it. This applies **both ways**: `sky arts` and `sky art` both go to review, whichever
+       arrived first.
+     - **No current result** (its block changed and awaits a re-check): its streams stay unplaced
+       (`fuzzy_pending`), even if they were placed before.
 
-   **Fuzzy never binds, and only a checked stream may create an identity.** Two streams with the same key in
-   one run share the check, because the first one checked creates the identity the second then joins. A block
-   over 2,000 identities is split by the second key token. One still over that is skipped, and its stream stays
-   `review`.
+   **Fuzzy never binds.** Eligibility depends only on the current comparison set, never on arrival order or on
+   which identities already exist. A new near-match therefore also moves the earlier group's streams to review.
+   Their identity row keeps any binding or decision, and is kept while referenced (§ Deletion). The admin
+   resolves the pair by assigning one side's streams (to an existing identity, or to a new one through **New
+   identity**) or by excluding them. A pair rejection only hides a suggestion and does not make a group eligible.
+   **Decided streams leave the comparison set**, so once one side is decided the other side's group becomes
+   eligible again.
 5. **Same key across tvg identities.** When two `tvg:` identities in the same region and variant share a member
    key, each of their streams gets an `IdentityMatch(source=same_key)` against the other identity. This is a
    suggestion, never a merge.
@@ -480,17 +503,18 @@ rejection, EPG pin or bound channel. The decision FKs are `PROTECT`, which enfor
 identity is kept and shown as empty. Its anchor is stable, so when the stream comes back (same stream key, same
 tvg_id or key) it rejoins the same row, and the decision still applies.
 
-S4 measures one pass over a synthetic three-account, 300k-stream corpus and records the result.
+S4 measures one pass over a synthetic three-account, 300k-stream corpus, both cold (every block computed) and
+warm (unchanged signatures), and records both.
 
 ## Proposals (S4 computes, S6 accepts)
 
-**Lock order** (D10): member `Stream` rows (`FOR KEY SHARE`, id order), then `ContentIdentity`, then
-`ChannelProposal`, then `Channel`, then its `ChannelStream` rows. Every one of these operations follows it:
+**Lock order.** The `catalog_membership` advisory lock (D10, taken only by operations that write membership,
+order or pins), then `ContentIdentity`, then `ChannelProposal`, then `Channel`. Every operation takes a prefix of
+this order, which rules out a cycle:
 
-- bind and unbind;
-- the resolver's proposal step;
-- accept;
-- dismiss.
+- accept and restore take all of it;
+- bind, unbind, dismiss and the resolver's proposal step take only the identity and proposal locks, because they
+  write no membership.
 
 **Recompute** (resolver step 8, per identity, holding that identity's lock):
 
@@ -509,7 +533,7 @@ same transaction.
 
 **Accept** (`POST proposals/{id}/accept`, S6, body `{revision, options}`) runs as one transaction:
 
-1. Take the locks in D10's order.
+1. Take the locks in the order above.
 2. Require `state = open` and a matching `revision`. Otherwise answer 409 with the current revision.
 3. Check the binding. For `add_streams`, require that `identity.channel` is still the proposal's channel. For
    `new_channel`, require that the identity is still unbound. Otherwise answer 409.
@@ -533,8 +557,31 @@ competing accept, bind or unbind waits on the identity lock, then fails at step 
 **EPG on accepted channels.** The catalog writes `epg_data` only on a channel with `auto_created = False`, and
 only when the identity's `epg_state` is `bound` or `pinned`. Auto sync rewrites `epg_data` on every channel it
 manages (`apps/m3u/tasks.py:2693-2702`), so on an auto-created target the catalog leaves EPG to sync, and the
-dialog says so. "Detach from auto-sync" is **ticked by default** (R7). The admin can untick it. If it stays ticked, the channel becomes
-catalog-managed and gets the identity's EPG in the same transaction.
+dialog says so.
+
+**Detach** ("Detach from auto-sync", **ticked by default** under R7, and the admin can untick it). It runs inside
+the accept transaction, after the locks, as one atomic step:
+
+1. **Fold the override.** For each field in `OVERRIDABLE_FIELDS` (`apps/channels/managers.py:16-25`) whose
+   `ChannelOverride` value is non-null, write that value to the channel's own column. Effective values resolve
+   override-first (`with_effective_values`, `:28-55`; `Channel._resolve_effective_fk`,
+   `apps/channels/models.py:460-486`). Folding therefore leaves every effective value, and so every output
+   (M3U, EPG, XC, HDHR), unchanged.
+2. **Retire the override row** (delete it). Nothing customised is lost, because step 1 moved it. The manual-channel
+   rule that rejects override edits (`apps/channels/serializers.py:644-659`) and the form that hides override
+   controls on manual channels (`frontend/src/components/forms/Channel.jsx:1319-1333`) then describe the channel
+   correctly: it has no override, and its own columns hold the values.
+3. **Mark it detached**: `auto_created = False`, `sync_detached = True`. Orphan cleanup only considers
+   `auto_created = True` channels (`apps/m3u/tasks.py:3018-3037`), so the channel survives its origin provider
+   dropping the stream. **One guard in auto sync** stops the next refresh creating a duplicate. Sync maps streams
+   only to auto-created channels (`:2293-2306`) and creates a channel for any stream with no entry
+   (`:2651-2655`). The guard makes it skip creating a channel for a stream already on a `sync_detached` channel.
+   This is the only change to sync in this spec.
+4. **EPG.** If the folded override had set `epg_data`, that is the admin's choice. The channel keeps it, the
+   catalog writes no EPG to this channel, and the dialog says the override's EPG was kept. Otherwise the
+   catalog writes the identity's EPG when `epg_state` is `bound` or `pinned`.
+
+Unticked, the channel stays auto-created and sync keeps managing it, EPG included.
 
 ## Reliability (S5)
 
@@ -617,7 +664,8 @@ Mantine 8 only. State goes in a new Zustand store, `frontend/src/store/catalog.j
     - group, number and Channel Profiles;
     - "order this channel automatically" (D13);
     - the adult-content choice when it applies;
-    - for an auto-created target, the detach option (ticked by default, R7) and its EPG note.
+    - for an auto-created target, the detach option (ticked by default, R7). The dialog lists the override values it
+      will fold into the channel, and says when an override's EPG will be kept.
 
     The tab also has **Dismiss** and **bulk accept** (each proposal is accepted on its own).
   - *Review*: open `IdentityMatch` rows, grouped by stream, each with a source badge. Actions: Assign, Reject
@@ -663,10 +711,11 @@ drf-spectacular schema, and is `IsAdmin` with no opt-down.
   channel to `manual`, and a membership-only edit keeps the mode.
 - **Auto channel sync.**
   - Sync's channels appear as candidates, and the admin binds one or none.
-  - Sync never sees `stream_order_mode` or `pinned`.
+  - Sync never sees `stream_order_mode` or `pinned`. Its one change is the detach guard (§ Proposals), so it
+    never re-creates a channel for a stream on a `sync_detached` channel.
   - The catalog never writes `epg_data` on an auto-created channel.
-- **Stream rehash and merge.** D10: rehash keeps its Stream-first locking and carries pins on the rows it
-  already writes. Decisions survive because they are keyed per D5.
+- **Stream rehash and merge.** D10: each rehash batch transaction takes the `catalog_membership` lock first,
+  and the merge carries pins on the rows it already writes. Decisions survive because they are keyed per D5.
 - **Stale and deleted streams.** Stale streams sort last (D8). Deleted streams cascade out of every
   stream-keyed catalog table. Identities follow the deletion rule.
 
@@ -742,15 +791,21 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   - A referenced empty identity is not deleted.
 - **Fuzzy.**
   - Fuzzy never binds.
-  - **A near-match deferred by the budget stays `fuzzy_pending`**, and creates no identity, until a later pass
-    checks it.
-  - A checked stream with no candidate creates its identity.
+  - **Arrival order.** Use two GB no-tvg streams, `UK: Sky Arts HD` and `UK: Sky Art HD`. Arts then Art, Art then
+    Arts, and both together each end with both groups in `review` and identical `IdentityMatch` rows.
+  - **Intervening binding.** Arts arrives alone, gets `key:sky arts`, and an admin binds it to a channel. Art then
+    arrives. Both groups go to review, and the identity is kept, empty and still bound. The admin assigns the Art
+    stream to `key:sky arts`, and the Arts group rejoins it. The final state equals a clean rebuild with the same
+    decision.
+  - **Deferred check.** A near-match in a block left unchecked by the budget stays `fuzzy_pending` and creates no
+    identity until its block is re-checked.
+  - **Signatures.** A block whose signature is unchanged is not recomputed.
 - **Locks** (Postgres-only, two connections):
   - a second resolver returns;
   - terminating the holder's connection mid-pass leaves `completed` unchanged;
   - a request made during the final pass, or after unlock but before the post-unlock check, produces exactly one
     further pass;
-  - the fuzzy cursor resumes.
+  - an exhausted budget is resumed by the next pass.
 - **EPG.**
   - GB- and NZ-region sources with the same tvg_id bind each identity to its own row.
   - Unknown-region rows from several sources give `ambiguous`.
@@ -774,13 +829,25 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   - A concurrent reorder and `PATCH`: the `PATCH` wins.
 - **Rehash.**
   - A pin only on the source row, or only on the target row, survives.
-  - **Rehash against acceptance, concurrently on a shared stream**: both complete with no deadlock (the test
-    fails on `DeadlockDetected`). The streams rehash skipped are merged on its next run.
+  - **Rehash against acceptance, with real signals and an out-of-batch partner.** Acceptance on channel C pauses
+    at a test hook after it has locked C. Rehash runs a batch containing a stream whose duplicate partner lies
+    outside the batch and has a `ChannelStream` row on C, with the `ChannelStream` signals enabled. The test
+    asserts that rehash's merge does not start until acceptance commits, that both finish, that the partner's
+    pin and C's catch-up rollup are correct, and that no `DeadlockDetected` is raised.
 - **Accept.**
   - A stale revision is refused.
   - A deleted member is dropped.
   - A second accept is refused.
   - A `manual` target keeps its mode.
+- **Detach** (on an auto-created target that has a `ChannelOverride` setting the name, number, logo and
+  `epg_data`).
+  - The effective values (`with_effective_values`) and the channel's generated M3U and XMLTV entries are
+    identical before and after acceptance.
+  - The override row is gone, and the override's EPG is kept: the catalog writes none.
+  - An ordinary `PATCH` of the name then succeeds, and a non-empty `override` `PATCH` is refused, as on any
+    manual channel.
+  - A following `sync_auto_channels` run creates no new channel for the origin stream and deletes nothing.
+  - Unticked, the channel stays auto-created and the catalog writes no EPG.
 - **First tune after acceptance.** Members are presented worst tier first. `get_stream()` immediately after the
   accept commits returns the best-tier stream.
 - **Adult content.** A new channel with one adult member is adult. Through `authorize_stream`
@@ -997,7 +1064,8 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 **Changes.**
 
 - The S4 models.
-- `resolve_identities`, with its advisory lock, durable counter, anchors and checked-only identity creation.
+- `resolve_identities`, with its advisory lock, durable counter, anchors and order-independent fuzzy
+  eligibility (`FuzzyBlockResult`).
 - EPG binding and pins.
 - Proposal computation.
 - The endpoints.
@@ -1007,7 +1075,9 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 
 **Break-checks.**
 
-- Let a budget-deferred stream create an identity. The `fuzzy_pending` test reddens.
+- Let a budget-deferred stream create an identity. The deferred-check test reddens.
+- Let a group whose `key:` identity already exists skip the eligibility check. The arrival-order test reddens,
+  with Arts placed in one order and in review in the other.
 - Use the first-seen name as `display_name`. The reversed-order determinism test reddens.
 - Make the decision FKs `CASCADE`. The disappear-and-return test reddens.
 - Advance `completed` without the ownership check. The killed-connection test reddens.
@@ -1049,7 +1119,9 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 
 - The `0040` migration and `ChannelOrderSnapshot`.
 - `rank_members` and `reorder_channels`.
-- D10's lock order on every listed writer, and the pin carry in the rehash merge.
+- D10's `catalog_membership` lock on every listed writer, including each rehash batch transaction, and the pin
+  carry in the rehash merge.
+- Detach (§ Proposals): fold the override, retire it, `sync_detached`, and the sync guard.
 - D7's flip to `manual`.
 - The auto-order preview and enable endpoints.
 - Restore.
@@ -1059,7 +1131,10 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 **Break-checks.**
 
 - Replace key 5 with the stream id. The non-id tie test reddens.
-- Take a Channel lock inside the rehash batch. The rehash-versus-accept test reddens with `DeadlockDetected`.
+- Drop the `catalog_membership` lock from the rehash batch transaction. The rehash-against-acceptance test
+  reddens: the merge starts while acceptance is paused.
+- Delete the override without folding it. The detach effective-output test reddens.
+- Drop the sync guard. The detach no-duplicate test reddens.
 - Skip the pre-commit ranking. The first-tune test reddens.
 - Create the channel non-adult. The `authorize_stream` adult test reddens.
 - Let accept set `auto` unconditionally. The manual-target test reddens.
@@ -1069,9 +1144,10 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 > Orders each `auto` channel's streams best quality tier first, then by reliability band, with admin pins on
 > top, so the relay's existing failover walks down in quality. Every channel starts `manual`; enabling goes
 > through a preview with snapshots; a reorder flips an `auto` channel to `manual` visibly and a restore
-> sticks. All membership and order writers follow one Stream-first lock order. Accepting a proposal is
+> sticks. All membership and order writers, rehash batches included, serialise on one advisory lock. Accepting a proposal is
 > revision-checked, ranks an Auto channel before it commits, propagates adult status and asks before adding
-> adult streams to a non-adult channel. The relay is unchanged. Spec PR S6.
+> adult streams to a non-adult channel; detaching folds any override into the channel so nothing visible
+> changes, and a one-line sync guard stops a duplicate. The relay is unchanged. Spec PR S6.
 
 ### S7 — the Lineup page and the channel streams table
 
@@ -1119,7 +1195,8 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - **No ranking by bitrate, codec or measured fps** (R7). A bitrate tiebreak within a tier is a possible later
   follow-up.
 - **No channel preemption.**
-- **No change to auto channel sync** or to any authorization filter.
+- **No change to auto channel sync**, except the one detach guard (§ Proposals). **No change** to any
+  authorization filter.
 - **No VOD or catch-up classification.**
 - **No playback-time weighting in health** (D11).
 
@@ -1200,3 +1277,11 @@ R1's "overridden by measured `Stream.stream_stats`" is met by `MeasuredResolutio
   - **Health**: an explicit 0.25 evidence threshold, with single-exposure behaviour pinned (finding 13).
 - 2026-10-31: owner ruling R7 resolved Q1, Q2, Q3, Q5 and Q6 to their defaults. Q1 filed as #619 (planned in
   PR S1b). Q6 filed as #620 (out of scope). § Open questions became § Resolved questions.
+- 2026-10-31: review round 4 (FAIL, 0 blocking, 3 should-fix).
+  - **Fuzzy eligibility** is now order-independent: computed per block over the current key groups, never existing
+    rows, and cached by block signature (finding 1).
+  - **One transaction-scoped advisory lock** serialises every membership writer, including each rehash batch,
+    with its out-of-batch partners and signal writes (finding 2).
+  - **Detach folds any override into the channel**, retires it, and keeps an override's EPG. A one-line sync guard
+    found while verifying finding 3 stops the next refresh creating a duplicate channel for the detached stream
+    (finding 3).
