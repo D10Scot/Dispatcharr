@@ -39,6 +39,7 @@ func (s connectionSource) Run(ctx context.Context, sink io.Writer) error {
 // chunk the new connection published, with the previous connection's
 // pending packets published whole before it.
 func TestEveryConnectionAttemptRecordsASourceBoundary(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 	runs := &int32Counter{}
@@ -77,6 +78,7 @@ func TestEveryConnectionAttemptRecordsASourceBoundary(t *testing.T) {
 // An attempt that published nothing leaves the next attempt's boundary at the
 // same index, recorded once; and the record keeps the newest maxBoundaries.
 func TestTheBoundaryRecordIsStrictlyIncreasingAndBounded(t *testing.T) {
+	t.Parallel()
 	c := &Channel{ring: buffer.New(buffer.Config{BudgetBytes: buffer.TSPacketSize * 400, ChunkBytes: buffer.TSPacketSize * 4})}
 	c.markBoundary()
 	c.markBoundary()

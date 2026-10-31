@@ -76,6 +76,7 @@ func (c *sourceCounter) snapshot() (running, started int) {
 // connection with no map entry and nothing that would ever stop it, and a
 // first client whose release tore down the other client's channel.
 func TestConcurrentFirstClientsStartExactlyOneSource(t *testing.T) {
+	t.Parallel()
 	const clients = 8
 	const rounds = 400
 

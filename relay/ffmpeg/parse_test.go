@@ -30,6 +30,7 @@ var directDispatch = map[string]bool{
 }
 
 func TestCanParseAndParseAgreeWithThePythonParsers(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		tool Tool
@@ -235,6 +236,7 @@ func TestCanParseAndParseAgreeWithThePythonParsers(t *testing.T) {
 // auto-detection. A port that took the basename would route a line
 // differently from Python for every profile whose command is a path.
 func TestToolForMatchesTheWholeCommandNotItsBasename(t *testing.T) {
+	t.Parallel()
 	for cmd, want := range map[string]Tool{"ffmpeg": ToolFFmpeg, "FFmpeg": ToolFFmpeg, "cvlc": ToolVLC, "vlc": ToolVLC, "streamlink": ToolStreamlink} {
 		if got, ok := ToolFor(cmd); !ok || got != want {
 			t.Errorf("ToolFor(%q) = %q, %v; want %q", cmd, got, ok, want)
@@ -253,6 +255,7 @@ func TestToolForMatchesTheWholeCommandNotItsBasename(t *testing.T) {
 // auto_parse never surfaces it -- which is why the socket-closing branch in
 // input/manager.py is reachable only when the command is literally vlc.
 func TestAutoParseFollowsTheFactoryOrderAndNeverReportsAVLCInputFailure(t *testing.T) {
+	t.Parallel()
 	kind, info, ok := AutoParse("  Stream #0:0: Video: h264, yuv420p, 320x180, 25 fps")
 	if !ok || kind != KindVideo || info.VideoCodec == nil || *info.VideoCodec != "h264" {
 		t.Fatalf("AutoParse(ffmpeg video) = %q, %s, %v", kind, describe(info), ok)
@@ -282,6 +285,7 @@ func TestAutoParseFollowsTheFactoryOrderAndNeverReportsAVLCInputFailure(t *testi
 // the stream info Python's status endpoint would carry for this capture.
 // Read from the same fixture the Python tests read, never from a copy.
 func TestTheCorpusPreambleParsesAsPythonStoresIt(t *testing.T) {
+	t.Parallel()
 	preamble, _ := relaytest.SplitCorpus(relaytest.Corpus("normal"))
 	var merged Info
 	parsed := 0

@@ -20,6 +20,7 @@ var (
 // and reported the mantissa, a roughly thousandfold under-report on both
 // status surfaces. Reddens if the character class is narrowed back.
 func TestAScientificNotationSpeedIsReadWithItsExponent(t *testing.T) {
+	t.Parallel()
 	_, records := relaytest.SplitCorpus(relaytest.Corpus("truncation"))
 	if len(records) != 1 {
 		t.Fatalf("the truncation capture carries %d records, want exactly 1 (CAPTURE.md)", len(records))
@@ -46,6 +47,7 @@ func TestAScientificNotationSpeedIsReadWithItsExponent(t *testing.T) {
 // ever recorded. Every record of the real 6.1.1 capture is now a progress
 // record, and every one whose speed is a number yields it.
 func TestAnFFmpeg6StreamCopyRecordIsAProgressRecord(t *testing.T) {
+	t.Parallel()
 	_, records := relaytest.SplitCorpus(relaytest.Corpus("ffmpeg6-normal"))
 	if len(records) < 3 {
 		t.Fatalf("the ffmpeg6-normal capture carries %d records; re-derive (CAPTURE.md)", len(records))
@@ -72,6 +74,7 @@ func TestAnFFmpeg6StreamCopyRecordIsAProgressRecord(t *testing.T) {
 // wrong, against the parser: the space-padded speed, the Lsize= final record,
 // the elapsed= trailer, plus the unit scaling and the actual-fps derivation.
 func TestParseProgressReadsTheRealRecordShapes(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name         string
 		line         string
@@ -118,6 +121,7 @@ func TestParseProgressReadsTheRealRecordShapes(t *testing.T) {
 // `[0-9.]+` captures from a corrupted record; a partial parse would feed the
 // buffering detector a speed Python never saw.
 func TestAnUnparseableNumberDropsTheWholeRecord(t *testing.T) {
+	t.Parallel()
 	if p, ok := ParseProgress("frame=1 fps=25 q=-1.0 bitrate= 500kbits/s speed=1.2.3x"); ok {
 		t.Fatalf("a record with speed=1.2.3x parsed as %+v; Python drops the line", p)
 	}
@@ -142,6 +146,7 @@ func TestAnUnparseableNumberDropsTheWholeRecord(t *testing.T) {
 // 1.00049999... and rounds DOWN, where 0.0005 is 0.00050000000000000001 and
 // rounds UP. A naive math.Round(x*1000)/1000 gets 1.0005 wrong.
 func TestRoundMatchesPythonsRound(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		x      float64
 		places int

@@ -168,6 +168,7 @@ func releasingHas(m *Manager, c *Channel) bool {
 }
 
 func TestReclaimForTakesTheLongestReclaimableChannelOnABlockingProfile(t *testing.T) {
+	t.Parallel()
 	rel := newReleaser(false)
 	judge := newFakeJudge()
 	m := reclaimManager(t, rel, judge, nil)
@@ -197,6 +198,7 @@ func TestReclaimForTakesTheLongestReclaimableChannelOnABlockingProfile(t *testin
 }
 
 func TestAChannelTheJudgeRefusesIsNeverReclaimed(t *testing.T) {
+	t.Parallel()
 	rel := newReleaser(false)
 	judge := newFakeJudge() // Silent answers false for every channel
 	m := reclaimManager(t, rel, judge, nil)
@@ -215,6 +217,7 @@ func TestAChannelTheJudgeRefusesIsNeverReclaimed(t *testing.T) {
 }
 
 func TestADeclinedReCheckLeavesTheChannelRunning(t *testing.T) {
+	t.Parallel()
 	rel := newReleaser(false)
 	judge := newFakeJudge()
 	m := reclaimManager(t, rel, judge, nil)
@@ -234,6 +237,7 @@ func TestADeclinedReCheckLeavesTheChannelRunning(t *testing.T) {
 // D16's last sentence: a channel with no client, still in its shutdown delay,
 // is reclaimable, and the pick's verdict for it is the manager's own.
 func TestAZeroClientChannelInItsShutdownDelayIsReclaimable(t *testing.T) {
+	t.Parallel()
 	rel := newReleaser(false)
 	judge := newFakeJudge()
 	m := reclaimManager(t, rel, judge, nil)
@@ -295,6 +299,7 @@ func TestAZeroClientChannelInItsShutdownDelayIsReclaimable(t *testing.T) {
 }
 
 func TestReclaimForWithNoJudgeTakesOnlyAChannelWithNoClient(t *testing.T) {
+	t.Parallel()
 	rel := newReleaser(false)
 	m := reclaimManager(t, rel, nil, nil)
 
@@ -320,6 +325,7 @@ func TestReclaimForWithNoJudgeTakesOnlyAChannelWithNoClient(t *testing.T) {
 }
 
 func TestReclaimForWaitsOnAReleasingChannel(t *testing.T) {
+	t.Parallel()
 	t.Run("the release lands", func(t *testing.T) {
 		rel := newReleaser(true)
 		m := reclaimManager(t, rel, newFakeJudge(), nil)
@@ -372,6 +378,7 @@ func TestReclaimForWaitsOnAReleasingChannel(t *testing.T) {
 // A releasing entry older than StopWait + wait is one whose stop timed out; it
 // may never release, so a later reclaim ignores it and drops it.
 func TestAStaleReleasingEntryIsIgnored(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	clock := time.Unix(1_700_000_000, 0)
 	now := func() time.Time {
@@ -414,6 +421,7 @@ func TestAStaleReleasingEntryIsIgnored(t *testing.T) {
 // The spec's four-path assertion, deterministically: afterRemove runs inside
 // each removal's m.mu critical section, so the check reads the maps directly.
 func TestEveryMapRemovalInsertsIntoTheReleasingSet(t *testing.T) {
+	t.Parallel()
 	type removal struct {
 		site     string
 		gone     bool
@@ -533,6 +541,7 @@ func endedByItself(t *testing.T, m *Manager, id string) *Channel {
 // one critical section, so once released is closed a read under m.mu finds no
 // entry. Deterministic, not a poll.
 func TestAReleasingEntryNeverOutlivesItsRelease(t *testing.T) {
+	t.Parallel()
 	assertGone := func(t *testing.T, m *Manager, c *Channel) {
 		t.Helper()
 		<-c.Released()
@@ -578,6 +587,7 @@ func TestAReleasingEntryNeverOutlivesItsRelease(t *testing.T) {
 // source returned on its own, still in the map for its attached client, with
 // its release not landed. A blocked tune waits on it.
 func TestReclaimForWaitsOnARunThatEndedByItself(t *testing.T) {
+	t.Parallel()
 	rel := newReleaser(true)
 	m := reclaimManager(t, rel, newFakeJudge(), nil)
 	ended := endedByItself(t, m, "A")
@@ -614,6 +624,7 @@ func TestReclaimForWaitsOnARunThatEndedByItself(t *testing.T) {
 // judge for the behind-live grace, and is reclaimed only once the judge says
 // it is past it.
 func TestALingeringChannelIsReclaimedOnlyPastItsGrace(t *testing.T) {
+	t.Parallel()
 	judge := newFakeJudge()
 	g := newLingerRig(t, func(cfg *ManagerConfig) { cfg.Silence = judge })
 	ch, release := g.attach("A", "ca", lingerTuning())
@@ -661,6 +672,7 @@ func TestALingeringChannelIsReclaimedOnlyPastItsGrace(t *testing.T) {
 }
 
 func TestLaterIsTheLaterOfTwoTimes(t *testing.T) {
+	t.Parallel()
 	early := time.Unix(1_000, 0)
 	late := time.Unix(2_000, 0)
 	if got := later(early, late); !got.Equal(late) {

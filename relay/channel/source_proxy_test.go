@@ -34,6 +34,7 @@ func (s *recordingSink) Bytes() []byte {
 }
 
 func TestProxySourceCopiesTheUpstreamVerbatim(t *testing.T) {
+	t.Parallel()
 	payload := relaytest.SyntheticTS(64, 0x100)
 	up := relaytest.NewUpstream(relaytest.Config{
 		Payload:        payload,
@@ -62,6 +63,7 @@ func TestProxySourceCopiesTheUpstreamVerbatim(t *testing.T) {
 // "Go-http-client/1.1", so asserting that string would pass with the
 // assignment deleted.
 func TestProxySourceSendsTheUserAgent(t *testing.T) {
+	t.Parallel()
 	up := relaytest.NewUpstream(relaytest.Config{StopAfterBytes: 188})
 	t.Cleanup(up.Close)
 
@@ -83,6 +85,7 @@ func TestProxySourceSendsTheUserAgent(t *testing.T) {
 // not set to an empty string, which some providers treat differently from
 // absent.
 func TestProxySourceLeavesTheUserAgentAloneWhenUnset(t *testing.T) {
+	t.Parallel()
 	up := relaytest.NewUpstream(relaytest.Config{StopAfterBytes: 188})
 	t.Cleanup(up.Close)
 
@@ -100,6 +103,7 @@ func TestProxySourceLeavesTheUserAgentAloneWhenUnset(t *testing.T) {
 }
 
 func TestProxySourceReportsANon200(t *testing.T) {
+	t.Parallel()
 	up := relaytest.NewUpstream(relaytest.Config{Status: 403})
 	t.Cleanup(up.Close)
 
@@ -114,6 +118,7 @@ func TestProxySourceReportsANon200(t *testing.T) {
 }
 
 func TestProxySourceEndsOnAnIdleUpstream(t *testing.T) {
+	t.Parallel()
 	up := relaytest.NewUpstream(relaytest.Config{DeadAir: 30 * time.Second})
 	t.Cleanup(up.Close)
 
@@ -131,6 +136,7 @@ func TestProxySourceEndsOnAnIdleUpstream(t *testing.T) {
 // upstream: 2c-5 turns the idle signal into a failover, and failing a healthy
 // stream over because a viewer closed a tab is the wrong diagnosis.
 func TestProxySourceAttributesACancellationToTheCaller(t *testing.T) {
+	t.Parallel()
 	up := relaytest.NewUpstream(relaytest.Config{DeadAir: 30 * time.Second})
 	t.Cleanup(up.Close)
 
@@ -163,6 +169,7 @@ func TestProxySourceAttributesACancellationToTheCaller(t *testing.T) {
 // prove nothing. The path and the query are NOT redacted, and a Dispatcharr
 // provider URL puts the credential in exactly those two places.
 func TestAConnectFailureNeverEchoesTheProviderURL(t *testing.T) {
+	t.Parallel()
 	const secretURL = "http://127.0.0.1:1/live/subscriber/hunter2/9.ts?token=s3cr3t"
 	err := ProxySource{URL: secretURL, ConnectTimeout: 200 * time.Millisecond}.
 		Run(t.Context(), &recordingSink{})
@@ -191,6 +198,7 @@ func TestAConnectFailureNeverEchoesTheProviderURL(t *testing.T) {
 // the only thing that can remove it, so a pass here is not an accident of
 // some other redaction.
 func TestAMalformedSourceURLNeverEchoesTheProviderCredential(t *testing.T) {
+	t.Parallel()
 	const secretURL = "http://provider.example/live/subscriber/hunter2/9.ts?token=s3cr3t\x7f"
 	err := ProxySource{URL: secretURL}.Run(t.Context(), &recordingSink{})
 	if err == nil {
@@ -221,6 +229,7 @@ func TestAMalformedSourceURLNeverEchoesTheProviderCredential(t *testing.T) {
 // http.ConnState is the provider's own view of the socket, unaffected by
 // anything this package gets right or wrong about its own bookkeeping.
 func TestRunClosesIdleConnectionsWhenItReturns(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	last := map[net.Conn]http.ConnState{}
 
@@ -282,6 +291,7 @@ func TestRunClosesIdleConnectionsWhenItReturns(t *testing.T) {
 // parameter and :71's timeout=(5, 30) are what these three mirror, verified
 // against this tree.
 func TestProxySourceDefaultsMatchPython(t *testing.T) {
+	t.Parallel()
 	var s ProxySource
 	if got := s.chunkSize(); got != 8192 {
 		t.Errorf("chunkSize() = %d, want 8192 (apps/proxy/live_proxy/input/http_streamer.py:18)", got)

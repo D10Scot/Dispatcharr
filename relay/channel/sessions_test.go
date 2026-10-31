@@ -30,6 +30,7 @@ func attachBlocking(t *testing.T, m *Manager, id, clientID string, tuning Tuning
 // finished, replaced under the same id, or in the middle of being started --
 // answers ErrChannelAbsent, and none of them starts anything.
 func TestAttachExistingNeverStartsAChannel(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64})
 	t.Cleanup(m.StopAll)
 
@@ -168,6 +169,7 @@ func TestAttachExistingNeverStartsAChannel(t *testing.T) {
 }
 
 func TestStopIfIdleHonoursTheShutdownDelayAndLeavesAWatchedChannel(t *testing.T) {
+	t.Parallel()
 	t.Run("a channel with a client is left alone", func(t *testing.T) {
 		m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64})
 		t.Cleanup(m.StopAll)
@@ -218,6 +220,7 @@ func TestStopIfIdleHonoursTheShutdownDelayAndLeavesAWatchedChannel(t *testing.T)
 }
 
 func TestDroppingHLSClientsEmitsDisconnectOnlyForConnectedOnes(t *testing.T) {
+	t.Parallel()
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64, Events: events})
 	t.Cleanup(m.StopAll)
@@ -282,6 +285,7 @@ func (s loggedSource) Run(ctx context.Context, _ io.Writer) error {
 }
 
 func TestAManagerStopMarksTheSessionsBeforeTheChannelStops(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var log []string
 	ender := recordingEnder{mu: &mu, log: &log, owned: []StoppedClient{{ClientID: "hls", Connected: true}}}
@@ -323,6 +327,7 @@ func TestAManagerStopMarksTheSessionsBeforeTheChannelStops(t *testing.T) {
 // at 100 characters (null when absent), the user id (null for an anonymous
 // one), and the address and id.
 func TestClientEventDetailsCutTheAgentAndNullTheAnonymousUser(t *testing.T) {
+	t.Parallel()
 	long := &Client{ID: "c1", IPAddress: "198.51.100.4", UserAgent: repeatByte('u', 150), UserID: "7"}
 	got := clientEventDetails(long)
 	if agent, _ := got["user_agent"].(string); len(agent) != userAgentEventLimit {
@@ -348,6 +353,7 @@ func repeatByte(b byte, n int) string {
 }
 
 func TestEmitClientConnectRaisesTheEventWithTheClientsDetails(t *testing.T) {
+	t.Parallel()
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64, Events: events})
 	t.Cleanup(m.StopAll)

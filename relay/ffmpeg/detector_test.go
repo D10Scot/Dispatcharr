@@ -27,6 +27,7 @@ func newDetector(c *clock, threshold float64, timeout time.Duration) *Detector {
 // hard-coded 1.0 pass), so every comparison below is against a value the
 // wire supplied.
 func TestTheDetectorFollowsPythonsTransitions(t *testing.T) {
+	t.Parallel()
 	c := &clock{at: time.Unix(1_789_000_000, 0)}
 	d := newDetector(c, 2.0, 15*time.Second)
 
@@ -84,6 +85,7 @@ func TestTheDetectorFollowsPythonsTransitions(t *testing.T) {
 // TestTheCumulativeLeadMustBurnOffBeforeTheDetectorArms; this is the half
 // that costs no wall clock.
 func TestTheCapturedLeadIsNeverCalledBufferingBeforeItCrosses(t *testing.T) {
+	t.Parallel()
 	speeds := relaytest.CorpusSpeeds("slow-trickle")
 	const threshold = 1.0 // proxy_settings' default buffering_speed; the corpus was captured against it
 	crossing := -1
@@ -127,6 +129,7 @@ func TestTheCapturedLeadIsNeverCalledBufferingBeforeItCrosses(t *testing.T) {
 // and BufferingFor keeps measuring from the first sub-threshold sample,
 // because that is the duration a later channel_failover reports.
 func TestADeferredTimeoutIsHeldBackForAnotherTimeout(t *testing.T) {
+	t.Parallel()
 	c := &clock{at: time.Unix(1_789_000_000, 0)}
 	d := newDetector(c, 2.0, 15*time.Second)
 
