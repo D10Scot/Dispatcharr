@@ -46,6 +46,7 @@ func advanceBody(t *testing.T, url string, streamID int, resetTried bool) []byte
 // the client is still attached and still fed, and the event names the new
 // stream.
 func TestAnAdvanceSwitchesTheChannelAndKeepsTheClientFed(t *testing.T) {
+	t.Parallel()
 	r, alternate := failoverRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-advance", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -110,6 +111,7 @@ func TestAnAdvanceSwitchesTheChannelAndKeepsTheClientFed(t *testing.T) {
 // its 404. Asserting all three together is what stops a handler that
 // answered one status for everything from passing.
 func TestAnAdvanceRefusesAMalformedBodyAndAnUnknownChannel(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-refuse", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -150,6 +152,7 @@ func TestAnAdvanceRefusesAMalformedBodyAndAnUnknownChannel(t *testing.T) {
 // URL; still success so metadata refreshes". Both halves are asserted: the
 // answer AND the absence of a second upstream connection.
 func TestAnAdvanceToTheURLAlreadyPlayingSucceedsAndSwitchesNothing(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-same", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -188,6 +191,7 @@ func TestAnAdvanceToTheURLAlreadyPlayingSucceedsAndSwitchesNothing(t *testing.T)
 // internal field: the tried set is only observable as the exclude_stream_ids
 // the relay sends, which is also the only thing it is for.
 func TestResetTriedClearsTheExclusionListAndOmittingItDoesNot(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		resetTried bool

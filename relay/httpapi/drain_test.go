@@ -17,6 +17,7 @@ import (
 // always said "ready, 0, 0" would pass a test that only checked the first,
 // and a probe that always said "ready" is the static 200 under a new name.
 func TestReadyzReportsTheChannelCountAndTheDrain(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 
 	status, body := r.readyz(t)
@@ -59,6 +60,7 @@ func TestReadyzReportsTheChannelCountAndTheDrain(t *testing.T) {
 // relay that reserved a provider slot and then refused the viewer would leave
 // Django holding a slot nothing will release.
 func TestATuneArrivingDuringTheDrainIsRefusedBeforeAnythingIsReserved(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	r.Lifecycle.BeginDrain()
 
@@ -83,6 +85,7 @@ func TestATuneArrivingDuringTheDrainIsRefusedBeforeAnythingIsReserved(t *testing
 // assertion needs: `started` is taken before Run is called, not inside it,
 // so the measurement cannot miss time the drain's own setup spent.
 func TestTheDrainStopsTheChannelEndsTheClientAndFlushesTheEvents(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-drain", "client-a")
 	defer func() { _ = response.Body.Close() }()

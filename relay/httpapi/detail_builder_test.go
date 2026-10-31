@@ -27,6 +27,7 @@ import (
 // stores each value rounded the way its writer rounds it; this is the str()
 // half alone, which is why the inputs below are the ROUNDED values.
 func TestPythonFloatRendersWhatPythonsStrRoundRenders(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   float64
 		want string
@@ -56,6 +57,7 @@ func TestPythonFloatRendersWhatPythonsStrRoundRenders(t *testing.T) {
 // THREE SHAPES: an empty ring, a fully resident sample, and one whose oldest
 // sampled indices have been evicted.
 func TestDescribeBufferStatsWalksTheRing(t *testing.T) {
+	t.Parallel()
 	// 1. An empty ring: chunks 0, an empty diagnostics object, and none of
 	// the sample keys -- channel_status.py:235's `if buffer_index > 0`.
 	empty := buffer.New(buffer.Config{BudgetBytes: 10 * buffer.ChunkBytes, ChunkBytes: buffer.TSPacketSize * 2})
@@ -129,6 +131,7 @@ func TestDescribeBufferStatsWalksTheRing(t *testing.T) {
 // humanBytes is channel_status.py:141-149's total_data, across all four
 // arms and at both sides of one boundary.
 func TestHumanBytesMatchesTheFourArms(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   uint64
 		want string
@@ -150,6 +153,7 @@ func TestHumanBytesMatchesTheFourArms(t *testing.T) {
 // unixFloat is the seconds-since-epoch float every timestamp on these
 // payloads is, and a zero time reports 0 rather than the year-1 epoch.
 func TestUnixFloatReportsZeroForAZeroTime(t *testing.T) {
+	t.Parallel()
 	if got := unixFloat(time.Time{}); got != 0 {
 		t.Errorf("unixFloat(zero) = %v, want 0", got)
 	}

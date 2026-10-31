@@ -54,6 +54,7 @@ func readAligned(t *testing.T, body io.Reader, packets int) []byte {
 // the alternate. CONNECTION_TIMEOUT and HEALTH_CHECK_INTERVAL come off the
 // wire compressed; the switch itself is row 2's, pinned in package channel.
 func TestAFailoverKeepsTheClientAttachedAndFed(t *testing.T) {
+	t.Parallel()
 	r, alternate := failoverRig(t,
 		relaytest.Config{Rate: 4, DeadAirAfterBytes: rigChunkBytes * 3},
 		map[string]any{"CONNECTION_TIMEOUT": 0.3, "HEALTH_CHECK_INTERVAL": 0.05})
@@ -113,6 +114,7 @@ func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool)
 // The primary and the first alternate each end after two chunks, so each
 // is exhausted after three quick EOFs; the third candidate flows.
 func TestAFailoverFallsBackToTheCachedCandidatesWhenTheControlPlaneIsDown(t *testing.T) {
+	t.Parallel()
 	second := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, 0x100), StopAfterBytes: rigChunkBytes * 2})
 	t.Cleanup(second.Close)
 	third := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, 0x100)})
@@ -176,6 +178,7 @@ func TestAFailoverFallsBackToTheCachedCandidatesWhenTheControlPlaneIsDown(t *tes
 // switch loudly, the cached alternate is never touched, and the channel ends
 // in error rather than streaming a candidate nobody reserved.
 func TestARefusedFailoverNeverUsesTheCache(t *testing.T) {
+	t.Parallel()
 	r, alternate := failoverRig(t, relaytest.Config{StopAfterBytes: rigChunkBytes * 2}, nil)
 	response := r.tuneAs(t, "c-refused", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -215,6 +218,7 @@ func TestARefusedFailoverNeverUsesTheCache(t *testing.T) {
 // A client that skipped the retry, or one that read the cache before its
 // first attempt failed, reddens this.
 func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
+	// Serial: it asserts a gap between request arrivals, which a loaded machine stretches.
 	alternate := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, 0x100)})
 	t.Cleanup(alternate.Close)
 	cp := relaytest.ControlPlaneConfig{Alternates: []relaytest.AlternateConfig{{StreamID: 2, URL: alternate.URL()}}}
@@ -246,6 +250,7 @@ func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
 // with the ids of the stream it was playing THEN: after a failover, the
 // alternate's. Observed at the fake, which records the release body.
 func TestTheSlotIsReleasedWithTheCurrentStreamWhenTheChannelEnds(t *testing.T) {
+	t.Parallel()
 	r, alternate := failoverRig(t, relaytest.Config{StopAfterBytes: rigChunkBytes * 2}, nil)
 	response := r.tuneAs(t, "c-release", "client-a")
 	waitFor(t, "the switch to the alternate", 15*time.Second, func() bool { return alternate.Requests() >= 1 })

@@ -160,6 +160,7 @@ func packetRun(t *testing.T, who string, body io.Reader, packets int) int {
 // reads. Tuning inside the goroutines would let one client attach after another
 // had already released, which is a different property.
 func TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint(t *testing.T) {
+	t.Parallel()
 	const clients = 6
 	const packets = 900
 
@@ -218,6 +219,7 @@ func TestEveryClientGetsAnUnbrokenRunFromItsOwnJoinPoint(t *testing.T) {
 // new_client_behind_seconds is sent as 3, not the default 5, so a relay
 // ignoring the wire value is visible (hollow shape 2).
 func TestASecondClientJoinsBehindLiveAndNotAtTheHead(t *testing.T) {
+	t.Parallel()
 	const behindSeconds = 3
 	// 1.0x nominal is 250,000 byte/s, so three seconds is 750,000 bytes --
 	// about 5.7 chunks at rigChunkBytes, comfortably more than one and
@@ -264,6 +266,7 @@ func TestASecondClientJoinsBehindLiveAndNotAtTheHead(t *testing.T) {
 // ten-client cap that relay_client.live_connections would otherwise under-count
 // behind (spec D4).
 func TestTheClientListIsCappedAtTenUnlessClientsAllIsAsked(t *testing.T) {
+	t.Parallel()
 	const clients = 13
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
 
@@ -313,6 +316,7 @@ func TestTheClientListIsCappedAtTenUnlessClientsAllIsAsked(t *testing.T) {
 // authorise ?clients=all -- which is the exact route spec D4's whole argument
 // rests on, and the correction the spec's section The contract records.
 func TestTheListEndpointRefusesAnUnsignedOrMissignedCall(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
 	response := r.tuneAs(t, "c-auth", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -365,6 +369,7 @@ func TestTheListEndpointRefusesAnUnsignedOrMissignedCall(t *testing.T) {
 // header would corrupt is the registry -- the client id an admin stops by, the
 // address row 17 pins, and the user id the stream limit counts.
 func TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
 
 	// Every X-Relay-* value a trusted request carries, and NO trust marker.
@@ -434,6 +439,7 @@ func TestAnUntrustedRequestIsNotBelievedForAnyRelayHeader(t *testing.T) {
 // MPEG-TS under a label that is not true, and the refusal happens BEFORE the
 // control plane is asked.
 func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		header string
@@ -507,6 +513,7 @@ func TestAnOutputThisRelayDoesNotServeIsRefused(t *testing.T) {
 // first half, at the HTTP layer: client_manager.py:218-221 returns False and
 // views.py:748-753 turns that into this status.
 func TestADuplicateClientIDIsRefusedAtTheTuneSurface(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil)
 
 	first := r.tuneAs(t, "c-dup", "the-same-id")
@@ -539,6 +546,7 @@ func TestADuplicateClientIDIsRefusedAtTheTuneSurface(t *testing.T) {
 // MaxChunksPerRead from 20 to 40 leaves the buffer cap test green for the same
 // reason. Only a literal written down from the Python side can fail.
 func TestTheTwoPortedConstantsMatchTheirPythonLiterals(t *testing.T) {
+	t.Parallel()
 	if DefaultClientLimit != 10 {
 		t.Errorf("DefaultClientLimit is %d, want 10 -- apps/proxy/relay_views.py:57's "+
 			"DEFAULT_CLIENT_LIMIT, what the Stats page and /proxy/stats/ have always shown",
@@ -579,6 +587,7 @@ func TestTheTwoPortedConstantsMatchTheirPythonLiterals(t *testing.T) {
 // because a 200 with an empty body is the same failure wearing a better number,
 // but they are not what fails first.
 func TestTheTuningClientLeavingDoesNotFailTheTuneForEveryoneElse(t *testing.T) {
+	t.Parallel()
 	// channel_shutdown_delay is 2s, NOT the default 0, and that is what makes
 	// this test deterministic rather than a coin flip. Two independent things
 	// can make the second client cause a second next-source call, and only one

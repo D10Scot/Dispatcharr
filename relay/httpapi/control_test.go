@@ -62,6 +62,7 @@ func decodeObject(t *testing.T, raw []byte) map[string]any {
 // half can assert, and both are asserted against the LIST endpoint in the
 // same test, because half a row is not a row (2c-3's own words).
 func TestTheDetailEndpointRendersARunningChannel(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-detail", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -136,6 +137,7 @@ func TestTheDetailEndpointRendersARunningChannel(t *testing.T) {
 // an outage, and a test that only checked the 200 would pass with a 404 that
 // answered an HTML error page.
 func TestFieldsStateAnswersTwoFieldsAndA404ForAnUnknownChannel(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-state", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -183,6 +185,7 @@ func TestFieldsStateAnswersTwoFieldsAndA404ForAnUnknownChannel(t *testing.T) {
 // body-only check, and "the channel is gone from the map" is the thing
 // /proxy/ts/stop/<id> exists to cause.
 func TestDeletingAChannelStopsItAndReportsItsPreviousState(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-stop", "client-a")
 	packetRun(t, "the client", response.Body, 1)
@@ -227,6 +230,7 @@ func TestDeletingAChannelStopsItAndReportsItsPreviousState(t *testing.T) {
 // BOTH HALVES, because a handler that tore the whole channel down would
 // satisfy "the stopped client stopped" on its own.
 func TestDeletingOneClientDisconnectsItAndLeavesTheOtherStreaming(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	first := r.tuneAs(t, "c-client", "client-a")
 	defer func() { _ = first.Body.Close() }()
@@ -350,6 +354,7 @@ func parkedWriters() (n int, sample string) {
 // ways (parkedWriters's own doc comment has the measurements) before this
 // test shipped in its tightened form.
 func TestStoppingAClientBlockedInAWriteRemovesItFromTheRegistry(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	first := r.tuneAs(t, "c-blocked-write", "client-a")
 	defer func() { _ = first.Body.Close() }()
@@ -444,6 +449,7 @@ func TestStoppingAClientBlockedInAWriteRemovesItFromTheRegistry(t *testing.T) {
 // The populated case is asserted in the same test, so "every optional key is
 // always absent" cannot be what makes this pass.
 func TestTheNamesComeOffTheWireAndAreAbsentWhenTheAnswerCarriedNone(t *testing.T) {
+	t.Parallel()
 	r := fanRigWith(t, relaytest.ControlPlaneConfig{Nameless: true}, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-nameless", "client-a")
 	defer func() { _ = response.Body.Close() }()

@@ -42,6 +42,7 @@ func automaticControlPlane() relaytest.ControlPlaneConfig {
 // runs its pipeline under "hls:p7", in automatic mode (a transcode would never
 // pass -c:v copy), and a second entry shares it.
 func TestAnAutomaticChannelEntersUnderItsProfilesKey(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, automaticProbe("6.000000"))
 	r := hlsRigFor(t, f, automaticControlPlane())
 
@@ -78,6 +79,7 @@ func TestAnAutomaticChannelEntersUnderItsProfilesKey(t *testing.T) {
 // contract mismatch, 502 after the Attach release; a TS tune on the same stub
 // is unaffected.
 func TestAnHLSEntryWithoutAnHLSProfileKeyIs502(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRigFor(t, f, relaytest.ControlPlaneConfig{HLSProfileAbsent: true})
 
@@ -100,6 +102,7 @@ func TestAnHLSEntryWithoutAnHLSProfileKeyIs502(t *testing.T) {
 }
 
 func TestAnUnknownHLSProfileModeIs502(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRigFor(t, f, relaytest.ControlPlaneConfig{HLSProfile: &relaytest.HLSProfileConfig{ID: 7, Mode: "turbo"}})
 	status, _, body := r.enter(t, "c-mode", "client-a")
@@ -112,6 +115,7 @@ func TestAnUnknownHLSProfileModeIs502(t *testing.T) {
 // already running keeps its own (one ffmpeg per (channel, HLS profile)), and
 // null is the built-in re-encode under "hls".
 func TestANullHLSProfileRunsTheBuiltInTranscodeUnderTheBuiltInKey(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRigFor(t, f, relaytest.ControlPlaneConfig{})
 	r.session(t, "c-null", "client-a")
@@ -150,6 +154,7 @@ func departAfter(t *testing.T, r *rig, channelID string, limit int) int {
 // 36 s for a copied automatic run whose keyframes are 6 s apart, and 12 s for
 // the built-in transcode. The failure names the second of the first departure.
 func TestAnAutomaticSessionTakesItsPipelinesTargetDuration(t *testing.T) {
+	// Serial: it counts the second a session departs at, which a loaded machine shifts by one.
 	t.Run("automatic, K 6 s", func(t *testing.T) {
 		f := newHLSFixture(t, modeGood, automaticProbe("6.000000"))
 		r := hlsRigFor(t, f, automaticControlPlane())
@@ -177,6 +182,7 @@ func TestAnAutomaticSessionTakesItsPipelinesTargetDuration(t *testing.T) {
 // player that reloads every 6 s is never silent. The control is the built-in
 // transcode, silent at 4.1 s.
 func TestAnAutomaticSessionIsSilentOnlyAfterTwoOfItsTargetDurations(t *testing.T) {
+	t.Parallel()
 	t.Run("automatic, K 6 s", func(t *testing.T) {
 		f := newHLSFixture(t, modeGood, automaticProbe("6.000000"))
 		r := hlsRigFor(t, f, automaticControlPlane())
@@ -223,6 +229,7 @@ func TestAnAutomaticSessionIsSilentOnlyAfterTwoOfItsTargetDurations(t *testing.T
 // margin, 43 s, under nginx's 60 s; the entry's adds the source's start
 // (issue #560), 58 s.
 func TestTheEntryWaitsCoverTheLongestTargetDuration(t *testing.T) {
+	t.Parallel()
 	floor := hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStall(hls.MaxTargetDuration)
 	want := map[string]time.Duration{"ReadyWait": 58 * time.Second, "PlaylistWait": 43 * time.Second}
 	for name, got := range map[string]time.Duration{
