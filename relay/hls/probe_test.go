@@ -20,6 +20,7 @@ const probeJSONFor1080iWithAnEmptyAC3 = `{"streams": [
 ]}`
 
 func TestParseProbeReadsTheStreams(t *testing.T) {
+	t.Parallel()
 	p, err := ParseProbe([]byte(probeJSONFor1080iWithAnEmptyAC3))
 	if err != nil {
 		t.Fatalf("ParseProbe: %v", err)
@@ -40,6 +41,7 @@ func TestParseProbeReadsTheStreams(t *testing.T) {
 // Spec § Encoder argv: a PMT-declared audio stream that carries no packets is
 // reported with 0 channels and a sample rate of 0, and does not qualify.
 func TestADeclaredButEmptyAudioStreamDoesNotQualify(t *testing.T) {
+	t.Parallel()
 	p, _ := ParseProbe([]byte(probeJSONFor1080iWithAnEmptyAC3))
 	q := p.Qualifying()
 	if len(q) != 1 || q[0].ID != "0x301" {
@@ -64,6 +66,7 @@ func TestADeclaredButEmptyAudioStreamDoesNotQualify(t *testing.T) {
 // state, is never folded into interlaced, and is treated as progressive:
 // no deinterlace, and R is the frame rate.
 func TestFieldOrderUnknownIsADistinctStateTreatedAsProgressive(t *testing.T) {
+	t.Parallel()
 	for value, want := range map[string]FieldOrder{
 		"progressive": FieldProgressive,
 		"tt":          FieldInterlaced, "bb": FieldInterlaced, "tb": FieldInterlaced, "bt": FieldInterlaced,
@@ -96,6 +99,7 @@ func TestFieldOrderUnknownIsADistinctStateTreatedAsProgressive(t *testing.T) {
 }
 
 func TestParseRational(t *testing.T) {
+	t.Parallel()
 	for value, ok := range map[string]bool{"25/1": true, "30000/1001": true, "0/0": false, "25": false, "a/b": false, "-1/2": false} {
 		if _, got := parseRational(value); got != ok {
 			t.Errorf("parseRational(%q) ok = %t, want %t", value, got, ok)
@@ -113,6 +117,7 @@ func TestParseRational(t *testing.T) {
 // Ruling R30: every generation is probed at 3 s / 3,000,000 bytes first, and
 // the encoder's input analysis matches the bound its probe succeeded with.
 func TestTheProbeBoundsAndTheEncodersInputAnalysis(t *testing.T) {
+	t.Parallel()
 	if got := joinArgs(ProbeArgv(QuickProbe)); got != "-hide_banner -loglevel error -probesize 3000000 -analyzeduration 3000000 -f mpegts -i pipe:0 -show_streams -of json" {
 		t.Errorf("the quick probe's argv = %q", got)
 	}
@@ -132,6 +137,7 @@ func TestTheProbeBoundsAndTheEncodersInputAnalysis(t *testing.T) {
 // field order, and only when more bytes were there to read -- never at a
 // boundary or the ring's close, where a longer probe reads the same bytes.
 func TestTheReprobeDecision(t *testing.T) {
+	t.Parallel()
 	complete, _ := ParseProbe([]byte(probeJSONFor1080iWithAnEmptyAC3))
 	noGeometry, _ := ParseProbe([]byte(`{"streams":[{"codec_type":"video","codec_name":"h264","width":0,"height":0,"id":"0x100"}]}`))
 	noField, _ := ParseProbe([]byte(`{"streams":[{"codec_type":"video","codec_name":"h264","width":640,"height":360,"id":"0x100"}]}`))
@@ -189,6 +195,7 @@ func TestTheReprobeDecision(t *testing.T) {
 // media instead of waiting for stdin's EOF, R77) and the packet entries to the
 // transcode probe, and transcode's stays byte for byte what it was.
 func TestTheAutomaticProbeArgvListsVideoPackets(t *testing.T) {
+	t.Parallel()
 	quick := "-hide_banner -loglevel error -probesize 3000000 -analyzeduration 3000000 -f mpegts -i pipe:0 -read_intervals %+3 -show_streams -show_entries packet=stream_index,pts_time,flags,size -of json"
 	if got := joinArgs(ProbeArgvFor(QuickProbe, ModeAutomatic)); got != quick {
 		t.Errorf("the quick automatic probe's argv = %q, want %q", got, quick)
@@ -221,6 +228,7 @@ const probeJSONWithPackets = `{"streams": [
 // packet at 9.48 s, 1,000,000 video bytes over an 8.0 s span, and 500,000 audio
 // bytes that count in neither total. 8 x 1,000,000 / 8.0 s is 1,000,000 b/s.
 func TestParseProbeCountsKeyframesTheirLongestIntervalAndTheRate(t *testing.T) {
+	t.Parallel()
 	p, err := ParseProbe([]byte(probeJSONWithPackets))
 	if err != nil {
 		t.Fatalf("ParseProbe: %v", err)
@@ -274,6 +282,7 @@ func TestParseProbeCountsKeyframesTheirLongestIntervalAndTheRate(t *testing.T) {
 }
 
 func TestParseProbeReadsLevelIndexAndAudioProfile(t *testing.T) {
+	t.Parallel()
 	p, err := ParseProbe([]byte(probeJSONWithPackets))
 	if err != nil {
 		t.Fatal(err)
@@ -297,6 +306,7 @@ func TestParseProbeReadsLevelIndexAndAudioProfile(t *testing.T) {
 const probeJSONHEVCFixture = `{"streams": [{"index": 0, "codec_name": "hevc", "profile": "Main", "codec_type": "video", "width": 640, "height": 360, "pix_fmt": "yuv420p", "level": 63, "id": "0x400", "r_frame_rate": "25/1", "avg_frame_rate": "25/1"}, {"index": 1, "codec_name": "aac", "profile": "LC", "codec_type": "audio", "id": "0x401", "r_frame_rate": "0/0", "avg_frame_rate": "0/0", "sample_rate": "48000", "channels": 2}]}`
 
 func TestAnHEVCProbeWithNoFieldOrderIsCompleteAndProgressive(t *testing.T) {
+	t.Parallel()
 	p, err := ParseProbe([]byte(probeJSONHEVCFixture))
 	if err != nil {
 		t.Fatal(err)
@@ -334,6 +344,7 @@ func TestAnHEVCProbeWithNoFieldOrderIsCompleteAndProgressive(t *testing.T) {
 // fallback rows use 29.97, not 25: a missing rate becomes 25 in outputRate,
 // so a 25/1 fallback row would pass with the fallback deleted.
 func TestAnInterlacedSourcesRateIsItsAverageFrameRate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name, field, r, avg string
 		probed, rate        Rational

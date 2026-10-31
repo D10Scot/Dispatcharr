@@ -36,6 +36,7 @@ func device(t *testing.T) string {
 // anything; a detection encode that exits 0 means Quick Sync; any failure
 // means software; and the answer is cached for the process.
 func TestDetection(t *testing.T) {
+	t.Parallel()
 	missing := &Detector{Command: filepath.Join(t.TempDir(), "never-run"), Device: filepath.Join(t.TempDir(), "renderD128")}
 	if got := missing.Engine(context.Background()); got != EngineSoftware {
 		t.Errorf("a missing device gave %s, want software", got)
@@ -71,6 +72,7 @@ func TestDetection(t *testing.T) {
 }
 
 func TestDetectArgv(t *testing.T) {
+	t.Parallel()
 	want := "-hide_banner -loglevel error -init_hw_device qsv=hw:/dev/dri/renderD128 -filter_hw_device hw -f lavfi -i color=c=black:s=256x144:r=25 -frames:v 1 -vf format=nv12,hwupload -c:v h264_qsv -f null -"
 	if got := joinArgs(DetectArgv(DefaultDevice)); got != want {
 		t.Errorf("DetectArgv = %q, want %q", got, want)
@@ -94,6 +96,7 @@ func script(t *testing.T, body string) string {
 // short is inconclusive, which is what keeps the pipeline from writing
 // Quick Sync off on its own Stop.
 func TestADetectionCutShortByTheCallerIsNotCached(t *testing.T) {
+	t.Parallel()
 	d := &Detector{Command: script(t, "sleep 1; exit 0"), Device: device(t)}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
@@ -118,6 +121,7 @@ func TestADetectionCutShortByTheCallerIsNotCached(t *testing.T) {
 // channel's detection encode, or canned silence encode, gives up when its
 // own context ends rather than holding its Stop.
 func TestAWaiterGivesUpOnTheProcessWideLocks(t *testing.T) {
+	t.Parallel()
 	d := &Detector{Command: script(t, "sleep 1; exit 0"), Device: device(t)}
 	first := make(chan Engine, 1)
 	go func() { first <- d.Engine(context.Background()) }()

@@ -257,6 +257,7 @@ func exists(path string) bool {
 // each segment once, under a temporary name and then renamed, off the
 // segmenter's goroutine.
 func TestTheWindowWritesEachSegmentOnceOffTheSegmentersGoroutine(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.fs.gate = make(chan struct{})
 	released := false
@@ -308,6 +309,7 @@ func TestTheWindowWritesEachSegmentOnceOffTheSegmentersGoroutine(t *testing.T) {
 
 // The newest 21 are served from memory: no read of the disk.
 func TestTheLiveEdgeIsServedFromMemory(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, 30, t0, 64)
@@ -328,6 +330,7 @@ func TestTheLiveEdgeIsServedFromMemory(t *testing.T) {
 }
 
 func TestAnOldSegmentIsReadFromDisk(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, 30, t0, 64)
@@ -346,6 +349,7 @@ func TestAnOldSegmentIsReadFromDisk(t *testing.T) {
 // Row ⟨G⟩: every segment within the depth is listed, by PDT rather than by
 // count, and a discontinuity that left is counted.
 func TestTheWindowListsEverySegmentWithinTheDepth(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", 60*time.Second)
 	publishDurable(t, s, 0, 40, t0, 32)
@@ -375,6 +379,7 @@ func TestTheWindowListsEverySegmentWithinTheDepth(t *testing.T) {
 // Row ⟨G⟩, R83: a segment that leaves the playlist by depth stays fetchable
 // for the retention and is then unlinked.
 func TestADepthRetiredSegmentStaysFetchableForTheRetention(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", 60*time.Second)
 	publishDurable(t, s, 0, 32, t0, 32) // segment 31 retires segment 0 at t0
@@ -411,6 +416,7 @@ func TestADepthRetiredSegmentStaysFetchableForTheRetention(t *testing.T) {
 // Row ⟨G⟩: the cap's order is retired segments, then a lingering window's
 // oldest, then any window's oldest.
 func TestTheCapEvictsRetiredThenLingeringThenOldest(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	const size = 1000
 	b := g.store("B", 44*time.Second)
@@ -444,6 +450,7 @@ func TestTheCapEvictsRetiredThenLingeringThenOldest(t *testing.T) {
 // Decision 6: a pending segment has no file yet and is never a victim, and a
 // window whose head is pending contributes no listed victim.
 func TestTheCapSkipsAPendingSegment(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.r.Close() // no writer: the state below is built by hand
 	s := g.store("chan", time.Hour)
@@ -497,6 +504,7 @@ func TestTheCapSkipsAPendingSegment(t *testing.T) {
 
 // Decision 6: the newest 21 are never evicted, and an unmet cap logs once.
 func TestTheCapNeverEvictsTheInMemoryEdge(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	a, b := g.store("A", time.Hour), g.store("B", time.Hour)
 	g.r.SetCap(1)
@@ -526,6 +534,7 @@ func TestTheCapNeverEvictsTheInMemoryEdge(t *testing.T) {
 
 // Global constraint 4: a read in flight is never unlinked under it.
 func TestAReadInFlightIsNeverUnlinkedUnderItsReader(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, StoreSegments+1, t0, 64)
@@ -567,6 +576,7 @@ func TestAReadInFlightIsNeverUnlinkedUnderItsReader(t *testing.T) {
 // Row ⟨H⟩: a directory, write or rename error degrades the window and nothing
 // else.
 func TestAWriteErrorDegradesTheWindowNotTheOutput(t *testing.T) {
+	t.Parallel()
 	for _, op := range []string{"MkdirAll", "WriteFile", "Rename"} {
 		t.Run(op, func(t *testing.T) {
 			g := newRewindRig(t)
@@ -612,6 +622,7 @@ func TestAWriteErrorDegradesTheWindowNotTheOutput(t *testing.T) {
 // Row ⟨H⟩, Decision 4: a window that degraded lists its disk run only while it
 // is contiguous with the live edge, then the live edge alone.
 func TestADegradedWindowListsItsDiskRunThenOnlyTheLiveEdge(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, 26, t0, 32)
@@ -651,6 +662,7 @@ func TestADegradedWindowListsItsDiskRunThenOnlyTheLiveEdge(t *testing.T) {
 // Row ⟨H⟩, Decision 3: a writer a whole store behind degrades the window at the
 // 22nd unwritten segment.
 func TestAFullWriterQueueDegradesTheWindow(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.fs.gate = make(chan struct{})
 	t.Cleanup(func() { close(g.fs.gate) })
@@ -673,6 +685,7 @@ func TestAFullWriterQueueDegradesTheWindow(t *testing.T) {
 // Row ⟨H⟩, Decision 9: the boot directory is retried, so a window opened after
 // it becomes makeable writes.
 func TestTheBootDirectoryIsRetriedAtEveryWindowOpen(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.fs.fail = func(op string, n int) error {
 		if op == "MkdirAll" && n == 1 {
@@ -696,6 +709,7 @@ func TestTheBootDirectoryIsRetriedAtEveryWindowOpen(t *testing.T) {
 }
 
 func TestStartUpRemovesEveryOtherBootDirectory(t *testing.T) {
+	t.Parallel()
 	root := t.TempDir()
 	for _, dir := range []string{"stale1/chan/1", "stale2/chan/1", "boot/chan/1"} {
 		if err := os.MkdirAll(filepath.Join(root, dir), 0o750); err != nil {
@@ -718,6 +732,7 @@ func TestStartUpRemovesEveryOtherBootDirectory(t *testing.T) {
 }
 
 func TestCleanStaleReportsAFailureOnceAndAnAbsentRootNot(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.r.root = filepath.Join(t.TempDir(), "absent")
 	g.r.CleanStale()
@@ -752,6 +767,7 @@ func TestCleanStaleReportsAFailureOnceAndAnAbsentRootNot(t *testing.T) {
 }
 
 func TestRemoveBootDeletesTheBootDirectory(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	if err := os.MkdirAll(filepath.Join(g.r.BootDir(), "chan", "1"), 0o750); err != nil {
 		t.Fatal(err)
@@ -778,6 +794,7 @@ func TestRemoveBootDeletesTheBootDirectory(t *testing.T) {
 }
 
 func TestCloseGivesUpOnAWriterThatWillNotStop(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.fs.gate = make(chan struct{})
 	t.Cleanup(func() { close(g.fs.gate) })
@@ -796,6 +813,7 @@ func TestCloseGivesUpOnAWriterThatWillNotStop(t *testing.T) {
 
 // A window whose pipeline stopped is removed once no read holds it.
 func TestAStoppedPipelinesWindowIsRemovedOnceUnread(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, StoreSegments+1, t0, 64)
@@ -829,6 +847,7 @@ func TestAStoppedPipelinesWindowIsRemovedOnceUnread(t *testing.T) {
 
 // Decision 7: once the removal is decided no disk read starts.
 func TestAClosingWindowRefusesANewDiskRead(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, StoreSegments+1, t0, 64)
@@ -847,6 +866,7 @@ func TestAClosingWindowRefusesANewDiskRead(t *testing.T) {
 }
 
 func TestTheChannelDirectoryNameIsSafe(t *testing.T) {
+	t.Parallel()
 	uuid := "8f1c2a4e-9b7d-4e1f-a6c3-0d5e2b7a9c11"
 	if got := channelDir(uuid); got != uuid {
 		t.Errorf("a UUID became %q", got)
@@ -862,6 +882,7 @@ func TestTheChannelDirectoryNameIsSafe(t *testing.T) {
 // The rendered playlist is reused until the store changes, and every kind of
 // change counts.
 func TestTheRenderedPlaylistIsReusedUntilTheStoreChanges(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, StoreSegments+1, t0, 64)
@@ -903,6 +924,7 @@ func TestTheRenderedPlaylistIsReusedUntilTheStoreChanges(t *testing.T) {
 }
 
 func TestSetCapIgnoresANonPositiveValue(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.r.SetCap(1 << 30)
 	g.r.SetCap(0)
@@ -913,6 +935,7 @@ func TestSetCapIgnoresANonPositiveValue(t *testing.T) {
 }
 
 func TestSegmentAtReportsHowFarBehindTheNewestItIs(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, 10, t0, 32)
@@ -931,6 +954,7 @@ func TestSegmentAtReportsHowFarBehindTheNewestItIs(t *testing.T) {
 }
 
 func TestAReadThatFailsAnswersNotFound(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, StoreSegments+1, t0, 64)
@@ -949,6 +973,7 @@ func TestAReadThatFailsAnswersNotFound(t *testing.T) {
 }
 
 func TestWaitDurableAnswersAtOnceWhereItCannotWait(t *testing.T) {
+	t.Parallel()
 	plain := NewStore(nil)
 	if err := plain.WaitDurable(context.Background(), 0); !errors.Is(err, ErrNoWindow) {
 		t.Errorf("no window: %v, want ErrNoWindow", err)
@@ -984,6 +1009,7 @@ func TestWaitDurableAnswersAtOnceWhereItCannotWait(t *testing.T) {
 }
 
 func TestWaitDegradedWaitsOutItsContext(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
@@ -997,6 +1023,7 @@ func TestWaitDegradedWaitsOutItsContext(t *testing.T) {
 }
 
 func TestSyncWaitsOutItsContext(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.fs.gate = make(chan struct{})
 	t.Cleanup(func() { close(g.fs.gate) })
@@ -1012,6 +1039,7 @@ func TestSyncWaitsOutItsContext(t *testing.T) {
 // A segment that left the store while its write was in flight is not counted
 // and its files are queued for unlink at once.
 func TestACommitForASegmentThatLeftTheStoreCountsNothing(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.r.Close()
 	s := g.store("chan", time.Hour)
@@ -1028,9 +1056,28 @@ func TestACommitForASegmentThatLeftTheStoreCountsNothing(t *testing.T) {
 	}
 }
 
+// A write that lands after its window degraded is ignored: nothing is counted
+// against the cap.
+func TestACommitForADegradedWindowCountsNothing(t *testing.T) {
+	t.Parallel()
+	g := newRewindRig(t)
+	s := g.store("chan", time.Hour)
+	w := s.window
+	g.r.degrade(w, errors.New("boom"), "")
+	before := g.r.Bytes()
+	late := &segment{seq: 5, gen: 0, bytes: 500, pending: true, parts: map[string]part{RenditionVideo: {duration: 2}}}
+	g.r.commit(w, late, 12)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if late.onDisk || g.r.Bytes() != before {
+		t.Errorf("a degraded window's late write was counted: onDisk %t, bytes %d, want %d", late.onDisk, g.r.Bytes(), before)
+	}
+}
+
 // A retired segment still queued for the disk is dropped from the queue when its
 // retention passes, so the writer never writes a file it is about to unlink.
 func TestARetiredPendingSegmentIsDroppedFromTheQueueAtItsRetention(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.r.Close()
 	s := g.store("chan", 10*time.Second)
@@ -1077,6 +1124,7 @@ func TestARetiredPendingSegmentIsDroppedFromTheQueueAtItsRetention(t *testing.T)
 // A Rewind needs no configuration: the production root, a random boot id and
 // the OS disk, and building one touches nothing.
 func TestANewRewindNeedsNoConfiguration(t *testing.T) {
+	t.Parallel()
 	r := NewRewind(RewindConfig{})
 	t.Cleanup(r.Close)
 	if got, want := filepath.Dir(r.BootDir()), DefaultRewindRoot; got != want {
@@ -1129,6 +1177,7 @@ func heldRetiredPending(t *testing.T, g *rewindRig) (*Store, *window, *segment) 
 // A degradation drops a retired segment that was still queued, releasing its
 // bytes: the disk will never hold it.
 func TestADegradationDropsAQueuedRetiredSegment(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s, w, retired := heldRetiredPending(t, g)
 	g.r.degrade(w, errors.New("boom"), "")
@@ -1143,6 +1192,7 @@ func TestADegradationDropsAQueuedRetiredSegment(t *testing.T) {
 // A retired segment whose write lands after its retirement is on disk and gives
 // its data up.
 func TestALateWriteOfARetiredSegmentReleasesItsData(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s, w, retired := heldRetiredPending(t, g)
 	g.r.commit(w, retired, 0)
@@ -1155,6 +1205,7 @@ func TestALateWriteOfARetiredSegmentReleasesItsData(t *testing.T) {
 }
 
 func TestAnUnlinkFailureIsLoggedAtDebugAndNotFatal(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	g.fs.fail = func(op string, _ int) error {
 		if op == "Remove" {
@@ -1180,6 +1231,7 @@ func TestAnUnlinkFailureIsLoggedAtDebugAndNotFatal(t *testing.T) {
 }
 
 func TestAFailedWindowRemovalIsLoggedAndForgotten(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, 2, t0, 64)
@@ -1205,6 +1257,7 @@ func TestAFailedWindowRemovalIsLoggedAndForgotten(t *testing.T) {
 // evict re-checks its victim under the lock: one that moved since it was picked
 // is left alone, and a listed head that carried a discontinuity counts it.
 func TestEvictLeavesAVictimThatMovedAndCountsADiscontinuity(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	publishDurable(t, s, 0, StoreSegments+1, t0, 64)
@@ -1236,6 +1289,7 @@ func TestEvictLeavesAVictimThatMovedAndCountsADiscontinuity(t *testing.T) {
 // The byte ceiling gives an on-disk segment's data up before it retires one,
 // and retires the head when nothing is on disk.
 func TestTheByteCeilingReleasesADiskSegmentBeforeItRetiresAnything(t *testing.T) {
+	t.Parallel()
 	const big = 20 << 20
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
@@ -1283,6 +1337,7 @@ func TestTheByteCeilingReleasesADiskSegmentBeforeItRetiresAnything(t *testing.T)
 // A window degrades once: a second failure neither logs again nor re-drops what
 // is already dropped.
 func TestAWindowDegradesOnce(t *testing.T) {
+	t.Parallel()
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)
 	g.r.degrade(s.window, errors.New("first"), "")
@@ -1295,6 +1350,7 @@ func TestAWindowDegradesOnce(t *testing.T) {
 // Queued segments past the byte ceiling never cost the window its on-disk
 // history: retiring listed segments frees nothing while every held byte is queued.
 func TestQueuedSegmentsPastTheCeilingKeepTheDurableWindow(t *testing.T) {
+	t.Parallel()
 	const big = 20 << 20
 	g := newRewindRig(t)
 	s := g.store("chan", time.Hour)

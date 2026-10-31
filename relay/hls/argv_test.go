@@ -19,6 +19,7 @@ func aud(id, codec string, channels int) Audio {
 // never upscaled, R the field rate of an interlaced source capped at 60, G
 // round(2R) -- with the bitrate from the output height.
 func TestDecideFixesGeometryRateAndBitrate(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name         string
 		v            *Video
@@ -67,6 +68,7 @@ func names(o Output) []string {
 // each at the source layout clamped to 2.0 or 5.1. Only qualifying streams
 // count.
 func TestTheRenditionSetComesFromGenerationZero(t *testing.T) {
+	t.Parallel()
 	v := video(1920, 1080, Rational{25, 1}, FieldInterlaced)
 	cases := []struct {
 		name  string
@@ -114,6 +116,7 @@ func fills(p Plan) map[string]string {
 // declared channel count, encoding anything else qualifying, and falling
 // back to silence; an undeclared source track is ignored.
 func TestEveryGenerationFillsEveryDeclaredRendition(t *testing.T) {
+	t.Parallel()
 	v := video(1920, 1080, Rational{25, 1}, FieldInterlaced)
 	gen0 := Probe{Video: v, Audio: []Audio{aud("0x301", "aac", 2), aud("0x302", "ac3", 6)}}
 	o, _ := Decide(gen0)
@@ -168,6 +171,7 @@ func argvString(o Output, p Plan) string { return strings.Join(o.Argv(p, Default
 
 // Spec § Encoder argv: the transcode generation's argv, software and QSV.
 func TestTheArgv(t *testing.T) {
+	t.Parallel()
 	v := video(1920, 1080, Rational{25, 1}, FieldInterlaced)
 	probe := Probe{Video: v, Audio: []Audio{aud("0x301", "aac", 2), aud("0x302", "ac3", 6)}}
 	o, _ := Decide(probe)
@@ -231,6 +235,7 @@ func TestTheArgv(t *testing.T) {
 // Parity: a non-qualifying audio stream is not mapped. The declared-but-empty
 // AC-3 PID declares no rendition and appears nowhere in the argv.
 func TestANonQualifyingAudioStreamIsNotMapped(t *testing.T) {
+	t.Parallel()
 	probe, _ := ParseProbe([]byte(probeJSONFor1080iWithAnEmptyAC3))
 	o, _ := Decide(probe)
 	got := argvString(o, PlanGeneration(o, probe, EngineSoftware))
@@ -242,6 +247,7 @@ func TestANonQualifyingAudioStreamIsNotMapped(t *testing.T) {
 // M8: a rendition filled with silence has no output in the argv at all, and
 // no descriptor.
 func TestSilenceHasNoOutputInTheArgv(t *testing.T) {
+	t.Parallel()
 	v := video(640, 360, Rational{25, 1}, FieldProgressive)
 	o, _ := Decide(Probe{Video: v})
 	plan := PlanGeneration(o, Probe{Video: v}, EngineSoftware)
