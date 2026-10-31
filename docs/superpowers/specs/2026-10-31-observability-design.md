@@ -210,6 +210,16 @@ on it. It is registered in `relay/httpapi/server.go`'s `New` beside `/healthz` a
 (`DISPATCHARR_RELAY_GO_PORT`, 5658). `httpapi.Config` gains a `Metrics http.Handler` field; a nil
 handler registers nothing, so every existing test that builds a `Config` is unaffected.
 
+The exporter is built with
+`otelprom.New(otelprom.WithRegisterer(reg), otelprom.WithTranslationStrategy(otlptranslator.UnderscoreEscapingWithSuffixes), otelprom.WithoutTargetInfo(), otelprom.WithoutScopeInfo())`.
+The translation strategy is **pinned** because v0.69.0's default depends on Prometheus's name
+validation mode, and upstream says the default will change (`exporters/prometheus/config.go:107-120`).
+`WithoutUnits` and `WithoutCounterSuffixes` are deprecated in its favour. Pinning it makes
+`github.com/prometheus/otlptranslator` a direct requirement (§ Go modules). `WithoutTargetInfo`
+and `WithoutScopeInfo` keep the resource and scope off the unauthenticated endpoint (D9).
+**Measured**: with these four options, the catalogue names render unchanged and the series
+carry only their own labels (§ Versions checked).
+
 Only HTTP/protobuf is supported (`otlptracehttp`, `otlpmetrichttp`, `otlploghttp`). No gRPC
 exporter is used (ADR 0011 § What stays banned), although `google.golang.org/grpc` is linked
 transitively through the OTLP collector packages (§ Go modules, measured).
@@ -316,112 +326,187 @@ handler is a fan-out over that handler and the `otelslog` bridge handler. Most r
 take no context, so they carry no trace id; the docs page says so, and no call is rewritten to
 add one (R6).
 
-**JSON is a new sink, so it is redacted.** The Python `JsonFormatter` passes `msg` and the
-formatted exception through `dispatcharr.observability.redaction.redact_text` (D9). The Go JSON
-handler uses `slog.HandlerOptions.ReplaceAttr` to pass every string attribute value, the message
-included, through `redact.Line` (`relay/redact/redact.go:66`). The text format is not touched in
-either language, so `MINO_LOG_FORMAT=text` is byte-identical to today.
+**JSON is a new sink, so it gets D9's rules.** Python's `JsonFormatter` passes `msg` through
+`redact_text` and renders an exception as its type and frame list (D9). In Go, the JSON handler
+sits behind `SafeHandler`, the typed log-field allowlist. The text format is untouched in both
+languages, so `MINO_LOG_FORMAT=text` is byte-identical to today. A channel UUID in a text-format
+line is today's behaviour and is out of this spec's scope.
 
 ### D9 — Redaction at every exporter boundary (R7)
 
-**The rule.** A span, a log record or a metric point reaches an exporter only through a wrapper
-that (a) drops every attribute whose key is not on that signal's allowlist, and (b) passes every
-remaining string value, every span name, every span status description, every event attribute
-and every log body through the language's redactor. URL-bearing keys get the URL treatment:
-userinfo removed, query string and fragment removed, path through the existing XC-path masking.
+**The rule.** A span, a log record, a metric point or a resource reaches an exporter, or the
+relay's `/metrics`, only through a boundary that does three things:
 
-**Python** (`dispatcharr/observability/redaction.py`, new):
+1. It keeps only the keys on that signal's allowlist and drops every other key.
+2. It replaces each carrier that cannot be made safe with a safe classification: a URL path
+   becomes its route template, an exception becomes its type, a channel UUID becomes the
+   channel's numeric id or a fixed token.
+3. It passes every remaining free-text value through the language's redactor.
 
-- `redact_text(s)`: every absolute URL in `s` (the regex `relay/redact/redact.go:50` uses,
-  ported) becomes `scheme://host[:port]` plus its path through `dispatcharr.utils.redact_url`
-  (`dispatcharr/utils.py:184`) with query and fragment dropped; then every whitespace- or
-  quote-delimited token that starts with `/` goes through `redact_url` too, which masks the
-  Xtream `/live|movie|series|timeshift/<user>/<pass>/…` and bare `/<user>/<pass>/<id>` shapes
-  (its docstring, `:186-193`). The second pass exists for `requests`' own exception text, which
-  names the path without the scheme (`Max retries exceeded with url: /live/u/p/1.ts`).
-- `redact_url_attribute(v)`: `urlsplit`, drop userinfo, query and fragment, `redact_url` the
-  path. Applied to `url.full`, `url.path`, `url.query` (dropped outright), `http.url`,
-  `http.target`, `http.route` is left alone (it is a template).
-- `RedactingSpanExporter(inner)`: `export(spans)` rebuilds each `ReadableSpan` with filtered
-  attributes, redacted name, status description, event attributes and link attributes, then
-  calls `inner.export`. `ReadableSpan` is immutable, which is why redaction is at the exporter
-  and not in a `SpanProcessor.on_end`.
-- `RedactingLogExporter(inner)`: the same for `LogData`: body through `redact_text`, attributes
-  filtered and redacted.
-- **Metric attribute allowlists are SDK `View`s**, one per catalogue instrument with
-  `attribute_keys=` set to that row's labels, plus a wildcard `View(instrument_name="*",
-  aggregation=DropAggregation())`. An instrument not in the catalogue therefore exports nothing,
-  which is what makes the catalogue frozen in code as well as on paper. O5's test asserts both
-  halves: a catalogue instrument with an extra attribute exports without it, and an
-  uncatalogued instrument exports no point. **Measured** with `opentelemetry-sdk` 1.45.2 and an
-  `InMemoryMetricReader`: a named view with `attribute_keys={"task","outcome"}` plus the wildcard
-  drop view exported exactly one stream, `mino_worker_task_duration`, whose point carried
-  `{task, outcome}` and not the `url` attribute it was recorded with; the uncatalogued `leak`
-  counter exported nothing.
+Round-1 review finding 2 is why this is a rule: a URL redactor alone leaves capability paths
+(`/proxy/ts/stream/<uuid>`, `/api/relay/channels/<uuid>/next-source`, `/hls/<token>/…`) and
+bare identifiers in log bodies (`apps/proxy/next_source.py:1161-1163`) untouched. The
+carriers, and how each is closed:
 
-The span allowlist starts from this candidate list and is **finalised from a recorded sample**
-(AGENTS.md: look before you gate). O5's first task records, with an `InMemorySpanExporter`, the
-attribute keys each of the five instrumentations actually emits for one request, one task, one
-query, one Redis command and one outbound call, and commits that sample as a test fixture; the
-allowlist is the subset below that the sample contains, and the PR body lists any sampled key
-that was left off and why.
+| Carrier | Example at the seed | Closed by |
+|---|---|---|
+| URL userinfo, query, fragment | `requests` client spans' `url.full`; the Django instrumentation's `http.url` (measured, D10: without the semconv opt-in it records `http.url` **with the query string**) | Server spans keep no URL key at all, only `http.route` (a template such as `proxy/ts/stream/<str:channel_id>`). Client spans keep `server.address`/`server.port`/`url.scheme` and no path |
+| Capability path (channel UUID, stream hash, HLS token) | `/proxy/ts/stream/<uuid>`, `/api/relay/channels/<uuid>/…`, `/hls/v1.<sid>.<mac>/…` | As above: no path-bearing key survives; span names are the instrumentations' templates (`GET proxy/ts/stream/<str:channel_id>`, measured) and pass the free-text redactor anyway |
+| Bare identifier in free text | `logger.info(f"Released profile slot {m3u_profile_id} for {identifier} …")` (`next_source.py:1161-1163`); `relay/channel/failover.go:195,214,232` `"channel", c.id` | The free-text redactor's identifier classes (below); in Go, the typed log-field allowlist maps the `channel` key to `channel_id` |
+| Exception text and stack trace | `requests`' `Max retries exceeded with url: /live/u/p/1.ts`; a psycopg error echoing a literal; a Redis "unknown command … with args beginning with" | **Spans:** an exception event keeps `exception.type` only; `exception.message` and `exception.stacktrace` are dropped. **Logs:** the record keeps `exception.type` and a frame list (`file:line in function`, no source text, no message); the body is redacted |
+| SQL, Redis command, task arguments, headers | `db.statement`, `db.query.text`, `celery.args`/`kwargs`, `http.request.header.*` | Never on an allowlist, whatever `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` says |
+| Metric exemplars | **Measured:** with SDK defaults, a histogram recorded inside a sampled span exports the secret-valued attribute a View removed, in the exemplar's `filtered_attributes` (Python 1.45.2, `TraceBasedExemplarFilter` by default, `opentelemetry/sdk/metrics/_internal/__init__.py:450`; Go v1.47.0, `exemplar.TraceBasedFilter` by default, `sdk/metric/config.go:81`) | Exemplars are **off** in both languages: Python `MeterProvider(exemplar_filter=AlwaysOffExemplarFilter())`, Go `sdkmetric.WithExemplarFilter(exemplar.AlwaysOffFilter)`. Both options are applied after `OTEL_METRICS_EXEMPLAR_FILTER` is read (Python `:450` takes the argument first; Go `config.go:84-91` applies options after the environment's), so the variable cannot turn them back on. **Measured:** with the filter off, the same recording exports no secret in either language |
+| Resource attributes | `OTEL_RESOURCE_ATTRIBUTES=k8s.pod.name=…,anything=<secret>`; Prometheus `target_info` | D13's allowlisted resource. `/metrics` emits no `target_info` and no scope labels (`WithoutTargetInfo`, `WithoutScopeInfo`) |
+
+**The free-text redactor.** Python `dispatcharr.observability.redaction.redact_text` and Go
+`relay/telemetry.scrub`, which applies `relay/redact.Line` first, apply the same classes in this
+order:
+
+1. Absolute URLs become `scheme://host[:port]/[redacted]`. This is `relay/redact/redact.go:51`'s
+   pattern and output, ported to Python.
+2. Scheme-less paths: any whitespace- or quote-delimited token starting with `/` becomes
+   `[path]`.
+3. UUIDs (`[0-9a-fA-F]{8}-([0-9a-fA-F]{4}-){3}[0-9a-fA-F]{12}`) become `[uuid]`.
+4. HLS media-session tokens (`v1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}`; the shape is
+   `relay/control/mediasession.go:50-52`'s) become `[token]`.
+5. Any run of 32 or more hex digits becomes `[hex]`. That covers a stream hash (SHA-256 hex,
+   `apps/channels/models.py:188`) and every HMAC this deployment computes
+   (`apps/proxy/internal_auth.py:90-95`).
+6. `key=value` and `key: value` pairs whose key matches
+   `(?i)pass(word)?|passwd|token|secret|api[_-]?key|auth(orization)?` keep the key and their
+   value becomes `***`.
+
+A log body can still carry text none of these classes describe. That residual is what the call
+site chose to log, and `scripts/check_credential_logging.py` polices it (extended below).
+
+**Python** (`dispatcharr/observability/redaction.py`):
+
+- `RedactingSpanExporter(inner)` rebuilds each `ReadableSpan` before `inner.export`. It keeps
+  only the span allowlist's keys, maps span events to the exception rule, and passes the name,
+  the status description and every kept string value through `redact_text`.
+- `RedactingLogExporter(inner)` does the same for `LogData`: the body goes through
+  `redact_text`, the attributes are cut to the log allowlist, and exceptions are handled as
+  above.
+- The metric boundary is the SDK `View`s: one per catalogue instrument, with `attribute_keys=`
+  set to that row's labels, plus a wildcard
+  `View(instrument_name="*", aggregation=DropAggregation())`. Exemplars are off.
+  **Measured** on SDK 1.45.2: a named view plus the wildcard drop exported one stream carrying
+  only `{task, outcome}`, and an uncatalogued `leak` counter exported nothing.
+- `JsonFormatter` (D8) applies the log rules to stdout.
+
+The span allowlist below is a candidate list. **O5 finalises it from a recorded sample**
+(AGENTS.md, "look before you gate"): O5's first task records the keys each of the five
+instrumentations actually emits, for one request, one task, one query, one Redis command and
+one outbound call, on Django 6.0.8 (which doubles as P2's compatibility smoke test, D10). The
+sample is committed as a fixture. The allowlist is the subset of the list below that appears in
+the sample, and the PR body lists any sampled key that was left off.
 
 | Source | Keys kept |
 |---|---|
-| HTTP server and client (django, requests) | `http.request.method`, `http.response.status_code`, `http.route`, `url.scheme`, `url.full`†, `url.path`†, `server.address`, `server.port`, `network.protocol.version`, `error.type`, and the old-convention `http.method`, `http.status_code`, `http.url`†, `http.target`†, `http.scheme`, `net.host.port` |
-| psycopg | `db.system`, `db.name`, `db.operation.name`, `server.address`, `server.port` (**not** `db.statement`/`db.query.text`) |
-| redis | `db.system`, `db.redis.database_index`, `server.address`, `server.port` (**not** `db.statement`) |
+| HTTP server (django) | `http.request.method`, `http.response.status_code`, `http.route`, `url.scheme`, `network.protocol.version`, `error.type`, and the old-convention `http.method`, `http.status_code`, `http.scheme` (**no** `url.full`, `url.path`, `url.query`, `http.url`, `http.target`, `http.server_name`, `net.host.port`) |
+| HTTP client (requests) | `http.request.method`, `http.response.status_code`, `url.scheme`, `server.address`, `server.port`, `error.type`, `http.method`, `http.status_code` (**no** `url.full`, `http.url`) |
+| psycopg | `db.system`, `db.name`, `db.operation.name`, `server.address`, `server.port` |
+| redis | `db.system`, `db.redis.database_index`, `server.address`, `server.port` |
 | celery | `celery.action`, `celery.state`, `celery.task_name`, `messaging.destination.name`, `messaging.message.id`, `messaging.system` |
-| this spec's own spans | the `mino.*` keys in § Span catalogue |
-| span events | `exception.type`, `exception.message`‡, `exception.stacktrace`‡ |
-| log records | `code.filepath`, `code.function`, `code.lineno`, `exception.type`, `exception.message`‡, `exception.stacktrace`‡ |
+| span events | `exception.type` |
+| log records | `code.filepath`, `code.function`, `code.lineno`, `exception.type`, `mino.exception.frames` |
 
-† URL treatment. ‡ `redact_text`. No `http.request.header.*` or `http.response.header.*` key is
-ever kept, whatever `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_*` says.
+**Go** (`relay/telemetry/redact.go`, `relay/telemetry/logs.go`):
 
-**Go** (`relay/telemetry/redact.go`, new; it calls `relay/redact`, the module's one redactor):
-
-- `redactingSpanExporter` wraps the `otlptracehttp` exporter. It rebuilds each
-  `sdktrace.ReadOnlySpan` through a small read-only view type (the SDK exposes
-  `tracetest.SpanStub.Snapshot()` for exactly this), keeping only `mino.*` keys from § Span
-  catalogue plus `http.response.status_code` and `error.type`, and passing every string through
-  `redact.Line`. Span names come from a closed set of constants, and the wrapper replaces any
-  other name with `relay.unknown`.
-- `redactingLogExporter` wraps `otlploghttp`: the body and every string attribute value go
-  through `redact.Line`, and an `error`-kinded value is rendered through `redact.Error` first.
-  Attribute keys are kept, unlike the span side: they are the literal keys of the relay's own
-  slog calls, chosen in code, and credlint already polices the error values they carry.
+- `redactingSpanExporter` wraps `otlptracehttp`. It rebuilds each `sdktrace.ReadOnlySpan` as a
+  `tracetest.SpanStub` (whose `Snapshot()` returns a `ReadOnlySpan`), keeps only the
+  `mino.*` keys in § Span catalogue plus `http.route`, `http.response.status_code` and
+  `error.type`, keeps only `exception.type` on events, and passes the name and status through
+  `scrub`. Span names come from a closed set of constants; any other name becomes
+  `relay.unknown`.
+- **The typed log-field allowlist** (finding 1) is a `slog.Handler` wrapper, `SafeHandler`. It
+  sits in front of **both** new sinks, the JSON handler and the `otelslog` bridge, and does
+  nothing to the text format. Its rules:
+  - `relay/telemetry/logkeys.go` holds a table classifying every literal key the relay's
+    non-test slog calls use. O4 generates the table with a `go/ast` census of the module and
+    `logkeys_test.go` re-runs that census, so a key added anywhere in the relay without a
+    classification fails the test, naming the key and its `file:line`.
+  - Classes:
+    - `keep`: the value is rendered and goes through `scrub`.
+    - `channel`: the value is a channel UUID. The key becomes `channel_id`, and the value
+      becomes the numeric id from a process-wide `ChannelIDs` map. The channel manager fills
+      the map on publish and empties it on removal, from O3's `channel_pk`. An unknown UUID
+      gives `channel_id="0"`.
+    - `error`: rendered through `redact.Error`, then `scrub`.
+    - `drop`.
+  - An unclassified key is dropped. It cannot reach the handler in a tree where the census test
+    passes, so this is defence in depth.
+  - Attributes attached with `WithAttrs` (`relay/output/profile.go:130`'s
+    `log.With("channel", cfg.ChannelID, …)`) and attributes inside groups (`WithGroup`, or a
+    `slog.Group` value) are classified by their leaf key, exactly like call-site attributes.
+  - Any value of kind `Any` that holds an `error` takes the `error` route whatever its key.
+  - The message goes through `scrub`.
+- `redactingLogExporter` wraps `otlploghttp` as a second line: it applies `scrub` to the body
+  and string values of records that reached the logger provider without passing `SafeHandler`.
+  No such path exists today.
 - Metric attributes are closed by construction: only `relay/telemetry` records them, from typed
-  parameters (`channelID int`, `kind Kind`, …), never a free string from a request.
+  parameters. Exemplars are off, and `/metrics` carries no resource and no scope.
 
 **No `otelhttp`.** Its server spans record the request target, and two XC routes carry the
 user's password in the path (`relay/httpapi/server.go:70-71`). The relay's spans are written by
-hand with the attributes above and `http.route` set to the mux pattern, which is a template.
+hand.
 
 **The checkers.**
 
 - `scripts/check_credential_logging.py` gains a second call shape beside `_is_logging_call`
-  (`:142`): a telemetry call is a call whose method is one of `set_attribute`, `set_attributes`,
+  (`:142`). A telemetry call is one whose method is `set_attribute`, `set_attributes`,
   `add_event`, `record_exception`, `start_as_current_span`, `start_span`, `set_status`, `add`,
   `record` or `set`, on a receiver whose name ends in `span`, `tracer`, `counter`, `histogram`,
-  `gauge` or `meter` (`_logger_owner`, `:132`, already returns the receiver). Arguments are judged
-  exactly as log arguments are, by `_unredacted_arguments` (`:194`), with `redact_text` and
-  `redact_url_attribute` added to `REDACT_FUNCTIONS` (`:116`).
+  `gauge` or `meter`. `_logger_owner` (`:132`) already returns the receiver. Its arguments are
+  judged by `_unredacted_arguments` (`:194`), with `redact_text` added to `REDACT_FUNCTIONS`
+  (`:116`).
 - `relay/internal/credlint` gains the two OTel sinks in D2.
 
-**The leak tests, one per signal per language.** Each builds the real redacting wrapper around an
-in-memory exporter, drives the real code path with a secret that has exactly one source, and
-asserts the secret appears in no exported byte. The secret is a fixed sentinel,
-`S3NT1NEL-pw-9d2f`, used as a password in a URL of the form
-`http://u:S3NT1NEL-pw-9d2f@provider.invalid:8080/live/u/S3NT1NEL-pw-9d2f/1.ts?password=S3NT1NEL-pw-9d2f`.
+**The leak tests** (finding 6). `DjangoInstrumentor().instrument()` rewrites `settings.MIDDLEWARE` for the whole test process, so the Django cases instrument in `setUpClass` before any `Client` is built and uninstrument in `tearDownClass`. Every test follows the same five rules:
 
-| Signal | Python test (`tests/test_observability_redaction.py`, label `tests`) | Go test (`relay/telemetry/redact_test.go`) | Break-check |
-|---|---|---|---|
-| Traces | A `requests.get` of the sentinel URL under the `requests` instrumentation; `provider.invalid` never resolves (RFC 6761 reserves `.invalid`), so the call fails with no network and the instrumentation records the exception; the `InMemorySpanExporter` behind `RedactingSpanExporter` holds no `S3NT1NEL` in any span's name, attributes, events or status | A span carrying `mino.channel_id`, an error from `http.Get` of the sentinel URL recorded with `RecordError`, and a status description of that error's text; serialise the exported stubs to JSON and assert no `S3NT1NEL` | Remove `url.full` from the URL-treatment set (Python) / skip `redact.Line` on event attributes (Go): the test reddens naming the attribute and the sentinel |
-| Logs | `logging.getLogger("apps.proxy").warning("failed %s", <sentinel URL>)` and an `exception()` from a `requests` failure, through `OtelBridgeHandler` into an in-memory log exporter behind `RedactingLogExporter`; also through `JsonFormatter` to a `StringIO` | `slog.Default().Warn("failed", "url", <sentinel URL>)` and an `ErrorContext` whose `error` attribute is the unredacted `*url.Error` from `http.Get` of the sentinel URL (the test file is not credlint-scanned), through the JSON handler to a buffer and through the OTel fan-out to an in-memory exporter | Format `record.msg % args` without `redact_text` in `JsonFormatter` / drop the `ReplaceAttr`: reddens naming the sink |
-| Metrics | Record a catalogue histogram with an extra attribute `{"url": <sentinel URL>}` and an uncatalogued counter named `leak` with the same attribute, through an `InMemoryMetricReader` with D9's views; no exported point carries `S3NT1NEL`, and no `leak` stream exists | Scrape `/metrics` from an `httptest.Server` after recording every catalogue instrument; assert the body has no `S3NT1NEL` and no label key outside the catalogue's | Delete the wildcard drop view: the `leak` stream appears and the test names it |
+1. It drives the real code path through the real boundary into an in-memory exporter (or, for
+   `/metrics`, an `httptest.Server`).
+2. It first asserts that the export it inspects is **non-empty and is the expected item**: a
+   span with the expected template name, a log record with the expected logger, a metric
+   stream with the expected name. A negative assertion over an empty export cannot pass.
+3. It uses **deterministic local transports**, never DNS or a real socket.
+   - Python: a `requests.adapters.BaseAdapter` mounted on the session. It raises
+     `requests.ConnectionError` with urllib3's own message shape,
+     `HTTPConnectionPool(host='provider', port=8080): Max retries exceeded with url: <path_url>`.
+   - Go: an `http.Client` whose `Transport` is a `RoundTripper` returning an error, which
+     `net/http` wraps in a `*url.Error` naming the URL.
+4. The secret is the sentinel `S3NT1NEL-pw-9d2f` inside each carrier of the table above:
+   - `http://u:S3NT1NEL-pw-9d2f@provider:8080/live/u/S3NT1NEL-pw-9d2f/1.ts?password=S3NT1NEL-pw-9d2f`
+   - the UUID `5e171e10-0000-4000-8000-00000000d2f0` standing for a channel
+   - an HLS token built by `MediaSessionToken`
+   - a 64-hex stream hash
+5. A failure names the carrier and the exported field it reached.
 
-Six tests, and each break-check is run and its red message recorded in the PR body.
+Python cases (`tests/test_observability_redaction.py`, label `tests`; Postgres and Redis come
+from the test container):
+
+| Instrumentation or sink | Case | Isolated mutation that must redden it |
+|---|---|---|
+| django | `GET /proxy/ts/stream/<uuid>?password=…` through `django.test.Client` with `OTEL_INSTRUMENTATION_HTTP_CAPTURE_HEADERS_SERVER_REQUEST=.*` and an `X-Api-Key: S3NT1NEL…` header; a view raising `ValueError(<sentinel URL>)`; `/hls/<token>/x.m3u8` | Add `http.target` to the server allowlist: reddens on the UUID and the query. Keep `exception.message`: reddens on the exception case |
+| requests | the sentinel URL through the failing adapter | Add `url.full` to the client allowlist |
+| psycopg | `cursor.execute("SELECT 'S3NT1NEL-pw-9d2f' FROM")`, a syntax error whose message quotes the literal | Keep `exception.message` (the same mutation as django, run separately) |
+| redis | `execute_command("NOSUCHCMD", "S3NT1NEL-pw-9d2f")`, whose error echoes the argument; `SET <uuid> S3NT1NEL…` | Keep `db.statement` |
+| celery | a test task applied with `apply(args=[<sentinel URL>])` that raises with the argument in its message | Keep `exception.message`; separately, add `celery.args` to the allowlist if the sample shows it |
+| span names | a Django route whose template is fine, with an unmatched path producing the fallback name | Skip `redact_text` on the name: reddens on a fixture span whose name is set to the sentinel URL |
+| logs, OTLP | `logging.getLogger("apps.proxy").info(f"Released profile slot 3 for {uuid} via relay metadata")` (the `next_source.py:1161-1163` shape); `logger.exception` with the sentinel in the message; `extra={"secret": …}` | Skip `redact_text` on the body: reddens on the UUID. Keep `exception.message`. Allow all attributes: reddens on `extra` |
+| logs, JSON | the same three through `JsonFormatter` to a `StringIO` | Bypass the formatter's `redact_text` |
+| metrics | catalogue histogram with an excluded `url` attribute recorded **inside a sampled span**; uncatalogued `leak` counter | Remove the wildcard drop view: `leak` appears. Remove `AlwaysOffExemplarFilter`: the excluded attribute appears in `filtered_attributes` (measured) |
+| resource | `OTEL_RESOURCE_ATTRIBUTES=k8s.pod.name=pod-1,evil.key=S3NT1NEL…,service.namespace=S3NT1NEL…/x` (a value outside the safe charset) in every signal's serialized export, OTLP on | Build the resource with `Resource.create`: reddens on `evil.key` |
+
+Go cases (`relay/telemetry/redact_test.go`, `logs_test.go`, `metrics_test.go`):
+
+| Sink | Case | Isolated mutation |
+|---|---|---|
+| spans | a `relay.next_source` span whose call failed through the failing `RoundTripper` (`RecordError` of the `*url.Error`, status from its text) | Keep event attributes other than `exception.type`; separately, skip `scrub` on the status description |
+| logs, JSON and OTLP | **real existing calls**: drive `Channel.failover` on a channel with no resolver (`relay/channel/failover.go:195` logs `"channel", c.id`), and start an output pipeline with an empty command (`relay/output/profile.go:130-133`, the `With`); plus `slog.Any("error", <the *url.Error>)` and a group | Classify `channel` as `keep`: reddens on the UUID. Skip the `error` route for `KindAny`: reddens on the sentinel URL. Ignore `WithAttrs`: reddens on the `With` UUID |
+| `/metrics` and OTLP metrics | `t.Setenv("OTEL_RESOURCE_ATTRIBUTES", "evil.key=S3NT1NEL…")`, record every catalogue instrument (M3 inside a sampled span), scrape `/metrics` and collect the in-memory OTLP reader; OTLP off and on | Drop `WithoutTargetInfo`: `/metrics` reddens on `target_info`'s `evil_key`. Drop the exemplar option: the in-memory OTLP export carries an exemplar with the span context, which the test forbids. Skip the environment normalisation (D13): OTLP resource reddens |
+
+Every mutation is run, its red message recorded in the PR body, and reverted.
 
 ### D10 — Python init: programmatic, after the fork, five instrumentations (R8)
 
@@ -446,11 +531,45 @@ emit the stable names catalogue row M10 renames.
 
 | Process | Hook | Where | Why it is after any fork |
 |---|---|---|---|
-| `api-uwsgi`, `relay-uwsgi` | module import of `dispatcharr/wsgi.py` (after `get_wsgi_application()`, `:8`), **and** `uwsgidecorators.postfork` when `uwsgidecorators` imports | `dispatcharr/wsgi.py` | Every uWSGI ini that loads `dispatcharr.wsgi` sets `lazy-apps = true` (`docker/uwsgi.ini:42`, `uwsgi.modular.ini:43`, `uwsgi.relay.ini:48`, `uwsgi.dev.ini:28`), so the module is imported in each worker after the fork. The postfork registration covers a configuration that turns `lazy-apps` off; the pid guard makes the two calls one. O5 adds `tests/test_uwsgi_inis_are_lazy.py`, which fails if any `docker/uwsgi*.ini` naming `dispatcharr.wsgi` lacks `lazy-apps = true`, so the import-time call cannot silently become a pre-fork call |
+| `api-uwsgi`, `relay-uwsgi` | module import of `dispatcharr/wsgi.py`, **before** `get_wsgi_application()` (`:8`), immediately after the `DJANGO_SETTINGS_MODULE` default (`:7`); **and** `uwsgidecorators.postfork` when `uwsgidecorators` imports | `dispatcharr/wsgi.py` | Every uWSGI ini that loads `dispatcharr.wsgi` sets `lazy-apps = true` (`docker/uwsgi.ini:42`, `uwsgi.modular.ini:43`, `uwsgi.relay.ini:48`, `uwsgi.dev.ini:28`), so the module is imported in each worker after the fork. The postfork registration covers a configuration that turns `lazy-apps` off; the pid guard makes the two calls one. O5 adds `tests/test_uwsgi_inis_are_lazy.py`, which fails if any `docker/uwsgi*.ini` naming `dispatcharr.wsgi` lacks `lazy-apps = true`, so the import-time call cannot silently become a pre-fork call |
 | `celery-default` (prefork) | `worker_process_init` | `dispatcharr/celery.py:48`'s existing handler, first line | Sent in each prefork child (`celery/concurrency/prefork.py:82` in Celery 5.6.3, read in the base image) |
 | `celery-dvr` (threads) | `worker_init`, only when `sender.pool_cls` names the thread pool | new handler in `dispatcharr/celery.py` | `worker_process_init` is sent by the prefork and solo pools only (`concurrency/prefork.py:82`, `concurrency/solo.py:20`); `concurrency/thread.py` sends nothing, and the thread pool does not fork. `worker_init` is sent from `WorkController.setup_instance` (`celery/worker/worker.py:127`) while `pool_cls` still holds the configured name (`:378`), before it is resolved at `:130` |
 | `celery-beat` | `beat_init` | new handler in `dispatcharr/celery.py` | Sent by `celery/beat.py:638`; beat does not fork |
-| `daphne` | module import of `dispatcharr/asgi.py`, after `django.setup()` (`:8`) | `dispatcharr/asgi.py` | Daphne runs one process and does not fork (`docker/supervisord.d/daphne.conf`) |
+| `daphne` | module import of `dispatcharr/asgi.py`, after the `DJANGO_SETTINGS_MODULE` default (`:7`) and **before** `django.setup()` (`:8`) and `get_asgi_application()` (`:13`) | `dispatcharr/asgi.py` | Daphne runs one process and does not fork (`docker/supervisord.d/daphne.conf`), and it has no ASGI lifespan support (django/daphne issue #264, open), so import time is the hook |
+
+**Why before the handler is built** (finding 5). `DjangoInstrumentor().instrument()` works by
+inserting its middleware into `settings.MIDDLEWARE`. A handler built earlier has already loaded
+its middleware chain and never runs the inserted one. **Measured** with
+`opentelemetry-instrumentation-django` 0.66b2 on Django 6.0.8, using a minimal settings module and
+one route: instrumenting before `get_wsgi_application()` produced one server span named
+`GET ok/<str:x>/`; instrumenting after it produced **no span at all**. That probe also showed
+that, without the semconv opt-in, the server span records `http.url` including the query string,
+which is one reason D9 keeps no URL key on server spans.
+
+**Tests of the real entry points.**
+
+- `tests/test_observability_wsgi_cold_import.py` runs a subprocess with an allowlisted
+  environment. The environment sets `DJANGO_SETTINGS_MODULE=dispatcharr.settings_test` and
+  `OTEL_EXPORTER_OTLP_ENDPOINT` pointing at a stdlib `http.server` that the test runs on
+  `127.0.0.1:0` and that records the request bodies it receives. The subprocess imports the
+  real `dispatcharr.wsgi` (a cold import, so nothing is instrumented beforehand), calls
+  `application` with a WSGI environ for an unrouted path, and force-flushes the tracer and meter
+  providers. The test decodes the captured `/v1/traces` and `/v1/metrics` bodies with
+  `opentelemetry-proto` (a dependency of the exporter) and asserts:
+  - one server span;
+  - one `mino_api_http_server_request_duration` point;
+  - a `service.name` of `mino-api`.
+
+  Break-check: move the `init` call below `get_wsgi_application()`. The span assertion reddens
+  with "no server span", which is the mechanism measured above.
+- The authorize hop's `X-Relay-Traceparent` is asserted in O6, inside a `TestCase` that
+  instruments in `setUpClass` and builds its client after that.
+- `tests/test_celery_otel_init.py` exercises the threads-pool hook through Celery's own startup
+  path. `app.WorkController(pool="threads", hostname=…)` constructs a real worker without
+  consuming, and its constructor sends `worker_init` with `sender.pool_cls == "threads"`.
+  **Measured** on Celery 5.6.3: the signal carried `'threads'`, and `'prefork'` for
+  `pool="prefork"`, before the pool class was resolved. The test asserts that `init` ran once
+  for `threads` and not at all for `prefork`.
 
 `worker_process_shutdown` (prefork children, `prefork.py:90`) and `worker_shutdown` call
 `force_flush` with a two-second bound. Telemetry from a uWSGI worker killed by `harakiri` or
@@ -544,20 +663,87 @@ outgoing request. The per-request HMAC binds method, path, timestamp and body
 `relay.tune`'s context reaches `startTune` because `StreamHandler` already passes `r.Context()`
 (`relay/httpapi/stream.go:277`); the span is put on that context before `authorizeTune` (`:247`).
 
-**Where `relay.tune` ends.** At the first successful write to this client: the first
-`writeChunks` call with media in `serveClient` (`stream.go:1095`) and the fMP4 init segment
-write (`relay/httpapi/fmp4.go:105`), or the multivariant playlist write for HLS
-(`relay/httpapi/hls.go:428`). On a refusal, a redirect (`stream.go:281-291`) or a tune failure
-it ends with the status the client got. A client that joins a running channel gets a
-`relay.tune` with no `relay.next_source` child and `mino.tune.joined=true`.
+**Span ownership** (finding 8). Each relay span has exactly one owner, which starts it and
+guarantees its end:
 
-**Failover and switch.** `relay/channel/failover.go:190`'s `failover` starts `relay.failover`
-as a new root with one link to the `relay.tune` span context the channel recorded when it was
-published, ends it at each of its returns with `mino.outcome`, and runs `c.resolver.Next` under
-it (`:211`) so the `relay.next_source` call is its child. `relay/channel/advance.go`'s operator
-switch starts `relay.stream_switch` from the internal request's extracted context with the same
-link. Both are short: they end when `failover`/`applySwitch` returns, never when the new source
-delivers.
+- **`relay.tune`** is owned by `StreamHandler` (`relay/httpapi/stream.go:219`).
+  - It starts the span at the top of the returned handler (`:228`) as
+    `tune := telemetry.StartTune(r.Context(), r)`. That call reads the trusted parent and
+    returns a context and a `*Tune`.
+  - It replaces `r` with `r.WithContext(ctx)`, so `authorizeTune` (`:247`) and `startTune`
+    (`:277`, which already receives `r.Context()`) run under the span.
+  - It immediately defers `tune.End()`.
+  - `*Tune` holds a `sync.Once` and two methods. `FirstByte()` ends the span with
+    `mino.outcome=streaming` and status 200. `Fail(outcome, status)` records the outcome a
+    failure branch chose. The deferred `End()` ends the span with whatever was recorded:
+    `refused`, `failed`, `redirect` or `draining`, or `abandoned` if the client went away
+    before a first byte. `End()` is a no-op once `FirstByte` has run.
+  - Each failure branch already writes its own response (`writeAuthorizeFailure`,
+    `writeTuneFailure`, `http.Error`, the redirect at `:281-293`) and gains one `tune.Fail(…)`
+    call beside it.
+  - `FirstByte` is passed down as a `func()`. `serveClient` (`:1047`) calls it after its first
+    successful `writeChunks` (`:1095`); the fMP4 path calls it after the init write
+    (`relay/httpapi/fmp4.go:105`); the HLS path calls it after the multivariant write
+    (`relay/httpapi/hls.go:428`). The span therefore ends **while the viewer is still
+    connected**, not when the request returns.
+- **`relay.authorize` and `relay.next_source`** are owned by `relay/control`. `Authorize`
+  (`relay/control/authorize.go:140`) and `NextSource` (`relay/control/nextsource.go:384`)
+  start the span from their `ctx`, end it before they return, and inject `traceparent` into each
+  attempt (`attempt`, `:451`).
+- **`relay.failover`** is owned by `Channel.failover` (`relay/channel/failover.go:190`).
+  - It starts the span as a new root, linked to the tune span context the channel stored when
+    it was published (the publishing tune's context, carried in `channel.Started`;
+    `relay/channel/manager.go:130`).
+  - It calls `c.resolver.Next` (`:211`) with the span's context, so `relay.next_source` is its
+    child.
+  - It ends the span at each return with M4's outcome.
+- **`relay.stream_switch`** is owned by `AdvanceHandler` (`relay/httpapi/control.go:235`).
+  - The internal routes extract `traceparent` only after `RequireInternal` accepts the request
+    (D11, Trust). `AdvanceHandler` then starts the span from `r.Context()` with a link to the
+    channel's stored tune context, and ends it when `Advance` returns.
+  - `Channel.Advance` (`relay/channel/advance.go:25`) takes no context at the seed, and its one
+    production caller (`control.go:308`) passes none. O4 changes the signature to
+    `Advance(ctx context.Context, resolved Resolved, resetTried bool) bool` and passes
+    `r.Context()` at `:308`.
+  - The context is used only to parent any span `Advance` starts. It does not bound `Advance`'s
+    work, which is lock-protected switching with no I/O and keeps its current semantics.
+  - The other `.Advance(` matches in the module are a fake clock's `Advance` in tests and are
+    unaffected.
+
+**Trace tests** (O4, `relay/httpapi/trace_test.go`). Each uses a `tracetest.SpanRecorder` and
+`relay/internal/relaytest`'s fake control plane, which captures request headers:
+
+1. **The whole graph.** A tune carries a valid marker and `X-Relay-Traceparent` naming span P.
+   The test asserts four things:
+   - `relay.tune`'s parent is P and its trace id is P's;
+   - `relay.next_source` is `relay.tune`'s child;
+   - the `traceparent` the fake control plane received names `relay.next_source`'s span id in
+     the same trace;
+   - every span carries the same trace id.
+2. **The span ends at the first byte while the viewer stays connected.** The test reads the
+   first chunk and, before closing the response body, asserts that `relay.tune` has ended with
+   `mino.outcome=streaming`. It then keeps reading. Break-check: call `FirstByte` from the
+   handler's return instead, and the assertion reddens with "tune span still open after first
+   byte".
+3. **Failure before the first byte.** next-source is refused (the fake answers 403), so the
+   client gets the existing error status. `relay.tune` has ended with `mino.outcome=refused`,
+   that status, and no first-byte event.
+4. **Untrusted context is ignored.** The same `X-Relay-Traceparent` arrives without a valid
+   marker, or a bare `traceparent` arrives. Either way `relay.tune` is a root.
+5. **An operator switch.** `POST /proxy/relay/channels/{id}/advance` arrives with valid
+   internal headers and a `traceparent` naming span Q, on a channel published by a traced tune
+   T. `relay.stream_switch`'s parent is Q and its single link is T. A second request without
+   valid internal headers is refused before any span starts.
+6. **A failover.** A forced `health_monitor` failover gives `relay.failover` a root with a link
+   to T, and a `relay.next_source` child.
+
+The cross-process half is asserted where each part runs:
+- O6's `TestCase` shows that the authorize 200 carries `X-Relay-Traceparent` naming the authorize
+  request's span.
+- O4's nginx test shows that nginx forwards it on the three Go-bound hop locations.
+- Test 1 above shows that the relay parents `relay.tune` on it.
+
+No single test spans Django, nginx and the relay. Together the three pin every hop.
 
 **Sampler.** Both languages use `ParentBased(root = TraceIdRatioBased(r))`, with `r` from
 `OTEL_TRACES_SAMPLER_ARG` (a float in [0, 1], default 1.0; an unparseable value is 1.0 with one
@@ -579,7 +765,7 @@ either.
 | `OTEL_EXPORTER_OTLP_PROTOCOL` (and per-signal) | all | Only `http/protobuf` is supported. Any other value: OTLP stays **off** in that process and one WARNING names the variable and the supported value |
 | `OTEL_EXPORTER_OTLP_HEADERS` (and per-signal) | all, through the exporters | Honoured. **A credential**: never logged, in any form. The one INFO line init writes names the endpoint as `scheme://host:port` only |
 | `OTEL_EXPORTER_OTLP_TIMEOUT`, `…_CERTIFICATE`, `…_CLIENT_KEY`, `…_CLIENT_CERTIFICATE`, `…_COMPRESSION` | all, through the exporters | Honoured |
-| `OTEL_RESOURCE_ATTRIBUTES` | all | Honoured, except that `service.name` and `mino.program` are always the process's own (D13) |
+| `OTEL_RESOURCE_ATTRIBUTES` | all | **Allowlisted** (D13): only the keys D13 names, only with values in a safe character set; every other pair is dropped with one WARNING naming the dropped *keys* |
 | `OTEL_SERVICE_NAME` | — | Ignored, because one container runs several services. The docs page says so |
 | `OTEL_TRACES_SAMPLER_ARG` | all | D11 |
 | `OTEL_TRACES_SAMPLER` | — | Ignored (D11) |
@@ -602,12 +788,35 @@ compose file sets any of them; the docs page shows how.
   supervisord program name (`relay-go`, `api-uwsgi`, `relay-uwsgi`, `daphne`, `celery-default`,
   `celery-dvr`, `celery-beat`), and `service.instance.id`, a random UUID per process. The
   three-name ruling is kept; `mino.program` is what lets a query separate the VOD relay from the
-  API without a fourth name. Python builds the resource with
-  `Resource.create({"service.name": …, "mino.program": …, "service.instance.id": …})`;
-  **measured** with SDK 1.45.2: with `OTEL_RESOURCE_ATTRIBUTES=service.name=evil,mino.program=evil,foo=bar`
-  and `OTEL_SERVICE_NAME=evil2` set, the result carried `mino-api`, `api-uwsgi` and `foo=bar`, so
-  the passed attributes win and the rest of the variable is honoured. Go merges
-  `resource.Environment()` first and the process's own attributes last for the same outcome.
+  API without a fourth name.
+- **The resource is allowlisted** (finding 3). An environment variable is not a safe place to
+  assume harmless, and `/metrics` is unauthenticated. Both languages build the resource from:
+  - `service.name`, `service.instance.id` and `mino.program` (D13);
+  - `service.version`, in Python only, from `version.py`'s `__version__` (the relay sets none);
+  - `telemetry.sdk.name`, `.language` and `.version`;
+  - from `OTEL_RESOURCE_ATTRIBUTES`, only the keys `deployment.environment.name`,
+    `service.namespace`, `k8s.cluster.name`, `k8s.namespace.name`, `k8s.node.name`,
+    `k8s.pod.name`, `k8s.pod.uid` and `host.name`, and only when the value matches
+    `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`.
+
+  Everything else in the variable is dropped, and one WARNING names the dropped keys, never a
+  value. `OTEL_SERVICE_NAME` is ignored (D12).
+  - **Python** constructs `Resource(attrs)` directly and never calls `Resource.create`, whose
+    detectors read the variable. **Measured** on SDK 1.45.2: `Resource({...})` ignored
+    `OTEL_RESOURCE_ATTRIBUTES` and `OTEL_SERVICE_NAME` set in the environment, and a
+    `TracerProvider(resource=…)` kept exactly that resource. The same `Resource` object is
+    passed to the tracer, meter and logger providers.
+  - **Go cannot do the same through options.** `sdktrace.WithResource`,
+    `sdkmetric.WithResource` and `sdklog.WithResource` each merge `resource.Environment()`
+    under the given resource (`sdk/trace/provider.go:393`, `sdk/metric/config.go:118`,
+    `sdk/log/provider.go:304` in v1.47.0). An arbitrary key in the variable therefore survives
+    any `WithResource`. `telemetry.Init` instead **normalises the process environment first**:
+    it computes the allowlisted value, sets `OTEL_RESOURCE_ATTRIBUTES` to it with `os.Setenv`,
+    unsets `OTEL_SERVICE_NAME`, and only then builds any provider. The relay's children (ffmpeg,
+    Streamlink, VLC) inherit the normalised value, which they ignore.
+  - `/metrics` carries no resource at all (`WithoutTargetInfo`, D4).
+  - The resource tests are D9's resource rows. In each language they run with OTLP on and off,
+    and they inspect the serialized export of every signal and the `/metrics` body.
 - **Scope names**: `mino/relay`, `mino/api`, `mino/worker`.
 - **The new environment variable is `MINO_LOG_FORMAT`**, born under the new prefix. Rename PR E1
   (`2026-10-28-mino-rename-design.md`, C-7/C-8) aliases `DISPATCHARR_<rest>` to `MINO_<rest>`; no
@@ -701,13 +910,55 @@ for the Python rows it is informational**, because the Collector does the transl
 | M5 | `mino_relay_hls_sessions` | Int64ObservableGauge | `{session}` | none | `mino_relay_hls_sessions` | `session.Table.Len` (`relay/session/table.go:549`; its "for tests" comment is corrected) |
 | M6 | `mino_relay_rewind_disk_usage` | Int64ObservableGauge | `By` | none | `mino_relay_rewind_disk_usage_bytes` | `hls.Rewind.Bytes` (`relay/hls/rewind.go:189`) |
 | M7 | `mino_relay_rewind_disk_limit` | Int64ObservableGauge | `By` | none | `mino_relay_rewind_disk_limit_bytes` | `hls.Rewind.Cap` (`rewind.go:182`); not observed while the cap is `math.MaxInt64` (unset, `:152`) |
-| M8 | `mino_relay_process_cpu` | Float64ObservableCounter | `s` | `channel_id`, `kind`, `profile_id` | `mino_relay_process_cpu_seconds_total` | `relay/procstat` (Linux only): `utime + stime` (fields 14 and 15 of `/proc/<pid>/stat`, `proc(5)`) summed over every process whose process group (field 5) is a tracked group, divided by `AT_CLKTCK` from `/proc/self/auxv` (100 if absent). Groups are registered when `ffmpeg.start` returns (`relay/ffmpeg/spawn.go:218-237`; `Setpgid` makes the leader's pid the group id, `:149-154`) and removed when `Process.Wait` returns (`:391`). Summing the group is what counts a Streamlink or VLC profile's own ffmpeg child, which the leader's fields alone would not |
+| M8 | `mino_relay_process_cpu` | Float64ObservableCounter | `s` | `channel_id`, `kind`, `profile_id` | `mino_relay_process_cpu_seconds_total` | `relay/procstat` (Linux only), **accumulated over each process's lifetime** (§ M8 accounting below): `utime + stime` (fields 14 and 15 of `/proc/<pid>/stat`, `proc(5)`) of every process whose process group (field 5) is tracked, divided by `AT_CLKTCK` from `/proc/self/auxv` (100 if absent). Groups are registered when `ffmpeg.start` returns (`relay/ffmpeg/spawn.go:218-237`; `Setpgid` makes the leader's pid the group id, `:149-154`) and unregistered when `Process.Wait` returns (`:391`). Grouping is what counts a Streamlink or VLC profile's own ffmpeg child |
 | M9 | `mino_relay_process_memory_rss` | Int64ObservableGauge | `By` | `channel_id`, `kind`, `profile_id` | `mino_relay_process_memory_rss_bytes` | the same scan: field 24 (`rss`, pages) × `os.Getpagesize()`, summed over the group |
 | M10 | `mino_api_http_server_request_duration` | Histogram | `s` | `http.request.method`, `http.route`, `http.response.status_code` | `mino_api_http_server_request_duration_seconds` | the django instrumentation's `http.server.request.duration`, renamed by a D9 view (rate, errors and duration all come from this one histogram) |
 | M11 | `mino_worker_task_duration` | Histogram | `s` | `task` (the registered task name), `outcome` (`SUCCESS`/`FAILURE`/`RETRY`/`REVOKED`, Celery's state) | `mino_worker_task_duration_seconds` | `task_prerun` records a monotonic start keyed by `task_id`; `task_postrun` records the duration with its `state` kwarg. Both handlers already exist (`dispatcharr/celery.py:85`, `:97`); one line is added to each |
 | M12 | `mino_worker_queue_depth` | Int64ObservableGauge | `{message}` | `queue` (`celery`/`dvr`) | `mino_worker_queue_depth` | D16, beat only |
 | M13 | `mino_worker_provider_slots_in_use` | Int64ObservableGauge | `{slot}` | `m3u_profile_id` | `mino_worker_provider_slots_in_use` | D16, beat only |
 | M14 | `mino_worker_provider_slots_limit` | Int64ObservableGauge | `{slot}` | `m3u_profile_id` | `mino_worker_provider_slots_limit` | D16, beat only; `0` means unlimited, as `max_streams=0` does |
+
+**M8 accounting** (finding 7). A sum over the processes alive at collection time would
+**decrease** when one child exits while its siblings run on. A backend reads that drop as a
+counter reset and computes a wrong rate. `relay/procstat` therefore keeps per-label-set
+accumulators instead of reporting a sum:
+
+- **Process identity** is `(pid, starttime)`, where `starttime` is field 22 of
+  `/proc/<pid>/stat`. A reused pid has a different start time and is a new identity.
+- **Each collection** reads every live member of every tracked group. For each identity it adds
+  `cpu_now − cpu_last_seen` to that group's label set and stores `cpu_now`. A new identity's
+  `cpu_last_seen` is 0, so its CPU since it started is counted once.
+- **When an identity is missing** from a later collection (exited and reaped), its last-seen
+  value is already in the accumulator and nothing is subtracted. The CPU it spent between the
+  last collection and its exit is lost. That undercount is bounded by one collection interval
+  per exited process, and the docs page states it.
+- **Unregistering** a group (at `Wait`) stops new reads for it. Its label set's accumulated
+  value **stays** and keeps being reported. A cumulative counter must not fall, and the series
+  lasts until the relay restarts (D7, Cardinality).
+- **Several groups with one label set** (two pipelines of the same channel, kind and profile in
+  turn) add into one accumulator.
+- **The reported value** is the accumulator, so it never decreases.
+
+M9 has no such rule: it is a gauge, and it is the sum of `rss` over the live members.
+
+**Tests** (O2, `relay/procstat/accounting_test.go`). They are driven by an injected `/proc` reader
+that returns scripted snapshots, so every expected value is exact:
+
+1. **Overlap.** A tracked group holds a leader and a child: 2 s and 3 s, then 4 s and 5 s. The
+   label set reports 5 s, then 9 s.
+2. **Departure.** The child disappears in the next snapshot while the leader goes to 6 s. The
+   report is 11 s (9 + 2). It is **not** 6 s.
+3. **Replacement and pid reuse.** A new identity appears with the departed child's pid and a
+   new `starttime` at 1 s. The report is 12 s, not a negative delta against the old 5 s.
+4. **Two groups, one label set.** The accumulator is their sum.
+5. **`untrack` is pinned directly.** After `untrack()`, the registry holds no entry for the
+   group (`Registry.Groups()` is empty), a further snapshot listing its pids adds nothing, and
+   the label set still reports its last accumulated value.
+
+The break-checks are run against the same snapshots:
+- Report the live sum instead of the accumulator: test 2 reddens with "6, want 11".
+- Key identities by pid alone: test 3 reddens with a negative delta.
+- Make `untrack` a no-op: test 5 reddens on the non-empty registry.
 
 M8 and M9 are the CPU question. On a non-Linux build (`GOOS=darwin` lint and tests) `relay/procstat`
 reports nothing and the two instruments have no points; `procstat_other.go` is a stub, and the
@@ -736,13 +987,15 @@ Both languages, `MINO_LOG_FORMAT=json`, one JSON object per line:
 |---|---|---|---|
 | `time` | `record.created` as RFC 3339 UTC with microseconds | slog's own (RFC 3339 nano) | |
 | `level` | `record.levelname` (`TRACE` for level 5, which the repo uses) | slog's (`DEBUG`/`INFO`/`WARN`/`ERROR`) | |
-| `msg` | `redact_text(record.getMessage())` | `redact.Line(msg)` via `ReplaceAttr` | |
+| `msg` | `redact_text(record.getMessage())` | `scrub(msg)` in `SafeHandler` | |
 | `logger` | `record.name` | absent | |
 | `service.name` | D13 | D13 | |
 | `mino.program` | D13 | `relay-go` | |
 | `trace_id`, `span_id` | from `opentelemetry.trace.get_current_span()` when its context is valid, lower-case hex | from the record's context when valid | absent, never empty, when there is no span |
-| `exception` | `redact_text(self.formatException(record.exc_info))` | absent (errors are attributes) | |
-| any other key | absent (`extra=` fields are not serialised) | the call's own attributes, string values through `redact.Line` | |
+| `exception.type` | `type(exc).__qualname__` with its module | absent (errors are attributes) | |
+| `mino.exception.frames` | list of `"file:line in function"`, innermost last; no source text, no message | absent | |
+| `channel_id` | absent | from a `channel`-class key (D9) | the numeric id; `"0"` when unknown |
+| any other key | absent (`extra=` fields are not serialised) | the call's own attributes as `SafeHandler` classifies them | |
 
 ## Versions checked
 
@@ -768,24 +1021,52 @@ this spec means one of those probes; "read" means the installed source; "inferre
 | `protobuf` (new transitive dependency of the OTLP exporter; not in `uv.lock` at the seed) | 7.36.2 | PyPI JSON |
 | gevent | 26.7.0 (the repo's pin, `pyproject.toml`) | the gevent probe in D10 |
 
-**What was measured about the Go Prometheus exporter.** With `otelprom.New(otelprom.WithRegisterer(reg))`
-over a private registry served by `promhttp.HandlerFor`, v0.69.0 rendered:
-`mino_relay_channels` (unit `{channel}`, gauge, no suffix), `mino_relay_client_sent_bytes_total`
-(unit `By`, counter), `mino_relay_process_cpu_seconds_total` (unit `s`, observable counter) and
-`mino_relay_process_memory_rss_bytes` (unit `By`, gauge). Every series also carried
-`otel_scope_name`, `otel_scope_schema_url` and `otel_scope_version` labels, and a `target_info`
-gauge carried the resource. The catalogue's Prometheus column is that rendering; O4's catalogue
-test treats the three `otel_scope_*` keys and `target_info` as expected, not as leaks.
+**What was measured about the Go Prometheus exporter.** The exporter was built with D4's four
+options (a private registry, `UnderscoreEscapingWithSuffixes` pinned, `WithoutTargetInfo`,
+`WithoutScopeInfo`) and served by `promhttp.HandlerFor`. v0.69.0 rendered:
+- `mino_relay_channels{state="active"}` (unit `{channel}`, gauge, no suffix);
+- `mino_relay_client_sent_bytes_total{channel_id,format}` (unit `By`, counter);
+- `mino_relay_process_cpu_seconds_total{kind}` (unit `s`, observable counter);
+- `mino_relay_process_memory_rss_bytes` (unit `By`, gauge).
 
-**What was not verified.** Whether `uwsgidecorators.postfork` fires for a hook registered during
-app loading under `lazy-apps = true` (D10 makes both calls and does not depend on the answer);
-whether uWSGI runs Python's at-fork hooks in its C-forked workers (D10 does not rely on them);
-whether `opentelemetry-instrumentation-django` 0.66b2 emits server spans for Django requests
-served by Daphne (only WebSockets are served there, `docker/supervisord.d/daphne.conf`, and the
-Channels consumer is not instrumented by it; Daphne's process is initialised for its log records,
-its outbound calls and its database and Redis spans). The research subagent dispatched to
-cross-check these against upstream documentation did not deliver a report before this draft was
-committed; nothing here rests on it.
+No series carried an `otel_scope_*` label and there was no `target_info` family. Without the two
+`Without…` options, every series also carried `otel_scope_name`, `otel_scope_schema_url` and
+`otel_scope_version`, and a `target_info` gauge carried the resource (also measured). That is
+why both options are required (D9).
+
+**What was measured about exemplars.** In both languages, with the SDK defaults, a histogram
+recorded inside a sampled span exported a View-excluded secret attribute in the exemplar. With
+the filter set to always-off, it did not (D9; Python 1.45.2, Go v1.47.0).
+
+**What was measured about late Django instrumentation.** See D10: instrumenting after
+`get_wsgi_application()` produced no span.
+
+**What was measured about Celery's `worker_init`.** See D10: `pool_cls` was `'threads'` or
+`'prefork'`, unresolved, when the signal fired.
+
+**What upstream sources confirmed** (the research subagent's report, read against source and
+docs on 2026-10-31):
+
+- **uWSGI does not run Python's at-fork hooks** in a worker unless `py-call-osafterfork` or
+  `py-call-uwsgi-fork-hooks` is set (`unbit/uwsgi` `plugins/python/python_plugin.c:197-198,448-480`).
+  None of this repo's inis sets either. D10 does not rely on the hooks.
+- **`uwsgidecorators.postfork`** sets `uwsgi.post_fork_hook`, which the Python plugin calls in
+  every worker after the fork. Whether a hook registered *during* lazy app loading also fires for
+  that same worker was not established. D10 calls `init` directly at import as well, and the pid
+  guard makes the two calls one.
+- **Daphne has no ASGI lifespan support** (django/daphne #264 and PR #570, both open), so D10
+  uses import time.
+- **The Django instrumentation covers Django's ASGI HTTP requests but not Channels WebSocket
+  consumers**, which never pass through Django middleware. Daphne serves only WebSockets here
+  (`docker/supervisord.d/daphne.conf`). Its process is initialised for its log records, outbound
+  calls, and database and Redis spans, and WebSocket consumers are not traced.
+- **Celery's instrumentation docs** say to initialise in `worker_process_init`.
+- **gevent** has given each greenlet its own `contextvars` context since 20.9 (gevent docs). That
+  is consistent with D10's measurement.
+
+**What was not verified, and is not relied on.** Only one thing: whether a `postfork` hook
+registered during lazy app loading fires for the worker that registered it. D10 designs around it.
+Everything else this spec relies on was either measured here or read in upstream source.
 
 ## Go modules
 
@@ -796,6 +1077,7 @@ implementation choice.
 
 ```
 github.com/prometheus/client_golang
+github.com/prometheus/otlptranslator
 go.opentelemetry.io/contrib/bridges/otelslog
 go.opentelemetry.io/otel
 go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp
@@ -812,8 +1094,9 @@ go.opentelemetry.io/otel/trace
 
 **Measured footprint.** A prototype module (Go 1.27.1 directive, built with 1.27.3) importing the
 three OTLP/HTTP exporters, the three SDK providers, the `otelslog` bridge, the Prometheus exporter
-and `promhttp` resolved to **11 direct requirements** (the list above minus `otel/log` and
-`otel/trace`, which the prototype did not import by name), **116 modules in the graph** and
+and `promhttp`, with the naming strategy pinned, resolved to **12 direct requirements** (the list
+above minus `otel/log` and `otel/trace`, which the prototype did not import by name), **116
+modules in the graph** and
 **34 third-party modules linked** into the binary:
 
 ```
@@ -941,16 +1224,22 @@ for `internal/credlint`, credlint, golangci-lint ×3); commit gate: Go section. 
 **Tests.** `relay/procstat`: parsing fixtures (a `stat` line with `) (` in the name; a group of three
 pids, two in the tracked group), the auxv parser on a fixture, and on Linux a live test that spawns
 `sleep` with `Setpgid`, tracks it, and sees a non-negative CPU figure and a positive RSS.
-`relay/telemetry`: the three Go leak tests (D9 table); `TestExpositionMatchesTheCatalogue` (D14);
+`relay/procstat`: the five accounting tests in § M8 accounting. `relay/telemetry`: the Go span,
+metric and resource leak rows of D9 (the log row's *real-call* cases need the census and the
+wiring, so they land in O4; O2 drives `SafeHandler` with synthetic records of each class, `With`,
+groups and `KindAny` errors); `TestExpositionMatchesTheCatalogue` (D14);
 `TestOTLPOffInstallsNoProvider` (no endpoint ⇒ `otel.GetTracerProvider()` is the no-op and no
 goroutine was started, by `runtime.NumGoroutine` before and after); `TestProtocolOtherThanHTTPProtobufStaysOff`;
 `TestSamplerArg` (unset ⇒ 1.0; `0.25` ⇒ ratio 0.25; `x` ⇒ 1.0 and one warning); the JSON handler's
-keys (§ Log record schema) and `ReplaceAttr` redaction.
+keys (§ Log record schema); `TestEnvironmentNormalisedBeforeProviders` (D13: after `Init`,
+`OTEL_RESOURCE_ATTRIBUTES` holds only allowlisted pairs and `OTEL_SERVICE_NAME` is unset); and
+`TestExemplarsOff` (a recording inside a sampled span exports no exemplar).
 
-**Break-checks.** Each of the three Go leak tests' (D9). For `TestExpositionMatchesTheCatalogue`:
+**Break-checks.** Each of D9's isolated Go mutations for the rows O2 carries, and § M8 accounting's
+three. For `TestExpositionMatchesTheCatalogue`:
 rename `mino_relay_hls_sessions` to `mino_relay_hls_session` in the instrument constructor; the test
-names the missing and the unexpected family. For procstat: drop the pgrp grouping and read only the
-leader; the three-pid fixture reddens with the leader-only figure.
+names the missing and the unexpected family. For procstat grouping: read only the leader; the
+three-pid fixture reddens with the leader-only figure.
 
 **Coverage (R27).** Both packages are unlinked, so outside the floor's denominator. The PR shows each
 package's per-package coverage ≥ 85%, CI-measured with `-count=1 -race -covermode=atomic` (the blocks
@@ -1008,15 +1297,26 @@ return: the failover case reddens.
   (`:60`), outside `DevRoutes`.
 - `relay/control/nextsource.go`: `ChannelPK *int` on `NextSourceAnswer`; `traceparent` injected in
   `attempt` (`:451`) and in `authorize.go`'s `Authorize` (`:140`).
-- `relay/channel`: the channel's numeric id (from the answer at publish) and its tune span context
-  (for links); M1/M2 observed through `Manager.Snapshot`/`ClientSnapshot`; M4 at each return of
-  `failover`; `relay.failover` and `relay.stream_switch` spans.
+- `relay/channel`:
+  - the channel's numeric id (from the answer at publish) and its publishing tune's span
+    context (for links), carried in `Started` (`manager.go:130`);
+  - the `telemetry.ChannelIDs` map, filled on publish and emptied on removal (D9);
+  - M1 and M2 observed through `Manager.Snapshot` and `ClientSnapshot`;
+  - M4 at each return of `failover`, which owns `relay.failover` (D11);
+  - `Advance(ctx context.Context, resolved Resolved, resetTried bool) bool` (`advance.go:25`), so
+    that `AdvanceHandler` (`relay/httpapi/control.go:235`) owns `relay.stream_switch` and passes
+    `r.Context()` at `:308`.
+- `relay/telemetry/logkeys.go`: the census-generated key classification table, and `SafeHandler`
+  installed in front of the JSON handler and the `otelslog` bridge (D9).
 - `relay/ffmpeg/spawn.go`: `start` takes a `procstat.Labels` (through the four exported `Start*`
   wrappers' callers, `output/profile.go:137`, `output/fmp4.go:532,618`,
   `channel/source_transcode.go:183`, `hls/pipeline.go:695,891`) and tracks the group until `Wait`.
   `hls/silence.go:123` and `hls/detect.go:184` pass the zero `Labels`, which tracks nothing.
-- `relay/httpapi`: `relay.tune` (D11, the trusted `X-Relay-Traceparent`), `relay.authorize`,
-  `relay.next_source`; M3 in `writeChunks` and the two HLS writes; the `session.Table.Len` comment.
+- `relay/httpapi`: `relay.tune` with D11's ownership (`StartTune`, `FirstByte` handed to the
+  three serving paths, `Fail` beside each failure branch, a deferred `End`); M3 in `writeChunks`
+  and the two HLS writes; the `session.Table.Len` comment.
+- `relay/control`: `relay.authorize` and `relay.next_source`, owned by `Authorize` and
+  `NextSource`.
 - `docker/nginx.conf`, `docker/dispatcharr_api_params.conf`, `docker/dispatcharr_api_params_proxy.conf`:
   Appendix A.1.
 - `e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts`: see the test table.
@@ -1029,10 +1329,12 @@ return: the failover case reddens.
 | Test | What it pins | Break-check |
 |---|---|---|
 | `relay/httpapi/server_test.go`: `GET /metrics` answers 200 with `DevRoutes` false; a nil `Metrics` registers nothing (404) | D4: always on, outside the dev flag | Move the registration inside `if cfg.DevRoutes`: the dev-routes-off case reddens with 404 |
-| `relay/httpapi` tune tests: a request with a valid marker and `X-Relay-Traceparent` produces a `relay.tune` whose parent is that context; the same header **without** a valid marker, and a bare `traceparent`, produce a root | D11 trust | Read `X-Relay-Traceparent` without consulting `IsRelayTrusted`: the untrusted case reddens naming the inherited trace id |
+| `relay/httpapi/trace_test.go`: D11's six trace tests (whole graph, end at first byte while connected, failure before first byte, untrusted context ignored, operator switch parent and link, failover root and link) | D11 trust, ownership, propagation | Read `X-Relay-Traceparent` without consulting `IsRelayTrusted`: test 4 reddens naming the inherited trace id. Call `FirstByte` at handler return: test 2 reddens. Start `relay.stream_switch` from `context.Background()`: test 5 reddens on the parent |
+| `relay/telemetry/logs_test.go` **real-call cases** (D9's Go log row): `Channel.failover` with no resolver (`failover.go:195`) and an output pipeline with an empty command (`output/profile.go:130-133`) through the JSON handler and the OTLP fan-out | D9 finding 1 | D9's three isolated mutations |
+| `relay/telemetry/logkeys_test.go`: re-runs the `go/ast` census over the module's non-test files and fails naming any literal slog key that the table does not classify, with its `file:line` | the allowlist cannot fall behind the code | Add `slog.Info("x", "new_key", 1)` to a scratch file in `relay/buffer`: reddens naming `new_key` and the file |
 | `relay/control`: `attempt` and `Authorize` send `traceparent` equal to the ctx's span; the internal-request HMAC still verifies with the header present | D11 propagation, HMAC unchanged | Inject after signing into a copy of the body: the verify case reddens |
 | `relay/channel/failover_test.go`: M4 incremented once per return with the right `trigger`/`outcome`; `relay.failover` linked to the tune span | M4, D11 | Count before the `ErrNoAlternate` branch: the outcome case reddens with `switched` where `no_alternate` was expected |
-| `relay/channel` + `relay/procstat` on Linux: a transcode source with a real `sleep` argv shows up in M8/M9 labelled `kind=source` with the channel's id, and disappears after `Wait` | M8/M9 wiring | Skip `untrack` in `Wait`: the after-wait case reddens with a stale series |
+| `relay/channel` + `relay/procstat` on Linux: a transcode source with a real `sleep` argv is tracked with `kind=source` and the channel's numeric id while it runs; after `Wait`, `Registry.Groups()` no longer holds its group and M8's value for its label set has not decreased | M8/M9 wiring, the `Wait` hook | Remove the `untrack` call from `Wait`: reddens on the non-empty registry |
 | `nginx-stream-buffering.spec.ts`, **added** assertions: (a) a new `PROXY_FORWARDED_RELAY_HEADERS = ['X-Relay-Traceparent']`, each `PROXY_BOUND_TARGETS` block has `auth_request_set $relay_traceparent` and `proxy_set_header X-Relay-Traceparent $relay_traceparent`; (b) both blanking includes blank it; (c) the sixth test, D6's three parts | D11 nginx half, D6 | Delete A.1's `proxy_set_header X-Relay-Traceparent` from `^~ /live/`: (a) reddens naming `/live/`. Add `location = /metrics { proxy_pass http://relay_go; }`: D6 parts 2 and 3 redden |
 
 **Test changes listed.** No existing assertion changes. The spec file's `RELAY_BOUND_TARGETS` doc
@@ -1084,14 +1386,16 @@ hook. **CI:** `Go result`, `E2E result` (all projects: `migration/**`), `Lifecyc
 
 | Test | Pins | Break-check |
 |---|---|---|
-| `tests/test_observability_redaction.py`: the three Python leak tests (D9) | R7 | D9's |
+| `tests/test_observability_redaction.py`: D9's Python rows, every instrumentation and sink with its own carrier cases and non-empty assertions | R7 | D9's isolated mutations, one per sink |
+| `tests/test_observability_django6_sample.py`: O5's first task, recording the attribute keys each instrumentation emits on Django 6.0.8 (one request, task, query, Redis command and outbound call) and comparing them with the committed fixture; it doubles as the Django 6 compatibility smoke test (upstream's tox covers Django only up to 5.x) | D9's allowlist rests on a sample, not on memory; P2 | Delete the `DjangoInstrumentor` call: reddens with "no server span recorded" |
+| `tests/test_observability_wsgi_cold_import.py` (D10) | init precedes the handler | D10's, measured |
 | `tests/test_observability_gevent.py` (D10) | R8's gevent test | D10's, measured |
-| `tests/test_observability_bootstrap.py`: endpoint unset ⇒ global providers are the API's proxies and `threading.active_count()` unchanged; set ⇒ SDK providers, and a second `init` in the same pid is a no-op; a fake pid change re-inits; `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` ⇒ off with one WARNING; `OTEL_SDK_DISABLED=true` ⇒ off; the `Resource` keeps `service.name`/`mino.program` against `OTEL_RESOURCE_ATTRIBUTES` (measured in D13) | D10, D12, D13 | Drop the pid guard: the second-`init` case reddens with two span processors |
+| `tests/test_observability_bootstrap.py`: endpoint unset ⇒ global providers are the API's proxies and `threading.active_count()` unchanged; set ⇒ SDK providers, and a second `init` in the same pid is a no-op; a fake pid change re-inits; `OTEL_EXPORTER_OTLP_PROTOCOL=grpc` ⇒ off with one WARNING; `OTEL_SDK_DISABLED=true` ⇒ off; the resource holds only D13's allowlisted keys, and the WARNING names dropped keys without values; `OTEL_METRICS_EXEMPLAR_FILTER=always_on` leaves exemplars off | D10, D12, D13, D9 exemplars | Drop the pid guard: the second-`init` case reddens with two span processors |
 | `tests/test_observability_propagation.py`: a WSGI environ with `HTTP_TRACEPARENT` and no internal header extracts nothing; with the valid static internal header extracts the parent; a Celery-shaped carrier extracts | D11 trust | Return `super().extract(...)` unconditionally: the no-header case reddens naming the inherited trace id |
 | `tests/test_observability_logs.py`: `MINO_LOG_FORMAT` unset ⇒ `LOGGING` equal to the seed's dict (a literal copy in the test) plus the inert `otel` handler; `json` ⇒ one JSON object per line with § Log record schema's keys and trace ids inside a span; an unknown value ⇒ text and one WARNING without the value | D8 | Make `json` the default: the unset case reddens |
 | `tests/test_uwsgi_inis_are_lazy.py` (D10) | lazy-apps assumption | Remove `lazy-apps = true` from a copy of `docker/uwsgi.relay.ini` in a temp dir passed to the test's helper: reddens naming the file |
-| `tests/test_celery_otel_init.py`: the `worker_init` handler inits for `pool_cls="threads"` and not for `"prefork"`; `worker_process_init` inits | D10 init points | Invert the pool check: both cases redden |
-| `tests/test_credential_logging_guard.py` (the checker's existing tests; cases **added**): `span.set_attribute("url", stream_url)` is reported; `span.set_attribute("url", redact_url_attribute(stream_url))` is not | D9 checker | Remove `set_attribute` from the method set: the first case reddens |
+| `tests/test_celery_otel_init.py`: through Celery's own startup, `app.WorkController(pool="threads", …)` fires `worker_init` and `init` runs once; `pool="prefork"` does not run it; `worker_process_init` runs it (D10, measured) | D10 init points | Invert the pool check: both cases redden |
+| `tests/test_credential_logging_guard.py` (the checker's existing tests; cases **added**): `span.set_attribute("url", stream_url)` is reported; `span.set_attribute("url", redact_text(stream_url))` is not | D9 checker | Remove `set_attribute` from the method set: the first case reddens |
 
 **Test changes listed.** None to existing tests. `tests/test_observability_logs.py`'s literal copy
 of the seed `LOGGING` is a new pin, not a change.
@@ -1122,9 +1426,11 @@ M10's view (already in O5's view list, now exercised); `apps/proxy/authorize_vie
 `X-Relay-Traceparent` (D11) after `:360`; `apps/proxy/internal_auth.py` gains
 `HEADER_RELAY_TRACEPARENT` beside the other header names (`:59-70`).
 
-**Tests.** `apps/proxy/tests/`: with an SDK tracer provider installed, the authorize 200 carries a
-`X-Relay-Traceparent` naming the request span; with none, the header is absent; a 403 never carries
-it. `tests/test_observability_metrics.py`: M11 records one point per task with `task`/`outcome`;
+**Tests.** `apps/proxy/tests/`: a `TestCase` that installs an SDK tracer provider with an
+in-memory exporter and runs `DjangoInstrumentor().instrument()` in `setUpClass`, before any test
+client is built (D10's ordering; `uninstrument` in `tearDownClass`). Its cases: the authorize 200
+carries an `X-Relay-Traceparent` naming the exported Django server span for that request (its trace
+id and span id); with no SDK provider installed, the header is absent; a 403 never carries it. `tests/test_observability_metrics.py`: M11 records one point per task with `task`/`outcome`;
 the beat callbacks report `LLEN` per queue against a fake broker client and in-use/limit per active
 profile against fixture rows and a fake Redis `MGET`, and close the DB connection.
 
@@ -1178,7 +1484,7 @@ merged tree and re-reads every name below there.
    `topk(5, rate(mino_relay_process_cpu_seconds_total[5m]))` by `channel_id, kind, profile_id`.
    That `channel_id` is the numeric id shown in the channel list, never the UUID.
 4. **Scraping the relay.** `/metrics` on the relay's port (5658 by default), never through nginx;
-   the `otel_scope_*` labels and `target_info`. **Push or scrape, not both into one backend**: with
+   that `/metrics` carries no `target_info` and no scope labels, by design (D9). **Push or scrape, not both into one backend**: with
    OTLP on, the relay pushes the same instruments it serves, and ingesting both doubles every
    series. The example config scrapes and receives, and comments out one path.
 5. **Network exposure.** `/metrics` has no auth; what it reveals (D7); a NetworkPolicy that admits
@@ -1190,7 +1496,9 @@ merged tree and re-reads every name below there.
 7. **Logs.** `MINO_LOG_FORMAT`; the record schema; which lines stay text (uWSGI's request log,
    supervisord, nginx, postgres, redis, the `print` calls); redaction of URLs in JSON and OTLP.
 8. **Limits.** Loss on restart (at most one batch per process, one metric interval); process
-   metrics are Linux-only; HLS silence and Quick Sync detection processes are not tracked;
+   metrics are Linux-only, and M8 undercounts by at most one collection interval of CPU per exited
+   process (§ M8 accounting); exemplars are off; JSON and OTLP logs carry a channel's numeric id
+   where the text format carries its UUID; exception messages are not exported, only their types; HLS silence and Quick Sync detection processes are not tracked;
    Kombu priority sub-queues are not counted; the cardinality limit (D7).
 
 `docs/observability/otel-collector.example.yaml`, contrib distribution, roughly:
@@ -1233,14 +1541,15 @@ The block above is an outline, not a hunk: O7 validates the real file with the C
 
 | # | Risk | Mitigation |
 |---|---|---|
-| K1 | A credential reaches an exporter through a path the allowlists did not anticipate: an exception message, a third-party attribute, a log `extra` | Allowlist, not denylist (D9): unknown keys are dropped. The six leak tests drive the real wrappers. `redact_text`'s second pass covers the scheme-less path in `requests`' messages. Reviews are `fable` from round one |
-| K2 | The protobuf encode of a batch runs on a uWSGI worker's gevent hub and stalls its request greenlets | Milliseconds per 512-span batch; `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` lowers it. Off by default. If measured to matter, the fix is a smaller batch, never a real OS thread in a gevent worker |
+| K1 | A credential or capability reaches an exporter through a carrier the allowlists did not anticipate | Allowlist, not denylist (D9): unknown keys are dropped. Unsafe carriers are replaced (route templates, exception types, numeric channel ids). A census test keeps the Go log-key table complete. The leak matrix gives each sink its own isolated mutation. Residual risk: free text in a log body that none of the redactor's classes describe, policed at the call site by the credential-logging checks |
+| K2 | The SDK misbehaves under gevent. (a) Encoding a batch to protobuf runs on a uWSGI worker's gevent hub and stalls its request greenlets. (b) Upstream reports deadlocks: opentelemetry-python #4345 ("Deadlock accessing metric reader storage … gevent workers", open), and #5788 (metric locks not reinitialised in a forked child, open). #3886 and #3897 (`BatchSpanProcessor` under gevent) are closed | (a) Milliseconds per 512-span batch; `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` lowers it. (b) D10 initialises after the fork in every process, which sidesteps #5788's fork path. #4345 is not covered by the context-isolation test. Before OTLP is enabled on the test box, O5's PR body records one soak: a uWSGI worker under the project's own `gevent = 400`, polled for ten minutes, with OTLP on, showing no hung worker. If it hangs, metrics export in uWSGI processes is switched off (`OTEL_METRICS_EXPORTER=none`, D12) and the finding becomes an issue. Off by default |
 | K3 | A client forces sampling or picks a trace id | D11: no public route on either side extracts a client's context |
 | K4 | The relay's shutdown overruns `stopwaitsecs=20` | Telemetry shutdown is bounded at 2 s after the 15 s drain (O4) |
 | K5 | Counters keep a series for every channel ever watched | D7: household scale; the SDK's cardinality limit caps it; a relay restart resets it |
 | K6 | Double-counted relay metrics when an operator both scrapes `/metrics` and pushes OTLP into one backend | The docs page's § 4; the example config enables one path |
 | K7 | An OTel minor bump changes an exposition name and silently breaks a dashboard | `TestExpositionMatchesTheCatalogue` fails on any name change; Renovate's grouped, human-merged OTel update is where it shows |
-| K8 | `otlploghttp` and the Python logs SDK are pre-1.0 (`v0.23.0`; the Python `_logs` package is still underscore-prefixed) and may change shape | Confined to `relay/telemetry` and `dispatcharr/observability`; pinned; grouped bumps |
+| K8 | Unstable logging pieces may change shape. `otlploghttp` is pre-1.0 (`v0.23.0`), although the Go logs API and SDK are stable since v1.47.0. The Python logs SDK is still the underscore module `opentelemetry.sdk._logs` | Confined to `relay/telemetry` and `dispatcharr/observability`; pinned; grouped bumps |
+| K12 | The Django instrumentation is untested upstream against Django 6 | O5's sample test runs it on Django 6.0.8 and fails if no server span is recorded |
 | K9 | govulncheck blocks a PR for a standard-library CVE that needs a toolchain bump | That is the intended posture (ADR 0011); the fix is a `relay/go.mod` `go` line bump in its own PR |
 | K10 | The thread-pool `dvr` worker never ran `worker_process_init` (D10's side finding), and other code may silently rely on it | Recorded as an issue in O5's body; this spec only uses `worker_init` for its own init |
 | K11 | The rename's R1 ratchet lands first and every O-PR adding `dispatcharr.observability` fails it | D13's sequencing table: regenerate the allowlist in the same PR with the C-10 reason |
@@ -1265,9 +1574,19 @@ Items the planner decided rather than found in a ruling, for the reviewer to cha
    as the pair a ratio needs, and adds no tune-duration histogram (traces carry it).
 7. **No parity-matrix row** for `/metrics`: it is not on a viewer's path (Global constraint 1). The
    nginx test is its pin.
-8. **The research subagent's cross-check against upstream docs did not arrive** before commit.
-   Every version and behaviour this spec relies on was measured locally instead (§ Versions
-   checked); the three items listed there as not verified are not relied on.
+8. **The research subagent's cross-check arrived after the first commit.** It confirmed several
+   things against upstream source and docs:
+   - uWSGI calls `PyOS_AfterFork_Child` only under `py-call-osafterfork`;
+   - Daphne has no lifespan support;
+   - the Django instrumentation covers ASGI HTTP but not Channels consumers;
+   - Celery's own docs recommend `worker_process_init`;
+   - gevent gives each greenlet its own context from gevent 20.9.
+
+   It changed three things, folded in at round 1: the pinned naming strategy (D4), the Django 6
+   sample test (O5), and K2's upstream issues.
+
+The round-1 reviewer ruled items 1–7 acceptable, items 4 and 5 subject to the D10 and D11
+changes made in that round.
 
 ## Appendix A — Byte-exact hunks against the seed SHA
 

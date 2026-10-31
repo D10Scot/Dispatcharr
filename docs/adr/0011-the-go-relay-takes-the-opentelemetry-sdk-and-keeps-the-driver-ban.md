@@ -90,8 +90,12 @@ banned.**
    module and fails on any vulnerability in code the relay calls, the Go
    standard library included. OSV-Scanner reads `relay/go.mod` beside the
    Python and npm lockfiles, and Trivy and Grype scan `relay/` as a directory
-   on every pull request that touches it. Until now they saw the relay only
-   inside the published image, after merge.
+   on every pull request that changes `relay/go.mod` or `relay/go.sum` (the
+   workflow's path filter), on every push to `main` that does, and nightly.
+   A pull request that edits only Go source does not trigger them, because
+   source alone cannot change the module set; govulncheck runs on every
+   relay change. Until now the scanners saw the relay only inside the
+   published image, after merge.
 5. **Renovate holds Go modules for seven days and never automerges them.**
    The OpenTelemetry modules release together and are grouped into one update.
 
@@ -105,7 +109,7 @@ banned.**
   replaces the script.
 - The binary links the OTLP protobuf stack and the Prometheus client library.
   Measured on a prototype module linking exactly the allowlisted modules at
-  their 2026-10-31 versions: 11 direct requirements, 116 modules in the
+  their 2026-10-31 versions: 12 direct requirements, 116 modules in the
   graph, 34 third-party modules linked, and **`google.golang.org/grpc` among
   them**, because the HTTP exporters import the OTLP collector packages,
   whose generated code carries the gRPC service stubs. A program linking only
