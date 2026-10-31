@@ -495,8 +495,9 @@ The lock is taken whether password login is currently on or off. Each write firs
   Demoting the last active admin is not in this ruling's scope and is unchanged.
 - **UI.** `frontend/src/components/forms/User.jsx` gains an admin-only "Active" switch, hidden for the current user. `frontend/src/components/tables/UsersTable.jsx` gains an "Active" badge column. HTTP goes through `api.js` as usual.
 - **The form sends `is_active` only when the admin changed it.** At the seed, `User.jsx`'s `onSubmit` (`:75-86`) sends every form value through `formValuesToPayload` (`frontend/src/utils/forms/UserUtils.js:66-109`), which spreads them all into the payload. With `is_active` in the form, an admin editing a user's name in a form opened before another admin deactivated that user would send a stale `is_active: true`. `update_fields` would save it, because it was assigned, and the guards only refuse deactivation.
-  - `formValuesToPayload` gains a third argument, `{ isActiveDirty }`, and deletes `is_active` from the payload unless it is true.
-  - `onSubmit` passes `form.isDirty('is_active')`.
+  - `formValuesToPayload(values, existingUser)` keeps `is_active` in the payload **only when `values.is_active !== existingUser.is_active`**, comparing against the user object loaded from the server when the form opened. Otherwise it deletes the key. On create (`existingUser` absent) it keeps the key.
+  - This is a pure comparison inside `UserUtils.js`. It deliberately does not use Mantine's `form.isDirty`. `User.jsx` initialises the form from create defaults (`:56-59`) and loads the user with `form.setValues` (`:95-107`) without resetting the dirty baseline, so dirty state is not measured against the loaded user.
+  - A form opened while the user was active, then submitted after another admin deactivated them, still holds `is_active: true` equal to its loaded `true`, so it sends no `is_active`.
   - Both files are in S0's scope.
 - **Break-glass.** The CLI one-liner in § 4.3 stays, for when no admin can sign in.
 
@@ -577,15 +578,21 @@ Six PRs in order, S0 to S5. Each opens as a draft, gets a pinned review (`fable`
 
 **Tests:** T30. Vitest:
 
-- `frontend/src/components/forms/__tests__/User.test.jsx`: `active switch hidden for the current user`, `active switch sends is_active`, and `stale form edit does not send is_active`
-- `frontend/src/utils/forms/__tests__/UserUtils.test.js`: `omits is_active unless the switch was changed`
+- `frontend/src/components/forms/__tests__/User.test.jsx`: `active switch hidden for the current user` (rendering only; that file mocks the form and the utils at `:18-49`, so it does not test the payload)
+- `frontend/src/utils/forms/__tests__/UserUtils.test.js`, through the real `formValuesToPayload`:
+  - `untouched active user omits is_active` (loaded `true`, values `true` → no key)
+  - `untouched inactive user omits is_active` (loaded `false`, values `false` → no key)
+  - `activating sends is_active true` (loaded `false`, values `true` → `true`)
+  - `deactivating sends is_active false` (loaded `true`, values `false` → `false`)
+  - `create keeps is_active`
+- Backend: T30's `test_patch_without_is_active_preserves_deactivation` and `test_stale_profile_patch_cannot_reactivate`
 
 **Break-checks:**
 
 - (a) Drop the self check. `apps.accounts.tests.test_user_activation.UserActivationTests.test_admin_cannot_deactivate_self` reddens: it expects 400 `cannot_deactivate_self` and gets 200.
 - (b) Count admins without `select_for_update()`. `UserActivationTests.test_concurrent_last_admin_deactivations_one_wins` reddens, deterministically through the § 5.5 barrier wrapper: both 200, and no active admin remains, which the message names.
 - (d) Restore the unrestricted `instance.save()` in `UserSerializer.update`. `UserActivationTests.test_stale_profile_patch_cannot_reactivate` reddens: `is_active` is true after the PATCH completes.
-- (e) Make `formValuesToPayload` keep `is_active` regardless of the flag. `frontend/src/utils/forms/__tests__/UserUtils.test.js` › `omits is_active unless the switch was changed` reddens: it builds a payload from values with `is_active: true` and `isActiveDirty: false`, and finds `is_active` in it. The companion `User.test.jsx` › `stale form edit does not send is_active` opens the form for an active user, edits only `first_name`, submits, and asserts the mocked `API.updateUser` payload has no `is_active` key.
+- (e) Make `formValuesToPayload` always keep `is_active`, dropping the comparison with the loaded user. `frontend/src/utils/forms/__tests__/UserUtils.test.js` › `untouched active user omits is_active` reddens: it finds `is_active: true` in the payload. That is exactly the stale value that would reactivate a user deactivated in the meantime.
 - (c) Add `is_active` to `me`'s `ALLOWED_FIELDS`. `UserActivationTests.test_me_cannot_change_is_active` reddens on `is_active` false.
 
 **PR description draft:**
@@ -825,7 +832,7 @@ Six PRs in order, S0 to S5. Each opens as a draft, gets a pinned review (`fable`
     - `accepts a consistent scoped stack`
 
     Each passes an env object and asserts the thrown message names the variable. Because the function is pure and is called before any request, a refusal is a refusal before any HTTP mutation.
-  - Break-check: make `assertScopedStack` fall back to `http://localhost:9191` when `E2E_BASE_URL` is unset. `refuses a missing E2E_BASE_URL` reddens: no error is thrown.
+  - Break-check: when `E2E_BASE_URL` is unset, make `assertScopedStack` substitute `http://127.0.0.1:${DISPATCHARR_E2E_PORT}` and keep every other check. `refuses a missing E2E_BASE_URL`, whose env is otherwise a consistent scoped stack, reddens deterministically: no error is thrown. Substituting the shared `localhost:9191` would not do it, because the port-match and shared-port rules would still throw.
 
   Turning password login off is instance-wide, and ADR 0001's shared container must never see it.
 - **Bootstrap and tokens.** The project has its own setup file, `tests/sso/sso.setup.ts`, run as a `sso-setup` project that `sso` lists in `dependencies:`. It never reads the shared `playwright/.auth/tokens.json` or `principals.json`. The setup:
