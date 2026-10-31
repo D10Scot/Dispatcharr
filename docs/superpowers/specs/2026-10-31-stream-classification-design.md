@@ -2,7 +2,7 @@
 
 **Date:** 2026-10-31
 **Status:** Draft (review rounds 1-3 addressed; see § Changelog)
-**Rulings:** the owner's rulings R1-R5 of 2026-10-31 override any default here. Appendix A restates
+**Rulings:** the owner's rulings R1-R5 and R7 of 2026-10-31 override any default here. Appendix A restates
 them, so this document can be read without the conversation that produced them.
 **Authorities:** `CLAUDE.md` (§ Video path, § State, § Known defects and traps, § Structural
 constraints, § Conventions), `CONTEXT.md`, `docs/adr/0005`, `docs/adr/0006`, `docs/adr/0010`, and
@@ -199,7 +199,7 @@ how the corpus is built without one).
 | **D5** | **Decisions are keyed by a stable stream key and are single-valued per key.** The key is `xc:<account_id>:<stream_id>` when the provider gives an id, else `m3u:<account_id>:<sha1(name, group title, tvg_id)>`. `StreamAssignment` holds at most **one** row per key: either *assign to identity X* or *exclude*. `StreamRegionPin` holds at most **one** row per key. `PairRejection` holds one row per *(key, identity)*. Replacing a decision is an upsert in one transaction, and revoking it is a delete. Every change **requests a resolve run**, and the resolver applies decisions on every run. **A region pin ends that stream's region conflict.** | `stream_hash` changes when a hashed field changes, and the rehash task merges rows (`core/tasks.py:719`). A key derived from the provider's own id survives both. Single-valued tables make contradictory decisions unrepresentable. |
 | **D6** | **Invalidation is "parse when the text changes, derive everything else on every run".** The only cached computation is the parse: `fingerprint = sha1(PARSER_VERSION, convention_version(account), name, group title, tvg_id)`. Classification is idempotent and needs no provider download: it reads `Stream` rows and skips unchanged fingerprints. It runs (a) after each provider refresh, (b) when an account's naming convention is saved, (c) on the admin **Re-run**, and (d) on a **daily backstop** over every active account. Identities, conflicts, EPG binding and proposals are recomputed by every resolve run. The effective tier and the health band are computed when they are **read**. | Removing the cached derived state removes the class of missed invalidations rounds 1 and 2 found. Round 3 found that a fingerprint is checked only when classification runs. (b)-(d) make sure it runs without depending on the next provider refresh, and a failed run is simply retried by the next trigger. |
 | **D7** | **Ordering control is two new columns on existing tables**: `Channel.stream_order_mode` (`auto` / `manual`, default `manual`) and `ChannelStream.pinned` (bool, default false). Under `auto`, pinned streams keep their relative admin order at the top, and every other stream is placed by D8. Under `manual`, nothing in this spec writes the channel's order. **An admin reorder of an `auto` channel switches it to `manual`.** A reorder is a request that changes the relative order of the streams kept on the channel. A **membership-only** edit (adding or removing streams, with the retained streams' relative order unchanged) keeps the mode. The response says when the mode flipped, and the UI shows the badge and a one-click "back to Auto". **Restoring a snapshot sets the channel to `manual`** under the same lock. | R3 says admin pins override everything. "Never destroy an admin's manual ordering silently" is met three ways. Every existing channel starts `manual`. A later drag is never overwritten, because it flips the channel visibly. A restore sticks. |
-| **D8** | **The ordering function, `rank_members(channel)`**, is shared by the reorder pass and by acceptance (§ Proposals). The sort key for unpinned streams is: (1) **effective tier**, best first: `UHD > FHD > HD > UNKNOWN > SD`; (2) **health band**: `good > fair > unknown > poor` (§ Reliability); (3) `backup` marker last; (4) `fps_hint` descending; (5) the stream's current `order` value, then its current position. Inactive accounts and stale streams sort last. | R4: tier, then reliability. `UNKNOWN` sits above `SD` and below `HD` because an unlabelled provider stream is more often 720p or 1080p than 576i (Q2 asks the owner to confirm). Key 5 is explicit rather than left to the stability of the sort. |
+| **D8** | **The ordering function, `rank_members(channel)`**, is shared by the reorder pass and by acceptance (§ Proposals). The sort key for unpinned streams is: (1) **effective tier**, best first: `UHD > FHD > HD > UNKNOWN > SD`; (2) **health band**: `good > fair > unknown > poor` (§ Reliability); (3) `backup` marker last; (4) `fps_hint` descending; (5) the stream's current `order` value, then its current position. Inactive accounts and stale streams sort last. | R4: tier, then reliability. `UNKNOWN` sits above `SD` and below `HD` because an unlabelled provider stream is more often 720p or 1080p than 576i (confirmed by R7). Key 5 is explicit rather than left to the stability of the sort. |
 | **D9** | **The relay's switch policy does not change.** The failover keeps "the next candidate after the current one, wrapping" (`order_alternates_from_current`). On a tier-sorted list that already walks down in quality, and it wraps back up to the top tier only once the lower ones are exhausted. **No climb-back** (returning to a higher tier while a lower one still plays) and **no same-tier-before-lower preference** for the streams *before* the current one in its own tier. Both are non-goals (§ Non-goals). | A switch-policy change is a live-path behaviour change. It needs a parity-matrix row and a pinned E2E, and the owner did not ask for one. The headline behaviour, best first and down in quality on failure, follows from the order alone. |
 | **D10** | **One lock order for everything that writes channel membership or order: member `Stream` rows first (`FOR KEY SHARE`, in id order), then catalog rows (identity, then proposal), then the `Channel` row (`FOR UPDATE`), then that channel's `ChannelStream` rows.** The writers that take the Channel lock are: the reorder pass, the serializer update (`apps/channels/serializers.py:700-729`), the bulk edit (`api_views.py:1460-1489`), acceptance, and snapshot restore. Each writer that inserts a `ChannelStream` row first key-share-locks the referenced streams. **The rehash merge takes no Channel lock.** It already holds `FOR UPDATE` on its batch of `Stream` rows (`core/tasks.py:561-568`, `skip_locked=True`, batches of 1,000), and updates the `ChannelStream` rows it moves in place, so it already follows the Stream-first order. Its one change is that a collision keeps `pinned = source.pinned or target.pinned` on the surviving row (`core/tasks.py:726-736`). | Round 3 found that putting a Channel lock inside rehash's Stream-locked batch inverts the order acceptance uses, and holds Channel locks for a whole batch. With Stream rows first everywhere, no writer waits on a Stream while holding a Channel or `ChannelStream` row that rehash needs. Rehash skips streams a writer has key-share-locked (`skip_locked`), and they are picked up on its next run. An order rehash leaves out of rank is corrected by the next reorder pass. |
 | **D11** | **Reliability is counted per exposure, at ingest, deduplicated per event.** An **exposure** is a stream being started (`channel_start`) or switched in (`stream_switch`). A **failure** is a failover away from it or a connection failure on it, plus a quarter-weight for each buffering episode. A receiver on the `relay_event_applied` signal handles each relevant event in its own transaction. It first inserts a `RelayEventReceipt(relay_boot, seq)`, which is unique. **Only if the insert succeeds** does it decay and update the stream's two counters. Receipts are kept for 30 days. The band is computed when it is read. | Round 3 showed a high-water mark is unsafe: a batch whose HTTP attempts timed out can still be applied by Django **after** a later batch, so a watermark would discard it. A unique receipt per event is order-free. Exposure counting needs no playback segments, and R4 asks only for "observed health (recent failovers, buffering events, connect failures)". |
@@ -390,7 +390,8 @@ is not pinned:
 
 A REST write to `Stream.stream_stats` cannot touch `MeasuredResolution`. A change to the TTL, or an expired
 measurement, takes effect the next time the tier is read. New measurements reach a channel's order at the next
-reorder pass. `video_bitrate` and `source_fps` are displayed but not used to rank (Q3).
+reorder pass. `video_bitrate` and `source_fps` are displayed but not used to rank (R7; a bitrate tiebreak is a possible later
+follow-up, not in scope).
 
 ## Identity resolution (S4)
 
@@ -532,7 +533,7 @@ competing accept, bind or unbind waits on the identity lock, then fails at step 
 **EPG on accepted channels.** The catalog writes `epg_data` only on a channel with `auto_created = False`, and
 only when the identity's `epg_state` is `bound` or `pinned`. Auto sync rewrites `epg_data` on every channel it
 manages (`apps/m3u/tasks.py:2693-2702`), so on an auto-created target the catalog leaves EPG to sync, and the
-dialog says so. If the admin ticks "Detach from auto-sync" (the default is Q5), the channel becomes
+dialog says so. "Detach from auto-sync" is **ticked by default** (R7). The admin can untick it. If it stays ticked, the channel becomes
 catalog-managed and gets the identity's EPG in the same transaction.
 
 ## Reliability (S5)
@@ -616,7 +617,7 @@ Mantine 8 only. State goes in a new Zustand store, `frontend/src/store/catalog.j
     - group, number and Channel Profiles;
     - "order this channel automatically" (D13);
     - the adult-content choice when it applies;
-    - for an auto-created target, the detach option and its EPG note.
+    - for an auto-created target, the detach option (ticked by default, R7) and its EPG note.
 
     The tab also has **Dismiss** and **bulk accept** (each proposal is accepted on its own).
   - *Review*: open `IdentityMatch` rows, grouped by stream, each with a source badge. Actions: Assign, Reject
@@ -939,7 +940,7 @@ Coverage follows the Phase 4 floor rule (D20).
 > never sent after the cutover. Each post carries only what the attempt that produced it measured, attributed
 > through S1a's context; input-metadata changes post at once and progress values ride a 30-second flush, so
 > steady-state traffic is one post per running channel per 30 s. The status view is unchanged. One
-> parity-matrix row. Spec PR S1b.
+> parity-matrix row. #619 (planned in PR S1b). Spec PR S1b.
 
 ### S2 — the parser (pure, inert)
 
@@ -1113,8 +1114,10 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - **No LLM assist in this spec** (R5; § LLM assist).
 - **No relay switch-policy change** (D9). That rules out climb-back, and also "same tier before lower" for streams
   that sit earlier in the current tier. The smallest later change would be Django-only: rotate within the
-  current tier block in `order_alternates_from_current()`. It would need its own parity row and E2E pin.
-- **No ranking by bitrate, codec or measured fps** (Q3).
+  current tier block in `order_alternates_from_current()`. It would need its own parity row and E2E pin. R7
+  scheduled it as a separate follow-up, #620, which is out of scope here.
+- **No ranking by bitrate, codec or measured fps** (R7). A bitrate tiebreak within a tier is a possible later
+  follow-up.
 - **No channel preemption.**
 - **No change to auto channel sync** or to any authorization filter.
 - **No VOD or catch-up classification.**
@@ -1132,20 +1135,21 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - **Stats volume.** S1b posts one event per 30 s per running subprocess channel, plus one per input-metadata change.
 - **Health ingest** adds one receipt insert and one locked row update per relevant event, on the API process.
 
-## Open questions for the owner
+## Resolved questions (ruling R7)
 
-- **Q1.** Should a separate issue be filed for M1 (the Go relay never posts `stream_stats`) as a parity defect?
-  S1b fixes it either way. A filed issue lets S1b carry `Closes #N`, and the metrics ledger record it.
-- **Q2.** Where should `UNKNOWN` tier sort? D8 puts it between HD and SD. The alternative is last.
-- **Q3.** Should bitrate count as a within-tier signal? Today two FHD streams at 3 and 8 Mb/s rank only by
-  reliability.
-- **Q5.** For `add_streams` into an auto-created channel, should "Detach from auto-sync" default to on? With it
-  off, today's sync behaviour holds, and sync keeps managing EPG. With it on, the merged channel survives when
-  its origin provider drops the stream, and the catalog takes over EPG.
-- **Q6.** Should D9's non-goal (tier-block rotation) be scheduled as a follow-up once S6 has run on real
-  providers for a while?
+The owner accepted the defaults on every open question (ruling R7, 2026-10-31). Nothing is left open.
 
-(Q4, on LLM auto-acceptance, was removed with the LLM assist, under ruling R5.)
+- **Q1, M1 as its own issue: yes.** Filed as #619 (the Go relay never posts `stream_stats`). It is
+  planned in PR S1b, whose description draft refers to it as such. This spec carries no closing keyword.
+- **Q2, where `UNKNOWN` sorts: between HD and SD,** as D8 has it.
+- **Q3, bitrate as a within-tier tiebreak: no.** It is out of scope here and recorded only as a possible later
+  follow-up.
+- **Q4** was removed with the LLM assist (R5).
+- **Q5, "Detach from auto-sync" when adding streams to an auto-created channel: ticked by default.** The admin
+  can untick it. Ticked, the merged channel survives its origin provider dropping the stream, and the catalog
+  manages its EPG. Unticked, today's sync behaviour holds.
+- **Q6, tier-block rotation (D9's non-goal): yes, as a separate Django-only follow-up,** filed as #620. It is out
+  of scope for this spec.
 
 ## Appendix A — owner rulings (2026-10-31)
 
@@ -1163,6 +1167,8 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - **R5 (review round 3): defer the LLM assist.** R2's optional LLM assist gets its own separate spec, design and
   review after this one lands. This spec removes it entirely, leaving only § LLM assist's stub and its one
   inherited requirement.
+- **R6** (process: the planner stays on Opus) has no bearing on the design.
+- **R7 (2026-10-31): the open questions are resolved to their defaults.** See § Resolved questions.
 
 R1's "overridden by measured `Stream.stream_stats`" is met by `MeasuredResolution`, which is written from the same
 `stream_stats` events.
@@ -1192,3 +1198,5 @@ R1's "overridden by measured `Stream.stream_stats`" is met by `MeasuredResolutio
     (finding 11).
   - **First tune**: pre-commit ranking on acceptance (finding 12).
   - **Health**: an explicit 0.25 evidence threshold, with single-exposure behaviour pinned (finding 13).
+- 2026-10-31: owner ruling R7 resolved Q1, Q2, Q3, Q5 and Q6 to their defaults. Q1 filed as #619 (planned in
+  PR S1b). Q6 filed as #620 (out of scope). § Open questions became § Resolved questions.
