@@ -77,7 +77,6 @@ func TestParentProcess(_ *testing.T) {
 // on holding its provider slot -- the defect CLAUDE.md § Operationally
 // records for the Python relay.
 func TestAChildOfADeadRelayDiesWithIt(t *testing.T) {
-	t.Setenv(relaytest.StandInEnv, "1")
 	t.Setenv(parentEnv, "1")
 	parent := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestParentProcess$")
 	parent.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

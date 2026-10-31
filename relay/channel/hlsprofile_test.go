@@ -3,6 +3,7 @@ package channel
 import "testing"
 
 func TestTheHLSProfileKey(t *testing.T) {
+	t.Parallel()
 	if got := (HLSProfile{}).Key(); got != "hls" {
 		t.Fatalf("the zero profile's key is %q, want %q", got, "hls")
 	}
@@ -16,6 +17,7 @@ func TestTheHLSProfileKey(t *testing.T) {
 // channel's own choice alone. The Output Profile set is refreshed the same way
 // (2c-7's Ruling R5) and this is its counterpart.
 func TestAFailoverAnswerRefreshesTheHLSProfile(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	ch.mu.Lock()
 	ch.hlsProfile = HLSProfile{Known: true, ID: 3, Mode: "transcode"}
@@ -43,6 +45,7 @@ func TestAFailoverAnswerRefreshesTheHLSProfile(t *testing.T) {
 // hls_generation stay one value each while a profile change drains an older
 // pipeline.
 func TestHLSStatusFollowsTheCurrentProfileKey(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	starter := &hlsStarter{}
 	ch.mu.Lock()

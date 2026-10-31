@@ -103,7 +103,6 @@ type readyStarter struct {
 
 func newReadyStarter(t *testing.T) *readyStarter {
 	t.Helper()
-	t.Setenv(relaytest.StandInEnv, "1")
 	s := &readyStarter{t: t, dir: t.TempDir()}
 	for name, data := range map[string][]byte{
 		"probe.json": relaytest.HLSProbeJSON(true, true),
@@ -289,6 +288,7 @@ func notDone(t *testing.T, p *hls.Pipeline, what string) {
 
 // Row ⟨E⟩: the last session's end lingers the pipeline and holds the channel.
 func TestTheLastSessionsEndLingersThePipelineAndHoldsTheChannel(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	ch, s := g.firstSession(lingerTuning(), newReadyStarter(t))
 	s.end()
@@ -311,6 +311,7 @@ func TestTheLastSessionsEndLingersThePipelineAndHoldsTheChannel(t *testing.T) {
 
 // A new session, or a resume, ends the linger on the same pipeline.
 func TestANewSessionEndsTheLingerOnTheSamePipeline(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	starter := newReadyStarter(t)
 	ch, s := g.firstSession(lingerTuning(), starter)
@@ -361,6 +362,7 @@ func TestANewSessionEndsTheLingerOnTheSamePipeline(t *testing.T) {
 }
 
 func TestTheLingersEndStopsThePipelineAndAnIdleChannel(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	ch, s := g.firstSession(lingerTuning(), newReadyStarter(t))
 	s.end()
@@ -384,6 +386,7 @@ func TestTheLingersEndStopsThePipelineAndAnIdleChannel(t *testing.T) {
 
 // A TS client attached during the linger outlives it.
 func TestATSClientOutlivesTheLinger(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	ch, s := g.firstSession(lingerTuning(), newReadyStarter(t))
 	s.end()
@@ -403,6 +406,7 @@ func TestATSClientOutlivesTheLinger(t *testing.T) {
 }
 
 func TestNoLingerWithTheWindowOrTheLingerOff(t *testing.T) {
+	t.Parallel()
 	for name, mutate := range map[string]func(*Tuning){
 		"the window off": func(tu *Tuning) { tu.RewindWindow = 0 },
 		"the linger off": func(tu *Tuning) { tu.RewindLinger = 0 },
@@ -427,6 +431,7 @@ func TestNoLingerWithTheWindowOrTheLingerOff(t *testing.T) {
 // Decision 13: the countdown starts only when the client count and the hold are
 // both zero.
 func TestTheShutdownDelayCountdownStartsOnlyAfterTheLinger(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	tuning := lingerTuning()
 	tuning.ShutdownDelay = 60 * time.Second
@@ -453,6 +458,7 @@ func TestTheShutdownDelayCountdownStartsOnlyAfterTheLinger(t *testing.T) {
 // Decision 13, stopIfStillIdle's own re-check: a countdown armed when an earlier
 // linger ended finds a later linger holding the channel.
 func TestAStaleCountdownDoesNotStopALingeringChannel(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	tuning := lingerTuning()
 	tuning.ShutdownDelay = 60 * time.Second
@@ -501,6 +507,7 @@ func TestAStaleCountdownDoesNotStopALingeringChannel(t *testing.T) {
 }
 
 func TestAnUnreadyOrEndedPipelineNeverLingers(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	ch, release := g.attach("chan", "s1", lingerTuning())
 	unready := &hlsStarter{}
@@ -532,6 +539,7 @@ func TestAnUnreadyOrEndedPipelineNeverLingers(t *testing.T) {
 }
 
 func TestAFailedOrStoppedPipelineEndsItsLinger(t *testing.T) {
+	t.Parallel()
 	t.Run("FailHLS", func(t *testing.T) {
 		g := newLingerRig(t, nil)
 		ch, s := g.firstSession(lingerTuning(), newReadyStarter(t))
@@ -562,6 +570,7 @@ func TestAFailedOrStoppedPipelineEndsItsLinger(t *testing.T) {
 
 // The hold is not a client.
 func TestTheLingerHoldIsNotAClient(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	ch, s := g.firstSession(lingerTuning(), newReadyStarter(t))
 	s.end()
@@ -591,6 +600,7 @@ func TestTheLingerHoldIsNotAClient(t *testing.T) {
 // A channel lingers at most one pipeline, and the hold reached through
 // StopIfIdle is the one mechanism.
 func TestOneLingerPerChannel(t *testing.T) {
+	t.Parallel()
 	g := newLingerRig(t, nil)
 	tuning := lingerTuning()
 	tuning.ShutdownDelay = 60 * time.Second
@@ -632,6 +642,7 @@ func TestOneLingerPerChannel(t *testing.T) {
 }
 
 func TestALingerTimerWithoutAManagerUsesTheRealClock(t *testing.T) {
+	t.Parallel()
 	c := &Channel{}
 	fired := make(chan struct{})
 	stop := c.schedule(time.Millisecond, func() { close(fired) })

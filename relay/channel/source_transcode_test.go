@@ -19,7 +19,9 @@ import (
 
 // TestStandIn is this package's trampoline (relaytest/standin.go).
 func TestStandIn(_ *testing.T) {
-	if os.Getenv(relaytest.StandInEnv) != "1" {
+	// Recognised by the "--" the stand-in's argv carries, not by an
+	// environment variable: t.Setenv would forbid t.Parallel everywhere.
+	if relaytest.StandInArgs() == nil {
 		return
 	}
 	os.Exit(relaytest.RunStandIn(relaytest.StandInArgs()))
@@ -29,7 +31,6 @@ func TestStandIn(_ *testing.T) {
 // URL is a placeholder the UDP filter reads and nothing else does.
 func standInSource(t *testing.T, args ...string) *TranscodeSource {
 	t.Helper()
-	t.Setenv(relaytest.StandInEnv, "1")
 	command, argv := relaytest.StandInCommand(args...)
 	return &TranscodeSource{Command: command, Argv: argv, URL: "http://provider.invalid/live.ts", UserAgent: "test/1.0"}
 }
@@ -110,6 +111,7 @@ func waitFor(t *testing.T, what string, timeout time.Duration, cond func() bool)
 // 1870-1875, then the retry loop): three runs of the same asset, then the
 // source is exhausted and the channel ends in error.
 func TestATranscodeProcessesFd1ReachesTheRingInOrder(t *testing.T) {
+	t.Parallel()
 	path, payload := assetFile(t, 64)
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
@@ -157,6 +159,7 @@ func TestATranscodeProcessesFd1ReachesTheRingInOrder(t *testing.T) {
 // stats, rounded the way Python stores them. Expected values are read off
 // the corpus (the shape CAPTURE.md guarantees), never typed as digits.
 func TestParsedStderrReachesTheChannelsStats(t *testing.T) {
+	t.Parallel()
 	path, _ := assetFile(t, 8)
 	speeds := relaytest.CorpusSpeeds("normal")
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
@@ -201,6 +204,7 @@ func TestParsedStderrReachesTheChannelsStats(t *testing.T) {
 // overwrite the input's (input/manager.py:1041-1045, :1079-1082). Driven
 // with a corpus whose output video line differs from its input one.
 func TestOutputPhaseStreamLinesDoNotOverwriteTheInputs(t *testing.T) {
+	t.Parallel()
 	corpus := filepath.Join(t.TempDir(), "phases.stderr")
 	// Real ffmpeg 8.1.2 lines (the corpus preamble), with the OUTPUT video
 	// line's resolution changed to something a remux could never produce
@@ -243,6 +247,7 @@ func TestOutputPhaseStreamLinesDoNotOverwriteTheInputs(t *testing.T) {
 // the previous record's speed with the new state and fail for a reason
 // that is not the mechanism.
 func TestTheCapturedLeadIsNeverLabelledBufferingBeforeItCrosses(t *testing.T) {
+	t.Parallel()
 	speeds := relaytest.CorpusSpeeds("slow-trickle")
 	const threshold = 1.0
 	crossing := -1
@@ -332,6 +337,7 @@ func slowTrickleTail(t *testing.T) {
 // hard way: a clock taken after the first poll saw buffering reddened 2 in
 // 8 under -race.)
 func TestASustainedSubThresholdSpeedFailsTheChannelOver(t *testing.T) {
+	t.Parallel()
 	slowTrickleTail(t)
 	const apiMax = 10.0
 	path, _ := assetFile(t, 8)
@@ -391,6 +397,7 @@ func TestASustainedSubThresholdSpeedFailsTheChannelOver(t *testing.T) {
 // playing, slowly, on the source it has. Python's stderr thread never touched
 // the counter (input/manager.py:1134-1138), so this switched regardless.
 func TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent(t *testing.T) {
+	t.Parallel()
 	slowTrickleTail(t)
 	const apiMax = 10.0
 	path, _ := assetFile(t, 8)
@@ -438,6 +445,7 @@ func TestABufferingFailoverIsRefusedOnceMaxStreamSwitchesIsSpent(t *testing.T) {
 // does not. The alternate replays the same slow capture, so it buffers too;
 // the resolver holds a second answer, so only the bound can stop the ask.
 func TestABufferingFailoverCountsAgainstMaxStreamSwitches(t *testing.T) {
+	t.Parallel()
 	slowTrickleTail(t)
 	const apiMax = 10.0
 	path, _ := assetFile(t, 8)
@@ -485,6 +493,7 @@ func TestABufferingFailoverCountsAgainstMaxStreamSwitches(t *testing.T) {
 // every pass with a record above the threshold, end the buffering and
 // restart the clock, and "still buffering" could not be asserted at all.
 func TestABufferingTimeoutWithNoAlternateAsksOncePerTimeoutNotOnEveryRecord(t *testing.T) {
+	t.Parallel()
 	slowTrickleTail(t)
 	const apiMax = 10.0
 	const timeout = time.Second
@@ -534,6 +543,7 @@ func TestABufferingTimeoutWithNoAlternateAsksOncePerTimeoutNotOnEveryRecord(t *t
 // capture with the threshold at the API maximum, above every record; before
 // the fix the frame= gate dropped every record and the state never moved.
 func TestAnFFmpeg6StreamCopyArmsTheBufferingDetector(t *testing.T) {
+	t.Parallel()
 	const apiMax = 10.0
 	path, _ := assetFile(t, 8)
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
@@ -552,6 +562,7 @@ func TestAnFFmpeg6StreamCopyArmsTheBufferingDetector(t *testing.T) {
 // between 0.1 and 10, first with the threshold above them (buffering from
 // record one) and then a second source with the threshold below them.
 func TestBufferingEndsWhenTheSpeedRecovers(t *testing.T) {
+	t.Parallel()
 	speeds := relaytest.CorpusSpeeds("normal")
 	// A detector run entirely at the channel level: its Observe is unit
 	// tested in package ffmpeg, so this asserts only the state edge.
@@ -598,6 +609,7 @@ func TestBufferingEndsWhenTheSpeedRecovers(t *testing.T) {
 // asserted PRESENT so the pass is redaction, not a log that dropped the
 // line.
 func TestAProviderURLInStderrNeverReachesTheLog(t *testing.T) {
+	t.Parallel()
 	const secretURL = "http://provider.example:8080/live/subscriber/hunter2/9.ts?token=s3cr3t"
 	path, _ := assetFile(t, 8)
 	logs := &captureLog{}
@@ -627,6 +639,7 @@ func TestAProviderURLInStderrNeverReachesTheLog(t *testing.T) {
 // A command that cannot be found ends the channel in error with a message
 // that names the executable and nothing from argv.
 func TestAMissingCommandFailsTheChannelWithoutEchoingArgv(t *testing.T) {
+	t.Parallel()
 	logs := &captureLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Log: logs.logger()})
 	t.Cleanup(m.StopAll)
@@ -650,6 +663,7 @@ func TestAMissingCommandFailsTheChannelWithoutEchoingArgv(t *testing.T) {
 // case, is dropped together with its partner; on any other upstream nothing
 // is.
 func TestTheUDPFilterDropsUserAgentArgumentsWithTheirFlags(t *testing.T) {
+	t.Parallel()
 	argv := []string{"-user_agent", "VLC/3.0.20", "-headers", "User-Agent: VLC/3.0.20", "-i", "udp://239.0.0.1:1234", "-c", "copy", "-f", "mpegts", "pipe:1"}
 	udp := &TranscodeSource{Argv: argv, URL: "udp://239.0.0.1:1234", UserAgent: "VLC/3.0.20"}
 	// "-headers" GOES WITH ITS VALUE (issue #296). Python dropped the value
@@ -673,6 +687,7 @@ func TestTheUDPFilterDropsUserAgentArgumentsWithTheirFlags(t *testing.T) {
 // dropped FLAG takes its value: `-user_agent` with an empty user agent
 // substituted leaves no stray "" behind.
 func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
+	t.Parallel()
 	const url = "udp://239.0.0.1:1234"
 	streamlink := &TranscodeSource{
 		Argv: []string{url, "--http-header", "User-Agent=VLC/3.0.20", "best", "--stdout"},
@@ -703,6 +718,7 @@ func TestTheUDPFilterLeavesNoDanglingFlag(t *testing.T) {
 // the stand-in echoes what it was given, and the log carries it. No URL in
 // this argv, so nothing is redacted and the comparison is exact.
 func TestTheBuiltArgvIsSpawnedVerbatim(t *testing.T) {
+	t.Parallel()
 	path, _ := assetFile(t, 8)
 	logs := &captureLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Log: logs.logger()})
@@ -722,6 +738,7 @@ func TestTheBuiltArgvIsSpawnedVerbatim(t *testing.T) {
 // A non-zero exit reaches the channel as an error carrying the child's own
 // code (input/manager.py's returncode).
 func TestANonZeroExitPutsTheChannelInError(t *testing.T) {
+	t.Parallel()
 	path, _ := assetFile(t, 8)
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
@@ -759,7 +776,6 @@ func TestAVLCInputFailureEndsTheSource(t *testing.T) {
 	path, _ := assetFile(t, 8)
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
-	t.Setenv(relaytest.StandInEnv, "1")
 	_, argv := relaytest.StandInCommand("-i", path, "--dead-air-after-bytes", "1504", "--stderr-corpus", corpus, "--stderr-interval", "0")
 	src := &TranscodeSource{Command: "vlc", Argv: argv, URL: "http://provider.invalid/live.ts", UserAgent: "x"}
 	ch, release := attachTranscode(t, m, "vlc", src, transcodeTuning(1.0, 15*time.Second))
@@ -777,6 +793,7 @@ func TestAVLCInputFailureEndsTheSource(t *testing.T) {
 // Cancelling the channel (a stop) kills the child and reports the
 // cancellation, not the SIGKILL's exit status.
 func TestStoppingTheChannelKillsTheChild(t *testing.T) {
+	t.Parallel()
 	path, _ := assetFile(t, 8)
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	src := standInSource(t, "-i", path, "--dead-air-after-bytes", "1504", "--ignore-sigterm")
@@ -813,6 +830,7 @@ func deref(v any) any {
 
 // Global Constraint 8's ratchet for the one default this source carries.
 func TestTranscodeSourceDefaultsMatchPython(t *testing.T) {
+	t.Parallel()
 	var s TranscodeSource
 	if got := s.chunkSize(); got != 8192 {
 		t.Errorf("chunkSize() = %d, want 8192 (apps/proxy/config.py:7's CHUNK_SIZE, input/manager.py:1843)", got)

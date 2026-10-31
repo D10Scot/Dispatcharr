@@ -18,7 +18,7 @@ import (
 // entry is a descriptor the child does not have: writing to it fails in the
 // child, and the numbering of the others does not move.
 func TestStartPipedExtraGivesTheChildItsOutputPipes(t *testing.T) {
-	t.Setenv(relaytest.StandInEnv, "1")
+	t.Parallel()
 	dir := t.TempDir()
 	video := filepath.Join(dir, "video")
 	audio := filepath.Join(dir, "audio")
