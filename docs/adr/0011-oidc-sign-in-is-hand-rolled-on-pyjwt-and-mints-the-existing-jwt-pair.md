@@ -41,7 +41,8 @@ Implement the OpenID Connect authorization code flow with PKCE (S256) in this re
 `apps/accounts/oidc/` package. Use PyJWT's `PyJWKSet`/`PyJWK` and `jwt.decode` for every JWS and
 claim check, and `requests` for discovery, JWKS and the token request. No new Python dependency is
 added. On success, the callback mints the existing simplejwt pair with `RefreshToken.for_user()`,
-stamps it with `auth_method=oidc` and the provider id, and hands it to the SPA through a one-time,
+stamps it with `auth_method=oidc`, the provider id, the provider's configuration version and a hash of the
+redirect URI used (the claims the spec's lockout guard checks), and hands it to the SPA through a one-time,
 browser-bound exchange code. It never calls `django.contrib.auth.login()`.
 
 The code we write covers the protocol plumbing: building the redirect, state and nonce, the token
