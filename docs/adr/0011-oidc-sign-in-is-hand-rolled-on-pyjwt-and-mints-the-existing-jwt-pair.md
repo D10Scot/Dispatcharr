@@ -53,8 +53,10 @@ library.
 
 - R1 holds with no adapter layer. Providers are rows, read per login, and discovery and JWKS caches
   are keyed by the row's version.
-- The streaming surfaces, the WebSocket and the floating player need no change, and no new
-  cookie-borne principal exists.
+- JWT-based browser playback (the floating player, recordings, VOD and catch-up) and the
+  WebSocket need no change, and no new cookie-borne principal exists. The one intentional change
+  on the streaming side is the spec's D19: while password login is off, the existing Django-session
+  principal (`apps/proxy/authorize.py`'s `_session_user`) stops authorizing streams.
 - `uv.lock` does not change for SSO, and there is no new supply-chain surface to pin, scan or watch.
 - We own about 400 lines of security-relevant code, so the spec's threat list and its per-threat
   tests are mandatory, not optional. A security-adjacent review cadence applies (`fable` from round
