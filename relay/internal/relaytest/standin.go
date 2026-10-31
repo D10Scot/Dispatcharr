@@ -104,6 +104,10 @@ import (
 //	                         the relay's reaction to the bytes, the exit and
 //	                         its moment, which a real encoder cannot be made to
 //	                         produce exactly on demand (hls.go).
+//	--fd-fragment-interval S with --fd-file: write every file at once, box by
+//	                         box, pausing S seconds after each mdat, so
+//	                         fragments arrive at an encoder's pace rather than
+//	                         as one burst
 //	--wait-stdin-eof         with --fd-file: after writing, drain fd 0 and exit
 //	                         only at its EOF -- a generation that ends because
 //	                         the relay closed its input
@@ -132,33 +136,34 @@ func StandInArgs() []string {
 }
 
 type standInOptions struct {
-	input          string
-	corpus         string
-	interval       time.Duration
-	loop           bool
-	exitAfter      int
-	exitCode       int
-	deadAirAfter   int
-	echoArgv       bool
-	ignoreSigterm  bool
-	stdinProbe     bool
-	fmp4Fragments  int
-	haveFMP4       bool
-	fmp4Interval   time.Duration
-	fmp4BSFError   bool
-	fmp4Exit       bool
-	spawnLog       string
-	tsPID          int
-	haveTSPID      bool
-	stdinPIDLog    string
-	fdFiles        []fdFile
-	waitStdinEOF   bool
-	ignoreStdinEOF bool
-	haveExitAfter  bool
-	haveDeadAir    bool
-	positional     []string
-	originalArgs   []string
-	fatalParseFlag string
+	input              string
+	corpus             string
+	interval           time.Duration
+	loop               bool
+	exitAfter          int
+	exitCode           int
+	deadAirAfter       int
+	echoArgv           bool
+	ignoreSigterm      bool
+	stdinProbe         bool
+	fmp4Fragments      int
+	haveFMP4           bool
+	fmp4Interval       time.Duration
+	fmp4BSFError       bool
+	fmp4Exit           bool
+	spawnLog           string
+	tsPID              int
+	haveTSPID          bool
+	stdinPIDLog        string
+	fdFiles            []fdFile
+	fdFragmentInterval time.Duration
+	waitStdinEOF       bool
+	ignoreStdinEOF     bool
+	haveExitAfter      bool
+	haveDeadAir        bool
+	positional         []string
+	originalArgs       []string
+	fatalParseFlag     string
 }
 
 func parseStandIn(args []string) standInOptions {
@@ -216,6 +221,9 @@ func parseStandIn(args []string) standInOptions {
 			} else {
 				o.fatalParseFlag = a
 			}
+		case "--fd-fragment-interval":
+			secs, _ := strconv.ParseFloat(next(), 64)
+			o.fdFragmentInterval = time.Duration(secs * float64(time.Second))
 		case "--wait-stdin-eof":
 			o.waitStdinEOF = true
 		case "--ignore-stdin-eof":

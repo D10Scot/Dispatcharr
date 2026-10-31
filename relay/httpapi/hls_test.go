@@ -137,7 +137,7 @@ func (f *hlsFixture) command(hls.Spawn) (string, []string) {
 			"--fd-file", relaytest.FDFileArg(3, f.path("afull.mp4")),
 			"--wait-stdin-eof")
 	case modeLong:
-		return relaytest.StandInCommand("--spawn-log", f.encoderLog,
+		return relaytest.StandInCommand("--spawn-log", f.encoderLog, "--fd-fragment-interval", "0.05",
 			"--fd-file", relaytest.FDFileArg(1, f.path("vlong.mp4")),
 			"--fd-file", relaytest.FDFileArg(3, f.path("along.mp4")),
 			"--wait-stdin-eof")
