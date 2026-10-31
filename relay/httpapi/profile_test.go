@@ -70,7 +70,6 @@ func pidsIn(t *testing.T, data []byte) map[int]int {
 // tests would fail for a reason that is not their subject.
 func standInProfileArgv(t *testing.T, args ...string) []string {
 	t.Helper()
-	t.Setenv(relaytest.StandInEnv, "1")
 	command, argv := relaytest.StandInCommand(
 		append(args, "--ts-pid", strconv.Itoa(transcodePID), "-i", "pipe:0")...)
 	return append([]string{command}, argv...)
@@ -117,6 +116,7 @@ func (r *rig) tuneProfile(t *testing.T, channelID, clientID, profileID, format s
 // test_output_profile_sharing.py::OutputProfileSharingTests::
 // test_two_clients_on_one_output_profile_share_a_single_transcode.
 func TestTwoClientsOnOneOutputProfileShareOneTranscode(t *testing.T) {
+	t.Parallel()
 	log := filepath.Join(t.TempDir(), "profile-spawns.log")
 	r := profileRig(t, "3", relaytest.OutputProfileConfig{
 		ID:   3,
@@ -190,6 +190,7 @@ func TestTwoClientsOnOneOutputProfileShareOneTranscode(t *testing.T) {
 // the two streams identical and the assertion could not fail -- see
 // transcodePID above.
 func TestAProfileClientAndAPlainClientShareOneUpstream(t *testing.T) {
+	t.Parallel()
 	log := filepath.Join(t.TempDir(), "profile-spawns.log")
 	r := profileRig(t, "3", relaytest.OutputProfileConfig{
 		ID:   3,
@@ -245,6 +246,7 @@ func TestAProfileClientAndAPlainClientShareOneUpstream(t *testing.T) {
 // satisfiable by the wrong thing: two spawns with one key would be a leak, and
 // two keys with one spawn would mean a pipeline that never started.
 func TestAnFMP4ClientOnAnOutputProfileRunsTheTranscodeAndTheRemuxChained(t *testing.T) {
+	t.Parallel()
 	dir := t.TempDir()
 	transcodeLog := filepath.Join(dir, "transcode-spawns.log")
 	remuxLog := filepath.Join(dir, "remux-spawns.log")
@@ -325,6 +327,7 @@ func TestAnFMP4ClientOnAnOutputProfileRunsTheTranscodeAndTheRemuxChained(t *test
 // tune puts the id in the registry. That is a property of identify and the
 // handler.
 func TestTheListPayloadNamesEachClientsOwnOutputProfile(t *testing.T) {
+	t.Parallel()
 	r := profileRig(t, "3", relaytest.OutputProfileConfig{
 		ID:   3,
 		Argv: standInProfileArgv(t),
@@ -391,6 +394,7 @@ func TestTheListPayloadNamesEachClientsOwnOutputProfile(t *testing.T) {
 // it plain TS. The Go relay reaches the same answer because the deactivated
 // profile is no longer in the next-source map.
 func TestAProfileMissingFromTheAnswerIsServedWithoutOne(t *testing.T) {
+	t.Parallel()
 	// An answer carrying a DIFFERENT active profile, so the map is known and
 	// non-empty and the only thing missing is the one this tune names -- a
 	// fixture with an empty map would also pass a relay that treated "no
@@ -450,6 +454,7 @@ func TestAProfileMissingFromTheAnswerIsServedWithoutOne(t *testing.T) {
 // detector is what makes the concurrent reader worth having. Run it with
 // -race or it pins only the value.
 func TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint(t *testing.T) {
+	t.Parallel()
 	// An answer carrying a DIFFERENT active profile, so the map is known and
 	// non-empty and the only thing missing is the one this tune names -- the
 	// arm that performs the correction.
@@ -508,6 +513,7 @@ func TestTheDeactivatedProfileCorrectionDoesNotRaceTheListEndpoint(t *testing.T)
 // stream_ts's try) and answers 500 too; the BODY diverges, because Python's
 // carries shlex's message and this relay has never seen it.
 func TestAProfileWhoseArgvDjangoCouldNotBuildIsAFiveHundred(t *testing.T) {
+	t.Parallel()
 	r := profileRig(t, "3", relaytest.OutputProfileConfig{ID: 3, ArgvNull: true},
 		relaytest.Config{Rate: 4}, nil)
 
@@ -529,6 +535,7 @@ func TestAProfileWhoseArgvDjangoCouldNotBuildIsAFiveHundred(t *testing.T) {
 // ensure_output_profile returning False (server.py:1532-1538, views.py:767-772)
 // rather than build_command raising.
 func TestATranscodeThatCannotBeSpawnedIsAFiveHundred(t *testing.T) {
+	t.Parallel()
 	r := profileRig(t, "3", relaytest.OutputProfileConfig{
 		ID:   3,
 		Argv: []string{"/nonexistent/dispatcharr-transcode", "-i", "pipe:0"},
@@ -556,6 +563,7 @@ func TestATranscodeThatCannotBeSpawnedIsAFiveHundred(t *testing.T) {
 // the client plain TS would hand a device the wrong audio codec silently. 502,
 // the same answer an absent proxy_settings key gets.
 func TestATuneNamingAProfileAgainstAnOlderControlPlaneIsABadGateway(t *testing.T) {
+	t.Parallel()
 	r := fanRigWith(t, relaytest.ControlPlaneConfig{OutputProfilesAbsent: true},
 		relaytest.Config{Rate: 4}, nil)
 
@@ -597,6 +605,7 @@ func TestATuneNamingAProfileAgainstAnOlderControlPlaneIsABadGateway(t *testing.T
 // exhausted after three quick EOFs -- TestAFailoverFallsBackToTheCachedCandidates
 // WhenTheControlPlaneIsDown's own fixture shape, for the same reason.
 func TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot(t *testing.T) {
+	t.Parallel()
 	second := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, assetPID), StopAfterBytes: rigChunkBytes * 2})
 	t.Cleanup(second.Close)
 	third := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, assetPID)})
@@ -677,6 +686,7 @@ func TestAFailoverRefreshesTheProfileSetAndADegradedOneDoesNot(t *testing.T) {
 // channel_shutdown_delay -- so the transcode stops at once while the channel
 // keeps running for the plain client still watching.
 func TestTheLastProfileClientLeavingStopsTheTranscodeAndNotTheChannel(t *testing.T) {
+	t.Parallel()
 	r := profileRig(t, "3", relaytest.OutputProfileConfig{
 		ID:   3,
 		Argv: standInProfileArgv(t),
@@ -723,6 +733,7 @@ func TestTheLastProfileClientLeavingStopsTheTranscodeAndNotTheChannel(t *testing
 // cleanup at :1772, which reaches the Go registry through run's deferred
 // stopOutputs.
 func TestStoppingTheChannelStopsItsProfileTranscode(t *testing.T) {
+	t.Parallel()
 	r := profileRig(t, "3", relaytest.OutputProfileConfig{
 		ID:   3,
 		Argv: standInProfileArgv(t),

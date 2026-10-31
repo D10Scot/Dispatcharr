@@ -61,10 +61,12 @@ func packetsUntil(t *testing.T, body io.ReadCloser, deadline time.Duration, stop
 // KEEPALIVE_INTERVAL. The control plane is slowed so the failover does not
 // end the wait early.
 func TestAnUnhealthyChannelSendsKeepalivesAtTheBufferHeadAndAHealthyOneDoesNot(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4, DeadAirAfterBytes: rigChunkBytes * 3}, map[string]any{
 		"CONNECTION_TIMEOUT": 5, "HEALTH_CHECK_INTERVAL": 0.05, "KEEPALIVE_INTERVAL": 0.05,
 	})
 	r.Control.SetDelay(4 * time.Second)
+	t.Cleanup(func() { r.Control.SetDelay(0) })
 	response := r.tuneAs(t, "c-keepalive", "client-a")
 	defer func() { _ = response.Body.Close() }()
 
@@ -110,10 +112,12 @@ func TestAnUnhealthyChannelSendsKeepalivesAtTheBufferHeadAndAHealthyOneDoesNot(t
 // the control plane too slow to ever switch: the response ends, and the
 // client count goes to zero.
 func TestAClientIsDroppedOnceTheKeepaliveCapIsReached(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4, DeadAirAfterBytes: rigChunkBytes * 3}, map[string]any{
 		"CONNECTION_TIMEOUT": 0.3, "HEALTH_CHECK_INTERVAL": 0.05, "KEEPALIVE_INTERVAL": 0.05, "MAX_KEEPALIVE_DURATION": 0.5,
 	})
 	r.Control.SetDelay(6 * time.Second)
+	t.Cleanup(func() { r.Control.SetDelay(0) })
 	response := r.tuneAs(t, "c-cap", "client-a")
 	defer func() { _ = response.Body.Close() }()
 
@@ -142,10 +146,12 @@ func TestAClientIsDroppedOnceTheKeepaliveCapIsReached(t *testing.T) {
 // and present on every channel this relay holds. The 2c-3 golden's
 // NOT_SERVED_YET entry for it goes with this test.
 func TestHealthyOnTheListPayloadFollowsTheHealthMonitor(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4, DeadAirAfterBytes: rigChunkBytes * 3}, map[string]any{
 		"CONNECTION_TIMEOUT": 0.3, "HEALTH_CHECK_INTERVAL": 0.05,
 	})
 	r.Control.SetDelay(4 * time.Second)
+	t.Cleanup(func() { r.Control.SetDelay(0) })
 	response := r.tuneAs(t, "c-healthy", "client-a")
 	defer func() { _ = response.Body.Close() }()
 	waitForHead(t, r, "c-healthy", 1)
@@ -168,6 +174,7 @@ func TestHealthyOnTheListPayloadFollowsTheHealthMonitor(t *testing.T) {
 // written -- and then the body ends. Amendment A2.5 recorded 2c-2 as
 // answering with zero bytes here.
 func TestAClientWithNoBytesGetsAnErrorPacketWhenEverySourceFails(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Status: 404}, nil)
 	response := r.tuneAs(t, "c-error-packet", "client-a")
 	defer func() { _ = response.Body.Close() }()

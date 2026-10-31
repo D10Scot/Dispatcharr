@@ -22,7 +22,6 @@ import (
 // drives the production argv.
 func standInRemux(t *testing.T, args ...string) output.Remux {
 	t.Helper()
-	t.Setenv(relaytest.StandInEnv, "1")
 	command, argv := relaytest.StandInCommand(args...)
 	return output.Remux{Command: command, Argv: argv, ArgvNoBSF: argv}
 }
@@ -70,6 +69,7 @@ func readAtLeast(body io.Reader, n int, within time.Duration) []byte {
 // The Content-Type is views.py:805's video/mp4 where a TS tune sends
 // video/mp2t (:817).
 func TestAnFMP4TuneIsServedAsVideoMP4WithTheInitSegmentFirst(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--fmp4-fragments", "20", "--fmp4-interval", "0.02")))
 
@@ -110,6 +110,7 @@ func TestAnFMP4TuneIsServedAsVideoMP4WithTheInitSegmentFirst(t *testing.T) {
 // reddens. The spawn log is the mechanism output_support.py:83's
 // spawn_logging_standin uses for the same claim on the Python side.
 func TestTwoFMP4ClientsShareOneRemux(t *testing.T) {
+	t.Parallel()
 	log := filepath.Join(t.TempDir(), "remux-spawns.log")
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--spawn-log", log, "--fmp4-fragments", "60", "--fmp4-interval", "0.02")))
@@ -146,6 +147,7 @@ func TestTwoFMP4ClientsShareOneRemux(t *testing.T) {
 // the output differs: views.py:789-818 branches after the channel is up and the
 // client is registered, on the client's own resolved format.
 func TestATSClientAndAnFMP4ClientShareOneUpstream(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--fmp4-fragments", "60", "--fmp4-interval", "0.02")))
 
@@ -178,6 +180,7 @@ func TestATSClientAndAnFMP4ClientShareOneUpstream(t *testing.T) {
 // the client's own metadata hash, which client_manager.py:242 wrote from
 // views.py:749's resolved_output_format.
 func TestTheListPayloadNamesEachClientsOwnOutputFormat(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--fmp4-fragments", "60", "--fmp4-interval", "0.02")))
 
@@ -219,6 +222,7 @@ func TestTheListPayloadNamesEachClientsOwnOutputFormat(t *testing.T) {
 // channel_shutdown_delay -- so the remux stops at once while the channel does
 // not stop at all, because a TS client is still watching.
 func TestTheLastFMP4ClientLeavingStopsTheRemuxAndNotTheChannel(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--fmp4-fragments", "200", "--fmp4-interval", "0.02")))
 
@@ -267,6 +271,7 @@ func TestTheLastFMP4ClientLeavingStopsTheRemuxAndNotTheChannel(t *testing.T) {
 // InitSegmentTimeout would add fifteen seconds to every run to assert the same
 // empty body, and the two arms return through the same line.
 func TestAnFMP4TuneWhoseRemuxProducesNoInitSegmentGetsAnEmptyTwoHundred(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--fmp4-fragments", "0", "--fmp4-exit")))
 
@@ -287,6 +292,7 @@ func TestAnFMP4TuneWhoseRemuxProducesNoInitSegmentGetsAnEmptyTwoHundred(t *testi
 // a channel that ended would leave an ffmpeg reading a ring nobody fills, held
 // alive by nothing, until the process exits.
 func TestStoppingTheChannelStopsItsRemux(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--fmp4-fragments", "200", "--fmp4-interval", "0.02")))
 
@@ -322,6 +328,7 @@ func TestStoppingTheChannelStopsItsRemux(t *testing.T) {
 // The two failures are different and a client that reads the body can tell
 // them apart in Python, so it must be able to here.
 func TestAnFMP4TuneWhoseRemuxCannotBeSpawnedIsAFiveHundred(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(output.Remux{Command: "/nonexistent/dispatcharr-remux", Argv: []string{}, ArgvNoBSF: []string{}}))
 
@@ -371,6 +378,7 @@ func TestAnFMP4TuneWhoseRemuxCannotBeSpawnedIsAFiveHundred(t *testing.T) {
 // defect-era version of this test used 200 fragments at 20 ms, four seconds
 // of them.
 func TestAStalledFMP4ClientOnAHealthyChannelStaysConnectedLikeATSClient(t *testing.T) {
+	t.Parallel()
 	const (
 		streamTimeout = 1.0
 		failoverGrace = 1.0
@@ -435,6 +443,7 @@ func TestAStalledFMP4ClientOnAHealthyChannelStaysConnectedLikeATSClient(t *testi
 // the tune, so the failover the health monitor asks for cannot end the
 // channel inside the six-second window: an fMP4 end well inside it is the cap's.
 func TestAnFMP4ClientOnAnUnhealthyStallIsDroppedAtTheKeepaliveCap(t *testing.T) {
+	t.Parallel()
 	const maxKeepalive = 2 * time.Second
 	r := fanRig(t, relaytest.Config{Rate: 8, DeadAirAfterBytes: 200_000}, map[string]any{
 		"CONNECTION_TIMEOUT": 0.3, "HEALTH_CHECK_INTERVAL": 0.05, "KEEPALIVE_INTERVAL": 0.05,
@@ -448,6 +457,7 @@ func TestAnFMP4ClientOnAnUnhealthyStallIsDroppedAtTheKeepaliveCap(t *testing.T) 
 	fmp4 := r.tuneFMP4(t, "c-row12-cap", "client-fmp4")
 	defer func() { _ = fmp4.Body.Close() }()
 	r.Control.SetDelay(8 * time.Second)
+	t.Cleanup(func() { r.Control.SetDelay(0) })
 	ch := r.Manager.Get("c-row12-cap")
 	if ch == nil {
 		t.Fatal("the channel is not running")

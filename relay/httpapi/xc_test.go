@@ -33,6 +33,7 @@ func (r *rig) tuneXC(t *testing.T, root, channelUUID, clientID string) *http.Res
 // fact, tune anything, since the numeric id maps to a uuid only through an
 // ORM query this process cannot make.
 func TestAnXCTuneServesTheHopsChannelAndAuthorizesOnce(t *testing.T) {
+	t.Parallel()
 	for _, root := range []string{
 		"/live/xcuser/xcpass/12345",
 		"/xcuser/xcpass/12345",
@@ -76,6 +77,7 @@ func TestAnXCTuneServesTheHopsChannelAndAuthorizesOnce(t *testing.T) {
 // relay that ignored the extension would pass a test that only checked
 // ".mp4 is fmp4" if the hop had already said fmp4.
 func TestTheXCExtensionOverridesTheHopsOutputFormat(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		id       string
 		hopSaid  string
@@ -126,6 +128,7 @@ func TestTheXCExtensionOverridesTheHopsOutputFormat(t *testing.T) {
 // falls through to the SPA catch-all there and has nowhere to fall through
 // to here, so the handler applies the pattern itself.
 func TestAnXCPathDjangoWouldNotResolveIs404(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	for _, id := range []string{"not-a-number", "12345.", "12345.mp4.extra", ""} {
 		response := r.tuneXC(t, "/live/u/p/"+id, "c-xc-uuid", "client-a")
@@ -148,6 +151,7 @@ func TestAnXCPathDjangoWouldNotResolveIs404(t *testing.T) {
 // rather than trusting it: /proxy/relay/channels reaching XCHandler would
 // answer 404 for every stats poll in the deployment.
 func TestTheBareXCRootDoesNotShadowTheControlRoutes(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	status, raw := r.listChannels(t, "")
 	if status != http.StatusOK {

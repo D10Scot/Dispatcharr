@@ -333,6 +333,7 @@ func (r *rig) tune(t *testing.T, path string, header http.Header) *http.Response
 // connects to it, and the client receives the provider's bytes as whole,
 // in-order TS packets.
 func TestATuneDeliversTheProvidersBytes(t *testing.T) {
+	t.Parallel()
 	payload := relaytest.SyntheticTS(4096, 0x100) // ~770 KB, three default chunks
 	rig := newRig(t,
 		relaytest.ControlPlaneConfig{},
@@ -385,6 +386,7 @@ func TestATuneDeliversTheProvidersBytes(t *testing.T) {
 // chunk size is invisible from outside by construction, so an end-to-end
 // assertion on it has to go one layer in or not exist.
 func TestTheRingUsesTheChunkSizeTheControlPlaneSent(t *testing.T) {
+	t.Parallel()
 	payload := relaytest.SyntheticTS(4096, 0x100)
 	rig := newRig(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Payload: payload})
 
@@ -413,6 +415,7 @@ func TestTheRingUsesTheChunkSizeTheControlPlaneSent(t *testing.T) {
 // headers. A client that could reach the relay without them would be talking
 // to a relay that had not asked Django anything.
 func TestATuneMakesOneSignedControlPlaneCall(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t, relaytest.ControlPlaneConfig{}, relaytest.Config{})
 	response := rig.tune(t, "/proxy/ts/stream/a-channel-uuid", nil)
 	defer func() { _ = response.Body.Close() }()
@@ -446,6 +449,7 @@ func TestATuneMakesOneSignedControlPlaneCall(t *testing.T) {
 // are served since 2c-5 (2c-2 listed transcode and redirect here), so the
 // kind that can reach this arm is one a newer control plane invents.
 func TestATuneRefusesAKindItDoesNotServe(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"hls-passthrough"} {
 		t.Run(kind, func(t *testing.T) {
 			rig := newRig(t, relaytest.ControlPlaneConfig{Kind: kind}, relaytest.Config{})
@@ -465,6 +469,7 @@ func TestATuneRefusesAKindItDoesNotServe(t *testing.T) {
 // sends only the seven stored keys fails the tune with a named key, rather
 // than the relay quietly substituting a Go-side default.
 func TestATuneRefusesIncompleteProxySettings(t *testing.T) {
+	t.Parallel()
 	stored := map[string]any{
 		"buffering_timeout":          15,
 		"buffering_speed":            1.0,
@@ -494,6 +499,7 @@ func TestATuneRefusesIncompleteProxySettings(t *testing.T) {
 // Each subtest removes ONE key from an otherwise complete answer, so the only
 // thing that can fail the tune is that key's own absence.
 func TestEveryProxySettingThisRelayReadsIsRequired(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{
 		settingChunkBytes, settingRetention, settingJoinBehind, settingReadSize, settingShutdownDelay,
 		settingBufferingSpeed, settingBufferingTimeout, settingDefaultUserAgent,
@@ -524,6 +530,7 @@ func TestEveryProxySettingThisRelayReadsIsRequired(t *testing.T) {
 // it there. Without the marker a hand-crafted header must be ignored and the
 // path value used, or any client could name any channel and skip the hop.
 func TestXRelayChannelIsIgnoredWithoutTheTrustMarker(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t, relaytest.ControlPlaneConfig{}, relaytest.Config{})
 	response := rig.tune(t, "/proxy/ts/stream/from-the-path", http.Header{
 		"X-Relay-Channel": []string{"from-the-header"},
@@ -540,6 +547,7 @@ func TestXRelayChannelIsIgnoredWithoutTheTrustMarker(t *testing.T) {
 }
 
 func TestXRelayChannelIsUsedWithTheTrustMarker(t *testing.T) {
+	t.Parallel()
 	rig := newRig(t, relaytest.ControlPlaneConfig{}, relaytest.Config{})
 	response := rig.tune(t, "/proxy/ts/stream/from-the-path", http.Header{
 		control.HeaderAuthorized: []string{control.RelayTrustToken(testSecret)},
@@ -558,6 +566,7 @@ func TestXRelayChannelIsUsedWithTheTrustMarker(t *testing.T) {
 
 // The dev flag still gates the whole route, as 2c-1 built it.
 func TestTheStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
+	t.Parallel()
 	server := New(Config{DevRoutes: false})
 	rec := httptest.NewRecorder()
 	server.Handler().ServeHTTP(rec,
@@ -574,6 +583,7 @@ func TestTheStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
 // sent across the three connections. With no alternate on the fake control
 // plane, the failover finds nothing and the channel errors.
 func TestAStreamThatEndsClosesTheClientsResponse(t *testing.T) {
+	t.Parallel()
 	payload := relaytest.SyntheticTS(4096, 0x100)
 	rig := newRig(t,
 		relaytest.ControlPlaneConfig{},

@@ -230,6 +230,9 @@ type ControlPlane struct {
 	settings  map[string]any
 	status    int
 	delay     time.Duration
+	delayWake chan struct{}
+	closing   chan struct{}
+	closeOnce sync.Once
 	profiles  map[string]OutputProfileConfig
 	hasProfs  bool
 	hlsProf   *HLSProfileConfig
@@ -362,6 +365,12 @@ func (c *ControlPlane) SetDelay(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.delay = d
+	// Restoring the default cuts held answers short, so a test ending a slow
+	// phase does not wait out the sleep the phase was started with.
+	if d == 0 {
+		close(c.delayWake)
+		c.delayWake = make(chan struct{})
+	}
 }
 
 // RecordedRequest is one call the fake received, and when.
@@ -388,7 +397,7 @@ type RecordedEvent struct {
 
 // NewControlPlane starts a fake control plane. Register Close with t.Cleanup.
 func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
-	c := &ControlPlane{}
+	c := &ControlPlane{delayWake: make(chan struct{}), closing: make(chan struct{})}
 	c.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body := make([]byte, 0)
 		if r.Body != nil {
@@ -415,13 +424,21 @@ func NewControlPlane(cfg ControlPlaneConfig) *ControlPlane {
 		})
 		forced := c.status
 		delay := c.delay
+		wake := c.delayWake
 		c.mu.Unlock()
 
 		if delay == 0 {
 			delay = cfg.Delay
 		}
 		if delay > 0 {
-			time.Sleep(delay)
+			timer := time.NewTimer(delay)
+			select {
+			case <-timer.C:
+			case <-wake:
+				timer.Stop()
+			case <-c.closing:
+				timer.Stop()
+			}
 		}
 
 		switch {
@@ -730,7 +747,10 @@ func (c *ControlPlane) EventsOfType(typ string) []RecordedEvent {
 // Close stops the fake. A relay whose control plane has been closed sees a
 // transport failure on its next call, which is the other shape of
 // control.Unavailable beside SetStatus's 5xx.
-func (c *ControlPlane) Close() { c.server.Close() }
+func (c *ControlPlane) Close() {
+	c.closeOnce.Do(func() { close(c.closing) })
+	c.server.Close()
+}
 
 // writeAuthorize answers the dev fallback.
 func (c *ControlPlane) writeAuthorize(w http.ResponseWriter, cfg ControlPlaneConfig) {

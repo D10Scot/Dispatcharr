@@ -14,6 +14,7 @@ import (
 // change to 2c-1's shape: /healthz is still liveness and still the literal
 // "ok", and /readyz now reports something real (spec D6).
 func TestHealthEndpointsAnswer200(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{DevRoutes: false})
 
 	rec := httptest.NewRecorder()
@@ -53,6 +54,7 @@ func TestHealthEndpointsAnswer200(t *testing.T) {
 // flag off still needs to be probeable, and that is the shape stage 2d relies
 // on.
 func TestHealthEndpointsIgnoreTheDevFlag(t *testing.T) {
+	t.Parallel()
 	for _, dev := range []bool{true, false} {
 		srv := New(Config{DevRoutes: dev})
 		rec := httptest.NewRecorder()
@@ -68,6 +70,7 @@ func TestHealthEndpointsIgnoreTheDevFlag(t *testing.T) {
 // the difference is the assertion -- a test that only checked "not 200" would
 // pass with the route registered and the handler erroring.
 func TestStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{DevRoutes: false})
 
 	// EVERY GATED ROUTE, not just the first one. 2c-8 adds six -- the two XC
@@ -110,6 +113,7 @@ func TestStreamRouteIsUnregisteredWithoutTheDevFlag(t *testing.T) {
 // without the "GET " prefix on the pattern, this is a 200 and any client can
 // POST to the health endpoints.
 func TestHealthEndpointsRejectNonGET(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{DevRoutes: false})
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPost, "/healthz", nil))
@@ -119,6 +123,7 @@ func TestHealthEndpointsRejectNonGET(t *testing.T) {
 }
 
 func TestUnknownPathIs404(t *testing.T) {
+	t.Parallel()
 	srv := New(Config{DevRoutes: true})
 	rec := httptest.NewRecorder()
 	srv.Handler().ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodGet, "/anything-else", nil))
