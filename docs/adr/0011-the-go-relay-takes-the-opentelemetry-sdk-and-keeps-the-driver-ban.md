@@ -129,6 +129,12 @@ banned.**
   already filters `go list -deps .` to the module's own import paths, so
   third-party packages never enter it. `gomod=` in the floor changes when
   `go.mod` does, which is a shape-only re-baseline.
+- The relay can export its log records over OTLP. Structured log fields are
+  exported only through a typed allowlist. Log **bodies** are the free text
+  the relay already writes to stderr. They are exported with best-effort
+  scrubbing and are **no stronger than stdout**, by owner ruling R-Q17
+  (2026-11-01). Their safety rests on credlint at the call site and on a
+  future structured-logging rewrite, which is out of scope.
 - The relay can now fail a build because an upstream module has a published
   vulnerability. That is the point of govulncheck blocking, and it is the
   same posture the Python and npm lockfiles already have.

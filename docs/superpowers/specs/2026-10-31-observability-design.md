@@ -351,8 +351,16 @@ line is today's behaviour and is out of this spec's scope.
    they go to the JSON formatter or over OTLP. A log body is the free text a call site already
    writes to stdout today. It is scrubbed by the pattern classes below and is **explicitly not
    claimed to be safe**: an exception message interpolated into a body (Celery's retry and
-   failure logging does this) reaches the body as it reaches stdout today. The docs page says
-   so. The credential-logging checks police the call sites, as they do today.
+   failure logging does this) reaches the body as it reaches stdout today. **This is no stronger
+   than stdout.** The docs page says so. The safety of a free-text body rests where it rests
+   today:
+   - on the call-site checks, `scripts/check_credential_logging.py` and `relay/internal/credlint`,
+     both extended as below;
+   - and on a future structured-logging rewrite, which is out of this spec's scope (R6).
+
+   The scrubbing is **not a proof**. Its tests are **policy tests**: each pattern class the
+   scrubber targets is shown to be removed from a body that contains it. They do not show that
+   a body holds no secret.
 
 **What the instrumentations actually emit.** Measured with Django 6.0.8, the five
 instrumentations at 0.66b2 and `OTEL_SEMCONV_STABILITY_OPT_IN=http`, on a minimal app whose
@@ -423,7 +431,12 @@ attribute fails is dropped, and the drop is logged once per instrument. Exemplar
     `traceback.extract_tb` with `capture_locals` off. It carries no source text, no message and
     no locals.
 
-  `extra=` fields and every other attribute are dropped.
+  Python `extra=` attributes are structured fields, so they are allow by construction too: they
+  pass through a typed per-key allowlist with the same validator kinds as the span table. That
+  allowlist is **empty** at O5, because no non-test call site passes `extra=` to a logger
+  (`git grep -n "extra=" -- 'apps/*.py' 'core/*.py' 'dispatcharr/*.py' ':!*/tests/*'` finds no
+  logging call at the seed). Every `extra` key is therefore dropped until a key is given a typed
+  rule. Every other attribute is dropped too.
 - **Body**, best effort (R-Q17): `redact_text(record.getMessage())`, where `redact_text` applies
   the pattern classes below.
 
@@ -557,7 +570,8 @@ the test container):
 | psycopg | `cursor.execute("SELECT 'S3NT1NEL-pw-9d2f' FROM")`, a syntax error echoing the literal |
 | redis | `execute_command("NOSUCHCMD", "<sentinel>")`, whose error echoes the argument; `SET <uuid> <sentinel>` |
 | celery | `apply(args=[<sentinel>], kwargs={"k": <sentinel>})` raising with the bare argument; a task that retries with the sentinel in its exception. The retry log **body** is R-Q17's best effort and is asserted only for URL, UUID and token classes, not for the bare sentinel |
-| log fields | `extra={"secret": …}`; `logger.exception` from a function with a local variable holding the sentinel (frames carry no locals) |
+| log fields | `extra={"secret": …}` and `extra={"count": 3}`, both dropped by the empty allowlist (policy). A test-only rule `count: int` keeps the second and still drops the first (policy and leak). `logger.exception` from a function with a local variable holding the sentinel: frames carry no locals |
+| log bodies (policy tests only, R-Q17) | one body per pattern class (URL, scheme-less path, UUID, HLS token, long hex, `password=`), each asserted removed. A bare sentinel in a body is **not** asserted absent, because no class targets it; the test says so in a comment |
 | metrics | an excluded attribute recorded inside a sampled span; an uncatalogued counter; a catalogue point whose `task` value is the sentinel URL (fails the identifier rule and is dropped) |
 | resource | the D13 case |
 
@@ -566,7 +580,7 @@ Go cases (`relay/telemetry/*_test.go` in O2; real-call cases in O4):
 | Sink | Case |
 |---|---|
 | spans | `relay.next_source` failing through the `RoundTripper`; the status description and event are the type only |
-| logs | O2: computed keys, a nested struct, a `LogValuer`, `With` from a package outside `relay/`, groups, an `error` with the sentinel URL, and `otel.Handle(errors.New(<sentinel>))` through the installed error handler. O4: the real calls at `failover.go:195`, and a call logged under `output/profile.go:130`'s `With`, found by the implementer and asserted with a control handler |
+| logs | O2: computed keys, a nested struct, a `LogValuer`, `With` from a package outside `relay/`, groups, an `error` with the sentinel URL, and `otel.Handle(errors.New(<sentinel>))` through the installed error handler (its error leaves as a type). Body policy tests per pattern class, as in Python, with no claim about a bare secret. O4: the real calls at `failover.go:195`, and a call logged under `output/profile.go:130`'s `With`, found by the implementer and asserted with a control handler |
 | `/metrics` and OTLP metrics | policy: no `target_info` family and no `otel_scope_*` label (mutation: drop `WithoutTargetInfo` or `WithoutScopeInfo`; measured in round 1, the family and labels then appear). Exemplars: M3 recorded inside a sampled span exports no exemplar (mutation: drop the option) |
 | resource | the D13 case |
 
@@ -1765,7 +1779,7 @@ The block above is an outline, not a hunk: O7 validates the real file with the C
 
 | # | Risk | Mitigation |
 |---|---|---|
-| K1 | A credential or capability reaches an exporter through a carrier the allowlists did not anticipate | Allow by construction for everything new (D9, R-Q17): unknown keys are dropped; values are checked against a typed rule; status descriptions become exception types; non-error `Any` values are dropped. The leak matrix gives each rule its own mutation, and the planner recorded each one failing. **Accepted residual, by ruling R-Q17:** log **bodies** over OTLP are as safe as stdout today and no safer. That includes exception text a call site interpolates, such as Celery's retry and failure messages. The credential-logging checks police call sites as they do today |
+| K1 | A credential or capability reaches an exporter through a carrier the allowlists did not anticipate | Allow by construction for everything new (D9, R-Q17): unknown keys are dropped; values are checked against a typed rule; status descriptions become exception types; non-error `Any` values are dropped. The leak matrix gives each rule its own mutation, and the planner recorded each one failing. **Accepted residual, by ruling R-Q17:** log **bodies** over OTLP are as safe as stdout today and **no stronger**. That includes exception text a call site interpolates, such as Celery's retry and failure messages. Body scrubbing is best effort, and its tests are policy tests, not a proof. Body safety rests on the call-site checks (`check_credential_logging.py`, credlint) and on a future structured-logging rewrite, which is out of scope |
 | K2 | The SDK misbehaves under gevent. (a) Encoding a batch to protobuf runs on a uWSGI worker's gevent hub and stalls its request greenlets. (b) Upstream reports deadlocks: opentelemetry-python #4345 ("Deadlock accessing metric reader storage … gevent workers", open), and #5788 (metric locks not reinitialised in a forked child, open). #3886 and #3897 (`BatchSpanProcessor` under gevent) are closed | (a) Milliseconds per 512-span batch; `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` lowers it. (b) D10 initialises after the fork in every process, which sidesteps #5788's fork path. #4345 is not covered by the context-isolation test. Before OTLP is enabled on the test box, O5's PR body records one soak: a uWSGI worker under the project's own `gevent = 400`, polled for ten minutes, with OTLP on, showing no hung worker. If it hangs, metrics export in uWSGI processes is switched off (`OTEL_METRICS_EXPORTER=none`, D12) and the finding becomes an issue. Off by default |
 | K3 | A client forces sampling or picks a trace id | D11: no public route on either side extracts a client's context |
 | K4 | The relay's shutdown overruns `stopwaitsecs=20` | Telemetry shutdown is bounded at 2 s after the 15 s drain (O4) |
