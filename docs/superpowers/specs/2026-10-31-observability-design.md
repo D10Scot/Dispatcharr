@@ -899,6 +899,11 @@ imported only by tests, so it is never linked into the binary. It exposes stdlib
 - `(*Recorder).Spans() []Span`, where `Span` is
   `{Name, TraceID, SpanID, ParentSpanID string; Links []string; Attrs map[string]any; Status, Description string; Ended bool}`.
 - `(*Recorder).Points(name string) []Point`.
+- `(*Recorder).TuneCompletions() int`: the number of times `*Tune`'s completion path ran (round 5).
+  `relay/telemetry` counts it in `(*Tune).complete`, the one function that `FirstByte`, `Fail`'s
+  terminal path and the deferred `End` all reach. The count is taken **before** `span.End()`, so
+  the SDK's idempotent `End` cannot hide a second completion. The counter is an `atomic.Int64`
+  on the installed telemetry instance, so production pays one atomic add per tune.
 - `telemetrytest.Traceparent(traceID, spanID string) string` builds a W3C header value for a
   request.
 
@@ -957,13 +962,21 @@ standard library, so the lint gate holds. Break-check: add `tracetest` to a test
     - only the write-first ordering also reddens on the outcome: `outcome="streaming"`.
 2f. **M3 counts the returned `n`, and completion happens exactly once.** A stub
     `ResponseWriter` accepts 100 of 188 bytes on each `Write` and returns an error. After two
-    armed writes, M3 is 200, the outcome is `streaming`, and the span ended once. A `Fail` after
-    the first byte changes neither the outcome nor the end count.
+    armed writes, M3 is 200 and the outcome is `streaming`. The handler then calls a late
+    `Fail` and returns, which runs the deferred `End`. At that point
+    `(*Recorder).TuneCompletions()` is **exactly 1**.
+
+    **The span record cannot be the oracle** (round 5): the SDK's `End` is idempotent, and a span
+    already ended ignores later attribute changes. **Measured** on SDK v1.47.0 with a
+    `SpanRecorder`: with `Fail` given its own `sync.Once`, the recorder still held **one** ended
+    span with `mino.outcome=streaming`. Only the completion counter saw the second completion.
 
     Break-checks:
     - Count only writes with a nil error: the case reddens with "0, want 200".
-    - Give `Fail` its own `sync.Once` instead of sharing `FirstByte`'s: the late `Fail` reddens
-      with two ends.
+    - Give `Fail` its own `sync.Once` instead of sharing `FirstByte`'s. **Measured** on a
+      prototype of `*Tune` with the counter in `complete`: the case reddens with
+      `completion invoked 2 times, want 1`, while the span record stays at one end with
+      `streaming`.
 3. **Failure before the first byte.** next-source is refused (the fake answers 403), so the
    client gets the existing error status. `relay.tune` has ended with `mino.outcome=refused`,
    that status, and no first-byte event.
@@ -1652,7 +1665,7 @@ return: the failover case reddens.
 | Test | What it pins | Break-check |
 |---|---|---|
 | `relay/httpapi/server_test.go`: `GET /metrics` answers 200 with `DevRoutes` false; a nil `Metrics` registers nothing (404) | D4: always on, outside the dev flag | Move the registration inside `if cfg.DevRoutes`: the dev-routes-off case reddens with 404 |
-| `relay/httpapi/trace_test.go`: D11's trace tests 1–6 and 2a–2f (whole graph; first byte while connected, as a keepalive, in a partial batch, and as tail-only; response unchanged; denial, draining, fMP4 output-start failure and success, each failure in both `Fail` orderings; M3's returned-`n` counting and exactly-once completion; failure before first byte; untrusted context ignored; operator switch parent and link; failover root and link), all through `telemetrytest` | D11 trust, ownership, propagation, first byte, disarming, M3 | Read `X-Relay-Traceparent` without consulting `IsRelayTrusted`: test 4 reddens naming the inherited trace id. Call `FirstByte` at handler return: test 2 reddens. Fire on the first `writeChunks` with media instead of the first write: 2a reddens. Construct the wrapper armed: 2e reddens on M3 in both orderings, and on the outcome in the write-first ordering (measured). Count only nil-error writes: 2f reddens "0, want 200". Give `Fail` its own once: 2f reddens on two ends. Start `relay.stream_switch` from `context.Background()`: test 5 reddens on the parent |
+| `relay/httpapi/trace_test.go`: D11's trace tests 1–6 and 2a–2f (whole graph; first byte while connected, as a keepalive, in a partial batch, and as tail-only; response unchanged; denial, draining, fMP4 output-start failure and success, each failure in both `Fail` orderings; M3's returned-`n` counting and exactly-once completion; failure before first byte; untrusted context ignored; operator switch parent and link; failover root and link), all through `telemetrytest` | D11 trust, ownership, propagation, first byte, disarming, M3 | Read `X-Relay-Traceparent` without consulting `IsRelayTrusted`: test 4 reddens naming the inherited trace id. Call `FirstByte` at handler return: test 2 reddens. Fire on the first `writeChunks` with media instead of the first write: 2a reddens. Construct the wrapper armed: 2e reddens on M3 in both orderings, and on the outcome in the write-first ordering (measured). Count only nil-error writes: 2f reddens "0, want 200". Give `Fail` its own once: 2f reddens on `TuneCompletions()` = 2 ("completion invoked 2 times, want 1", measured), and not on the span record, which the SDK's idempotent `End` keeps at one end. Start `relay.stream_switch` from `context.Background()`: test 5 reddens on the parent |
 | `relay/telemetry/logs_test.go` **real-call cases** (D9's Go log row), each through a tee of a raw control handler and `SafeHandler` in front of **both** sinks, the JSON handler and the OTLP fan-out into an in-memory exporter: (1) `Channel.failover` on a channel with no resolver (`relay/channel/failover.go:195`); (2) a real fMP4 pipeline started with `output.Start` and a stand-in command (`sh -c "exit 0"`), whose logger is bound by the `With` at `relay/output/fmp4.go:529` and which emits `"the remux ended"` at `:612` (the reader returns nil at EOF, `:777-778`, so the record is reached through `generation` and `run`). Each case first asserts that the **control** saw the channel UUID, then that **neither sink** holds it and both hold `channel_id`. The round-2 fixture, an empty-command `StartProfile` (`output/profile.go:130-133`), emits no record and is **not** used | D9 finding 1, round 3 finding 4, round 4 finding 1 | D9's isolated `SafeHandler` mutations, each run against both cases; in each, the control assertion stays green while a sink assertion reddens |
 | `relay/telemetry/logkeys_test.go`: re-runs the `go/ast` census over the module's non-test files and fails naming any literal slog key that the table does not classify, with its `file:line` | the allowlist cannot fall behind the code | Add `slog.Info("x", "new_key", 1)` to a scratch file in `relay/buffer`: reddens naming `new_key` and the file |
 | `relay/control`: `attempt` and `Authorize` send `traceparent` equal to the ctx's span; the internal-request HMAC still verifies with the header present | D11 propagation, HMAC unchanged | Inject after signing into a copy of the body: the verify case reddens |
