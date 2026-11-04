@@ -478,7 +478,7 @@ two XC routes carry the password in the path (`relay/httpapi/server.go:70-71`).
    | `bool` | `KindBool` | |
    | `duration` | `KindDuration` | |
    | `enum` | `KindString` **equal to** one member of the rule's closed set, written in `logkeys.go`. Examples: `trigger` ∈ {`health_monitor`, `max_retries_exceeded`, `buffering_timeout`}; `state` ∈ the `channel.State` names; `reason` ∈ the event reasons the relay emits | the set is source code; a value outside it is dropped |
-   | `profilekey` | `KindString` matching `^(mpegts\|fmp4\|hls)(:p[0-9]{1,9})?$`. This is exactly what `output.FormatKey` produces (`relay/output/profile.go:51-62`; `ProfileKey` at `:47` calls it): a member of a closed format set, optionally followed by a numeric profile id | a closed prefix and a number |
+   | `profilekey` | `KindString` matching `^(mpegts\|fmp4\|hls)(:p([1-9][0-9]{0,18}))?$` **and** a suffix that `strconv.ParseInt(…, 10, 64)` accepts as a positive value. This is the domain `output.FormatKey` can produce (`relay/output/profile.go:51-62`, `strconv.Itoa` of an `int`; `ProfileKey` at `:47` calls it) for the ids the relay accepts: positive `int`s parsed with `strconv.Atoi` (`relay/httpapi/stream.go:441-447`), from Django's `BigAutoField` (`dispatcharr/settings.py:369`). That is 1 to 9223372036854775807 on the 64-bit builds the Dockerfile produces, with no leading zero. Round 3's `[0-9]{1,9}` ceiling was wrong (round 4 finding 2): it dropped `mpegts:p1000000000` | a closed prefix and a number in the id domain |
    | `channel` | `KindString` matching the UUID pattern. Emitted as `channel_id`, the numeric id from `telemetry.ChannelIDs`, or `"0"`. **The UUID itself is never emitted** | it is replaced by a number |
 
    There is no free-text class and no charset class. Keys whose values are free text or
@@ -570,13 +570,24 @@ The same baseline run also carried these **hostile values under allowed keys**, 
 was dropped:
 - `trigger=<sentinel>`;
 - `format="mpegts:<sentinel>"`, which fails `profilekey`;
+- `format="mpegts:p9223372036854775808"` (one past `int64`), `"mpegts:p0"` and `"mpegts:p01"`;
 - `stream=<sentinel>`, a string under an `int` key;
 - `channel=<sentinel>`, not a UUID;
 - `count="7"`, a string under an `int` key;
 - `reason=<uuid>`.
 
 The allowed values `format="mpegts:p3"` and `reason="degraded_failover"` were kept. That is the
-policy assertion the hostile cases sit beside.
+policy assertion the hostile cases sit beside. The `profilekey` domain was measured separately
+(2026-11-04, scratch prototype):
+- **retained:** the bare formats, `mpegts:p3`, the nine/ten-digit boundary `mpegts:p999999999`
+  and `mpegts:p1000000000`, the maximum `mpegts:p9223372036854775807`, and `FormatKey`'s output
+  for each of those ids;
+- **dropped:** `p9223372036854775808`, `p0`, `p01`, `p-1`, a 20-digit suffix, `avi:p3` and the
+  sentinel.
+
+Break-check: restore round 3's `[0-9]{1,9}` suffix. The retained cases redden naming
+`mpegts:p1000000000` and `mpegts:p9223372036854775807`. The same mutation also kept `mpegts:p01`,
+which the leading-zero rule exists to drop.
 
 Two real existing calls were driven through the prototype, each beside a **control** handler that
 must see the carrier first, so a call that never logs cannot make the test pass:
@@ -616,7 +627,7 @@ Go cases (`relay/telemetry/*_test.go` in O2; real-call cases in O4):
 |---|---|
 | spans | `relay.next_source` failing through the `RoundTripper`; the status description and event are the type only |
 | logs | O2: computed keys, a nested struct, a `LogValuer`, `With` from a package outside `relay/`, groups, an `error` with the sentinel URL, and `otel.Handle(errors.New(<sentinel>))` through the installed error handler (its error leaves as a type). Body policy tests per pattern class, as in Python, with no claim about a bare secret. O4: the two real calls above (`failover.go:195`; `output/fmp4.go:612` under the `With` at `:529`, through a stand-in pipeline), each with a control handler that must see the UUID first |
-| `/metrics` and OTLP metrics | `TestMetricsEndpointCarriesNoResource` (D13): a sentinel in `OTEL_RESOURCE_ATTRIBUTES`, then no sentinel, no `target_info` family and no `otel_scope_*` label in the scrape (mutation: drop `WithoutTargetInfo` or `WithoutScopeInfo`; measured, the sentinel and family then appear). Exemplars: M3 recorded inside a sampled span exports no exemplar (mutation: drop the option) |
+| `/metrics` and OTLP metrics | `TestMetricsEndpointCarriesNoResource` (D13): a sentinel in `OTEL_RESOURCE_ATTRIBUTES`, then no sentinel, no `target_info` family and no `otel_scope_*` label in the scrape (two separate mutations, each **measured on its own** on v0.69.0: dropping `WithoutTargetInfo` alone exposes the sentinel and the `target_info` family, and no scope label; dropping `WithoutScopeInfo` alone exposes `otel_scope_*` labels, and neither the sentinel nor `target_info`). Exemplars: M3 recorded inside a sampled span exports no exemplar (mutation: drop the option) |
 
 ### D10 — Python init: programmatic, after the fork, five instrumentations (R8)
 
@@ -929,11 +940,30 @@ standard library, so the lint gate holds. Break-check: add `tracetest` to a test
     - an **fMP4 output-start failure**, the 500 JSON body: `failed`, 500;
     - **successful media**: `streaming`, 200.
 
-    Break-check: construct the wrapper armed. The denial, draining and output-failure cases each
-    redden with `streaming` where their own outcome was expected.
-2f. **M3 counts the returned `n`.** A stub `ResponseWriter` accepts 100 of 188 bytes and returns
-    an error. M3 rises by 100. A disarmed error body adds nothing. Break-check: count only
-    writes with a nil error, and the case reddens with "0, want 100".
+    **Disarming has its own oracle** (round 4 finding 3): each failure case also asserts that **M3
+    did not move**. An error body written while disarmed is not counted, whatever the span says.
+    The span outcome alone cannot detect a wrongly armed wrapper, because a correct
+    implementation may call `Fail` before or after writing its error body:
+    - with `Fail` first, the shared `sync.Once` keeps the outcome right even if the wrapper is
+      armed;
+    - only with the write first would the outcome flip to `streaming`.
+
+    So each failure case runs **both orderings** (`Fail` then write, and write then `Fail`), and
+    asserts M3 = 0 in both.
+
+    Break-check: construct the wrapper armed. **Measured** on a scratch prototype of the wrapper
+    and a denial branch:
+    - both orderings redden on M3: `M3 counted 10 error-body bytes, want 0`;
+    - only the write-first ordering also reddens on the outcome: `outcome="streaming"`.
+2f. **M3 counts the returned `n`, and completion happens exactly once.** A stub
+    `ResponseWriter` accepts 100 of 188 bytes on each `Write` and returns an error. After two
+    armed writes, M3 is 200, the outcome is `streaming`, and the span ended once. A `Fail` after
+    the first byte changes neither the outcome nor the end count.
+
+    Break-checks:
+    - Count only writes with a nil error: the case reddens with "0, want 200".
+    - Give `Fail` its own `sync.Once` instead of sharing `FirstByte`'s: the late `Fail` reddens
+      with two ends.
 3. **Failure before the first byte.** next-source is refused (the fake answers 403), so the
    client gets the existing error status. `relay.tune` has ended with `mino.outcome=refused`,
    that status, and no first-byte event.
@@ -1047,8 +1077,11 @@ compose file sets any of them; the docs page shows how.
   - there is no `target_info` family;
   - there is no `otel_scope_` label.
 
-  Break-check: drop `WithoutTargetInfo`, and the test reddens on the sentinel and on
-  `target_info`.
+  There are two separate break-checks, each measured on its own (2026-11-04):
+  - Drop `WithoutTargetInfo` only: the test reddens on the sentinel and on `target_info`, while
+    the scope assertion stays green.
+  - Drop `WithoutScopeInfo` only: the test reddens on `otel_scope_`, while the sentinel and
+    `target_info` assertions stay green.
 - **Scope names**: `mino/relay`, `mino/api`, `mino/worker`.
 - **The new environment variable is `MINO_LOG_FORMAT`**, born under the new prefix. Rename PR E1
   (`2026-10-28-mino-rename-design.md`, C-7/C-8) aliases `DISPATCHARR_<rest>` to `MINO_<rest>`; no
@@ -1619,8 +1652,8 @@ return: the failover case reddens.
 | Test | What it pins | Break-check |
 |---|---|---|
 | `relay/httpapi/server_test.go`: `GET /metrics` answers 200 with `DevRoutes` false; a nil `Metrics` registers nothing (404) | D4: always on, outside the dev flag | Move the registration inside `if cfg.DevRoutes`: the dev-routes-off case reddens with 404 |
-| `relay/httpapi/trace_test.go`: D11's trace tests 1–6 and 2a–2d (whole graph; first byte while connected, as a keepalive, in a partial batch, and as tail-only; response unchanged; failure before first byte; untrusted context ignored; operator switch parent and link; failover root and link), all through `telemetrytest` | D11 trust, ownership, propagation, first byte | Read `X-Relay-Traceparent` without consulting `IsRelayTrusted`: test 4 reddens naming the inherited trace id. Call `FirstByte` at handler return: test 2 reddens. Fire on the first `writeChunks` with media instead of the first write: 2a reddens. Start `relay.stream_switch` from `context.Background()`: test 5 reddens on the parent |
-| `relay/telemetry/logs_test.go` **real-call cases** (D9's Go log row): `Channel.failover` with no resolver (`failover.go:195`) and an output pipeline with an empty command (`output/profile.go:130-133`) through the JSON handler and the OTLP fan-out | D9 finding 1 | D9's three isolated mutations |
+| `relay/httpapi/trace_test.go`: D11's trace tests 1–6 and 2a–2f (whole graph; first byte while connected, as a keepalive, in a partial batch, and as tail-only; response unchanged; denial, draining, fMP4 output-start failure and success, each failure in both `Fail` orderings; M3's returned-`n` counting and exactly-once completion; failure before first byte; untrusted context ignored; operator switch parent and link; failover root and link), all through `telemetrytest` | D11 trust, ownership, propagation, first byte, disarming, M3 | Read `X-Relay-Traceparent` without consulting `IsRelayTrusted`: test 4 reddens naming the inherited trace id. Call `FirstByte` at handler return: test 2 reddens. Fire on the first `writeChunks` with media instead of the first write: 2a reddens. Construct the wrapper armed: 2e reddens on M3 in both orderings, and on the outcome in the write-first ordering (measured). Count only nil-error writes: 2f reddens "0, want 200". Give `Fail` its own once: 2f reddens on two ends. Start `relay.stream_switch` from `context.Background()`: test 5 reddens on the parent |
+| `relay/telemetry/logs_test.go` **real-call cases** (D9's Go log row), each through a tee of a raw control handler and `SafeHandler` in front of **both** sinks, the JSON handler and the OTLP fan-out into an in-memory exporter: (1) `Channel.failover` on a channel with no resolver (`relay/channel/failover.go:195`); (2) a real fMP4 pipeline started with `output.Start` and a stand-in command (`sh -c "exit 0"`), whose logger is bound by the `With` at `relay/output/fmp4.go:529` and which emits `"the remux ended"` at `:612` (the reader returns nil at EOF, `:777-778`, so the record is reached through `generation` and `run`). Each case first asserts that the **control** saw the channel UUID, then that **neither sink** holds it and both hold `channel_id`. The round-2 fixture, an empty-command `StartProfile` (`output/profile.go:130-133`), emits no record and is **not** used | D9 finding 1, round 3 finding 4, round 4 finding 1 | D9's isolated `SafeHandler` mutations, each run against both cases; in each, the control assertion stays green while a sink assertion reddens |
 | `relay/telemetry/logkeys_test.go`: re-runs the `go/ast` census over the module's non-test files and fails naming any literal slog key that the table does not classify, with its `file:line` | the allowlist cannot fall behind the code | Add `slog.Info("x", "new_key", 1)` to a scratch file in `relay/buffer`: reddens naming `new_key` and the file |
 | `relay/control`: `attempt` and `Authorize` send `traceparent` equal to the ctx's span; the internal-request HMAC still verifies with the header present | D11 propagation, HMAC unchanged | Inject after signing into a copy of the body: the verify case reddens |
 | `relay/channel/failover_test.go`: M4 incremented once per return with the right `trigger`/`outcome`; `relay.failover` linked to the tune span | M4, D11 | Count before the `ErrNoAlternate` branch: the outcome case reddens with `switched` where `no_alternate` was expected |
