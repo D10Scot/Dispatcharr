@@ -1,10 +1,10 @@
 {
  "detail": null,
- "fetched_at": "2026-11-04T13:49:37+00:00",
+ "fetched_at": "2026-11-05T14:02:12+00:00",
  "kind": "pull_requests",
  "records": [
   {
-   "additions": 2659,
+   "additions": 2798,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 2,
@@ -19,7 +19,7 @@
    "id": 621,
    "merged_at": null,
    "title": "docs(spec): observability \u2014 OpenTelemetry metrics, traces and logs",
-   "updated_at": "2026-11-01T00:16:36Z"
+   "updated_at": "2026-11-04T21:06:02Z"
   },
   {
    "additions": 306,
