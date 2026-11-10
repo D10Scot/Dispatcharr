@@ -1,8 +1,128 @@
 {
  "detail": null,
- "fetched_at": "2026-11-09T15:19:52+00:00",
+ "fetched_at": "2026-11-10T14:26:14+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-11-09T20:14:20Z",
+   "id": 631,
+   "label_events": [
+    {
+     "at": "2026-11-09T20:14:21Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-11-09T20:14:22Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/backups/services.py:363)",
+   "updated_at": "2026-11-09T20:14:20Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-09T20:14:17Z",
+   "id": 630,
+   "label_events": [
+    {
+     "at": "2026-11-09T20:14:18Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-11-09T20:14:19Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/backups/services.py:360)",
+   "updated_at": "2026-11-09T20:14:17Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-09T20:14:15Z",
+   "id": 629,
+   "label_events": [
+    {
+     "at": "2026-11-09T20:14:16Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-11-09T20:14:16Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/plugins/api_views.py:568)",
+   "updated_at": "2026-11-09T20:14:15Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-09T20:14:12Z",
+   "id": 628,
+   "label_events": [
+    {
+     "at": "2026-11-09T20:14:14Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-11-09T20:14:14Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/plugins/api_views.py:566)",
+   "updated_at": "2026-11-09T20:14:12Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-09T20:14:10Z",
+   "id": 627,
+   "label_events": [
+    {
+     "at": "2026-11-09T20:14:11Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-11-09T20:14:11Z",
+     "event": "labeled",
+     "label": "priority:p1"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p1"
+   ],
+   "state": "open",
+   "title": "[codeql] py/path-injection: Uncontrolled data used in path expression (apps/plugins/api_views.py:547)",
+   "updated_at": "2026-11-09T20:14:10Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-11-02T19:52:04Z",
