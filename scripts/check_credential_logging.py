@@ -197,7 +197,7 @@ def _is_telemetry_call(node):
 
 
 def _is_redact_call(node):
-    """Whether `node` is a call to redact_url() / redact_headers()."""
+    """Whether `node` is a call to one of REDACT_FUNCTIONS (redact_url, redact_headers, redact_text, redact_exception)."""
     if not isinstance(node, ast.Call):
         return False
     func = node.func

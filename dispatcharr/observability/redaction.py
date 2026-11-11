@@ -17,6 +17,7 @@ Two standards live here.
 
 Nothing here imports from ``apps.*``.
 """
+import copy
 import dataclasses
 import logging
 import re
@@ -51,6 +52,9 @@ _SQL_OR_REDIS_NAME_RE = re.compile(r"^[A-Z]{2,16}( [A-Z]{2,16})?$")
 _RUN_NAME_RE = re.compile(r"^(run|apply_async)/([A-Za-z0-9_][\w.]{0,127})$")
 _CODE_PATH_RE = re.compile(r"^[^\n\r]{1,512}$")
 _CODE_FUNCTION_RE = re.compile(r"^[\w<>.$-]{1,128}$")
+_UUID_ANYWHERE = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 _FRAME_RE = re.compile(r"^[^\n\r]{1,400}:\d+ in [\w<>.$-]{1,128}$")
 
 
@@ -59,7 +63,7 @@ def _is_int(value):
 
 
 def _fullmatch(pattern):
-    return lambda value: isinstance(value, str) and pattern.match(value) is not None
+    return lambda value: isinstance(value, str) and pattern.fullmatch(value) is not None
 
 
 def _one_of(*members):
@@ -70,7 +74,13 @@ def _one_of(*members):
 is_method = _one_of(*_HTTP_METHODS)
 is_route = _fullmatch(_ROUTE_RE)
 is_scheme = _one_of("http", "https")
-is_hostname = _fullmatch(_HOSTNAME_RE)
+_is_hostname_charset = _fullmatch(_HOSTNAME_RE)
+
+
+def is_hostname(value):
+    # A Host header is the client's own string: a UUID-shaped one is refused
+    # (the channel UUID is a capability), as the Go side refuses it under every key.
+    return _is_hostname_charset(value) and _UUID_ANYWHERE.search(value) is None
 is_dotted = _fullmatch(_DOTTED_RE)
 is_identifier = _fullmatch(_IDENT_RE)
 is_uuid = _fullmatch(_UUID_RE)
@@ -83,7 +93,7 @@ def is_frames(value):
     return (
         isinstance(value, (list, tuple))
         and len(value) <= 256
-        and all(isinstance(item, str) and _FRAME_RE.match(item) for item in value)
+        and all(isinstance(item, str) and _FRAME_RE.fullmatch(item) for item in value)
     )
 
 
@@ -118,11 +128,8 @@ SPAN_ATTRIBUTE_RULES = {
 # dropped until a key is given a typed rule here.
 LOG_FIELD_RULES = {
     "code.file.path": is_code_path,
-    "code.filepath": is_code_path,
     "code.function.name": is_code_function,
-    "code.function": is_code_function,
     "code.line.number": _is_int,
-    "code.lineno": _is_int,
     "exception.type": is_dotted,
     "mino.exception.frames": is_frames,
 }
@@ -205,9 +212,9 @@ def _allowed_name(name, attributes):
         route = attributes.get("http.route")
         if route is not None and name == f"{method} {route}":
             return True
-    if _RUN_NAME_RE.match(name):
+    if _RUN_NAME_RE.fullmatch(name):
         return True
-    return _SQL_OR_REDIS_NAME_RE.match(name) is not None
+    return _SQL_OR_REDIS_NAME_RE.fullmatch(name) is not None
 
 
 def _redact_span(span):
@@ -359,19 +366,14 @@ def _redact_log_record(readable):
     rules = {**LOG_EXTRA_RULES, **LOG_FIELD_RULES}
     attributes = _clean_attributes(record.attributes, rules)
     body = redact_text(record.body) if isinstance(record.body, str) else None
-    clean = dataclasses.replace(record, attributes=attributes, body=body) if dataclasses.is_dataclass(
-        record
-    ) else _copy_log_record(record, attributes, body)
-    return dataclasses.replace(readable, log_record=clean)
-
-
-def _copy_log_record(record, attributes, body):
-    import copy
-
+    # event_name is cleared too: the SDK handler promotes ``otel.event.name`` to
+    # it, and nothing of ours sets one.
     clean = copy.copy(record)
     clean.attributes = attributes
     clean.body = body
-    return clean
+    clean.event_name = None
+    return dataclasses.replace(readable, log_record=clean)
+
 
 
 class RedactingLogExporter(LogRecordExporter):

@@ -9,22 +9,16 @@ os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'dispatcharr.settings')
 # instrumentation works by inserting its middleware into settings.MIDDLEWARE,
 # and a handler built earlier has already loaded its chain (observability spec
 # D10, measured: instrumenting afterwards produced no server span at all).
-# Every uwsgi ini that loads this module sets `lazy-apps = true`
-# (tests/test_uwsgi_inis_are_lazy.py), so this runs in each worker after the
-# fork. The postfork hook covers a configuration that turns lazy-apps off; the
-# pid guard in init() makes the two calls one.
+#
+# Every docker/uwsgi*.ini sets `lazy-apps = true` (tests/test_uwsgi_inis_are_lazy.py),
+# so this module is imported in each worker after the fork. There is
+# deliberately no uwsgidecorators.postfork hook: with lazy-apps off this import
+# would already have built providers in the master, a worker cannot replace
+# the OTel API's set-once global providers, and init() refuses (with a warning)
+# to build a second set in a forked child. The lazy-apps test is the protection.
 from dispatcharr.observability.bootstrap import init as _otel_init, wsgi_program
 
 _otel_init("mino-api", wsgi_program())
-
-try:
-    import uwsgidecorators
-
-    @uwsgidecorators.postfork
-    def _otel_postfork():
-        _otel_init("mino-api", wsgi_program())
-except ImportError:
-    pass
 
 from django.core.wsgi import get_wsgi_application
 

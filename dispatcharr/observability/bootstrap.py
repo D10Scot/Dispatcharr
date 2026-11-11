@@ -23,6 +23,8 @@ SERVICE_WORKER = "mino-worker"
 # pid -> True once init has reached a decision in that process. Keyed on the
 # pid so that a forked child (a new pid) initialises itself.
 _initialised_pid = None
+# The pid that actually built providers; None while nothing is installed.
+_installed_pid = None
 _providers = {"tracer": None, "meter": None, "logger": None}
 
 
@@ -168,10 +170,20 @@ def init(service_name, program):
     pid = os.getpid()
     if _initialised_pid == pid:
         return
+    if _installed_pid is not None and _installed_pid != pid:
+        # Initialised before a fork. The OTel API's global providers are
+        # set-once, so a child cannot swap in its own: building more would
+        # leave the instrumentors bound to the parent's providers and add
+        # threads nothing writes to. Refuse loudly instead (the lazy-apps test
+        # is what keeps this from happening in a shipped configuration).
+        _initialised_pid = pid
+        logger.warning(
+            "OpenTelemetry was initialised before this process forked (is uWSGI "
+            "lazy-apps off?); telemetry in this process is bound to its parent's "
+            "providers and is not re-initialised"
+        )
+        return
     _initialised_pid = pid
-    # A forked child inherits its parent's module state, never its providers.
-    for key in _providers:
-        _providers[key] = None
 
     if not config.otlp_enabled():
         return
@@ -183,6 +195,9 @@ def init(service_name, program):
 
 
 def _install(service_name, program):
+    global _installed_pid
+
+    _installed_pid = os.getpid()
     _merge_semconv_opt_in()
 
     from opentelemetry import _logs, metrics, trace

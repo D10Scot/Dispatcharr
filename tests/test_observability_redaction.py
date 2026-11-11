@@ -396,18 +396,24 @@ class LogFieldAndBodyTests(TestCase):
     def _raw(self):
         return [r.log_record for r in self.rig.raw_logs.get_finished_logs()]
 
-    def test_extra_fields_are_dropped_by_the_empty_allowlist(self):
+    def test_extra_fields_never_leave_the_bridge(self):
         self.log.info("hello", extra={"secret": SENTINEL, "count": 3})
+        (raw,) = self._raw()
         (record,) = self._exported()
-        self.assertIn("secret", self._raw()[0].attributes)  # control
-        self.assertEqual(redaction.LOG_EXTRA_RULES, {})
-        self.assertNotIn("secret", record.attributes)
-        self.assertNotIn("count", record.attributes)  # POLICY: empty allowlist
-        self.assertNotIn(SENTINEL, repr(dict(record.attributes)))
+        self.assertEqual(redaction.LOG_EXTRA_RULES, {})  # POLICY: empty allowlist
+        for attrs in (raw.attributes, record.attributes):
+            self.assertNotIn("secret", attrs)
+            self.assertNotIn("count", attrs)
+            self.assertNotIn(SENTINEL, repr(dict(attrs)))
 
     def test_a_typed_rule_keeps_its_key_and_still_drops_the_other(self):
+        # The exporter's typed extras allowlist, reached by a record that did not
+        # come through the bridge (the bridge forwards no extras at all).
+        from opentelemetry._logs import LogRecord
+
+        logger = self.rig.logger_provider.get_logger("direct")
         with mock.patch.dict(redaction.LOG_EXTRA_RULES, {"count": redaction._is_int}):
-            self.log.info("hello", extra={"secret": SENTINEL, "count": 3})
+            logger.emit(LogRecord(body="hello", attributes={"secret": SENTINEL, "count": 3}))
         (record,) = self._exported()
         self.assertEqual(record.attributes.get("count"), 3)  # POLICY
         self.assertNotIn("secret", record.attributes)
@@ -433,6 +439,73 @@ class LogFieldAndBodyTests(TestCase):
         self.assertNotIn("exception.stacktrace", attrs)
         # The bridge never hands the SDK a message either.
         self.assertNotIn("exception.message", self._raw()[0].attributes)
+
+    def test_hostile_extras_never_reach_the_encoded_otlp_bytes(self):
+        """Each mechanism by which an ``extra=`` key could become wire data, on the ENCODED bytes."""
+        from opentelemetry.exporter.otlp.proto.common._log_encoder import encode_logs
+
+        hostile = [
+            # promoted by the SDK handler to the record's first-class event name
+            {"otel.event.name": SENTINEL},
+            {"event.name": SENTINEL_UUID},
+            # spoofing each structured field (the legacy spellings are not allowlisted at all)
+            {"code.filepath": SENTINEL, "code.function": SENTINEL, "code.lineno": 7},
+            {"code.file.path": SENTINEL, "code.function.name": SENTINEL, "code.line.number": 7},
+            {"exception.type": SENTINEL},
+            {"mino.exception.frames": [f"/live/user/{SENTINEL}/1:1 in f"]},
+        ]
+        for extra in hostile:
+            with self.subTest(keys=sorted(extra)):
+                self.rig.raw_logs.clear()
+                self.rig.redacted_logs.clear()
+                self.log.info("hello", extra=extra)
+                raw = self.rig.raw_logs.get_finished_logs()
+                exported = self.rig.redacted_logs.get_finished_logs()
+                self.assertEqual(len(exported), 1)
+                encoded = encode_logs(exported).SerializeToString()
+                self.assertNotIn(SENTINEL.encode(), encoded, f"the sentinel reached the OTLP bytes via {sorted(extra)}")
+                self.assertNotIn(SENTINEL_UUID.encode(), encoded)
+                # POLICY: the structured fields are the code's, not the caller's
+                attrs = dict(exported[0].log_record.attributes)
+                self.assertEqual(attrs["code.function.name"], "test_hostile_extras_never_reach_the_encoded_otlp_bytes")
+                self.assertNotEqual(attrs["code.line.number"], 7)
+                self.assertNotIn("exception.type", attrs)
+                self.assertNotIn("mino.exception.frames", attrs)
+                self.assertIsNone(exported[0].log_record.event_name)
+                # The bridge itself already forwards nothing from extra (the exporter is the second line).
+                self.assertEqual(len(raw), 1)
+                self.assertNotIn(SENTINEL, repr(dict(raw[0].log_record.attributes)))
+                self.assertIsNone(raw[0].log_record.event_name)
+
+    def test_the_exporter_alone_clears_event_name_and_spoofed_fields(self):
+        # The bridge is bypassed here: a record reaching the logger provider by
+        # any other route still leaves clean.
+        from opentelemetry.exporter.otlp.proto.common._log_encoder import encode_logs
+        from opentelemetry._logs import LogRecord
+
+        logger = self.rig.logger_provider.get_logger("direct")
+        logger.emit(
+            LogRecord(
+                body="direct",
+                attributes={"code.filepath": SENTINEL, "exception.type": "x y", "mino.exception.frames": ["bad"]},
+                event_name=SENTINEL,
+            )
+        )
+        (exported,) = self.rig.redacted_logs.get_finished_logs()
+        self.assertEqual(dict(self.rig.raw_logs.get_finished_logs()[0].log_record.attributes)["code.filepath"], SENTINEL)  # control
+        self.assertNotIn(SENTINEL.encode(), encode_logs([exported]).SerializeToString())
+        self.assertIsNone(exported.log_record.event_name)
+
+    def test_a_retry_log_body_loses_its_url_uuid_and_token_classes(self):
+        # R-Q17: the bare sentinel in an exception text is NOT asserted absent.
+        body = (
+            f"Task tests.observability.retries[{SENTINEL_UUID}] retry: Retry in 1s: "
+            f"ConnectionError('http://u:pw@prov.tv/live/a/b/1 {HLS_TOKEN}')"
+        )
+        self.log.warning(body)
+        (record,) = self._exported()
+        for secret in ("pw@prov.tv", SENTINEL_UUID, HLS_TOKEN):
+            self.assertNotIn(secret, record.body)
 
     def test_body_policy_one_case_per_pattern_class(self):
         # POLICY TESTS ONLY (R-Q17). Each pattern class is shown removed from a
@@ -462,6 +535,30 @@ class LogFieldAndBodyTests(TestCase):
 
     def test_a_body_without_a_pattern_class_is_unchanged(self):
         self.assertEqual(redaction.redact_text("Started 3 clients on channel 7"), "Started 3 clients on channel 7")
+
+
+class ValidatorTests(TestCase):
+    def test_a_trailing_newline_is_refused(self):
+        for validator, good in (
+            (redaction.is_dotted, "abc"),
+            (redaction.is_route, "^api/"),
+            (redaction.is_uuid, SENTINEL_UUID),
+            (redaction.is_identifier, "postgresql"),
+            (redaction.is_hostname, "example.com"),
+            (redaction.is_digits, "12"),
+        ):
+            with self.subTest(validator=validator):
+                self.assertTrue(validator(good))
+                self.assertFalse(validator(good + "\n"))
+
+    def test_a_uuid_shaped_server_address_is_refused(self):
+        self.assertFalse(redaction.is_hostname(SENTINEL_UUID))
+        self.assertFalse(redaction.is_hostname(f"{SENTINEL_UUID}.example.com"))
+        self.assertTrue(redaction.is_hostname("web"))
+
+    def test_a_frame_with_a_trailing_newline_is_refused(self):
+        self.assertTrue(redaction.is_frames(["a.py:1 in f"]))
+        self.assertFalse(redaction.is_frames(["a.py:1 in f\n"]))
 
 
 class MetricBoundaryTests(TestCase):

@@ -595,7 +595,7 @@
 3	tests/test_tls_cert_path_validation.py
 1	tests/test_unmatched_api_paths_404.py
 3	tests/test_urls_xc_three_segment.py
-5	tests/test_uwsgi_inis_are_lazy.py
+6	tests/test_uwsgi_inis_are_lazy.py
 2	tests/test_wait_for_redis.py
 6	tests/test_websocket_consumer_filter.py
 1	uv.lock

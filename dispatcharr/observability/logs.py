@@ -15,6 +15,12 @@ from dispatcharr.observability import config
 # Set by bootstrap.init(); None until a process has said what it is.
 _identity = {"service.name": None, "mino.program": None}
 
+# What a LogRecord carries before anyone adds ``extra=`` (plus the two fields
+# formatting adds and Python 3.12+'s taskName).
+_STANDARD_RECORD_ATTRIBUTES = frozenset(
+    vars(logging.LogRecord("n", logging.INFO, "p", 1, "m", (), None))
+) | {"message", "asctime", "taskName"}
+
 # The OpenTelemetry LoggingHandler once init has installed a LoggerProvider.
 _inner_handler = None
 
@@ -107,12 +113,21 @@ class OtelBridgeHandler(logging.Handler):
 
     @staticmethod
     def _structured_copy(record):
-        """A copy whose exception is a type and a frame list, never a message.
+        """A copy holding only the standard LogRecord attributes, plus our two fields.
 
-        The SDK handler would otherwise attach ``exception.message`` and the
-        formatted traceback (source text and exception text) to the record.
+        Nothing from ``extra=`` survives: the SDK handler turns every
+        non-standard record attribute into a log attribute, and promotes
+        ``otel.event.name`` / ``event.name`` to the record's event name, so an
+        ``extra`` key spelled like one of our structured fields (or like an
+        event name) would otherwise reach the wire. Binding each structured
+        field to code here is what makes the allowlist mean something.
+
+        The exception becomes a type and a frame list, never the message and
+        formatted traceback the SDK handler would otherwise attach.
         """
         clone = copy.copy(record)
+        for key in [k for k in vars(clone) if k not in _STANDARD_RECORD_ATTRIBUTES]:
+            delattr(clone, key)
         exc_info = record.exc_info
         clone.exc_info = None
         clone.exc_text = None

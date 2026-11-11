@@ -167,17 +167,48 @@ print(json.dumps({"info": [m for m in capture.messages if m.startswith("OpenTele
         self.assertTrue(p["info"][0].endswith("to https://collector.example:4318"), p["info"][0])
         self.assertNotIn("S3NT1NEL", p["info"][0])
 
-    def test_a_forked_child_with_a_new_pid_initialises_itself(self):
+    def test_init_in_a_forked_child_builds_nothing_and_warns_once(self):
+        # Deviation from D10 ("a forked child initialises itself"): the OTel
+        # API's global providers are set-once, so a child cannot replace the
+        # parent's. A second set would leave the instrumentors bound to the
+        # parent's providers and add threads nothing writes to. The shipped
+        # protection is the lazy-apps test.
         code = PRELUDE + """
 bootstrap.init("mino-api", "api-uwsgi")
-first = bootstrap._providers["tracer"]
+tracer, meter, logger_provider = trace.get_tracer_provider(), metrics.get_meter_provider(), _logs.get_logger_provider()
+providers = dict(bootstrap._providers)
+threads = threading.active_count()
 real = os.getpid()
 os.getpid = lambda: real + 1   # a fork: same module state, new pid
 bootstrap.init("mino-api", "api-uwsgi")
-print(json.dumps({"rebuilt": bootstrap._providers["tracer"] is not first and bootstrap._providers["tracer"] is not None}))
+bootstrap.init("mino-api", "api-uwsgi")
+print(json.dumps({
+    "global_tracer_unchanged": trace.get_tracer_provider() is tracer,
+    "global_meter_unchanged": metrics.get_meter_provider() is meter,
+    "global_logger_unchanged": _logs.get_logger_provider() is logger_provider,
+    "providers_unchanged": bootstrap._providers == providers,
+    "threads_grew": threading.active_count() - threads,
+    "warnings": [m for m in capture.messages if "initialised before this process forked" in m],
+}))
 """
         _, p = run_child(code, child_env(ENDPOINT))
-        self.assertEqual(p, {"rebuilt": True})
+        self.assertTrue(p["global_tracer_unchanged"] and p["global_meter_unchanged"] and p["global_logger_unchanged"])
+        self.assertTrue(p["providers_unchanged"], "init in a forked child built new providers")
+        self.assertLessEqual(p["threads_grew"], 0, "init in a forked child started threads")
+        self.assertEqual(len(p["warnings"]), 1, p["warnings"])
+        self.assertIn("lazy-apps", p["warnings"][0])
+
+    def test_a_fork_after_an_off_init_still_does_nothing_harmful(self):
+        code = PRELUDE + """
+bootstrap.init("mino-api", "api-uwsgi")
+real = os.getpid()
+os.getpid = lambda: real + 1
+bootstrap.init("mino-api", "api-uwsgi")
+print(json.dumps({"tracer": type(trace.get_tracer_provider()).__name__,
+                  "warnings": [m for m in capture.messages if "forked" in m]}))
+"""
+        _, p = run_child(code, child_env({}))
+        self.assertEqual(p, {"tracer": "ProxyTracerProvider", "warnings": []})
 
 
 class InProcessTests(SimpleTestCase):
