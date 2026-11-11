@@ -52,6 +52,17 @@ func TestSnapshotSkipsAVanishedProcessAndFailsOnAnyOtherReadError(t *testing.T) 
 	if got, err := snapshotFrom([]string{"500", "self", "12x"}, readsAs(p)); err != nil || len(got) != 1 || got[0] != p {
 		t.Fatalf("snapshotFrom = %+v, %v; want the one pid read back", got, err)
 	}
+	// A line that does not parse is skipped beside a good one, and the
+	// snapshot stands.
+	mixed := func(name string) ([]byte, error) {
+		if name == "501" {
+			return []byte("501 (ffmpeg) garbage\n"), nil
+		}
+		return []byte(statLine(p) + "\n"), nil
+	}
+	if got, err := snapshotFrom([]string{"500", "501"}, mixed); err != nil || len(got) != 1 || got[0] != p {
+		t.Errorf("an unparseable line beside a good one: snapshot = %+v, %v; want the good one and the snapshot whole", got, err)
+	}
 	for _, gone := range []error{fs.ErrNotExist, syscall.ENOENT, syscall.ESRCH} {
 		if got, err := snapshotFrom([]string{"500"}, failsWith(gone)); err != nil || len(got) != 0 {
 			t.Errorf("a process that exited (%v): snapshot = %+v, %v; want it skipped and the snapshot whole", gone, got, err)

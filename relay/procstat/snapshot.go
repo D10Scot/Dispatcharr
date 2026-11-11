@@ -21,7 +21,11 @@ var errUnreadable = errors.New("procstat: a process's stat could not be read")
 // only could not be read (descriptor exhaustion, say) must never look absent,
 // or enough of those in a row would forget it and count its CPU again from
 // zero. A stat line that does not parse is skipped; an identity that never
-// parsed was never counted, so skipping it cannot count anything twice.
+// parsed was never counted, so skipping it cannot count anything twice. One
+// that parsed before and then fails looks absent and ages under the
+// Registry's grace like any other absence; the kernel writes the same line
+// shape on every read, so that is not expected of a live process, and
+// failing the whole host's snapshot on one odd line would be the worse trade.
 func snapshotFrom(names []string, read func(name string) ([]byte, error)) ([]Proc, error) {
 	out := make([]Proc, 0, len(names))
 	for _, name := range names {

@@ -508,3 +508,39 @@ func TestTheOverflowSeriesPassesTheMetricBoundary(t *testing.T) {
 		}
 	}
 }
+
+// Round-5 nit 1. build itself reaches otel.Handle: sdkmetric.WithResource
+// reads OTEL_RESOURCE_ATTRIBUTES and NewMeterProvider reads
+// OTEL_GO_X_CARDINALITY_LIMIT, and each hands a malformed value's text to the
+// error handler. So the handler must be ours before build runs, or that text
+// reaches whatever handler was installed (by default, stderr).
+func TestTheErrorHandlerIsInstalledBeforeBuildReadsTheEnvironment(t *testing.T) {
+	for name, v := range map[string]string{
+		"OTEL_RESOURCE_ATTRIBUTES":    sentinel + "-no-equals",
+		"OTEL_GO_X_CARDINALITY_LIMIT": sentinel,
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf strings.Builder
+			prev := slog.Default()
+			slog.SetDefault(slog.New(NewSafeHandler(slog.NewJSONHandler(&buf, nil), DefaultRules, nil)))
+			t.Cleanup(func() { slog.SetDefault(prev) })
+			prevHandler := otel.GetErrorHandler()
+			t.Cleanup(func() { otel.SetErrorHandler(prevHandler) })
+			var got []string
+			otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) { got = append(got, err.Error()) }))
+			t.Setenv(name, v)
+
+			tel, err := Init(context.Background(), Config{}, WithProcRegistry(nil))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = tel.Shutdown(context.Background()) })
+			if len(got) != 0 {
+				t.Errorf("LEAK: build reported %q to the handler installed before Init: ours was installed after build", got)
+			}
+			if !strings.Contains(buf.String(), `"error.type"`) || strings.Contains(buf.String(), sentinel) {
+				t.Errorf("POLICY: want the SDK error logged as its type only: %s", buf.String())
+			}
+		})
+	}
+}
