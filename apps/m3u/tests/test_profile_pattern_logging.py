@@ -67,6 +67,19 @@ class GetTransformedCredentialsPatternLoggingTests(NoPatternInLogs, SimpleTestCa
         self.assertTrue(any("ValueError" in r.getMessage() for r in logs.records))
 
 
+    def test_primary_profile_lookup_failure_logs_type_only(self):
+        # profile=None sends the helper through the primary-profile lookup;
+        # a failing lookup must log the exception type, not its text.
+        err = ValueError("lookup failed near 'olduser/oldpass'")
+        with mock.patch("apps.m3u.models.M3UAccountProfile.objects") as objs:
+            objs.filter.side_effect = err
+            with capture(m3u_tasks.logger) as logs:
+                out = get_transformed_credentials(account(), None)
+        self.assertEqual(out, ("http://prov.example.com", "olduser", "oldpass"))
+        self.assert_no_leak(logs)
+        self.assertTrue(any("ValueError" in r.getMessage() for r in logs.records))
+
+
 class FingerprintHelperPatternLoggingTests(NoPatternInLogs, SimpleTestCase):
     def test_fingerprint_failure_logs_type_only(self):
         sample = "http://prov.example.com/live/olduser/oldpass/1.ts"

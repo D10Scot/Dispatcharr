@@ -3095,7 +3095,12 @@ def get_transformed_credentials(account, profile=None):
             else:
                 logger.debug(f"No active profiles found for account {account.name}, using base credentials")
         except Exception as e:
-            logger.warning(f"Could not get primary profile for account {account.name}: {e}")
+            # Type only: keep exception text out of the log (see the transform below).
+            logger.warning(
+                "Could not get primary profile for account %s: %s",
+                account.name,
+                type(e).__name__,
+            )
             profile = None
 
     from core.xtream_codes import normalize_server_url

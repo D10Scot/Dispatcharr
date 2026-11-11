@@ -8,7 +8,7 @@ as `<username>/<password>` and `replace_pattern` as
 its no-match WARNING (on by default), and logged `{e}` at ERROR.
 
 These tests call the real helpers with credential-bearing patterns, capture
-every record at DEBUG on the root logger, and fail naming the leaked value.
+every record at DEBUG on the module loggers, and fail naming the leaked value.
 """
 
 import contextlib
@@ -40,9 +40,10 @@ class _Records(logging.Handler):
 def capture(*loggers):
     """Collect every record the given loggers emit, at DEBUG.
 
-    Attached to the module loggers themselves because this project's logging
-    config does not propagate them to root, so `assertLogs()` on root sees
-    nothing and would pass vacuously. Fails if nothing at all was emitted.
+    Attached to the module loggers themselves because their records do not
+    reach the root logger under this project's logging config, so a root
+    `assertLogs()` would see nothing. Fails if nothing at all was emitted, so
+    a test cannot pass by capturing nothing.
     """
     handler = _Records()
     saved = []
