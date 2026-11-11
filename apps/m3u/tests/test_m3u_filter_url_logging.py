@@ -128,7 +128,7 @@ class BatchLoggingTests(TestCase):
             with self.subTest(url=url):
                 info = {"name": "BBC News", "url": url, "attributes": {}}
                 logs, trace = self.run_batch(info)
-                self.assertTrue(trace.called, "the TRACE line must still be emitted")
+                trace.assert_any_call("Processing stream: %s in group %s", "BBC News", "Default Group")
                 for call in trace.call_args_list:
                     text = repr(call)
                     for secret in SECRETS:
@@ -174,6 +174,23 @@ class ParseWarningLoggingTests(SimpleTestCase):
         self.assertTrue(any(r.levelname == "WARNING" for r in logs.records))
         assert_no_secret(self, logs.records)
 
+    MALFORMED = '#EXTINF:-1 catchup-source=http://prov.example.com/live/olduser/oldpass/1.ts?x="v",Chan'
+
+    def test_malformed_attribute_syntax_cannot_leak_through_a_key(self):
+        # The unanchored attribute regex reads the URL itself as an attribute key.
+        keys = m3u_tasks.parse_extinf_line(self.MALFORMED)["attributes"]
+        self.assertTrue(any("olduser" in k for k in keys), "precondition: the URL became a key")
+        with capture(m3u_tasks.logger) as logs:
+            list(m3u_tasks.iter_m3u_entries([self.MALFORMED, "#EXTINF:-1,Next", "http://prov.example.com/n.ts"]))
+        self.assertTrue(any("had no URL (next" in r.getMessage() for r in logs.records))
+        assert_no_secret(self, logs.records)
+
+    def test_malformed_attribute_syntax_at_end_of_file_cannot_leak_through_a_key(self):
+        with capture(m3u_tasks.logger) as logs:
+            list(m3u_tasks.iter_m3u_entries([self.MALFORMED]))
+        self.assertTrue(any("at end of file had no URL" in r.getMessage() for r in logs.records))
+        assert_no_secret(self, logs.records)
+
     def test_unparseable_extinf_warns_without_line_text(self):
         bad = "#EXTINF http://prov.example.com/live/olduser/oldpass/1.ts"
         with capture(m3u_tasks.logger) as logs:
@@ -183,9 +200,9 @@ class ParseWarningLoggingTests(SimpleTestCase):
 
 
 class _Response:
-    def __init__(self, status=200, body=b"", url=SERVER_URL):
+    def __init__(self, status=200, body=b"", url=SERVER_URL, headers=None):
         self.status_code = status
-        self.headers = {"Content-Length": str(len(body))}
+        self.headers = headers if headers is not None else {"Content-Length": str(len(body))}
         self.url = url
         self._body = body
 
@@ -232,6 +249,38 @@ class FetchLoggingTests(SimpleTestCase):
         self.assertEqual(result[1], True)
         self.assertTrue(any("Content preview" in r.getMessage() for r in logs.records))
         assert_no_secret(self, logs.records)
+
+    def test_response_headers_are_not_dumped(self):
+        headers = {
+            "Content-Type": "audio/x-mpegurl; charset=http://prov.example.com/live/olduser/oldpass/1.ts",
+            "Content-Length": "12",
+            "Location": "https://prov.example.com/channel/opaquetoken123/index.m3u8",
+            "Link": "<http://prov.example.com/live/olduser/oldpass/1.ts>; rel=next",
+        }
+        body = b"#EXTM3U\n#EXTINF:-1,Chan\nhttp://prov.example.com/x.ts\n"
+        headers = m3u_tasks.requests.structures.CaseInsensitiveDict(headers)  # as requests returns
+        _, result, logs = self.fetch(_Response(200, body, headers=headers))
+        self.assertEqual(result[1], True)
+        meta = [r.getMessage() for r in logs.records if "Response metadata" in r.getMessage()]
+        self.assertEqual(meta, ["Response metadata: content-type=audio/x-mpegurl content-length=12"])
+        self.assertEqual(m3u_tasks._safe_content_length("12 http://x/olduser"), "other")
+        self.assertEqual(m3u_tasks._safe_content_type("text/http://x/olduser"), "other")
+        assert_no_secret(self, logs.records)
+
+    def test_provider_text_overlapping_the_server_url_cannot_unmask_it(self):
+        # A body that is a substring of the server URL used to be replaced inside
+        # the assembled message first, so the URL no longer matched and survived.
+        for body in (b"http", b"prov.example.com", b"srvpass", b"username=srvuser"):
+            with self.subTest(body=body):
+                account, result, logs = self.fetch(_Response(404, body))
+                self.assertEqual(result, (None, False))
+                assert_no_secret(self, logs.records)
+                self.assertIn(SERVER_URL, account.last_message)
+        for text in ("http", "get.php?username=srvuser"):
+            with self.subTest(exception=text):
+                _, result, logs = self.fetch(side_effect=RuntimeError(text))
+                self.assertEqual(result, (None, False))
+                assert_no_secret(self, logs.records)
 
     def test_playlist_that_looks_like_an_error_warns_without_content(self):
         body = b"#EXTM3U\n#EXTINF:-1,Error TV\nhttp://prov.example.com/live/olduser/oldpass/1.ts\n"
@@ -360,3 +409,53 @@ class BulkAndTaskFailureLoggingTests(TestCase):
         self.assertTrue(failure)
         assert_no_secret(self, logs.records)
         self.assertIn("RuntimeError", failure[0].getMessage())
+        self.assertIsNone(failure[0].exc_info, "a traceback would print the exception message")
+        self.assertIn("in refresh_single_m3u_account", failure[0].getMessage(), "frame marker")
+
+
+class XcAndAutoSyncLoggingTests(SimpleTestCase):
+    def run_xc_groups(self, categories):
+        account = SimpleNamespace(
+            id=5, account_type=m3u_tasks.M3UAccount.Types.XC, server_url=SERVER_URL,
+            username="srvuser", password="srvpass", status=None, last_message=None,
+            save=mock.Mock(), get_user_agent_string=lambda: "UA", custom_properties={},
+        )
+        manager = mock.MagicMock()
+        manager.select_related.return_value.get.return_value = account
+        client = mock.MagicMock()
+        client.__enter__.return_value = client
+        client.get_live_categories.return_value = categories
+        with (
+            mock.patch.object(m3u_tasks.M3UAccount, "objects", manager),
+            mock.patch.object(m3u_tasks, "XCClient", return_value=client),
+            mock.patch.object(m3u_tasks, "send_m3u_update"),
+            mock.patch.object(m3u_tasks, "process_groups"),
+            mock.patch.object(m3u_tasks, "_refresh_m3u_groups_locked", wraps=m3u_tasks._refresh_m3u_groups_locked),
+        ):
+            with capture(m3u_tasks.logger) as logs:
+                m3u_tasks._refresh_m3u_groups_locked(5, False, True, None)
+        return logs
+
+    def test_category_response_is_not_dumped(self):
+        cats = [{
+            "category_id": "1", "category_name": "Live",
+            "extra": "http://prov.example.com/live/olduser/oldpass/1.ts",
+        }]
+        logs = self.run_xc_groups(cats)
+        self.assertTrue(any("Found 1 categories" in r.getMessage() for r in logs.records))
+        assert_no_secret(self, logs.records)
+
+    def test_unexpected_category_response_is_not_dumped(self):
+        logs = self.run_xc_groups({"error": "http://prov.example.com/live/olduser/oldpass/1.ts"})
+        self.assertTrue(any("Unexpected response from XC server: dict" in r.getMessage() for r in logs.records))
+        assert_no_secret(self, logs.records)
+
+    def test_auto_sync_failure_logs_type_only(self):
+        boom = RuntimeError("bad http://prov.example.com/live/olduser/oldpass/1.ts")
+        with mock.patch.object(m3u_tasks.M3UAccount, "objects") as objects:
+            objects.select_related.return_value.get.side_effect = boom
+            with capture(m3u_tasks.logger) as logs:
+                result = m3u_tasks.sync_auto_channels(5)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("olduser", result["error"], "the returned payload is unchanged")
+        assert_no_secret(self, logs.records)
