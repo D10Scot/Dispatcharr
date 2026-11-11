@@ -3183,7 +3183,12 @@ def get_transformed_credentials(account, profile=None):
                     return base_url, base_username, base_password
 
             except Exception as e:
-                logger.error(f"Error transforming URL for profile {profile.name if profile else 'unknown'}: {e}")
+                # Type only: a regex error's text can quote part of the profile's pattern.
+                logger.error(
+                    "Error transforming URL for profile %s: %s",
+                    profile.name if profile else 'unknown',
+                    type(e).__name__,
+                )
                 return base_url, base_username, base_password
         else:
             # No profile or no transformation patterns
