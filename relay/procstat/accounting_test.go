@@ -214,3 +214,25 @@ func TestAGroupOfThreePidsWithTwoTrackedSumsTheTwo(t *testing.T) {
 		t.Fatalf("group figure = %v, want 5 (the leader and its child, not the stranger)", got)
 	}
 }
+
+// Without /proc (a non-Linux build) a tracked group is never observed, and the
+// instruments must have no points rather than zeros.
+func TestANeverObservedLabelSetHasNoPoint(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{{}}} // nothing in the group's process group
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	if got := r.Collect(); len(got) != 0 {
+		t.Fatalf("Collect = %+v, want no sample for a label set never observed", got)
+	}
+}
+
+func TestTrackRefusesGroupZero(t *testing.T) {
+	r := NewRegistry(&scripted{})
+	for _, pgid := range []int{0, -1} {
+		untrack := r.Track(pgid, lab)
+		if g := r.Groups(); len(g) != 0 {
+			t.Fatalf("Track(%d) registered %+v", pgid, g)
+		}
+		untrack()
+	}
+}

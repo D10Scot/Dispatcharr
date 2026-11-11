@@ -60,6 +60,8 @@ type Telemetry struct {
 	procs      *procstat.Registry
 	completion atomic.Int64
 
+	res      *resource.Resource
+	mp       *sdkmetric.MeterProvider
 	sampler  sdktrace.Sampler
 	logs     *sdklog.LoggerProvider
 	rules    Rules
@@ -79,7 +81,7 @@ type ClientCount struct {
 var current atomic.Pointer[Telemetry]
 
 var inert = sync.OnceValue(func() *Telemetry {
-	t, err := build(Config{SamplerRatio: 1}, &options{tp: noop.NewTracerProvider()})
+	t, err := build(context.Background(), Config{SamplerRatio: 1}, &options{tp: noop.NewTracerProvider()})
 	if err != nil { // building against noop providers cannot fail
 		panic(err)
 	}
@@ -108,7 +110,8 @@ type options struct {
 }
 
 // WithTracerProvider makes spans use tp and skips building an OTLP tracer
-// provider. The caller owns tp's shutdown.
+// provider AND the OTLP metric reader (it is a test seam, not a production
+// option). The caller owns tp's shutdown.
 func WithTracerProvider(tp trace.TracerProvider) Option { return func(o *options) { o.tp = tp } }
 
 // WithMetricReader adds a reader to the meter provider, beside the Prometheus one.
@@ -136,14 +139,15 @@ func Init(ctx context.Context, cfg Config, opts ...Option) (*Telemetry, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	t, err := build(cfg, &o)
+	t, err := build(ctx, cfg, &o)
 	if err != nil {
 		return nil, err
 	}
 
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		// credential-logging: ok - SafeHandler reduces an error to its type; the SDK's error text never leaves
-		slog.Default().Error("otel error", "error", err)
+		// Only the type leaves, whatever handler is installed: the text of an SDK
+		// export error carries the collector URL, query string included.
+		slog.Default().Error("otel error", "error.type", innermostType(err))
 	}))
 
 	if cfg.OTLP {
@@ -155,7 +159,7 @@ func Init(ctx context.Context, cfg Config, opts ...Option) (*Telemetry, error) {
 	return t, nil
 }
 
-func build(cfg Config, o *options) (*Telemetry, error) {
+func build(ctx context.Context, cfg Config, o *options) (*Telemetry, error) {
 	t := &Telemetry{cfg: cfg, ids: o.ids, procs: o.procs, rules: DefaultRules}
 	if o.rules != nil {
 		t.rules = *o.rules
@@ -173,6 +177,7 @@ func build(cfg Config, o *options) (*Telemetry, error) {
 	t.sampler = sdktrace.ParentBased(sdktrace.TraceIDRatioBased(ratio))
 
 	res := buildResource()
+	t.res = res
 
 	reg := prometheus.NewRegistry()
 	exp, err := otelprom.New(
@@ -195,13 +200,14 @@ func build(cfg Config, o *options) (*Telemetry, error) {
 		mpOpts = append(mpOpts, sdkmetric.WithReader(r))
 	}
 	if o.tp == nil && cfg.OTLP && cfg.Metrics {
-		mexp, err := otlpmetrichttp.New(context.Background())
+		mexp, err := otlpmetrichttp.New(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("telemetry: building the OTLP metric exporter: %w", redact.Error(err))
 		}
 		mpOpts = append(mpOpts, sdkmetric.WithReader(sdkmetric.NewPeriodicReader(newRedactingMetricExporter(mexp))))
 	}
 	mp := sdkmetric.NewMeterProvider(mpOpts...)
+	t.mp = mp
 	t.shutdown = append(t.shutdown, mp.Shutdown)
 
 	if o.tp != nil {
@@ -218,7 +224,7 @@ func build(cfg Config, o *options) (*Telemetry, error) {
 // startOTLP builds the tracer and logger providers behind the redacting
 // exporters. It is called only when OTLP is enabled.
 func (t *Telemetry) startOTLP(ctx context.Context, o *options) error {
-	res := buildResource()
+	res := t.res // the one resource of this Init: one service.instance.id across all signals
 	if o.tp == nil && t.cfg.Traces {
 		texp, err := otlptracehttp.New(ctx)
 		if err != nil {

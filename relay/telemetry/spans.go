@@ -117,8 +117,9 @@ func StartStreamSwitch(ctx context.Context, link SpanRef) (context.Context, *Spa
 }
 
 // InjectTraceparent writes ctx's span context into h as a W3C traceparent.
-// It writes nothing when ctx holds no valid span, which is always the case
-// with OTLP off.
+// It writes nothing when ctx holds no valid span. With OTLP off that is the
+// case unless the tune adopted a trusted X-Relay-Traceparent: the no-op tracer
+// carries the remote parent's context, and forwarding it is harmless.
 func InjectTraceparent(ctx context.Context, h http.Header) {
 	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(h))
 }

@@ -76,6 +76,7 @@ type Registry struct {
 	groups map[int]*tracked // by registration id
 	acc    map[Labels]float64
 	seen   map[identity]seenInfo // the last observation of each identity
+	obs    map[Labels]bool       // label sets that have had a member observed
 }
 
 type seenInfo struct {
@@ -95,6 +96,7 @@ func NewRegistry(src Source) *Registry {
 		groups: map[int]*tracked{},
 		acc:    map[Labels]float64{},
 		seen:   map[identity]seenInfo{},
+		obs:    map[Labels]bool{},
 	}
 }
 
@@ -105,6 +107,9 @@ var Default = NewRegistry(SystemSource())
 // that unregisters it. Calling untrack twice is harmless. The accumulated CPU
 // of l stays and keeps being reported after untrack.
 func (r *Registry) Track(pgid int, l Labels) (untrack func()) {
+	if pgid <= 0 {
+		return func() {} // group 0 is the kernel threads; never track it
+	}
 	r.mu.Lock()
 	r.nextID++
 	id := r.nextID
@@ -133,7 +138,7 @@ func (r *Registry) Groups() []Group {
 }
 
 // Collect reads the host once and returns one Sample per label set that has
-// ever been tracked. With nothing tracked it reads nothing.
+// ever had a member observed (a platform without /proc reports none). With nothing tracked it reads nothing.
 func (r *Registry) Collect() []Sample {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -175,6 +180,7 @@ func (r *Registry) Collect() []Sample {
 				// A group registered twice under different labels would
 				// double count; the spawn path registers a group once.
 				for _, l := range owners {
+					r.obs[l] = true
 					r.acc[l] += float64(delta) / ticks
 					rss[l] += p.RSSPages * page
 				}
@@ -192,6 +198,9 @@ func (r *Registry) Collect() []Sample {
 
 	out := make([]Sample, 0, len(r.acc))
 	for l, cpu := range r.acc {
+		if !r.obs[l] {
+			continue // never observed (no /proc): no point rather than a zero
+		}
 		out = append(out, Sample{Labels: l, CPUSeconds: cpu, RSSBytes: rss[l], Live: live[l]})
 	}
 	sort.Slice(out, func(i, j int) bool {

@@ -38,6 +38,9 @@ func (e *redactingMetricExporter) Export(ctx context.Context, rm *metricdata.Res
 }
 
 func redactMetric(m metricdata.Metrics) (metricdata.Metrics, bool) {
+	if !in(metricNames, m.Name) {
+		return m, false // D14: the catalogue is the whole list
+	}
 	switch d := m.Data.(type) {
 	case metricdata.Gauge[int64]:
 		d.DataPoints = filterPoints(d.DataPoints)

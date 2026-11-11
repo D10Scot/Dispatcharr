@@ -5,6 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"os"
+	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -68,7 +72,7 @@ func TestTheSpanBoundaryDropsEverythingNotAllowlisted(t *testing.T) {
 		attribute.String(AttrOutcome, OutcomeSource),
 		attribute.String(AttrReason, ReasonTune),
 		attribute.Int(AttrStatusCode, 200),
-		attribute.String(AttrRoute, "GET /proxy/ts/stream/{id}"),
+		attribute.String(AttrRoute, "GET /proxy/ts/stream/{channelID}"),
 		attribute.String("url.full", "http://p/live/u/"+sentinel),
 		attribute.String(AttrOutcome+".x", sentinel),
 		attribute.String(AttrTrigger, sentinel),
@@ -90,7 +94,7 @@ func TestTheSpanBoundaryDropsEverythingNotAllowlisted(t *testing.T) {
 	s := spans[0].Snapshot()
 	out := dump(s)
 	if !strings.Contains(out, "attr "+AttrChannelID+"=42") || !strings.Contains(out, "attr "+AttrOutcome+"=source") ||
-		!strings.Contains(out, "attr "+AttrRoute+"=GET /proxy/ts/stream/{id}") {
+		!strings.Contains(out, "attr "+AttrRoute+"=GET /proxy/ts/stream/{channelID}") {
 		t.Errorf("POLICY: an allowlisted attribute was lost:\n%s", out)
 	}
 	if !strings.Contains(out, "status=Error/*url.Error") || !strings.Contains(out, "eattr "+attrExcType+"=*url.Error") {
@@ -131,17 +135,28 @@ func TestEveryAttributeRuleRejectsItsHostileValue(t *testing.T) {
 		"trigger":                  attribute.String(AttrTrigger, sentinel),
 		"route with a query":       attribute.String(AttrRoute, "GET /live/u/p/1?password="+sentinel),
 		"route holding a UUID":     attribute.String(AttrRoute, "GET /proxy/ts/stream/"+chanUUID),
+		"bare XC path":             attribute.String(AttrRoute, "GET /user/"+sentinel+"/42"),
+		"bare XC path, no method":  attribute.String(AttrRoute, "/user/"+sentinel+"/42"),
+		"live XC path":             attribute.String(AttrRoute, "GET /live/user/"+sentinel+"/42"),
+		"route not registered":     attribute.String(AttrRoute, "GET /metrics"),
 		"status out of range":      attribute.Int(AttrStatusCode, 999),
 		"status as string":         attribute.String(AttrStatusCode, "200"),
 		"unlisted key":             attribute.String("http.url", sentinel),
 		"exception type is a text": attribute.String(attrExcType, sentinel),
 	} {
-		if name != "exception type is a text" && validSpanAttr(kv) {
+		if validSpanAttr(kv) {
 			t.Errorf("%s: accepted %v", name, kv)
 		}
 	}
-	if validTypeName(sentinel+" with spaces") || validTypeName(chanUUID) {
-		t.Error("validTypeName accepted free text or a UUID")
+	for _, bad := range []string{sentinel, sentinel + " with spaces", chanUUID, "x." + chanUUID, "", "*", "url.", ".Error", "Get http://p/" + sentinel} {
+		if validTypeName(bad) {
+			t.Errorf("validTypeName accepted %q", bad)
+		}
+	}
+	for _, good := range []string{"*url.Error", "*errors.errorString", "context.deadlineExceededError", "*fmt.wrapError", "*net.OpError", "*pkg.Wrapped[int]"} {
+		if !validTypeName(good) {
+			t.Errorf("validTypeName rejected %q", good)
+		}
 	}
 	if !validSpanAttr(attribute.Bool(AttrTuneJoined, true)) {
 		t.Error("the tune.joined bool was rejected")
@@ -250,11 +265,12 @@ func TestTheMetricExporterDropsPointsWhoseAttributesFailTheirRule(t *testing.T) 
 	e := newRedactingMetricExporter(mem)
 	err := e.Export(context.Background(), &metricdata.ResourceMetrics{ScopeMetrics: []metricdata.ScopeMetrics{{
 		Metrics: []metricdata.Metrics{
-			{Name: "sum", Data: metricdata.Sum[int64]{DataPoints: []metricdata.DataPoint[int64]{dp(good), dp(badValue), dp(badKey), dp(badKind), dp(notString), dp(state), dp(out)}}},
-			{Name: "gauge", Data: metricdata.Gauge[float64]{DataPoints: []metricdata.DataPoint[float64]{{Attributes: good, Value: 2}, {Attributes: badKey, Value: 3}}}},
-			{Name: "gaugeint", Data: metricdata.Gauge[int64]{DataPoints: []metricdata.DataPoint[int64]{dp(good)}}},
-			{Name: "sumf", Data: metricdata.Sum[float64]{DataPoints: []metricdata.DataPoint[float64]{{Attributes: good, Value: 1}}}},
-			{Name: "hist", Data: metricdata.Histogram[float64]{}},
+			{Name: nameClientSent, Data: metricdata.Sum[int64]{DataPoints: []metricdata.DataPoint[int64]{dp(good), dp(badValue), dp(badKey), dp(badKind), dp(notString), dp(state), dp(out)}}},
+			{Name: nameHLSSessions, Data: metricdata.Gauge[float64]{DataPoints: []metricdata.DataPoint[float64]{{Attributes: good, Value: 2}, {Attributes: badKey, Value: 3}}}},
+			{Name: nameChannels, Data: metricdata.Gauge[int64]{DataPoints: []metricdata.DataPoint[int64]{dp(good)}}},
+			{Name: nameProcessCPU, Data: metricdata.Sum[float64]{DataPoints: []metricdata.DataPoint[float64]{{Attributes: good, Value: 1}}}},
+			{Name: nameChannels, Data: metricdata.Histogram[float64]{}},
+			{Name: "uncatalogued", Data: metricdata.Gauge[int64]{DataPoints: []metricdata.DataPoint[int64]{dp(good)}}},
 		},
 	}}})
 	if err != nil {
@@ -273,8 +289,8 @@ func TestTheMetricExporterDropsPointsWhoseAttributesFailTheirRule(t *testing.T) 
 			}
 		}
 	}
-	if strings.Join(names, ",") != "sum,gauge,gaugeint,sumf" {
-		t.Errorf("metrics = %v, want the histogram dropped", names)
+	if strings.Join(names, ",") != strings.Join([]string{nameClientSent, nameHLSSessions, nameChannels, nameProcessCPU}, ",") {
+		t.Errorf("metrics = %v, want the histogram and the uncatalogued gauge dropped", names)
 	}
 	if sumPoints != 3 {
 		t.Errorf("sum kept %d points, want 3 (good, state, out)", sumPoints)
@@ -286,7 +302,8 @@ func TestOtelErrorsLeaveAsATypeNotText(t *testing.T) {
 	prev := slog.Default()
 	slog.SetDefault(slog.New(NewSafeHandler(slog.NewJSONHandler(&buf, nil), DefaultRules, nil)))
 	t.Cleanup(func() { slog.SetDefault(prev) })
-	t.Cleanup(func() { otel.SetErrorHandler(otel.GetErrorHandler()) })
+	prevHandler := otel.GetErrorHandler()
+	t.Cleanup(func() { otel.SetErrorHandler(prevHandler) })
 
 	if _, err := Init(context.Background(), Config{SamplerRatio: 1}, WithProcRegistry(nil)); err != nil {
 		t.Fatal(err)
@@ -312,6 +329,7 @@ func TestExportedLogKeysAreJudgedByTheSameRules(t *testing.T) {
 		{"channel_id", val{k: vStr, s: "42"}, true},
 		{"channel_id", val{k: vStr, s: chanUUID}, false},
 		{"error.type", val{k: vStr, s: "*url.Error"}, true},
+		{"error.type", val{k: vStr, s: sentinel}, false},
 		{"error.type", val{k: vStr, s: sentinel + " text"}, false},
 		{"other.type", val{k: vStr, s: "*url.Error"}, false},
 		{"channel", val{k: vStr, s: chanUUID}, false},
@@ -323,5 +341,56 @@ func TestExportedLogKeysAreJudgedByTheSameRules(t *testing.T) {
 		if got := r.classifyExported(tc.key, tc.v); got != tc.want {
 			t.Errorf("classifyExported(%q, %+v) = %v, want %v", tc.key, tc.v, got, tc.want)
 		}
+	}
+}
+
+// The text format has no SafeHandler in front of it, so the call site itself
+// must send only the type: an export error's text carries the collector URL.
+func TestOtelErrorsLeaveNoURLInTheTextFormat(t *testing.T) {
+	var buf strings.Builder
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	prevHandler := otel.GetErrorHandler()
+	t.Cleanup(func() { otel.SetErrorHandler(prevHandler) })
+
+	tel, err := Init(context.Background(), Config{SamplerRatio: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = tel.Shutdown(context.Background()) })
+	otel.Handle(&url.Error{Op: "Post", URL: "https://collector.example/v1/traces?api_key=" + sentinel, Err: errors.New("dial tcp: refused")})
+
+	out := buf.String()
+	if !strings.Contains(out, "otel error") || !strings.Contains(out, "error.type=") {
+		t.Errorf("POLICY: no typed error line: %s", out)
+	}
+	for _, bad := range []string{sentinel, "collector.example", "api_key", "refused"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("LEAK: %q in the text-format output: %s", bad, out)
+		}
+	}
+}
+
+// Every mux pattern registered in httpapi is in the closed set, and the set
+// holds nothing else. A new route that is not added to RoutePatterns fails here.
+func TestRoutePatternsEqualTheRegisteredMuxPatterns(t *testing.T) {
+	src, err := os.ReadFile("../httpapi/server.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	re := regexp.MustCompile(`s\.mux\.Handle(?:Func)?\("([^"]+)"`)
+	var found []string
+	for _, m := range re.FindAllStringSubmatch(string(src), -1) {
+		found = append(found, m[1])
+	}
+	want := slices.Clone(RoutePatterns)
+	slices.Sort(want)
+	slices.Sort(found)
+	if !slices.Equal(found, want) {
+		t.Fatalf("registered patterns differ from telemetry.RoutePatterns:\n registered: %q\n set:        %q", found, want)
+	}
+	if len(found) != 13 {
+		t.Errorf("%d patterns, want 13", len(found))
 	}
 }

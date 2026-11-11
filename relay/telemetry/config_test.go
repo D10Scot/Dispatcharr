@@ -2,6 +2,7 @@ package telemetry
 
 import (
 	"bytes"
+	"context"
 	"log/slog"
 	"strings"
 	"testing"
@@ -90,7 +91,7 @@ func TestSamplerArg(t *testing.T) {
 }
 
 func TestTheSamplerIsParentBasedOverTheRatio(t *testing.T) {
-	tel, err := build(Config{SamplerRatio: 0.25}, &options{})
+	tel, err := build(context.Background(), Config{SamplerRatio: 0.25}, &options{})
 	if err != nil {
 		t.Fatal(err)
 	}

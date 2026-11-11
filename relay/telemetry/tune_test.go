@@ -88,7 +88,7 @@ func TestTheSpanEndsAtTheFirstByteWhileTheViewerStaysConnected(t *testing.T) {
 	_, tune := telemetry.StartTune(r.Context(), r, false)
 	tune.SetChannelID(7)
 	tune.SetOutputFormat(telemetry.FormatMPEGTS)
-	tune.SetRoute("GET /proxy/ts/stream/{id}")
+	tune.SetRoute("GET /proxy/ts/stream/{channelID}")
 	tune.SetJoined(true)
 	defer tune.End()
 
@@ -105,7 +105,7 @@ func TestTheSpanEndsAtTheFirstByteWhileTheViewerStaysConnected(t *testing.T) {
 	}
 	if s.Attrs[telemetry.AttrOutcome] != "streaming" || s.Attrs[telemetry.AttrStatusCode] != int64(200) ||
 		s.Attrs[telemetry.AttrChannelID] != int64(7) || s.Attrs[telemetry.AttrOutputFormat] != "mpegts" ||
-		s.Attrs[telemetry.AttrTuneJoined] != true || s.Attrs[telemetry.AttrRoute] != "GET /proxy/ts/stream/{id}" {
+		s.Attrs[telemetry.AttrTuneJoined] != true || s.Attrs[telemetry.AttrRoute] != "GET /proxy/ts/stream/{channelID}" {
 		t.Errorf("attrs = %v", s.Attrs)
 	}
 	if _, err := w.Write(make([]byte, 188)); err != nil {

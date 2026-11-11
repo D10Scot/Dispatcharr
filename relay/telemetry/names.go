@@ -75,9 +75,33 @@ const (
 // nginx (D11). Extract it only from a trusted request.
 const HeaderRelayTraceparent = "X-Relay-Traceparent"
 
+// RoutePatterns are the relay's mux patterns as httpapi.New registers them: the
+// CLOSED set http.route may take. A route is bound by construction (D9): the
+// two XC patterns carry the password in the path, so a charset rule would pass
+// a request path and only a member of this set is exported. A test holds the
+// set equal to the registrations in relay/httpapi/server.go, so a new route
+// that is not added here fails it.
+var RoutePatterns = []string{
+	"GET /healthz",
+	"GET /readyz",
+	"GET /proxy/ts/stream/{channelID}",
+	"GET /live/{username}/{password}/{channelID}",
+	"GET /{username}/{password}/{channelID}",
+	"GET /hls/{token}/{file}",
+	"GET /hls/{token}/{rendition}/{file}",
+	"DELETE /hls/{token}",
+	"GET /proxy/relay/channels",
+	"GET /proxy/relay/channels/{channelID}",
+	"DELETE /proxy/relay/channels/{channelID}",
+	"DELETE /proxy/relay/channels/{channelID}/clients/{clientID}",
+	"POST /proxy/relay/channels/{channelID}/advance",
+}
+
 var (
-	spanNames = setOf(SpanTune, SpanAuthorize, SpanNextSource, SpanFailover, SpanStreamSwitch)
-	outcomes  = setOf(
+	routes      = setOf(RoutePatterns...)
+	metricNames = setOf(nameChannels, nameClients, nameClientSent, nameFailovers, nameHLSSessions, nameRewindUsage, nameRewindLimit, nameProcessCPU, nameProcessMemory)
+	spanNames   = setOf(SpanTune, SpanAuthorize, SpanNextSource, SpanFailover, SpanStreamSwitch)
+	outcomes    = setOf(
 		OutcomeStreaming, OutcomeRedirect, OutcomeRefused, OutcomeFailed, OutcomeDraining, OutcomeAbandoned,
 		OutcomeAllowed, OutcomeDenied, OutcomeUnavailable,
 		OutcomeSource, OutcomeNoSource, OutcomeBlocked,

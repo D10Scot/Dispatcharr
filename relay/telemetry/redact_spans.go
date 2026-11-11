@@ -2,15 +2,11 @@ package telemetry
 
 import (
 	"context"
-	"regexp"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
-
-var routePattern = regexp.MustCompile(`^(?:[A-Z]+ )?/[A-Za-z0-9_{}./$~-]{0,200}$`)
 
 // redactingSpanExporter is D9's Go span boundary. Span names come from a
 // closed set; attributes are the span catalogue's typed keys, each validated
@@ -36,31 +32,52 @@ func (e *redactingSpanExporter) ExportSpans(ctx context.Context, spans []sdktrac
 
 func (e *redactingSpanExporter) Shutdown(ctx context.Context) error { return e.inner.Shutdown(ctx) }
 
-func redactSpan(s sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
-	stub := tracetest.SpanStubFromReadOnlySpan(s)
+// redacted is a ReadOnlySpan whose name, attributes, events, links and status
+// are the redacted ones. It embeds the original for everything else (the span
+// context, times, resource and scope), so production code does not need the
+// SDK's tracetest package.
+type redacted struct {
+	sdktrace.ReadOnlySpan
+	name   string
+	attrs  []attribute.KeyValue
+	events []sdktrace.Event
+	links  []sdktrace.Link
+	status sdktrace.Status
+}
 
-	if !in(spanNames, stub.Name) {
-		stub.Name = stub.InstrumentationScope.Name
+func (r redacted) Name() string                     { return r.name }
+func (r redacted) Attributes() []attribute.KeyValue { return r.attrs }
+func (r redacted) Events() []sdktrace.Event         { return r.events }
+func (r redacted) Links() []sdktrace.Link           { return r.links }
+func (r redacted) Status() sdktrace.Status          { return r.status }
+func (r redacted) DroppedAttributes() int           { return 0 }
+func (r redacted) DroppedEvents() int               { return 0 }
+func (r redacted) DroppedLinks() int                { return 0 }
+
+func redactSpan(s sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
+	out := redacted{ReadOnlySpan: s, name: s.Name()}
+
+	if !in(spanNames, out.name) {
+		out.name = s.InstrumentationScope().Name
 	}
 
-	attrs := make([]attribute.KeyValue, 0, len(stub.Attributes))
-	for _, kv := range stub.Attributes {
+	out.attrs = make([]attribute.KeyValue, 0, len(s.Attributes()))
+	for _, kv := range s.Attributes() {
 		if validSpanAttr(kv) {
-			attrs = append(attrs, kv)
+			out.attrs = append(out.attrs, kv)
 		}
 	}
-	stub.Attributes = attrs
 
 	var excType string
-	events := make([]sdktrace.Event, 0, len(stub.Events))
-	for _, ev := range stub.Events {
+	out.events = make([]sdktrace.Event, 0, len(s.Events()))
+	for _, ev := range s.Events() {
 		if ev.Name != "exception" {
 			continue
 		}
 		for _, kv := range ev.Attributes {
 			if string(kv.Key) == attrExcType && kv.Value.Type() == attribute.STRING && validTypeName(kv.Value.AsString()) {
 				excType = kv.Value.AsString()
-				events = append(events, sdktrace.Event{
+				out.events = append(out.events, sdktrace.Event{
 					Name:       "exception",
 					Attributes: []attribute.KeyValue{kv},
 					Time:       ev.Time,
@@ -69,20 +86,18 @@ func redactSpan(s sdktrace.ReadOnlySpan) sdktrace.ReadOnlySpan {
 			}
 		}
 	}
-	stub.Events = events
 
-	links := make([]sdktrace.Link, len(stub.Links))
-	for i, l := range stub.Links {
-		links[i] = sdktrace.Link{SpanContext: l.SpanContext}
+	out.links = make([]sdktrace.Link, len(s.Links()))
+	for i, l := range s.Links() {
+		out.links[i] = sdktrace.Link{SpanContext: l.SpanContext}
 	}
-	stub.Links = links
 
 	// The code is kept. The description is the exception type or nothing.
-	stub.Status = sdktrace.Status{Code: stub.Status.Code}
-	if stub.Status.Code == codes.Error {
-		stub.Status.Description = excType
+	out.status = sdktrace.Status{Code: s.Status().Code}
+	if out.status.Code == codes.Error {
+		out.status.Description = excType
 	}
-	return stub.Snapshot()
+	return out
 }
 
 func validTypeName(s string) bool {
@@ -108,8 +123,8 @@ func validSpanAttr(kv attribute.KeyValue) bool {
 	case AttrTrigger:
 		return v.Type() == attribute.STRING && in(triggers, v.AsString())
 	case AttrRoute:
-		// The mux pattern: placeholders, never captured values. Code, not input.
-		return v.Type() == attribute.STRING && routePattern.MatchString(v.AsString()) && !uuidPattern.MatchString(v.AsString())
+		// A member of the closed set of registered mux patterns, nothing else.
+		return v.Type() == attribute.STRING && in(routes, v.AsString())
 	case AttrStatusCode:
 		return v.Type() == attribute.INT64 && v.AsInt64() >= 100 && v.AsInt64() <= 599
 	}

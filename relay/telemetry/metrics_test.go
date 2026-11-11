@@ -232,8 +232,9 @@ func TestOTLPOffInstallsNoProvider(t *testing.T) {
 	if after := runtime.NumGoroutine(); after != before {
 		t.Errorf("goroutines %d -> %d: something started with OTLP off", before, after)
 	}
-	if body := scrape(t, tel.Metrics()); !strings.Contains(body, "# TYPE") && strings.Contains(body, "mino_") {
-		t.Error("the Prometheus handler answered something that is not an exposition")
+	tel.ClientSent(context.Background(), 1, "mpegts", 5)
+	if body := scrape(t, tel.Metrics()); !strings.Contains(body, "# TYPE mino_relay_client_sent_bytes_total counter") {
+		t.Errorf("/metrics does not serve the exposition with OTLP off:\n%s", body)
 	}
 }
 

@@ -30,9 +30,11 @@ var (
 	profileKeyPattern = regexp.MustCompile(`^(mpegts|fmp4|hls)(:p([1-9][0-9]{0,18}))?$`)
 	uuidExact         = regexp.MustCompile(`(?i)^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	digits            = regexp.MustCompile(`^[0-9]{1,19}$`)
-	// typeNamePattern is the shape of a %T: package-qualified, pointer and
-	// generic punctuation. It is applied to a string this code produced.
-	typeNamePattern = regexp.MustCompile(`^[*\w.\[\]/,-]{1,256}$`)
+	// typeNamePattern is the shape of the %T of an error: an optional *, then
+	// pkg.Type (identifier segments, at least one dot), then an optional generic
+	// argument list, the only place a slash or hyphen is allowed. A bare word
+	// such as a secret has no dot and fails.
+	typeNamePattern = regexp.MustCompile(`^\*?[A-Za-z_]\w*(\.[A-Za-z_]\w*)+(\[[\w.*/,\[\]-]{0,200}\])?$`)
 )
 
 // validProfileKey is the domain output.FormatKey can produce for the ids the
@@ -89,6 +91,10 @@ func (r Rules) classify(key string, v val, ids *ChannelIDs) (outKey string, out 
 				id = ids.Get(v.s)
 			}
 			return "channel_id", val{k: vStr, s: strconv.Itoa(id)}, true
+		}
+	case ClassType:
+		if v.k == vStr && validTypeName(v.s) {
+			return key, v, true
 		}
 	case ClassDrop, ClassError:
 		// ClassError is reached only through the error route.

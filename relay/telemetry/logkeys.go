@@ -25,6 +25,9 @@ const (
 	// ClassError accepts an error and emits <key>.type, the %T of the
 	// innermost error. Its text is never exported.
 	ClassError
+	// ClassType accepts the %T of an error (pkg.Type) a call site computed
+	// itself, such as the OTel error handler's error.type.
+	ClassType
 )
 
 // Rule is one key's classification.
@@ -51,11 +54,12 @@ var TriggerValues = []string{"health_monitor", "max_retries_exceeded", "bufferin
 // until then it carries only the keys the spec names.
 var DefaultRules = Rules{
 	Keys: map[string]Rule{
-		"channel": {Class: ClassChannel},
-		"format":  {Class: ClassProfileKey},
-		"trigger": {Class: ClassEnum, Enum: TriggerValues},
-		"error":   {Class: ClassError},
-		"err":     {Class: ClassError},
+		"channel":    {Class: ClassChannel},
+		"format":     {Class: ClassProfileKey},
+		"trigger":    {Class: ClassEnum, Enum: TriggerValues},
+		"error":      {Class: ClassError},
+		"err":        {Class: ClassError},
+		"error.type": {Class: ClassType},
 	},
 	Groups: map[string]bool{},
 }

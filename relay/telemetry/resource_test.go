@@ -35,7 +35,7 @@ func TestOurResourceAttributesWinOverTheEnvironmentAndTheRestPassThrough(t *test
 	}
 }
 
-func TestEachProcessGetsItsOwnInstanceID(t *testing.T) {
+func TestInstanceIDsAreRandomPerResource(t *testing.T) {
 	first, second := instanceID(), instanceID()
 	if first == second {
 		t.Fatal("two calls returned the same instance id")
