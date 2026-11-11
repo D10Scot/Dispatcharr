@@ -61,7 +61,7 @@ const RedisStatus = ({ tls }) => {
     <TlsServiceCard serviceName="Redis">
       <TlsOption
         label="Encryption"
-        description="Encrypt traffic between Dispatcharr and Redis."
+        description="Encrypt traffic between Mino and Redis."
         tooltip={
           enabled
             ? 'The connection is encrypted'
@@ -79,7 +79,7 @@ const RedisStatus = ({ tls }) => {
       />
       <TlsOption
         label="Mutual TLS"
-        description="Authenticate Dispatcharr to Redis using a client certificate."
+        description="Authenticate Mino to Redis using a client certificate."
         tooltip={mtlsTooltip}
         badgeText={mtls && enabled ? 'Active' : 'Inactive'}
         badgeColor={mtlsColor}
@@ -120,7 +120,7 @@ const PostgresStatus = ({ tls }) => {
     <TlsServiceCard serviceName="PostgreSQL">
       <TlsOption
         label="Encryption"
-        description="Encrypt traffic between Dispatcharr and PostgreSQL."
+        description="Encrypt traffic between Mino and PostgreSQL."
         tooltip={
           enabled
             ? 'The connection is encrypted'
@@ -138,7 +138,7 @@ const PostgresStatus = ({ tls }) => {
       />
       <TlsOption
         label="Mutual TLS"
-        description="Authenticate Dispatcharr to PostgreSQL using a client certificate."
+        description="Authenticate Mino to PostgreSQL using a client certificate."
         tooltip={mtlsTooltip}
         badgeText={mtls && enabled ? 'Active' : 'Inactive'}
         badgeColor={mtlsColor}

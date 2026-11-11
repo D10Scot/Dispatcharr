@@ -775,7 +775,7 @@ const PluginCard = ({
               </Text>
               <PluginSecurityWarning>
                 Plugins run server-side code with full access to your
-                Dispatcharr instance and its data. Only install plugins from
+                Mino instance and its data. Only install plugins from
                 developers you trust. Malicious plugins could read or modify
                 data, call internal APIs, or perform unwanted actions.
               </PluginSecurityWarning>

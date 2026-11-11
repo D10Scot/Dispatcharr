@@ -1,4 +1,4 @@
-"""Label Postgres connections by Dispatcharr process role (for pg_stat_activity)."""
+"""Label Postgres connections by Mino process role (for pg_stat_activity)."""
 
 from __future__ import annotations
 
@@ -51,4 +51,4 @@ def uses_geventpool_database_backend(argv: list[str] | None = None) -> bool:
 
 
 def db_application_name() -> str:
-    return f"Dispatcharr-{get_process_role()}-{os.getpid()}"
+    return f"Mino-{get_process_role()}-{os.getpid()}"

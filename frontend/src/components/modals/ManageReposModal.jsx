@@ -467,7 +467,7 @@ export default function ManageReposModal({ opened, onClose }) {
                   )
                 ) : (
                   <Text size="xs" c="yellow">
-                    Third-party repositories are not reviewed by the Dispatcharr
+                    Third-party repositories are not reviewed by the Mino
                     team.
                     <br />
                     Adding sources and installing plugins is done at your own

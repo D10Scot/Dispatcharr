@@ -24,7 +24,7 @@ import (
 // net/http wraps every client failure in a *url.Error whose Error() prints the
 // whole URL, and its own redaction covers ONLY userinfo -- it turns
 // http://user:pw@host into http://user:***@host and leaves the path and query
-// string untouched, which is exactly where a Dispatcharr provider credential
+// string untouched, which is exactly where a Mino provider credential
 // lives. The inner error is what is left: "dial tcp 127.0.0.1:1: connect:
 // connection refused" names a host and a port and no secret.
 //

@@ -160,7 +160,7 @@ func TestProxySourceAttributesACancellationToTheCaller(t *testing.T) {
 // that is what makes this test able to fail. net/http redacts userinfo by
 // itself -- it prints http://user:***@host -- so a test that only checked a
 // password in the userinfo would pass against a %w-wrapped *url.Error and
-// prove nothing. The path and the query are NOT redacted, and a Dispatcharr
+// prove nothing. The path and the query are NOT redacted, and a Mino
 // provider URL puts the credential in exactly those two places.
 func TestAConnectFailureNeverEchoesTheProviderURL(t *testing.T) {
 	const secretURL = "http://127.0.0.1:1/live/subscriber/hunter2/9.ts?token=s3cr3t"
