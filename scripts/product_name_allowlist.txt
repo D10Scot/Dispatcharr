@@ -579,6 +579,7 @@
 9	tests/test_process_label.py
 6	tests/test_redaction.py
 2	tests/test_relay_event_visibility.py
+4	tests/test_runtime_sqlite_marker.py
 3	tests/test_tls_cert_path_validation.py
 1	tests/test_unmatched_api_paths_404.py
 3	tests/test_urls_xc_three_segment.py
