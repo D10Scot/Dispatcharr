@@ -256,7 +256,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                 />
                 <Switch
                   label="Active"
-                  description="Inactive users cannot sign in, and their access and refresh tokens stop working"
+                  description="Inactive users cannot sign in and their tokens stop working; Xtream (XC) credentials keep working until the XC password is cleared."
                   {...form.getInputProps('is_active', { type: 'checkbox' })}
                   key={form.key('is_active')}
                 />
