@@ -383,11 +383,11 @@ class LinkCsrfTests(FlowTestCase):
         victim = APIClient()
         self.start(victim, self.provider)  # the victim holds a binding cookie of its own
         response = self.callback(victim, self.provider, self.op.authorize(authorize_url, {"roles": ["admins"]}))
-        self.assertEqual(sso_error(response), "binding_invalid")
         self.assertFalse(
             OIDCIdentity.objects.filter(user=attacker).exists(),
             "the victim's IdP identity was linked to the attacker's account",
         )
+        self.assertEqual(sso_error(response), "binding_invalid")
         attacker.refresh_from_db()
         self.assertEqual(attacker.user_level, User.UserLevel.STANDARD)
 
@@ -1023,8 +1023,7 @@ class ClientAssertionTests(FlowTestCase):
     def test_assertion_shape(self):
         self.op.assertion_key = self.active_cert.public_key()
         response = self.sign_in(APIClient(), self.provider, {"roles": ["staff"]})
-        self.assertIsNone(sso_error(response), response["Location"])
-        token = self.assertion()
+        token = self.assertion()  # inspected before the outcome, so a wrong claim is named
         header = jwt.get_unverified_header(token)
         self.assertEqual(header["alg"], "PS256")
         self.assertEqual(header["typ"], "JWT")
@@ -1041,6 +1040,7 @@ class ClientAssertionTests(FlowTestCase):
         self.assertEqual(claims["exp"] - claims["nbf"], 300)
         self.assertEqual(claims["iat"], claims["nbf"])
         self.assertTrue(claims["jti"])
+        self.assertIsNone(sso_error(response), response["Location"])
 
     def test_assertion_replaces_secret(self):
         self.sign_in(APIClient(), self.provider, {"roles": ["staff"]})

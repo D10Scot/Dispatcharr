@@ -41,6 +41,7 @@ class EmailTakeoverTests(FlowTestCase):
         admin = User.objects.create_user(
             username="boss", email="boss@example.com", password="testpass123", user_level=10
         )
+        make_admin("second-admin")  # so a wrong match is not hidden behind a last_admin refusal
         provider = self.make_flow_provider()
         self.login(
             APIClient(), provider,
