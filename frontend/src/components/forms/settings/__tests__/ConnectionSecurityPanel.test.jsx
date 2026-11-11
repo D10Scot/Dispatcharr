@@ -544,7 +544,7 @@ describe('ConnectionSecurityPanel', () => {
     it('renders Redis Encryption description', () => {
       expect(
         within(getServiceCard('Redis')).getByText(
-          'Encrypt traffic between Dispatcharr and Redis.'
+          'Encrypt traffic between Mino and Redis.'
         )
       ).toBeInTheDocument();
     });
@@ -560,7 +560,7 @@ describe('ConnectionSecurityPanel', () => {
     it('renders Redis Mutual TLS description', () => {
       expect(
         within(getServiceCard('Redis')).getByText(
-          'Authenticate Dispatcharr to Redis using a client certificate.'
+          'Authenticate Mino to Redis using a client certificate.'
         )
       ).toBeInTheDocument();
     });
@@ -568,7 +568,7 @@ describe('ConnectionSecurityPanel', () => {
     it('renders PostgreSQL Encryption description', () => {
       expect(
         within(getServiceCard('PostgreSQL')).getByText(
-          'Encrypt traffic between Dispatcharr and PostgreSQL.'
+          'Encrypt traffic between Mino and PostgreSQL.'
         )
       ).toBeInTheDocument();
     });
@@ -584,7 +584,7 @@ describe('ConnectionSecurityPanel', () => {
     it('renders PostgreSQL Mutual TLS description', () => {
       expect(
         within(getServiceCard('PostgreSQL')).getByText(
-          'Authenticate Dispatcharr to PostgreSQL using a client certificate.'
+          'Authenticate Mino to PostgreSQL using a client certificate.'
         )
       ).toBeInTheDocument();
     });

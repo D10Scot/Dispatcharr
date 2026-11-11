@@ -158,7 +158,8 @@ class MyWebSocketConsumer(AsyncWebsocketConsumer):
                 )
             except Exception as e:
                 search_preview = url
-                logger.error(f"Failed to generate replace preview: {e}")
+                # Type only: a regex error's text can quote part of the pattern.
+                logger.error("Failed to generate replace preview: %s", type(e).__name__)
 
             result = transform_url(url, search, replace)
             await self.send(text_data=json.dumps({

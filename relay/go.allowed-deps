@@ -1,0 +1,5 @@
+# The relay's allowed DIRECT Go requirements, one module path per line.
+# scripts/check_go_deps.sh fails when go.mod's direct requirements differ
+# from this list in either direction. Adding a line is adding a dependency:
+# ADR 0011 and docs/superpowers/specs/2026-10-31-observability-design.md
+# (D2, § Go modules) say which modules may appear here.
