@@ -722,7 +722,7 @@ class UntruncatedClassificationTests(TestCase):
         manager = mock.MagicMock()
         manager.select_related.return_value.get.return_value = account
         trace_lines = []
-        stream_model = mock.MagicMock()
+        stream_model = self.stream_model = mock.MagicMock()
         stream_model._meta.get_field.return_value.max_length = 255
         stream_model.generate_hash_key.return_value = "h"
         if fail:
@@ -772,8 +772,13 @@ class UntruncatedClassificationTests(TestCase):
     def test_stored_name_is_still_truncated_and_unchanged(self):
         records = self.collect("nametoken/" + "x" * 300 + "/1.ts")
         original = records[0]["name"]
+        self.assertGreater(len(original), 255)
         self.batch(records)
         self.assertEqual(records[0]["name"], original)
+        self.assertEqual(
+            self.stream_model.call_args.kwargs["name"], original[:255],
+            "the stored name is still cut to the configured limit",
+        )
 
     def test_disabled_group_debug_withholds_a_url_shaped_group(self):
         records = [{"name": "acct one", "url": URL, "attributes": {"group-title": "nametoken/a/b"}}]

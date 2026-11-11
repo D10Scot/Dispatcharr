@@ -1490,7 +1490,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             if name and len(name) > name_max_length:
                 logger.warning(
                     "Stream name too long (%d > %d), truncating: %s...",
-                    len(name), name_max_length, log_name.short(80),
+                    len(name), name_max_length,
+                    log_name.short(80) if logger.isEnabledFor(logging.WARNING) else "",
                 )
                 name = name[:name_max_length]
 
