@@ -1290,11 +1290,14 @@ class RefreshReevaluationTests(FlowTransactionTestCase):
             self.login(APIClient(), self.provider, {"roles": ["super"], "preferred_username": "u"})
 
         response = self.run_held_refresh(body["refresh"], between)
-        self.assertEqual(response.status_code, 200, f"expected 200, got {response.status_code}")
-        self.assertEqual(self.level(), 10)
-        self.assertFalse(
-            SystemEvent.objects.filter(event_type="login_failed", details__reason="last_admin").exists()
+        last_admin = SystemEvent.objects.filter(event_type="login_failed", details__reason="last_admin")
+        self.assertEqual(
+            response.status_code, 200,
+            f"expected 200, got {response.status_code} with {last_admin.count()} last_admin event(s): "
+            "the last-admin test ran on a level the re-read no longer gives",
         )
+        self.assertEqual(self.level(), 10)
+        self.assertFalse(last_admin.exists())
 
     def test_identity_unlinked_between_reads_refuses(self):
         self.require_postgresql()
