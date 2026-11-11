@@ -44,9 +44,9 @@ test('hdhr discover.json describes a tuner and points at its own lineup', { tag:
   // elsewhere), so DiscoverAPIView takes its `if not device:` branch
   // (apps/hdhr/api_views.py:79-89), which hardcodes both literals. They only
   // become slug-derived (`dispatcharr-hdhr-<slug>` /
-  // `Dispatcharr HDHomeRun - <slug>`) when a channel_profile or
+  // `Mino HDHomeRun - <slug>`) when a channel_profile or
   // output_profile segment is present — neither is, here.
-  expect(device.FriendlyName).toBe('Dispatcharr HDHomeRun');
+  expect(device.FriendlyName).toBe('Mino HDHomeRun');
   expect(device.DeviceID).toBe('12345678');
 
   // calculate_tuner_count(minimum=1, unlimited_default=10) adds a COUNT of

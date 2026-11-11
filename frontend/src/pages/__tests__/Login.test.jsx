@@ -28,7 +28,7 @@ describe('Login', () => {
     expect(
       screen.getByRole('progressbar', { name: 'Loading login' })
     ).toBeInTheDocument();
-    expect(screen.getByAltText('Dispatcharr Logo')).toBeInTheDocument();
+    expect(screen.getByAltText('Mino Logo')).toBeInTheDocument();
     expect(screen.queryByTestId('login-form')).not.toBeInTheDocument();
     expect(screen.queryByTestId('superuser-form')).not.toBeInTheDocument();
   });

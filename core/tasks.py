@@ -797,7 +797,7 @@ def _determine_stream_to_keep(stream_a, stream_b):
 @shared_task
 def check_for_version_update():
     """
-    Check for new Dispatcharr versions on GitHub and create a notification if available.
+    Check for new Mino versions on GitHub and create a notification if available.
     This task should be run periodically (e.g., daily) via Celery Beat.
 
     For dev builds (identified by __timestamp__), checks for stable releases only.
@@ -976,7 +976,7 @@ def check_for_version_update():
                     send_websocket_notification(notification)
                     logger.info(f"New version notification created and sent via WebSocket")
             else:
-                logger.debug(f"Dispatcharr is up to date (v{__version__})")
+                logger.debug(f"Mino is up to date (v{__version__})")
 
                 # Delete ALL version update notifications when up to date (no longer needed)
                 deleted_count = SystemNotification.objects.filter(
