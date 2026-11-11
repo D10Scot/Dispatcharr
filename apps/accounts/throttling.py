@@ -1,7 +1,7 @@
 """Shared login rate limiting for JWT and Django admin."""
 
 from django.http import HttpResponse
-from rest_framework.throttling import AnonRateThrottle
+from rest_framework.throttling import AnonRateThrottle, SimpleRateThrottle
 
 from dispatcharr.utils import get_client_ip
 
@@ -43,3 +43,17 @@ def enforce_login_rate_limit(request):
     if wait is not None:
         response["Retry-After"] = str(max(1, int(wait)))
     return response
+
+
+class OIDCRateThrottle(SimpleRateThrottle):
+    """Per-IP throttle for the OIDC browser endpoints (scope ``oidc``, SSO spec 3.1).
+
+    Keyed by the same trusted-proxy-aware client IP as ``LoginRateThrottle``, and applied to
+    authenticated callers too (``link/start``), which ``AnonRateThrottle`` would skip.
+    """
+
+    scope = "oidc"
+
+    def get_cache_key(self, request, view):
+        ident = get_client_ip(request) or self.get_ident(request)
+        return self.cache_format % {"scope": self.scope, "ident": ident}

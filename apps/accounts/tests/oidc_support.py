@@ -91,6 +91,19 @@ def base_url_for(target_len, slug):
     return base
 
 
+class _FakeRaw:
+    """The slice of urllib3's ``HTTPResponse`` the limited reader uses."""
+
+    def __init__(self, body):
+        self._body = body
+        self._pos = 0
+
+    def read1(self, amt=8192, decode_content=True):
+        chunk = self._body[self._pos : self._pos + amt]
+        self._pos += len(chunk)
+        return chunk
+
+
 class FakeResponse:
     """Stands in for ``requests.Response`` where the SSRF policy is under test."""
 
@@ -98,10 +111,7 @@ class FakeResponse:
         self.status_code = status_code
         self.headers = {}
         self._body = body if isinstance(body, bytes) else json.dumps(body).encode()
-
-    def iter_content(self, chunk_size=8192):
-        for i in range(0, len(self._body), chunk_size):
-            yield self._body[i : i + chunk_size]
+        self.raw = _FakeRaw(self._body)
 
     def close(self):
         pass

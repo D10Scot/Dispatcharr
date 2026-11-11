@@ -48,6 +48,8 @@
 2	apps/accounts/migrations/0001_initial.py
 2	apps/accounts/migrations/0002_remove_user_channel_groups_user_channel_profiles_and_more.py
 2	apps/accounts/models.py
+1	apps/accounts/oidc/api_views.py
+1	apps/accounts/oidc/flow.py
 1	apps/accounts/permissions.py
 6	apps/accounts/tests/test_accounts.py
 1	apps/accounts/throttling.py

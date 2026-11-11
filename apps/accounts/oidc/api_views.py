@@ -1,7 +1,7 @@
-"""Admin API for OIDC providers, identities and ``auth_settings`` (SSO spec 3.1, 5.1, 5.2).
+"""OIDC API: the admin side (SSO spec 3.1, 5.1, 5.2) and the login flow (3.1-3.3a).
 
-Login-flow endpoints (``start``, ``callback``, ``exchange``, the public ``providers/``) are
-PR S2. Nothing here establishes a session.
+The flow endpoints (``providers/``, ``start``, ``link/start``, ``callback``, ``exchange``) are
+thin: ``flow.py`` holds the protocol. Nothing here establishes a Django session.
 """
 
 import hmac
@@ -9,24 +9,34 @@ import re
 
 from django.db import transaction
 from django.db.models import ProtectedError
-from django.http import HttpResponse
+from django.http import HttpResponse, HttpResponseRedirect
+from urllib.parse import urlencode
 from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework import mixins, status, viewsets
 from rest_framework.decorators import action
+from rest_framework.permissions import BasePermission
+from rest_framework_simplejwt.authentication import JWTAuthentication
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.accounts.models import OIDCIdentity, OIDCProvider
-from apps.accounts.permissions import IsAdmin, IsStandardUser
+from apps.accounts.permissions import Authenticated, IsAdmin, IsStandardUser
+from apps.accounts.throttling import OIDCRateThrottle
 from core.models import CoreSettings
 
-from . import audit, auth_settings, certificates, discovery, expiry, redirect
+from . import audit, auth_settings, certificates, discovery, expiry, flow, redirect
 from . import secrets as oidc_secrets
 from .errors import CodedError
 from .serializers import (
     AuthSettingsReadSerializer,
     AuthSettingsWriteSerializer,
     CertificateActivateSerializer,
+    CodedErrorSerializer,
+    ExchangeRequestSerializer,
+    ExchangeResponseSerializer,
+    LinkStartRequestSerializer,
+    LinkStartResponseSerializer,
+    PublicAuthConfigSerializer,
     OIDCIdentityDetailSerializer,
     OIDCIdentitySerializer,
     OIDCProviderSerializer,
@@ -313,3 +323,166 @@ class OIDCSettingsView(APIView):
                     fields=changed,
                 )
         return Response(self._payload(request, values))
+
+
+# ---- the login flow (PR S2) ------------------------------------------------------------
+
+
+class UINetworkAllowed(BasePermission):
+    """The UI network ACL for the unauthenticated flow endpoints."""
+
+    def has_permission(self, request, view):
+        from dispatcharr.utils import network_access_allowed
+
+        return network_access_allowed(request, "UI")
+
+
+class _FlowView(APIView):
+    """Base for start, link/start, callback and exchange: ACL, ``oidc`` throttle, headers.
+
+    No authenticator runs (``link/start`` overrides that): a stale bearer header must not
+    turn a login into a 401.
+    """
+
+    authentication_classes = []
+    permission_classes = [UINetworkAllowed]
+    throttle_classes = [OIDCRateThrottle]
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        for name, value in flow.NO_STORE_HEADERS.items():
+            response[name] = value
+        return response
+
+
+def _provider_and_base(slug):
+    provider = flow.enabled_provider(slug)
+    if provider is None:
+        raise CodedError("not_found", status_code=status.HTTP_404_NOT_FOUND)
+    base = flow.public_base_url()
+    if not base:
+        raise CodedError("sso_not_configured", status_code=status.HTTP_409_CONFLICT)
+    return provider, base
+
+
+class OIDCPublicProvidersView(APIView):
+    """``GET providers/``: the login page's configuration. No issuer, client id or secret."""
+
+    authentication_classes = []
+    permission_classes = [UINetworkAllowed]
+
+    @extend_schema(responses={200: PublicAuthConfigSerializer})
+    def get(self, request):
+        providers = list(
+            OIDCProvider.objects.filter(enabled=True).order_by("id").values("slug", "display_name")
+        )
+        payload = {
+            "providers": providers,
+            "password_login_enabled": bool(
+                CoreSettings.get_auth_settings().get("password_login_enabled", True)
+            ),
+        }
+        return Response(PublicAuthConfigSerializer(payload).data)
+
+
+class OIDCStartView(_FlowView):
+    """``GET <slug>/start/?next=``: a LOGIN transaction, answered with a 302 to the IdP.
+
+    It takes no ``intent`` parameter: a GET start can never link.
+    """
+
+    @extend_schema(
+        parameters=[OpenApiParameter("next", str, required=False)],
+        responses={302: None, 404: CodedErrorSerializer, 409: CodedErrorSerializer},
+    )
+    def get(self, request, slug):
+        provider, base = _provider_and_base(slug)
+        try:
+            started = flow.begin(
+                request,
+                provider,
+                base,
+                intent=flow.INTENT_LOGIN,
+                link_user_id=None,
+                next_value=request.query_params.get("next"),
+            )
+        except (discovery.DiscoveryError, flow.FlowError) as exc:
+            code = "provider_unavailable" if isinstance(exc, discovery.DiscoveryError) else exc.code
+            flow.login_failed(request, code, provider.slug)
+            return HttpResponseRedirect(f"{base}/login?{urlencode({'sso_error': code})}")
+        return started.apply_cookies(HttpResponseRedirect(started.authorize_url))
+
+
+class OIDCLinkStartView(_FlowView):
+    """``POST <slug>/link/start/``: a LINK transaction for the authenticated caller.
+
+    The binding cookie is set on this same-origin response, so the link exists only in the
+    browser of the user who asked for it. ``link_user_id`` is the caller, never a parameter.
+    """
+
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [Authenticated]
+
+    @extend_schema(
+        request=LinkStartRequestSerializer,
+        responses={
+            200: LinkStartResponseSerializer,
+            404: CodedErrorSerializer,
+            409: CodedErrorSerializer,
+            502: CodedErrorSerializer,
+        },
+    )
+    def post(self, request, slug):
+        body = LinkStartRequestSerializer(data=request.data)
+        body.is_valid(raise_exception=True)
+        provider, base = _provider_and_base(slug)
+        try:
+            started = flow.begin(
+                request,
+                provider,
+                base,
+                intent=flow.INTENT_LINK,
+                link_user_id=request.user.pk,
+                next_value=body.validated_data.get("next"),
+            )
+        except discovery.DiscoveryError:
+            raise CodedError("provider_unavailable", status_code=status.HTTP_502_BAD_GATEWAY)
+        except flow.FlowError as exc:
+            raise CodedError(exc.code, status_code=exc.status)
+        response = Response(LinkStartResponseSerializer({"authorize_url": started.authorize_url}).data)
+        return started.apply_cookies(response)
+
+
+class OIDCCallbackView(_FlowView):
+    """``GET <slug>/callback/``: the redirect URI. Always a 302 once the provider resolves."""
+
+    @extend_schema(responses={302: None, 404: CodedErrorSerializer, 409: CodedErrorSerializer})
+    def get(self, request, slug):
+        provider, base = _provider_and_base(slug)
+        return flow.callback(request, provider, base)
+
+
+class OIDCExchangeView(_FlowView):
+    """``POST exchange/ {code}``: redeem the one-time handoff for the token pair."""
+
+    @extend_schema(
+        request=ExchangeRequestSerializer,
+        responses={200: ExchangeResponseSerializer, 400: CodedErrorSerializer},
+    )
+    def post(self, request):
+        body = ExchangeRequestSerializer(data=request.data)
+        if not body.is_valid():
+            return Response({"code": "handoff_invalid"}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            payload, cookie_name, base = flow.exchange(request, body.validated_data["code"])
+        except flow.FlowError as exc:
+            response = Response({"code": exc.code}, status=exc.status)
+            cookie_name = getattr(exc, "cookie_name", None)
+            if cookie_name:
+                flow.delete_binding_cookie(response, cookie_name, exc.base_url)
+            return response
+        response = Response(ExchangeResponseSerializer(payload).data)
+        response["Pragma"] = "no-cache"
+        if cookie_name:
+            flow.delete_binding_cookie(response, cookie_name, base)
+        return response

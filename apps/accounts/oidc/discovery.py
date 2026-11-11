@@ -10,10 +10,13 @@ logged, only the exception class and an HTTP status.
 
 import json
 import logging
+import time
 from urllib.parse import urlparse
 
 import requests
+import urllib3
 from django.conf import settings
+from django.core.cache import cache
 
 from core.http_security import fetch_outbound_http, validate_outbound_http_url
 
@@ -21,6 +24,13 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 1024 * 1024  # 1 MiB, enforced while streaming
 TIMEOUT = (5, 10)  # connect, read
+# A total bound on one fetch, measured from before the connect. The per-read timeout alone
+# lets a server that drips a byte every few seconds hold a request until uWSGI's harakiri;
+# with this the worst case is TOTAL_DEADLINE plus one read timeout.
+TOTAL_DEADLINE = 15
+READ_SIZE = 65536
+CACHE_TTL = 3600
+JWKS_REFETCH_COOLDOWN = 60
 WELL_KNOWN = "/.well-known/openid-configuration"
 
 _REDIRECT_MESSAGES = ("More than ", "Redirect without a Location")
@@ -52,25 +62,59 @@ def _scheme_allowed(url):
     return scheme == "https" or (scheme == "http" and settings.OIDC_ALLOW_HTTP)
 
 
-def _read_limited(resp, kind):
+def _now():
+    """The monotonic clock; a seam so the deadline test needs no real waiting."""
+    return time.monotonic()
+
+
+def read_limited(resp, deadline, *, too_large, failed):
+    """Read a streamed body under the 1 MiB cap and a monotonic ``deadline``.
+
+    ``read1`` returns after one underlying receive, so the deadline is checked between
+    receives rather than after a buffered read that waits for a whole chunk. Raises
+    ``DiscoveryError(too_large)`` past the cap and ``DiscoveryError(failed)`` on a transport
+    error or once the deadline has passed.
+    """
     chunks = []
     total = 0
     try:
-        for chunk in resp.iter_content(chunk_size=8192):
+        while True:
+            if _now() > deadline:
+                logger.warning("OIDC response body read exceeded its deadline")
+                raise DiscoveryError(failed)
+            chunk = resp.raw.read1(READ_SIZE, decode_content=True)
+            if not chunk:
+                break
             total += len(chunk)
             if total > MAX_BYTES:
-                raise DiscoveryError(f"{kind}_too_large")
+                raise DiscoveryError(too_large)
             chunks.append(chunk)
     except requests.RequestException as exc:
-        logger.warning("OIDC %s body read failed: %s", kind, type(exc).__name__)
-        raise DiscoveryError(f"{kind}_unreachable") from None
+        logger.warning("OIDC response body read failed: %s", type(exc).__name__)
+        raise DiscoveryError(failed) from None
+    except (urllib3.exceptions.HTTPError, OSError) as exc:
+        # Reading the raw stream directly surfaces urllib3's own errors (ReadTimeoutError,
+        # ProtocolError, DecodeError), which requests would otherwise have wrapped.
+        logger.warning("OIDC response body read failed: %s", type(exc).__name__)
+        raise DiscoveryError(failed) from None
     return b"".join(chunks)
+
+
+def deadline_from_now():
+    return _now() + TOTAL_DEADLINE
+
+
+def _read_limited(resp, kind, deadline):
+    return read_limited(
+        resp, deadline, too_large=f"{kind}_too_large", failed=f"{kind}_unreachable"
+    )
 
 
 def _get_json(url, provider, *, kind, not_allowed_code):
     """GET ``url`` under the SSRF policy and return the parsed JSON object."""
     if not _scheme_allowed(url):
         raise DiscoveryError(not_allowed_code)
+    deadline = deadline_from_now()
     try:
         resp = fetch_outbound_http(
             url,
@@ -94,7 +138,7 @@ def _get_json(url, provider, *, kind, not_allowed_code):
         if resp.status_code != 200:
             logger.warning("OIDC %s fetch answered HTTP %s", kind, resp.status_code)
             raise DiscoveryError(f"{kind}_http_error")
-        body = _read_limited(resp, kind)
+        body = _read_limited(resp, kind, deadline)
     finally:
         resp.close()
     try:
@@ -157,6 +201,50 @@ def check_token_endpoint(provider, discovery):
         )
     except ValueError:
         raise DiscoveryError("token_endpoint_not_allowed") from None
+
+
+def _cache_key(kind, provider):
+    return f"oidc:{kind}:{provider.pk}:{provider.version}"
+
+
+def discovery_cache_key(provider):
+    return _cache_key("disco", provider)
+
+
+def jwks_cache_key(provider):
+    return _cache_key("jwks", provider)
+
+
+def get_discovery(provider):
+    """The validated discovery document, cached per provider and version for an hour.
+
+    Every security-relevant provider edit bumps ``version``, so an edit is never served a
+    stale document. Only a document that passed ``fetch_discovery``'s checks is cached.
+    """
+    key = discovery_cache_key(provider)
+    doc = cache.get(key)
+    if isinstance(doc, dict):
+        return doc
+    doc = fetch_discovery(provider)
+    cache.set(key, doc, CACHE_TTL)
+    return doc
+
+
+def get_jwks(provider, discovery, *, refetch=False):
+    """The JWKS, cached like discovery. ``refetch`` bypasses the cache (an unknown ``kid``)."""
+    key = jwks_cache_key(provider)
+    if not refetch:
+        doc = cache.get(key)
+        if isinstance(doc, dict):
+            return doc
+    doc = fetch_jwks(provider, discovery)
+    cache.set(key, doc, CACHE_TTL)
+    return doc
+
+
+def claim_jwks_refetch(provider):
+    """True at most once per provider per 60 s: the unknown-``kid`` refetch cooldown."""
+    return cache.add(f"oidc:jwks-refetch:{provider.pk}", 1, JWKS_REFETCH_COOLDOWN)
 
 
 def run_test(provider):
