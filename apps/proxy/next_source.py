@@ -283,14 +283,11 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
     try:
         logger.debug("Executing URL pattern replacement:")
         logger.debug(f"  base URL: {redact_url(input_url)}")
-        logger.debug(f"  search: {search_pattern}")
 
         # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \g<1>
         # Fixed conversion patterns only; timeout is reserved for the user search.
         safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
         safe_replace_pattern = convert_js_numbered_backreferences(safe_replace_pattern)
-        logger.debug(f"  replace: {replace_pattern}")
-        logger.debug(f"  safe replace: {safe_replace_pattern}")
 
         # Apply the transformation (regex module accepts JS-style (?<name>...) natively).
         # timeout bounds ReDoS from nested quantifiers in search_pattern.
@@ -301,13 +298,16 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
             timeout=URL_TRANSFORM_REGEX_TIMEOUT,
         )
         if match_count == 0:
-            logger.warning(f"URL pattern '{search_pattern}' did not match, falling back to original URL: {redact_url(input_url)}")
+            # The patterns are never logged: in the Xtream "simple" profile mode they
+            # are the provider login (<username>/<password>).
+            logger.warning("Profile URL pattern did not match, falling back to original URL: %s", redact_url(input_url))
         else:
             logger.info(f"Generated stream url: {redact_url(stream_url)}")
 
         return stream_url
     except Exception as e:
-        logger.error(f"Error transforming URL: {e}")
+        # Type only: a regex error's text can quote part of the pattern.
+        logger.error("Error transforming URL: %s", type(e).__name__)
         return input_url  # Return original URL on error
 
 
