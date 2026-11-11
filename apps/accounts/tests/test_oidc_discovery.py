@@ -225,8 +225,8 @@ class OutboundPolicyTests(TestCase):
     def test_private_issuer_refused_by_default(self):
         provider = make_provider(issuer="https://idp.internal/realms/x")
         result = self._run(provider, lambda host, *a, **k: _addrinfo("10.0.0.5"), {})
-        self.assertEqual(result["problems"], ["discovery_not_allowed"])
         self.assertEqual(self.requested, [], "a request was sent to a private address")
+        self.assertEqual(result["problems"], ["discovery_not_allowed"])
 
     def test_private_issuer_allowed_with_flag(self):
         provider = make_provider(issuer="https://idp.internal/realms/x", allow_private_network=True)
@@ -263,11 +263,11 @@ class OutboundPolicyTests(TestCase):
             }
         }
         result = self._run(provider, resolver, docs)
-        self.assertEqual(result["problems"], ["jwks_uri_not_allowed", ])
         self.assertFalse(
             [u for u in self.requested if "10.0.0.5" in u],
             "a request to the private address was attempted",
         )
+        self.assertEqual(result["problems"], ["jwks_uri_not_allowed"])
 
     def test_discovered_token_endpoint_is_checked_too(self):
         def resolver(host, *args, **kwargs):

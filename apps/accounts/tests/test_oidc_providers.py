@@ -466,7 +466,9 @@ class EntraPresetTests(TestCase):
 
         # One character more through the slug.
         long = self.client.post(PROVIDERS, entra_body(slug=slug_long), format="json")
-        self.assertEqual(long.status_code, 400)
+        self.assertEqual(
+            long.status_code, 400, "a 257-character Entra redirect URI was accepted"
+        )
         self.assertEqual(long.json(), {"code": "redirect_uri_too_long"})
         self.assertFalse(OIDCProvider.objects.filter(slug=slug_long).exists())
 
@@ -749,7 +751,11 @@ class CredentialExpiryTests(TestCase):
             f"{PROVIDERS}{provider.pk}/", {"client_auth_method": "client_secret_post"}, format="json"
         )
         info = self._expiry(provider)
-        self.assertEqual(info["state"], "expired")
+        self.assertEqual(
+            info["state"],
+            "expired",
+            "after switching back to the secret, the certificate's notAfter was still reported",
+        )
         self.assertEqual(
             info["expires_at"], (self.today - datetime.timedelta(days=1)).isoformat()
         )
@@ -917,7 +923,11 @@ class ProviderCertificateTests(TestCase):
         self.assertNotEqual(a["thumbprint_sha256"], b_thumb)
 
         response = self._activate(a["thumbprint_sha256"])
-        self.assertEqual(response.status_code, 409)
+        self.assertEqual(
+            response.status_code,
+            409,
+            "activation promoted a pending certificate other than the one named",
+        )
         self.assertEqual(response.json(), {"code": "pending_certificate_changed"})
         provider = OIDCProvider.objects.get(pk=self.provider.pk)
         self.assertEqual(provider.client_cert_pem, "", "the active pair changed")
@@ -1071,7 +1081,9 @@ class RuntimeSqliteTests(TestCase):
         set_auth_settings()
         with override_settings(RUNTIME_SQLITE=True):
             response = client.post(PROVIDERS, generic_body(), format="json")
-        self.assertEqual(response.status_code, 400)
+        self.assertEqual(
+            response.status_code, 400, "a provider was created on a runtime SQLite instance"
+        )
         self.assertEqual(response.json(), {"code": "requires_postgresql"})
         self.assertEqual(OIDCProvider.objects.count(), 0)
 

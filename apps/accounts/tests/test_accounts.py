@@ -51,14 +51,20 @@ class InitializeSuperuserTests(TestCase):
             slug="kc", display_name="KC", issuer="https://idp.example/realms/x", client_id="c"
         )
         self.assertFalse(User.objects.filter(user_level__gte=10).exists())
-        self.assertTrue(self.client.get(self.url).json()["superuser_exists"])
+        self.assertTrue(
+            self.client.get(self.url).json()["superuser_exists"],
+            "GET still reports the bootstrap as open while an OIDCProvider row exists",
+        )
         response = self.client.post(
             self.url,
             data='{"username": "intruder", "password": "pw12345678"}',
             content_type="application/json",
         )
         self.assertTrue(response.json()["superuser_exists"])
-        self.assertFalse(User.objects.filter(username="intruder").exists(), "POST created a user")
+        self.assertFalse(
+            User.objects.filter(username="intruder").exists(),
+            "POST created a user although an OIDCProvider row exists",
+        )
 
     def test_returns_false_when_no_users_exist(self):
         """Empty database should return false"""

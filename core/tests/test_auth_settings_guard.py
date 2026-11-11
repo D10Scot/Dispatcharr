@@ -123,9 +123,11 @@ class AuthSettingsDjangoAdminTests(TestCase):
             {"key": AUTH_SETTINGS_KEY, "name": "Authentication Settings", "value": '{"password_login_enabled": false}'},
         )
         self.assertIn(response.status_code, (302, 403, 200))
-        self.assertEqual(self._row_state(), before)
         self.row.refresh_from_db()
-        self.assertEqual(self.row.value, ORIGINAL)
+        self.assertEqual(
+            self.row.value, ORIGINAL, "the auth_settings row was changed through Django admin"
+        )
+        self.assertEqual(self._row_state(), before)
 
     def test_change_view_is_view_only(self):
         response = self.client.get(self.change_url)
