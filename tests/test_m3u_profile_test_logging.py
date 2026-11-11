@@ -17,7 +17,6 @@ from apps.accounts.models import User
 from apps.proxy import next_source
 from apps.proxy.tests.test_profile_pattern_logging import NoPatternInLogs, capture
 from dispatcharr import consumers
-from dispatcharr.consumers import MyWebSocketConsumer
 from tests.test_websocket_consumer_filter import _user
 
 _real_sub = regex.sub
@@ -25,7 +24,7 @@ _real_sub = regex.sub
 
 class ConsumerPreviewPatternLoggingTests(NoPatternInLogs, SimpleTestCase):
     def test_preview_error_logs_type_only(self):
-        consumer = MyWebSocketConsumer()
+        consumer = consumers.MyWebSocketConsumer()
         consumer.scope = {"user": _user(user_level=User.UserLevel.ADMIN)}
         consumer.send = AsyncMock()
         url = "http://prov.example.com/live/olduser/oldpass/1.ts"
@@ -44,7 +43,7 @@ class ConsumerPreviewPatternLoggingTests(NoPatternInLogs, SimpleTestCase):
                 raise err
             return _real_sub(*args, **kwargs)
 
-        with patch("dispatcharr.consumers.regex.sub", side_effect=sub):
+        with patch.object(consumers.regex, "sub", side_effect=sub):
             with capture(consumers.logger, next_source.logger) as logs:
                 async_to_sync(consumer.receive)(json.dumps(payload))
 
