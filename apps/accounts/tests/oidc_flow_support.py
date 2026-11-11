@@ -359,9 +359,9 @@ class FlowTestCase(FlowMixin, TestCase):
 class FlowTransactionTestCase(FlowMixin, TransactionTestCase):
     """Real commits, for the concurrency tests. Threads are joined in ``finally``."""
 
-    def require_postgresql(self):
+    def require_postgresql(self, reason="needs PostgreSQL row and advisory locks"):
         if connection.vendor != "postgresql":
-            self.skipTest("needs PostgreSQL row and advisory locks")
+            self.skipTest(reason)
 
 
 class Worker(threading.Thread):

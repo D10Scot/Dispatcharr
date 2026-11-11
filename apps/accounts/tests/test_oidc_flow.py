@@ -1369,6 +1369,8 @@ class RefreshReevaluationTests(FlowTransactionTestCase):
 
 class HandoffConcurrencyTests(FlowTransactionTestCase):
     def test_concurrent_exchanges_one_wins(self):
+        # SQLite's in-memory test database is not visible from a second thread.
+        self.require_postgresql("needs a database the worker threads can reach")
         provider = self.make_flow_provider()
         client = APIClient()
         response = self.sign_in(client, provider, {"roles": ["staff"]})

@@ -11,6 +11,7 @@ from unittest import mock
 import itertools
 
 import requests
+from django.core.cache import cache
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
@@ -365,6 +366,9 @@ class OutboundPolicyTests(TestCase):
     def test_discovered_token_endpoint_checked_at_callback(self):
         from .oidc_flow_support import FlowOP, query_of
 
+        # The discovery cache is keyed by pk and version, and SQLite reuses a rolled-back
+        # pk, so a document an earlier test cached would answer this one without a fetch.
+        cache.clear()
         op = FlowOP()
         op.start()
         self.addCleanup(op.stop)
@@ -392,6 +396,9 @@ class OutboundPolicyTests(TestCase):
     def test_loopback_needs_env_switch_for_the_flow(self):
         from .oidc_flow_support import FlowOP, query_of
 
+        # The discovery cache is keyed by pk and version, and SQLite reuses a rolled-back
+        # pk, so a document an earlier test cached would answer this one without a fetch.
+        cache.clear()
         op = FlowOP()
         op.start()
         self.addCleanup(op.stop)
