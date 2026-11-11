@@ -612,7 +612,7 @@ builds those patterns from the old and new username and password (`applyXcSimple
 (`next_source.py:71`), from slot fingerprinting on every pooled M3U reserve
 (`apps/m3u/connection_pool.py:83`) and from the profile preview (`dispatcharr/consumers.py:163`).
 `scripts/check_credential_logging.py` misses it because the names are `*_pattern` and because it does not model
-exception text (`:95-98`). **S3b therefore depends on a prerequisite fix PR, P1**: `transform_url` never logs a
+exception text (`:95-98`). **S3b therefore depends on P1, the transform_url pattern-logging fix (issue to be filed by the owner)**: `transform_url` never logs a
 pattern or replacement, says only that the profile's pattern did not match (naming the profile id where the
 caller has one), and logs only the exception type; `_fingerprint_from_profile_stream_url`'s DEBUG line
 (`connection_pool.py:92-97`) logs only the exception type. P1's tests call the real helpers with
@@ -1343,7 +1343,7 @@ closing keyword.
 
 | PR | Needs | Stopping point |
 |---|---|---|
-| P1 | none | `transform_url` and slot fingerprinting log no pattern, replacement or exception text (a pre-existing tune-path defect; § Re-measurement at expiry, Credentials) |
+| P1 (the transform_url pattern-logging fix; issue to be filed by the owner) | none | `transform_url` and slot fingerprinting log no pattern, replacement or exception text (a pre-existing tune-path defect; § Re-measurement at expiry, Credentials) |
 | S1a | none | events carry identity and attribution |
 | S1b | S1a | `stream_stats` posted again |
 | S2 | none | parser, inert |
@@ -1357,7 +1357,7 @@ closing keyword.
 
 Each stopping point passes its smoke check (§ Test strategy). S3b is independent of S4-S8: it can land any time
 after S3, S1b and P1, and a stopping point without it simply keeps every measurement. P1 is a small fix PR on
-its own branch, with its own issue (cited with `Refs`), and is worth landing whether or not S3b follows.
+its own branch; its issue is to be filed by the owner, and this spec cites it only with `Refs`. It is worth landing whether or not S3b follows.
 
 ### S0 — this spec
 
@@ -1366,7 +1366,8 @@ Docs only. It cites a tracking issue with `Refs`, if one is filed.
 ### P1 — `transform_url` logs no credential (prerequisite fix)
 
 A fix for a pre-existing defect on the tune path, found while reviewing S3b (§ Re-measurement at expiry,
-Credentials). Its own issue, its own branch, and a closing keyword for that issue only in P1's own description.
+Credentials). The issue is to be filed by the owner; P1 runs on its own branch, and any closing keyword for that
+issue belongs only in P1's own PR description, never in this spec.
 
 **Changes.** In `apps/proxy/next_source.py`'s `transform_url`: delete the three DEBUG lines that print the
 search, replace and safe-replace patterns; make the no-match WARNING say only that the pattern did not match
