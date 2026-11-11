@@ -1,4 +1,4 @@
-"""Django test runner for the full Dispatcharr backend suite."""
+"""Django test runner for the full Mino backend suite."""
 
 from __future__ import annotations
 

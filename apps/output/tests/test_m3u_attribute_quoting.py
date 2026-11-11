@@ -1,7 +1,7 @@
 """Regression tests for #80: an unescaped double quote in tvg-name/group-title
 broke the #EXTINF line. `apps.output.views._m3u_attr` escapes only `"` (to
 `&quot;`); `&` stays literal on purpose, because common IPTV players and
-Dispatcharr's own importer (apps.m3u.tasks.parse_extinf_line, which never
+Mino's own importer (apps.m3u.tasks.parse_extinf_line, which never
 unescapes) read M3U attribute values literally, so a general HTML escape
 would turn "AT&T" into "AT&amp;T".
 """

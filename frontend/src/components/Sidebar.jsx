@@ -5,7 +5,6 @@ import {
   ArrowLeft,
   ChevronRight,
   Copy,
-  Heart,
   HelpCircle,
   LogOut,
 } from 'lucide-react';
@@ -39,21 +38,6 @@ import NotificationCenter from './NotificationCenter';
 
 const NAV_ICON_SIZE = 19;
 const NAV_LABEL_SIZE = 'sm';
-
-const DonateButton = ({ tooltipPosition = 'top' }) => (
-  <Tooltip label="Support Dispatcharr" position={tooltipPosition}>
-    <ActionIcon
-      component="a"
-      href="https://opencollective.com/dispatcharr/contribute"
-      target="_blank"
-      rel="noopener noreferrer"
-      variant="transparent"
-      color="pink"
-    >
-      <Heart size={20} />
-    </ActionIcon>
-  </Tooltip>
-);
 
 /** Horizontal rule between sidebar sections; key is supplied by the caller. */
 const NavDivider = () => (
@@ -363,10 +347,10 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
           whiteSpace: 'nowrap',
         }}
       >
-        <img width={30} src={logo} alt="Dispatcharr" />
+        <img width={30} src={logo} alt="Mino" />
         {!collapsed && (
           <Text style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', minWidth: 150 }}>
-            Dispatcharr
+            Mino
           </Text>
         )}
       </Group>
@@ -503,7 +487,6 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
                 <HelpCircle size={20} />
               </ActionIcon>
             </Tooltip>
-            <DonateButton />
             {isAuthenticated && <NotificationCenter />}
           </Group>
         </Group>
@@ -511,7 +494,6 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
       {collapsed && (
         <Box style={{ padding: '0 16px 16px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
           {isAuthenticated && <NotificationCenter />}
-          <DonateButton tooltipPosition="right" />
           <Tooltip label="About" position="right">
             <ActionIcon variant="transparent" color="gray" onClick={() => setAboutOpen(true)}>
               <HelpCircle size={20} />
