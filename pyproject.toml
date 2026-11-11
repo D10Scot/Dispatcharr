@@ -1,6 +1,6 @@
 [project]
 name = "dispatcharr"
-description = "Dispatcharr - Stream dispatching and management"
+description = "Mino - Stream dispatching and management"
 readme = "README.md"
 license = "AGPL-3.0-only"
 requires-python = ">=3.13"
