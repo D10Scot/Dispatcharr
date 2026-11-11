@@ -144,6 +144,9 @@ func Init(ctx context.Context, cfg Config, opts ...Option) (*Telemetry, error) {
 		return nil, err
 	}
 
+	// The previous handler is deliberately not restored on a failed Init or in
+	// Shutdown: this one logs only the error's type, which is strictly safer than
+	// the SDK's default, so leaving it installed can only help.
 	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
 		// Only the type leaves, whatever handler is installed: the text of an SDK
 		// export error carries the collector URL, query string included.

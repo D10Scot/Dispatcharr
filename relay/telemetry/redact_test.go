@@ -372,8 +372,39 @@ func TestOtelErrorsLeaveNoURLInTheTextFormat(t *testing.T) {
 	}
 }
 
+// error.type carries a %T the call site computed itself, so it is judged by
+// shape: a type name passes, any other string (a sentinel, a URL, a UUID) drops.
+func TestErrorTypeKeyKeepsTypeNamesAndDropsEverythingElse(t *testing.T) {
+	r := DefaultRules
+	for _, tc := range []struct {
+		s    string
+		want bool
+	}{
+		{"*url.Error", true},
+		{"*errors.errorString", true},
+		{sentinel, false},
+		{"Get http://p/live/u/" + sentinel, false},
+		{chanUUID, false},
+		{"x." + chanUUID, false},
+		{"http://u:p@h/x", false},
+		{"", false},
+	} {
+		_, got, ok := r.classify("error.type", val{k: vStr, s: tc.s}, nil)
+		if ok != tc.want {
+			t.Errorf("classify(error.type, %q) kept=%v, want %v", tc.s, ok, tc.want)
+		}
+		if ok && got.s != tc.s {
+			t.Errorf("classify rewrote %q to %q", tc.s, got.s)
+		}
+	}
+}
+
 // Every mux pattern registered in httpapi is in the closed set, and the set
 // holds nothing else. A new route that is not added to RoutePatterns fails here.
+//
+// Limits: it reads only the string-literal registrations on s.mux in
+// httpapi/server.go. A route registered another way (a variable pattern, another
+// mux, another file) is not seen and must be added to RoutePatterns by hand.
 func TestRoutePatternsEqualTheRegisteredMuxPatterns(t *testing.T) {
 	src, err := os.ReadFile("../httpapi/server.go")
 	if err != nil {
