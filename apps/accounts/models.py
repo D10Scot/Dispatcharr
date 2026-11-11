@@ -12,7 +12,7 @@ class CustomUserManager(UserManager):
 class User(AbstractUser):
     objects = CustomUserManager()
     """
-    Custom user model for Dispatcharr.
+    Custom user model for Mino.
     Inherits from Django's AbstractUser to add additional fields if needed.
     """
 

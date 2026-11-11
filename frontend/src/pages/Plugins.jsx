@@ -539,7 +539,7 @@ export default function PluginsPage() {
       >
         <Stack>
           <PluginSecurityWarning>
-            Plugins run server-side code with full access to your Dispatcharr
+            Plugins run server-side code with full access to your Mino
             instance and its data. Only enable plugins from developers you
             trust. Malicious plugins could read or modify data, call internal
             APIs, or perform unwanted actions. Review the source or trust the

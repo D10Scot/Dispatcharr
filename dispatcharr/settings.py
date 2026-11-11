@@ -6,6 +6,7 @@ from datetime import timedelta
 from urllib.parse import quote_plus
 from django.core.exceptions import ImproperlyConfigured
 
+from dispatcharr.observability.logs import augment_logging
 from dispatcharr.db.process_label import db_application_name, uses_geventpool_database_backend
 
 
@@ -346,8 +347,8 @@ REST_FRAMEWORK = {
 }
 
 SPECTACULAR_SETTINGS = {
-    "TITLE": "Dispatcharr API",
-    "DESCRIPTION": "API documentation for Dispatcharr",
+    "TITLE": "Mino API",
+    "DESCRIPTION": "API documentation for Mino",
     "VERSION": "1.0.0",
     "SERVE_INCLUDE_SCHEMA": False,
 }
@@ -636,6 +637,11 @@ LOGGING = {
         "level": LOG_LEVEL,  # Use user-configured level instead of hardcoded 'INFO'
     },
 }
+
+# Observability (spec D8): adds the inert OpenTelemetry bridge handler to every
+# logger that has `console`, and switches `console` to the JSON formatter when
+# MINO_LOG_FORMAT=json. With the variable unset, console output is unchanged.
+LOGGING = augment_logging(LOGGING)
 
 # Connect script execution safety settings
 # Allowed base directories for custom scripts; real paths must be inside

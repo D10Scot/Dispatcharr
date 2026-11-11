@@ -125,7 +125,7 @@ jobs:
           # already covers. That is the load-bearing half -- a corpus outside
           # `^relay/` would stop triggering this workflow at all, and `Go
           # result` would stay green through its not-required branch.
-          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_stdlib_only\.sh$|scripts/check_go_credential_logging\.sh$|scripts/check_floor_raise\.sh$|scripts/tests/test_check_floor_raise\.sh$|scripts/coverage_relay_go\.|\.github/workflows/go-tests\.yml$)'
+          pattern='^(relay/|\.golangci\.yml$|scripts/check_go_deps\.sh$|scripts/tests/test_check_go_deps\.sh$|scripts/check_go_credential_logging\.sh$|scripts/check_floor_raise\.sh$|scripts/tests/test_check_floor_raise\.sh$|scripts/coverage_relay_go\.|\.github/workflows/go-tests\.yml$)'
           if printf '%s\n' "$changed" | grep -qE "$pattern"; then
             echo "go=true" >> "$GITHUB_OUTPUT"
           else
@@ -248,9 +248,19 @@ jobs:
           path: /tmp/relay-go-coverage
           retention-days: 1
 
-      - name: Assert the module is standard-library only
+      # ADR 0011: the direct requirements equal relay/go.allowed-deps, the
+      # binary links no database/sql and no Redis or Postgres driver, and
+      # go.mod is tidy. Replaced the stdlib-only assertion.
+      - name: Assert the dependency allowlist and the driver ban
         working-directory: .
-        run: scripts/check_go_stdlib_only.sh relay
+        run: scripts/check_go_deps.sh relay
+
+      # The check's own cases, against throwaway modules with no network
+      # (scripts/tests/test_check_go_deps.sh). Here rather than in lint.yml,
+      # beside test_check_floor_raise.sh, because it needs the Go toolchain.
+      - name: Test the dependency check
+        working-directory: .
+        run: bash scripts/tests/test_check_go_deps.sh
 
       # The Go side of the credential-logging rule (lint.yml's
       # credential-logging job is the Python side): every error-typed
@@ -260,6 +270,35 @@ jobs:
       - name: Assert no error reaches a log unredacted
         working-directory: .
         run: scripts/check_go_credential_logging.sh relay
+
+  # ADR 0011: a vulnerability in code the relay calls, the Go standard
+  # library included, fails the run. govulncheck runs from the module cache
+  # at a pinned version that `go run` verifies against the Go checksum
+  # database; Renovate bumps GOVULNCHECK_VERSION (renovate.json's custom
+  # manager). A bare runner is enough: govulncheck reads source and the
+  # module graph, and links nothing it scans.
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    timeout-minutes: 15
+    env:
+      GOVULNCHECK_VERSION: v1.9.0
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: relay/go.mod
+
+      - name: Run govulncheck
+        working-directory: relay
+        run: go run "golang.org/x/vuln/cmd/govulncheck@${GOVULNCHECK_VERSION}" ./...
 
   lint:
     name: golangci-lint
@@ -293,7 +332,7 @@ jobs:
           # actions-lint.yml: a new release adding a linter must not fail an
           # unrelated PR. Keep in sync with the version the PostToolUse hook
           # checks for (.claude/hooks/run-go-checks.sh).
-          version: v2.13.2
+          version: v2.14.0
           working-directory: relay
 
       - name: Run golangci-lint (GOOS=linux)
@@ -301,7 +340,7 @@ jobs:
         env:
           GOOS: linux
         with:
-          version: v2.13.2
+          version: v2.14.0
           working-directory: relay
 
       - name: Run golangci-lint (GOOS=darwin)
@@ -309,7 +348,7 @@ jobs:
         env:
           GOOS: darwin
         with:
-          version: v2.13.2
+          version: v2.14.0
           working-directory: relay
 
   # Gate 2's Go counterpart (spec § Stage 2c, the 2c-9 row; § Testing). A bare
@@ -388,7 +427,7 @@ jobs:
   go-result:
     name: Go result
     runs-on: ubuntu-latest
-    needs: [changes, build, lint, coverage]
+    needs: [changes, build, lint, coverage, govulncheck]
     if: always()
     timeout-minutes: 5
     steps:
@@ -397,10 +436,11 @@ jobs:
           CHANGES_RESULT: ${{ needs.changes.result }}
           BUILD_RESULT: ${{ needs.build.result }}
           LINT_RESULT: ${{ needs.lint.result }}
+          GOVULNCHECK_RESULT: ${{ needs.govulncheck.result }}
           COVERAGE_RESULT: ${{ needs.coverage.result }}
           GO_REQUIRED: ${{ needs.changes.outputs.go }}
         run: |
-          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT lint=$LINT_RESULT coverage=$COVERAGE_RESULT go-required=$GO_REQUIRED"
+          echo "changes=$CHANGES_RESULT build=$BUILD_RESULT lint=$LINT_RESULT coverage=$COVERAGE_RESULT govulncheck=$GOVULNCHECK_RESULT go-required=$GO_REQUIRED"
           if [ "$CHANGES_RESULT" != "success" ]; then
             echo "Change detection itself failed — cannot prove the Go jobs were unnecessary."
             exit 1
@@ -412,7 +452,7 @@ jobs:
           # `skipped` here means a gated job never ran on a run that needed
           # it, so only an exact `success` may report green.
           for pair in "build:$BUILD_RESULT" "lint:$LINT_RESULT" \
-                      "coverage:$COVERAGE_RESULT"; do
+                      "coverage:$COVERAGE_RESULT" "govulncheck:$GOVULNCHECK_RESULT"; do
             if [ "${pair#*:}" != "success" ]; then
               echo "The Go jobs were required and ${pair%%:*} did not succeed."
               exit 1

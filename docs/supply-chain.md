@@ -66,6 +66,16 @@ word for it.
   docker run --rm --platform linux/amd64 -v "$PWD:/work" -w /work \
     ghcr.io/astral-sh/uv:0.12.5-python3.13-trixie-slim uv lock
   ```
+- **The relay's Go modules are an allowlist, not a lockfile.** The Go relay
+  takes no third-party code except what `relay/go.allowed-deps` names, one
+  direct module per line (ADR 0011; the file is empty until the
+  OpenTelemetry SDK arrives). `scripts/check_go_deps.sh relay`, run by
+  `go-tests.yml`, fails when `go.mod`'s direct requirements differ from that
+  file in either direction, when the shipped binary links `database/sql` or a
+  Redis or Postgres driver (`database/sql/driver`, an interface package, is
+  exempt), or when `go.mod`/`go.sum` are untidy. Adding a line to the
+  allowlist is adding a dependency and is reviewed as one. Renovate holds Go
+  module updates for seven days and never automerges them.
 
 ## Vulnerability scanning gate
 
@@ -78,6 +88,14 @@ workflow file's comments for the current line):
   relevant push/PR.
 - **Trivy** and **Grype** scan the actually-published `:latest`/`:base`
   images against independent CVE databases.
+- **The relay's Go modules** are scanned before merge. `govulncheck`
+  (`go-tests.yml`, in `Go result`'s `needs`) fails on a vulnerability in code
+  the relay actually calls, the Go standard library included, at a version
+  pinned in the job's `GOVULNCHECK_VERSION` and kept fresh by Renovate.
+  OSV-Scanner reads `relay/go.mod` with the other lockfiles, and the
+  `go-modules` job in `vuln-scan.yml` runs Trivy and Grype over `relay/`
+  from source on every PR that touches `relay/go.mod` or `relay/go.sum`; the
+  image jobs see the same modules only after publication.
 
 All three scanners run as digest-pinned containers, not marketplace actions.
 Image-scan jobs hold **no registry credentials of any kind** — they pull
