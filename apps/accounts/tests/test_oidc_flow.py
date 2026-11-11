@@ -7,6 +7,7 @@ advertise PKCE or RFC 9207 unless a test turns the latter on.
 """
 
 import base64
+import contextlib
 import datetime
 import hashlib
 import json
@@ -1989,6 +1990,30 @@ def explode(*args, **kwargs):
     raise KeyError(UNEXPECTED_TEXT)
 
 
+class _Records(logging.Handler):
+    def __init__(self):
+        super().__init__(level=logging.DEBUG)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+@contextlib.contextmanager
+def flow_log_records():
+    """Every record the flow module logs. Unlike ``assertLogs`` an empty capture is not a
+    failure on exit, so the test's own assertions (the status first) speak for a break."""
+    target = logging.getLogger(flow.__name__)
+    handler, level = _Records(), target.level
+    target.addHandler(handler)
+    target.setLevel(logging.DEBUG)
+    try:
+        yield handler.records
+    finally:
+        target.removeHandler(handler)
+        target.setLevel(level)
+
+
 class LastResortTests(FlowTestCase):
     """Each entry point answers its fixed refusal for an unenumerated exception, and says so
     at ERROR with the class and the innermost frame only."""
@@ -1999,24 +2024,24 @@ class LastResortTests(FlowTestCase):
         super().setUp()
         self.provider = self.make_flow_provider()
 
-    def assertLoggedLoudly(self, logs, captured, stage):
-        lines = [r.getMessage() for r in logs.records if r.levelno == logging.ERROR]
-        self.assertEqual(len(lines), 1, logs.output)
+    def assertLoggedLoudly(self, records, captured, stage):
+        lines = [r.getMessage() for r in records if r.levelno == logging.ERROR]
+        self.assertEqual(len(lines), 1, [r.getMessage() for r in records])
         line = lines[0]
         self.assertIn(flow.UNEXPECTED_MARKER, line)
         self.assertIn(f"OIDC {stage} ", line)
         self.assertIn("KeyError", line)
         self.assertIn(self.FRAME, line, f"the innermost frame is not named: {line}")
-        for record in logs.records:
+        for record in records:
             self.assertIsNone(record.exc_info, "a traceback was logged")
-        everything = " ".join(logs.output) + " ".join(text for _, text in captured)
+        everything = " ".join(r.getMessage() for r in records) + " ".join(text for _, text in captured)
         self.assertNotIn(UNEXPECTED_TEXT, everything, "the exception's message reached a log")
 
     def test_callback(self):
         client = APIClient(raise_request_exception=False)
         url = self.start(client, self.provider)
         params = self.op.authorize(url, {"roles": ["staff"]})
-        with self.assertLogs("apps.accounts.oidc.flow", "DEBUG") as logs, capture_all_logs() as captured:
+        with flow_log_records() as logs, capture_all_logs() as captured:
             with mock.patch.object(flow.validate, "validate_id_token", side_effect=explode):
                 response = self.callback(client, self.provider, params)
         self.assertEqual(
@@ -2029,7 +2054,7 @@ class LastResortTests(FlowTestCase):
 
     def test_start(self):
         client = APIClient(raise_request_exception=False)
-        with self.assertLogs("apps.accounts.oidc.flow", "DEBUG") as logs, capture_all_logs() as captured:
+        with flow_log_records() as logs, capture_all_logs() as captured:
             with mock.patch.object(flow, "safe_next", side_effect=explode):
                 response = client.get(f"/api/accounts/oidc/{self.provider.slug}/start/")
         self.assertEqual(
@@ -2041,7 +2066,7 @@ class LastResortTests(FlowTestCase):
     def test_link_start(self):
         client, _ = admin_client()
         client.raise_request_exception = False
-        with self.assertLogs("apps.accounts.oidc.flow", "DEBUG") as logs, capture_all_logs() as captured:
+        with flow_log_records() as logs, capture_all_logs() as captured:
             with mock.patch.object(flow, "safe_next", side_effect=explode):
                 response = client.post(
                     f"/api/accounts/oidc/{self.provider.slug}/link/start/", {"next": "/users"}, format="json"
