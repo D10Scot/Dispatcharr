@@ -232,6 +232,11 @@ NETWORK_ACCESS_KEY = "network_access"
 SYSTEM_SETTINGS_KEY = "system_settings"
 EPG_SETTINGS_KEY = "epg_settings"
 USER_LIMITS_SETTINGS_KEY = "user_limit_settings"
+# Ninth group (SSO spec section 5.1): the password-login toggle and ``public_base_url``.
+# Neither the generic settings endpoint nor Django admin may write it, and every security
+# decision reads it fresh from Postgres through ``CoreSettings.get_auth_settings()``.
+AUTH_SETTINGS_KEY = "auth_settings"
+AUTH_SETTINGS_DEFAULTS = {"public_base_url": "", "password_login_enabled": True}
 
 # Redis cache for CoreSettings JSON groups. Primary invalidation is post_save /
 # post_delete; TTL is a safety net if a writer bypasses signals.
@@ -433,6 +438,22 @@ class CoreSettings(models.Model):
 
         cls._cache_set(cache_key, value, timeout=_GROUP_CACHE_TTL_SECONDS)
         return copy.deepcopy(value)
+
+    @classmethod
+    def get_auth_settings(cls):
+        """The ``auth_settings`` group, read fresh from Postgres.
+
+        Deliberately not ``_get_group``: the Redis group cache's version check and fill are
+        not one atomic step and its invalidation runs in ``post_save`` rather than
+        ``on_commit``, so a racing reader can repopulate a stale value for up to five
+        minutes (SSO spec section 5.1). Missing keys fall back to the defaults.
+        """
+        import copy
+
+        value = cls._load_group_value(AUTH_SETTINGS_KEY, AUTH_SETTINGS_DEFAULTS)
+        merged = copy.deepcopy(AUTH_SETTINGS_DEFAULTS)
+        merged.update(value)
+        return merged
 
     @classmethod
     def _update_group(cls, key, name, updates):
@@ -836,6 +857,7 @@ class SystemEvent(models.Model):
         ('epg_blocked', 'EPG Download Blocked'),
         ('vod_start', 'VOD Started'),
         ('vod_stop', 'VOD Stopped'),
+        ('auth_config_changed', 'Authentication Configuration Changed'),
     ]
 
     event_type = models.CharField(max_length=50, choices=EVENT_TYPES, db_index=True)

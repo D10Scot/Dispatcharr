@@ -256,6 +256,11 @@ POSTGRES_SSL_CA_CERT = os.environ.get("POSTGRES_SSL_CA_CERT", "")
 POSTGRES_SSL_CERT = os.environ.get("POSTGRES_SSL_CERT", "")
 POSTGRES_SSL_KEY = os.environ.get("POSTGRES_SSL_KEY", "")
 
+# Deployment-level switch (SSO spec 3.5): allows http OIDC issuers and loopback addresses for
+# the e2e stack and local development. Read once here; it is not a database setting, so it
+# cannot be enabled from the web.
+OIDC_ALLOW_HTTP = os.environ.get("MINO_OIDC_ALLOW_HTTP") == "1"
+
 # True only when the LIVE database is SQLite (DB_ENGINE=sqlite). Writes that depend on
 # the PostgreSQL advisory-lock floor (apps/accounts/admin_floor.py) are refused with
 # 400 requires_postgresql when it is set. settings_test.py resets it to False.
