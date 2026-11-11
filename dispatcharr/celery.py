@@ -2,7 +2,16 @@
 import os
 from celery import Celery
 import logging
-from celery.signals import task_postrun, task_prerun, worker_process_init, worker_ready
+from celery.signals import (
+    beat_init,
+    task_postrun,
+    task_prerun,
+    worker_init,
+    worker_process_init,
+    worker_process_shutdown,
+    worker_ready,
+    worker_shutdown,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +56,11 @@ app.autodiscover_tasks()
 # never opens DB connections that autoscale children would inherit via fork().
 @worker_process_init.connect(weak=False)
 def init_worker_process(**_kwargs):
+    # OpenTelemetry first, in each prefork child (observability spec D10).
+    from dispatcharr.observability.bootstrap import init, program_from_supervisor
+
+    init("mino-worker", program_from_supervisor(("celery-default",), "celery-default"))
+
     from django.db import connections
 
     # Standard Celery + Django guidance for prefork pools: discard any
@@ -61,6 +75,43 @@ def init_worker_process(**_kwargs):
         PluginManager.get().discover_plugins(sync_db=False)
     except Exception:
         logger.exception("plugin discovery on worker_process_init failed")
+
+
+def _is_thread_pool(pool_cls):
+    """Whether Celery's configured pool is the thread pool (unresolved name or class)."""
+    if isinstance(pool_cls, str):
+        return pool_cls == "threads" or pool_cls.endswith("concurrency.thread:TaskPool")
+    return getattr(pool_cls, "__module__", "") == "celery.concurrency.thread"
+
+
+# worker_process_init is sent by the prefork and solo pools only; the thread
+# pool (the `dvr` worker) does not fork and sends nothing, so its OpenTelemetry
+# init runs here. worker_init fires from WorkController.setup_instance while
+# pool_cls still holds the configured name. See #632: the same gap means the
+# dvr worker never runs plugin discovery; that is not fixed here.
+@worker_init.connect(weak=False)
+def init_worker_threads_telemetry(sender=None, **_kwargs):
+    if not _is_thread_pool(getattr(sender, "pool_cls", None)):
+        return
+    from dispatcharr.observability.bootstrap import init, program_from_supervisor
+
+    init("mino-worker", program_from_supervisor(("celery-dvr",), "celery-dvr"))
+
+
+# Beat does not fork.
+@beat_init.connect(weak=False)
+def init_beat_telemetry(**_kwargs):
+    from dispatcharr.observability.bootstrap import init
+
+    init("mino-worker", "celery-beat")
+
+
+@worker_process_shutdown.connect(weak=False)
+@worker_shutdown.connect(weak=False)
+def flush_telemetry(**_kwargs):
+    from dispatcharr.observability.bootstrap import force_flush
+
+    force_flush(2000)
 
 
 # Use environment variable for log level with fallback to INFO
