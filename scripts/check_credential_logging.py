@@ -79,6 +79,21 @@ unrelated pull requests. Three gaps are known and were found by reading:
 Closing them means working off the resulting backlog in one pass. Until then,
 read a diff for these three shapes yourself; the check will not do it for you.
 
+TELEMETRY CALLS (observability spec D9). The same one-argument-at-a-time rule
+applies to a span, tracer, metric-instrument or meter call, because a span
+attribute, an event or an instrument's attributes is an exporter sink just as
+a log line is:
+
+    span.set_attribute("url", stream_url)                  # reported
+    span.set_attribute("url", redact_text(stream_url))     # clear
+
+A call is a telemetry call when its method is one of TELEMETRY_METHODS and its
+receiver's name ends in `span`, `tracer`, `counter`, `histogram`, `gauge` or
+`meter` (any case: `current_span`, `self._task_histogram`). This is a lint at
+the call site and nothing more. The exporter boundary
+(dispatcharr/observability/redaction.py) does not depend on it, and it keeps the
+blindness to `str(exception)` described below.
+
 KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
 
   * It reads one call, never the statements around it. A URL redacted — or not
@@ -113,7 +128,29 @@ CREDENTIAL_RE = re.compile(
     r"|api_key|\btoken\b|_url\b|url\}"
 )
 
-REDACT_FUNCTIONS = frozenset({"redact_url", "redact_headers"})
+# redact_text and redact_exception are dispatcharr/observability/redaction.py's:
+# the first scrubs a free-text body (best effort), the second reduces an
+# exception to its qualified type name.
+REDACT_FUNCTIONS = frozenset(
+    {"redact_url", "redact_headers", "redact_text", "redact_exception"}
+)
+
+TELEMETRY_METHODS = frozenset(
+    {
+        "set_attribute",
+        "set_attributes",
+        "add_event",
+        "record_exception",
+        "start_as_current_span",
+        "start_span",
+        "set_status",
+        "add",
+        "record",
+        "set",
+    }
+)
+
+TELEMETRY_RECEIVER_SUFFIXES = ("span", "tracer", "counter", "histogram", "gauge", "meter")
 
 IGNORE_MARKER = "credential-logging: ignore"
 
@@ -148,6 +185,15 @@ def _is_logging_call(node):
     # `logger`, `_logger`, `self.logger` — the grep this replaced matched any
     # identifier ending in "logger", and narrowing that would drop coverage.
     return owner is not None and owner.endswith("logger")
+
+
+def _is_telemetry_call(node):
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    if node.func.attr not in TELEMETRY_METHODS:
+        return False
+    owner = _logger_owner(node.func)
+    return owner is not None and owner.lower().endswith(TELEMETRY_RECEIVER_SUFFIXES)
 
 
 def _is_redact_call(node):
@@ -245,7 +291,7 @@ def check_file(path, out=sys.stdout, err=sys.stderr):
     findings = []
 
     for node in ast.walk(tree):
-        if not _is_logging_call(node):
+        if not (_is_logging_call(node) or _is_telemetry_call(node)):
             continue
 
         if not any(_unredacted_arguments(node)):
