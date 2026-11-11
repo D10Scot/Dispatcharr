@@ -340,3 +340,69 @@ class CredentialLoggingGuardTests(SimpleTestCase):
         ]
         result = self.run_guard(*targets)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+OIDC_CREDENTIAL_NAMES = (
+    "client_secret",
+    "client_assertion",
+    "client_key",
+    "id_token",
+    "access_token",
+    "refresh_token",
+    "code_verifier",
+    "nonce",
+)
+
+
+class OidcCredentialNamesTests(SimpleTestCase):
+    """SSO spec 3.3, T16: CREDENTIAL_RE knows the OIDC flow's secrets, one case per name."""
+
+    setUp = CredentialLoggingGuardTests.setUp
+    write = CredentialLoggingGuardTests.write
+    run_guard = CredentialLoggingGuardTests.run_guard
+
+    def assertReported(self, name, source):
+        path = self.write(f"{name}.py", source)
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 1, f"{name}: {result.stdout + result.stderr}")
+        self.assertIn(name, result.stdout)
+
+    def test_client_secret(self):
+        self.assertReported("client_secret", 'logger.info("secret %s", client_secret)\n')
+
+    def test_client_assertion(self):
+        self.assertReported("client_assertion", 'logger.debug("assertion %s", client_assertion)\n')
+
+    def test_client_key(self):
+        self.assertReported("client_key", 'logger.warning(f"key {provider.client_key_encrypted}")\n')
+
+    def test_id_token(self):
+        self.assertReported("id_token", 'logger.info("token %s", id_token)\n')
+
+    def test_access_token(self):
+        self.assertReported("access_token", 'logger.error("got %s", body["access_token"])\n')
+
+    def test_refresh_token(self):
+        self.assertReported("refresh_token", 'logger.debug("refresh %s", refresh_token)\n')
+
+    def test_code_verifier(self):
+        self.assertReported("code_verifier", 'logger.info("pkce %s", code_verifier)\n')
+
+    def test_nonce(self):
+        self.assertReported("nonce", 'logger.info("nonce %s", nonce)\n')
+
+    def test_nonce_is_matched_as_a_word(self):
+        path = self.write("nonces.py", 'logger.info("count %s", nonces_seen)\n')
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_every_name_is_covered(self):
+        tested = {n[len("test_"):] for n in dir(self) if n.startswith("test_")}
+        self.assertLessEqual(set(OIDC_CREDENTIAL_NAMES), tested)
+
+    def test_the_oidc_package_is_clean(self):
+        repo = GUARD.resolve().parent.parent
+        targets = sorted((repo / "apps" / "accounts" / "oidc").glob("*.py"))
+        targets.append(repo / "apps" / "accounts" / "api_views.py")
+        result = self.run_guard(*targets)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

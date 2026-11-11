@@ -197,6 +197,48 @@ class RedactUrlExamples(SimpleTestCase):
         self.assertIs(redact_url(url), url)
 
 
+class RedactUrlOidcKeysTests(SimpleTestCase):
+    """SSO spec 3.3, T16: one case per OIDC query key added to SENSITIVE_QUERY_KEYS."""
+
+    def assertMasked(self, key):
+        value = "SENTINEL-" + key.upper().replace("_", "-")
+        out = redact_url(f"https://mino.example.com/api/accounts/oidc/p1/callback/?{key}={value}&iss=x")
+        self.assertNotIn(value, out)
+        self.assertIn(f"{key}={REDACTED}", out)
+        self.assertIn("iss=x", out)
+
+    def test_code(self):
+        self.assertMasked("code")
+
+    def test_state(self):
+        self.assertMasked("state")
+
+    def test_session_state(self):
+        self.assertMasked("session_state")
+
+    def test_id_token(self):
+        self.assertMasked("id_token")
+
+    def test_access_token(self):
+        self.assertMasked("access_token")
+
+    def test_refresh_token(self):
+        self.assertMasked("refresh_token")
+
+    def test_client_secret(self):
+        self.assertMasked("client_secret")
+
+    def test_client_assertion(self):
+        self.assertMasked("client_assertion")
+
+    def test_code_verifier(self):
+        self.assertMasked("code_verifier")
+
+    def test_fragment_handoff_code_masked(self):
+        out = redact_url("https://mino.example.com/login/sso#code=SENTINEL-HANDOFF")
+        self.assertNotIn("SENTINEL-HANDOFF", out)
+
+
 class RedactHeadersTests(SimpleTestCase):
     def test_authorization_and_cookie_are_masked(self):
         out = redact_headers(

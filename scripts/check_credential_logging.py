@@ -111,6 +111,10 @@ LOG_LEVELS = frozenset({"info", "debug", "warning", "error", "exception"})
 CREDENTIAL_RE = re.compile(
     r"request\.headers|request\.META|get_full_path|\bpassword\b"
     r"|api_key|\btoken\b|_url\b|url\}"
+    # OIDC (SSO spec 3.3): the client credential and key, every token, the PKCE verifier
+    # and the nonce. \bnonce\b, not nonce: "nonces" and "nonce_hash" name no value.
+    r"|client_secret|client_assertion|client_key|id_token|access_token|refresh_token"
+    r"|code_verifier|\bnonce\b"
 )
 
 REDACT_FUNCTIONS = frozenset({"redact_url", "redact_headers"})
