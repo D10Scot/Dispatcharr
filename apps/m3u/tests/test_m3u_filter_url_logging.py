@@ -40,7 +40,7 @@ OPAQUE_URL = "https://prov.example.com/channel/opaquetoken123/index.m3u8"
 SERVER_URL = "http://prov.example.com/get.php?username=srvuser&password=srvpass&type=m3u"
 SECRETS = (
     "olduser", "oldpass", "opaquetoken123", "srvuser", "srvpass",
-    "catchuptoken", "logotoken", "vlctoken", "idtoken", "typesecret", "memberfile",
+    "catchuptoken", "logotoken", "vlctoken", "idtoken", "nametoken", "typesecret", "memberfile",
 )
 
 
@@ -572,7 +572,7 @@ class RefreshAutoSyncResultLoggingTests(TransactionTestCase):
         }
         with mock.patch("apps.m3u.tasks.collect_xc_streams", return_value=[xc_stream]):
             with capture(m3u_tasks.logger) as logs:
-                m3u_tasks._refresh_single_m3u_account_impl(account.id)
+                returned = m3u_tasks._refresh_single_m3u_account_impl(account.id)
 
         line = [r.getMessage() for r in logs.records if "Auto channel sync result" in r.getMessage()]
         self.assertEqual(
@@ -581,7 +581,93 @@ class RefreshAutoSyncResultLoggingTests(TransactionTestCase):
         )
         assert_no_secret(self, logs.records)
         # Returned, persisted and WebSocket data are unchanged.
+        self.assertEqual(returned, "Dispatched jobs complete.")
         account.refresh_from_db()
         self.assertEqual(account.status, M3UAccount.Status.ERROR)
         self.assertIn(f"Auto-sync error: {secret_error}", account.last_message)
-        self.assertEqual(mock_ws.call_args.kwargs.get("status"), "error")
+        ws = mock_ws.call_args.kwargs
+        self.assertEqual(ws.get("status"), "error")
+        self.assertEqual(ws.get("failed_stream_details"), mock_sync.return_value["failed_stream_details"])
+        self.assertEqual(ws.get("message"), account.last_message)
+        self.assertEqual(ws.get("error"), account.last_message)
+        self.assertEqual(ws.get("channels_created"), 2)
+
+
+class LoggableNameTests(SimpleTestCase):
+    def test_ordinary_names_pass_through(self):
+        for name in ("BBC News", "A&E / HD", "24/7 News", "CNN (US)", "a/b", "Sport 1 - HD"):
+            with self.subTest(name=name):
+                self.assertEqual(m3u_tasks._loggable_name(name), name)
+
+    def test_url_shapes_are_withheld(self):
+        for name in (
+            "http://prov.example.com/x",          # contains ://
+            "channel?token=nametoken",             # ? followed later by =
+            "live/olduser/oldpass",                # whitespace-free run, two slashes
+            "x live/nametoken/1.ts y",
+        ):
+            with self.subTest(name=name):
+                self.assertEqual(m3u_tasks._loggable_name(name), "<withheld: URL-shaped>")
+
+    def test_non_string_names_are_stringified(self):
+        self.assertEqual(m3u_tasks._loggable_name(12345), "12345")
+
+
+class GeneratedNameLoggingTests(TestCase):
+    """The fallback name for an empty provider name embeds the raw stream_id."""
+
+    def run_batch(self, records):
+        account = SimpleNamespace(account_type="STD", filters=mock.MagicMock())
+        manager = mock.MagicMock()
+        manager.select_related.return_value.get.return_value = account
+        trace_lines = []
+        stream_model = mock.MagicMock()
+        stream_model._meta.get_field.return_value.max_length = 255
+        stream_model.generate_hash_key.return_value = "h"
+        stream_model.objects.filter.return_value.select_related.return_value.only.return_value = []
+        with (
+            mock.patch.object(django.db.connections, "close_all"),
+            mock.patch.object(m3u_tasks.M3UAccount, "objects", manager),
+            mock.patch.object(m3u_tasks, "Stream", stream_model),
+            mock.patch.object(
+                m3u_tasks.logger, "trace",
+                side_effect=lambda msg, *a, **k: trace_lines.append(msg % a),
+            ),
+        ):
+            with capture(m3u_tasks.logger) as logs:
+                m3u_tasks.process_m3u_batch_direct(
+                    1, records, {"Live": 1}, [],
+                    compiled_filters=compiled("name", "acct|News", False),
+                )
+        return logs, trace_lines
+
+    def test_generated_name_reaches_no_per_stream_log_but_ordinary_names_do(self):
+        generated = "acct - http://prov.example.com/live/olduser/oldpass/nametoken"
+        records = [
+            {"name": generated, "url": URL, "attributes": {"group-title": "Live"}},
+            {"name": "BBC News", "url": URL, "attributes": {"group-title": "Live"}},
+            {"name": "nametoken/a/b" + "x" * 300, "url": URL, "attributes": {"group-title": "Live"}},
+            {"name": "acct - nametoken?a=b", "url": "u" * 5000, "attributes": {"group-title": "Live"}},
+        ]
+        logs, trace_lines = self.run_batch(records)
+        everything = [record_text(r) for r in logs.records] + trace_lines
+        for text in everything:
+            for secret in SECRETS:
+                self.assertNotIn(secret, text, f"leaked {secret!r}: {text}")
+        self.assertIn("Processing stream: BBC News in group Live", trace_lines)
+        self.assertIn("Processing stream: <withheld: URL-shaped> in group Live", trace_lines)
+        matches = [r.getMessage() for r in logs.records if "matches filter pattern" in r.getMessage()]
+        self.assertIn("Stream BBC News (group Live) matches filter pattern acct|News", matches)
+        self.assertIn("Stream <withheld: URL-shaped> (group Live) matches filter pattern acct|News", matches)
+        self.assertTrue(any("URL too long" in r.getMessage() for r in logs.records))
+        self.assertTrue(any("name too long" in r.getMessage() for r in logs.records))
+
+    def test_failure_error_withholds_the_generated_name(self):
+        # a URL-shaped str name that makes processing fail (no attributes key)
+        records = [{"name": "acct - http://prov.example.com/x/nametoken", "url": URL}]
+        logs, _ = self.run_batch(records)
+        errors = [r.getMessage() for r in logs.records if r.levelname == "ERROR"]
+        self.assertTrue(errors)
+        for text in errors:
+            self.assertNotIn("nametoken", text)
+        self.assertIn("Failed to process stream <withheld: URL-shaped>: KeyError", errors[0])

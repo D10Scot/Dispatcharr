@@ -58,6 +58,22 @@ def _safe_content_type(value):
     return token if token in _LOGGABLE_MEDIA_TYPES else "other"
 
 
+_URL_SHAPED_RE = re.compile(r"://|\?.*=|\S*/\S*/\S*")
+
+
+def _loggable_name(value):
+    """A stream or group name for a per-stream log line; URL-shaped text is withheld.
+
+    A name is provider text, and an application-generated fallback name embeds
+    the raw ``stream_id``. Withheld when the text contains ``://``, or a ``?``
+    followed later by ``=``, or a whitespace-free run with two or more ``/``
+    (so ``A&E / HD`` and ``24/7 News`` pass). Logging only: the name itself is
+    never changed.
+    """
+    text = str(value)
+    return "<withheld: URL-shaped>" if _URL_SHAPED_RE.search(text) else text
+
+
 def _safe_id(value):
     """A provider identifier for a log line: short digits, else a placeholder.
 
@@ -1140,7 +1156,7 @@ def _stream_passes_m3u_filters(name, url, group_title, compiled_filters):
         if pattern.search(target or ""):
             logger.debug(
                 "Stream %s (group %s) matches filter pattern %s",
-                name, group_title, filter_obj.regex_pattern,
+                _loggable_name(name), _loggable_name(group_title), filter_obj.regex_pattern,
             )
             return not filter_obj.exclude
     return True
@@ -1422,12 +1438,12 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
 
             # Validate URL length - maximum of 4096 characters
             if url and len(url) > 4096:
-                logger.warning(f"Skipping stream '{name}': URL too long ({len(url)} characters, max 4096)")
+                logger.warning(f"Skipping stream '{_loggable_name(name)}': URL too long ({len(url)} characters, max 4096)")
                 continue
 
             # Truncate name if it exceeds the model field limit
             if name and len(name) > name_max_length:
-                logger.warning(f"Stream name too long ({len(name)} > {name_max_length}), truncating: {name[:80]}...")
+                logger.warning(f"Stream name too long ({len(name)} > {name_max_length}), truncating: {_loggable_name(name[:80])}...")
                 name = name[:name_max_length]
 
             tvg_id, tvg_logo = get_case_insensitive_attr(
@@ -1436,7 +1452,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-            logger.trace("Processing stream: %s in group %s", name, group_title)
+            logger.trace("Processing stream: %s in group %s", _loggable_name(name), _loggable_name(group_title))
 
             if compiled_filters and not _stream_passes_m3u_filters(
                 name, url, group_title, compiled_filters,
@@ -1447,7 +1463,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             # Filter out disabled groups for this account
             if group_title not in groups:
                 logger.debug(
-                    f"Skipping stream in disabled or excluded group: {group_title}"
+                    f"Skipping stream in disabled or excluded group: {_loggable_name(group_title)}"
                 )
                 continue
 
@@ -1520,7 +1536,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             # login, and an exception may quote any of them.
             logger.error(
                 "Failed to process stream %s: %s (record keys: %s)",
-                name,
+                _loggable_name(name),
                 type(e).__name__,
                 sorted(stream_info) if isinstance(stream_info, dict) else type(stream_info).__name__,
             )
