@@ -23,6 +23,7 @@ from .oidc_flow_support import (
     Worker,
     join_all,
     make_admin,
+    record_resolve_errors,
     sso_error,
 )
 from .oidc_support import admin_client
@@ -220,7 +221,8 @@ class LastAdminTests(FlowTransactionTestCase):
         c1 = Worker(prepared(["admins"]), "c1")
         c2 = Worker(prepared(["staff"]), "c2")
         with mock.patch.object(provisioning, "lock_user", side_effect=lock_user_wrapper), \
-                mock.patch.object(provisioning, "admin_floor_lock", side_effect=floor_wrapper):
+                mock.patch.object(provisioning, "admin_floor_lock", side_effect=floor_wrapper), \
+                record_resolve_errors() as resolve_errors:
             try:
                 c1.start()
                 self.assertTrue(c1_held.wait(WAIT_TIMEOUT), "callback 1 never locked the identity")
@@ -233,6 +235,8 @@ class LastAdminTests(FlowTransactionTestCase):
                 join_all([c1, c2], [e1, e2])
         for worker in (c1, c2):
             text = repr(worker.error) if worker.error else ""
+            # A deadlock inside resolve is answered as provisioning_failed, not raised.
+            text += " ".join(resolve_errors.get(worker.name, []))
             self.assertNotIn("deadlock detected", text.lower(), f"{worker.name}: {text}")
             self.assertIsNone(worker.error, f"{worker.name} raised {worker.error!r}")
         self.assertTrue(reached, "callback 2 never returned from admin_floor_lock")

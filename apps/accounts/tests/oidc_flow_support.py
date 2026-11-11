@@ -412,6 +412,33 @@ def join_all(workers, events=()):
             worker.join(JOIN_TIMEOUT)
 
 
+@contextmanager
+def record_resolve_errors():
+    """Record the text of every DatabaseError ``provisioning.resolve`` raises, by thread name.
+
+    The callback answers ``provisioning_failed`` for one rather than letting it escape, so a
+    test that must tell PostgreSQL's deadlock error from another refusal reads it here.
+    """
+    from unittest import mock
+
+    from django.db import DatabaseError
+
+    from apps.accounts.oidc import provisioning
+
+    seen = {}
+    real = provisioning.resolve
+
+    def wrapper(*args, **kwargs):
+        try:
+            return real(*args, **kwargs)
+        except DatabaseError as exc:
+            seen.setdefault(threading.current_thread().name, []).append(repr(exc))
+            raise
+
+    with mock.patch.object(provisioning, "resolve", side_effect=wrapper):
+        yield seen
+
+
 def make_admin(username="admin2"):
     return User.objects.create_user(
         username=username, password="testpass123", user_level=User.UserLevel.ADMIN

@@ -25,6 +25,7 @@ from .oidc_flow_support import (
     fragment_code,
     join_all,
     make_admin,
+    record_resolve_errors,
     sso_error,
 )
 from .oidc_support import admin_client
@@ -114,9 +115,11 @@ class ProvisioningAtomicityTests(FlowTransactionTestCase):
             ).json()
             self.assertEqual(body["intent"], intent)
 
-    def assertNoDeadlock(self, *workers):
+    def assertNoDeadlock(self, *workers, resolve_errors=None):
         for worker in workers:
             text = repr(worker.error) if worker.error else ""
+            # A deadlock inside resolve is answered as provisioning_failed, not raised.
+            text += " ".join((resolve_errors or {}).get(worker.name, []))
             self.assertNotIn(DEADLOCK, text.lower(), f"{worker.name} ended in PostgreSQL's deadlock error: {text}")
 
     # ---- T24 -----------------------------------------------------------------------------
@@ -269,6 +272,7 @@ class ProvisioningAtomicityTests(FlowTransactionTestCase):
         for patcher in patches:
             patcher.start()
             self.addCleanup(patcher.stop)
+        resolve_errors = self.enterContext(record_resolve_errors())
         try:
             worker_l.start()
             self.assertTrue(l_held.wait(WAIT_TIMEOUT), "L never reached its attempt savepoint")
@@ -281,7 +285,7 @@ class ProvisioningAtomicityTests(FlowTransactionTestCase):
             e2.set()
         finally:
             join_all([worker_l, worker_c], [e1, e2, e3])
-        self.assertNoDeadlock(worker_l, worker_c)
+        self.assertNoDeadlock(worker_l, worker_c, resolve_errors=resolve_errors)
         self.assertTrue(reached, f"L never entered the conflict handler: {worker_l.error!r} {worker_l.result}")
         self.assertHandoff(worker_c)
         self.assertHandoff(worker_l, intent="link")
