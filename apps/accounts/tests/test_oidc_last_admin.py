@@ -286,6 +286,7 @@ class LastAdminTests(FlowTransactionTestCase):
                 )
                 self.assertIsNone(sso_error(demoted), demoted["Location"])
                 self.assertEqual(self.level("a"), 1)
+                release.set()
             finally:
                 join_all([worker], [release])
         self.assertIsNone(worker.error, repr(worker.error))

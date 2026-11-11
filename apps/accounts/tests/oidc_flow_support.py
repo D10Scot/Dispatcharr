@@ -215,7 +215,8 @@ class FlowOP:
     def _client_ok(self, headers, form):
         auth = headers.get("Authorization")
         if auth and auth.startswith("Basic "):
-            decoded = base64.b64decode(auth[6:]).decode("utf-8")
+            # Latin-1 never fails: a client that sent raw non-ASCII is refused, not crashed.
+            decoded = base64.b64decode(auth[6:]).decode("latin-1")
             raw_id, _, raw_secret = decoded.partition(":")
             return (
                 unquote_plus(raw_id) == self.expected_client_id
@@ -395,11 +396,20 @@ def run_threads(*workers):
 
 
 def join_all(workers, events=()):
-    """Set every event (so nothing can hang) and join each worker with a bounded wait."""
-    for event in events:
-        event.set()
+    """Join each worker with a bounded wait; only then set every event still unset, so a
+    failed test cannot hang, and join again.
+
+    The events are not set first: a worker-set event (one thread signalling another) set
+    here early would release the waiting thread before its partner acted, and the
+    ordering the test exists to force would be lost.
+    """
     for worker in workers:
         worker.join(JOIN_TIMEOUT)
+    if any(worker.is_alive() for worker in workers):
+        for event in events:
+            event.set()
+        for worker in workers:
+            worker.join(JOIN_TIMEOUT)
 
 
 def make_admin(username="admin2"):

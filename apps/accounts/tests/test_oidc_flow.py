@@ -935,7 +935,9 @@ class ClientAuthTests(FlowTestCase):
         request = self.op.token_requests[-1]
         auth = request["headers"]["Authorization"]
         self.assertTrue(auth.startswith("Basic "))
-        decoded = base64.b64decode(auth[6:]).decode("utf-8")
+        # A conforming client sends only ASCII here; latin-1 decodes whatever arrived so a
+        # non-conforming header is shown in the failure rather than raising.
+        decoded = base64.b64decode(auth[6:]).decode("latin-1")
         raw_id, _, raw_secret = decoded.partition(":")
         got = (unquote_plus(raw_id), unquote_plus(raw_secret))
         self.assertEqual(
@@ -1238,6 +1240,7 @@ class RefreshReevaluationTests(FlowTransactionTestCase):
             worker.start()
             self.assertTrue(entered.wait(WAIT_TIMEOUT), "the refresh never reached admin_floor_lock")
             between()
+            release.set()
         finally:
             join_all([worker], [release])
         self.assertIsNone(worker.error, repr(worker.error))
