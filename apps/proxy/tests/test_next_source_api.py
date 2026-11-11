@@ -816,6 +816,20 @@ class ChannelPkOnTheContractTests(RelayApiTestCase):
         )
         self.assertEqual(answer["channel_pk"], self.channel.pk)
 
+    def test_a_target_stream_error_answer_carries_the_id(self):
+        # An orphan Stream gets a custom account on create, so the error arm
+        # is reached by the helper's own error dict instead.
+        with patch(
+            "apps.proxy.next_source.get_stream_info_for_switch",
+            return_value={"error": "No profiles available with connection capacity"},
+        ):
+            answer = self._next_source(
+                self.channel.uuid, {"target_stream_id": self.stream_b.id}
+            )
+        self.assertIsNone(answer["source"])
+        self.assertEqual(answer["error"], "No profiles available with connection capacity")
+        self.assertEqual(answer["channel_pk"], self.channel.pk)
+
     def test_a_stream_preview_answers_null(self):
         answer = self._next_source(self.stream_a.stream_hash)
         self.assertIn("channel_pk", answer)
