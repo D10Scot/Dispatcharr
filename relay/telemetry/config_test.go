@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"os"
 	"strings"
 	"testing"
 )
@@ -133,5 +134,103 @@ func TestLoadConfigDefaultsToTheProcessEnvironment(t *testing.T) {
 	t.Setenv(envEndpoint, "http://c:4318")
 	if cfg := LoadConfig(nil, nil); !cfg.OTLP {
 		t.Fatalf("os.Getenv was not consulted: %+v", cfg)
+	}
+}
+
+func TestTheTracesAndLogsSignalsCanEachBeSwitchedOff(t *testing.T) {
+	for _, tc := range []struct {
+		name                  string
+		traces, metrics, logs bool
+	}{
+		{"OTEL_TRACES_EXPORTER", false, true, true},
+		{"OTEL_LOGS_EXPORTER", true, true, false},
+		{"OTEL_METRICS_EXPORTER", true, false, true},
+	} {
+		log, _ := capture()
+		cfg := LoadConfig(env(map[string]string{envEndpoint: "http://c:4318", tc.name: "none"}), log)
+		if !cfg.OTLP || cfg.Traces != tc.traces || cfg.Metrics != tc.metrics || cfg.Logs != tc.logs {
+			t.Errorf("%s=none: config = %+v", tc.name, cfg)
+		}
+	}
+}
+
+func TestSDKDisabledIsTrimmedAndCaseInsensitiveAsInPython(t *testing.T) {
+	for _, v := range []string{"true", "TRUE", " True "} {
+		log, _ := capture()
+		if cfg := LoadConfig(env(map[string]string{envEndpoint: "http://c:4318", envSDKDisabled: v}), log); cfg.OTLP {
+			t.Errorf("OTEL_SDK_DISABLED=%q left OTLP on", v)
+		}
+	}
+	log, _ := capture()
+	if cfg := LoadConfig(env(map[string]string{envEndpoint: "http://c:4318", envSDKDisabled: "false"}), log); !cfg.OTLP {
+		t.Error("OTEL_SDK_DISABLED=false turned OTLP off")
+	}
+}
+
+// Round-3 finding 1. The trace and metric exporters print a value they refuse
+// to stderr through OTel's internal logger, out of reach of every handler. So
+// LoadConfig refuses it first: OTLP stays off, and one warning names the
+// variable and never the value.
+func TestAMalformedOTLPVariableKeepsOTLPOffAndIsNamedNeverEchoed(t *testing.T) {
+	missing := t.TempDir() + "/" + sentinel + ".pem"
+	for name, v := range map[string]string{
+		"OTEL_EXPORTER_OTLP_HEADERS":                    "Authorization: Bearer " + sentinel,
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS":             "Authorization=Bearer%zz" + sentinel,
+		"OTEL_EXPORTER_OTLP_METRICS_HEADERS":            "Author ization=" + sentinel,
+		"OTEL_EXPORTER_OTLP_LOGS_HEADERS":               "a=b," + sentinel,
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":            "http://user:" + sentinel + "@c:port%zz/",
+		"OTEL_EXPORTER_OTLP_METRICS_ENDPOINT":           "http://user:" + sentinel + "@c:port%zz/",
+		"OTEL_EXPORTER_OTLP_LOGS_ENDPOINT":              "http://user:" + sentinel + "@c:port%zz/",
+		"OTEL_EXPORTER_OTLP_TIMEOUT":                    sentinel,
+		"OTEL_EXPORTER_OTLP_METRICS_TIMEOUT":            "1.5",
+		"OTEL_EXPORTER_OTLP_CERTIFICATE":                missing,
+		"OTEL_EXPORTER_OTLP_TRACES_CERTIFICATE":         missing,
+		"OTEL_METRIC_EXPORT_INTERVAL":                   sentinel,
+		"OTEL_METRIC_EXPORT_TIMEOUT":                    "-5",
+		"OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE": missing,
+	} {
+		m := map[string]string{envEndpoint: "http://c:4318", name: v}
+		if name == "OTEL_EXPORTER_OTLP_METRICS_CLIENT_CERTIFICATE" {
+			m["OTEL_EXPORTER_OTLP_METRICS_CLIENT_KEY"] = os.Args[0] // readable: the certificate is the bad half
+		}
+		log, buf := capture()
+		cfg := LoadConfig(env(m), log)
+		if cfg.OTLP {
+			t.Errorf("%s: a malformed value left OTLP on", name)
+		}
+		if got := buf.String(); strings.Count(got, "level=WARN") != 1 || !strings.Contains(got, "variable="+name+"\n") {
+			t.Errorf("%s: warning = %q, want one naming the variable", name, got)
+		}
+		if strings.Contains(buf.String(), sentinel) {
+			t.Errorf("LEAK: %s's value was echoed: %s", name, buf)
+		}
+	}
+	// The endpoint itself, which also enables OTLP.
+	log, buf := capture()
+	if cfg := LoadConfig(env(map[string]string{envEndpoint: "http://user:" + sentinel + "@c:port%zz/"}), log); cfg.OTLP || strings.Contains(buf.String(), sentinel) || !strings.Contains(buf.String(), envEndpoint) {
+		t.Errorf("a malformed %s: OTLP=%v, warning %q", envEndpoint, cfg.OTLP, buf)
+	}
+}
+
+// The values the exporters accept are accepted silently, so the
+// pre-validation never switches off a working configuration.
+func TestWellFormedOTLPVariablesAreAccepted(t *testing.T) {
+	readable := os.Args[0]
+	log, buf := capture()
+	cfg := LoadConfig(env(map[string]string{
+		envEndpoint:                                  " http://c:4318/base ",
+		"OTEL_EXPORTER_OTLP_HEADERS":                 " Authorization=Bearer%20abc , x-tenant = t1 ",
+		"OTEL_EXPORTER_OTLP_TRACES_HEADERS":          "k=",
+		"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT":         "https://c:4318/v1/traces",
+		"OTEL_EXPORTER_OTLP_TIMEOUT":                 "10000",
+		"OTEL_EXPORTER_OTLP_CERTIFICATE":             readable,
+		"OTEL_EXPORTER_OTLP_CLIENT_CERTIFICATE":      readable,
+		"OTEL_EXPORTER_OTLP_CLIENT_KEY":              readable,
+		"OTEL_EXPORTER_OTLP_LOGS_CLIENT_CERTIFICATE": "/nonexistent/without/its/key",
+		"OTEL_METRIC_EXPORT_INTERVAL":                "60000",
+		"OTEL_METRIC_EXPORT_TIMEOUT":                 "30000",
+	}), log)
+	if !cfg.OTLP || buf.Len() != 0 {
+		t.Fatalf("a well-formed configuration was refused: %+v %s", cfg, buf)
 	}
 }

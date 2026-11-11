@@ -3,10 +3,14 @@ package telemetry_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 	"github.com/D10Scot/Dispatcharr/relay/telemetry/telemetrytest"
@@ -363,4 +367,81 @@ func TestNilSpansAndInertTelemetryAreSafe(t *testing.T) {
 	_, tune := telemetry.StartTune(r.Context(), r, false)
 	tune.FirstByte()
 	telemetry.Current().ClientSent(ctx, 1, "mpegts", 5)
+}
+
+// Round-3 finding 2: SetError reads the type before it touches the span, so a
+// typed nil must not panic with telemetry installed or without it.
+func TestSetErrorWithATypedNilIsSafe(t *testing.T) {
+	var typedNil *url.Error
+	_, inert := telemetry.StartNextSource(context.Background(), telemetry.ReasonTune)
+	inert.SetError(typedNil)
+	inert.End()
+
+	rec := telemetrytest.Install(t)
+	_, ns := telemetry.StartNextSource(context.Background(), telemetry.ReasonTune)
+	ns.SetError(typedNil)
+	ns.End()
+	n, _ := rec.Span(telemetry.SpanNextSource)
+	if n.Status != "error" || n.Description != "*url.Error" {
+		t.Fatalf("status = %s %q", n.Status, n.Description)
+	}
+}
+
+// Round-3 finding 3. ExtractTraceparent reads traceparent alone: a hostile
+// tracestate is never adopted into the span context, so it reaches neither the
+// exported span nor InjectTraceparent's output.
+func TestATracestateIsNeverAdoptedOrForwarded(t *testing.T) {
+	rec := telemetrytest.Install(t)
+	q := http.Header{}
+	q.Set("traceparent", telemetrytest.Traceparent(traceID, spanID))
+	q.Set("tracestate", "vendor="+sentinel)
+	ctx := telemetry.ExtractTraceparent(context.Background(), q)
+	if ts := trace.SpanContextFromContext(ctx).TraceState().String(); ts != "" {
+		t.Errorf("LEAK: the extracted span context carries tracestate %q", ts)
+	}
+	sctx, sw := telemetry.StartStreamSwitch(ctx, telemetry.SpanRef{})
+	if ts := trace.SpanContextFromContext(sctx).TraceState().String(); ts != "" {
+		t.Errorf("LEAK: the switch span carries tracestate %q", ts)
+	}
+	out := http.Header{}
+	telemetry.InjectTraceparent(sctx, out)
+	sw.End()
+	if !strings.Contains(out.Get("traceparent"), traceID) {
+		t.Fatalf("POLICY: the traceparent was not forwarded: %v", out)
+	}
+	if len(out) != 1 || strings.Contains(fmt.Sprint(out), sentinel) {
+		t.Errorf("LEAK: InjectTraceparent wrote more than traceparent: %v", out)
+	}
+	if s, _ := rec.Span(telemetry.SpanStreamSwitch); s.ParentSpanID != spanID {
+		t.Errorf("POLICY: the switch lost its parent: %+v", s)
+	}
+
+	// Even a span context that does hold a tracestate is never sent on.
+	ts, err := trace.ParseTraceState("vendor=" + strings.ToLower(sentinel))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sc := trace.SpanContextFromContext(sctx).WithTraceState(ts)
+	out = http.Header{}
+	telemetry.InjectTraceparent(trace.ContextWithSpanContext(context.Background(), sc), out)
+	if out.Get("traceparent") == "" || out.Get("tracestate") != "" || len(out) != 1 {
+		t.Errorf("LEAK: InjectTraceparent forwarded a tracestate: %v", out)
+	}
+}
+
+// Round-3 finding 4. A tune that passed auth_request is trusted, and nginx
+// forwards the client's own traceparent beside it. Only X-Relay-Traceparent
+// may parent a trusted tune; with it absent the tune is a root.
+func TestATrustedTuneNeverFallsBackToTheClientsTraceparent(t *testing.T) {
+	rec := telemetrytest.Install(t)
+	r := tuneRequest(false, true) // the client's bare traceparent, no X-Relay-Traceparent
+	_, tune := telemetry.StartTune(r.Context(), r, true)
+	tune.End()
+	s, _ := rec.Span(telemetry.SpanTune)
+	if s.ParentSpanID != "" || s.TraceID == traceID {
+		t.Errorf("a trusted tune adopted the client's traceparent: parent=%q trace=%s", s.ParentSpanID, s.TraceID)
+	}
+	if len(s.TraceID) != 32 {
+		t.Errorf("trace id %q is not a fresh one", s.TraceID)
+	}
 }

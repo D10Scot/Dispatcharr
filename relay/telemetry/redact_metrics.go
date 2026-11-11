@@ -73,9 +73,21 @@ func filterPoints[N int64 | float64](in []anyPoint[N]) []anyPoint[N] {
 	return out
 }
 
+// overflowKey is the attribute sdk/metric puts on the overflow data point
+// (sdk/metric/internal/aggregate/limit.go).
+const overflowKey = "otel.metric.overflow"
+
 func validMetricAttrs(set attribute.Set) bool {
 	for _, kv := range set.ToSlice() {
 		v := kv.Value
+		// The SDK's cardinality-limit overflow series (D7 names it in the
+		// docs) carries this one boolean attribute and nothing else.
+		if string(kv.Key) == overflowKey {
+			if v.Type() != attribute.BOOL || !v.AsBool() {
+				return false
+			}
+			continue
+		}
 		if v.Type() != attribute.STRING {
 			return false
 		}

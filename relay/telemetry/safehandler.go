@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"reflect"
 )
 
 // SafeHandler is the typed log-field allowlist of D9 for the relay. It sits in
@@ -146,10 +147,26 @@ func (h *SafeHandler) one(key string, v val) []slog.Attr {
 	}
 }
 
+// maxUnwrap bounds innermostType's walk, so a cyclic Unwrap chain ends.
+const maxUnwrap = 64
+
 // innermostType is the %T of the innermost error errors.Unwrap reaches. An
 // error's text is never exported: a *url.Error prints the whole URL.
-func innermostType(err error) string {
-	for {
+//
+// It is total. A typed-nil error (a nil *url.Error in a non-nil error
+// interface) is not unwrapped, because its Unwrap would dereference nil; the
+// walk stops after maxUnwrap hops; and an Unwrap that panics anyway ends the
+// walk at the last error reached. A logging or span call must never be what
+// takes the relay down.
+func innermostType(err error) (typ string) {
+	// credential-logging: ok - %T prints the type name only, never the error text
+	typ = fmt.Sprintf("%T", err)
+	// On a panic the named result already holds the last type reached.
+	defer func() { _ = recover() }()
+	for range maxUnwrap {
+		if isNilPointer(err) {
+			break
+		}
 		u, ok := err.(interface{ Unwrap() error }) //nolint:errorlint // walking the chain by hand is the point
 		if !ok {
 			break
@@ -159,7 +176,14 @@ func innermostType(err error) string {
 			break
 		}
 		err = next
+		// credential-logging: ok - %T prints the type name only, never the error text
+		typ = fmt.Sprintf("%T", err)
 	}
-	// credential-logging: ok - %T prints the type name only, never the error text
-	return fmt.Sprintf("%T", err)
+	return typ
+}
+
+// isNilPointer reports whether err holds a nil pointer of some error type.
+func isNilPointer(err error) bool {
+	v := reflect.ValueOf(err)
+	return v.Kind() == reflect.Pointer && v.IsNil()
 }

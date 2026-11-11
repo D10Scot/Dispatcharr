@@ -3,14 +3,18 @@ package telemetry
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel/trace"
 )
 
 const (
@@ -241,3 +245,110 @@ func TestUint64PastInt64IsDropped(t *testing.T) {
 const tick = time.Second
 
 var zeroTime time.Time
+
+// cyclic is an error whose Unwrap returns itself.
+type cyclic struct{}
+
+func (c *cyclic) Error() string { return "cyclic" }
+func (c *cyclic) Unwrap() error { return c }
+
+// panicky is an error whose Unwrap panics on any receiver.
+type panicky struct{}
+
+func (panicky) Error() string { return "panicky" }
+func (panicky) Unwrap() error { panic("unwrap") }
+
+// Round-3 finding 2. A typed-nil error is a nil pointer inside a non-nil
+// interface; its Unwrap dereferences nil. slog's own handlers survive it, so
+// SafeHandler must too: on a channel goroutine a panic ends the relay.
+func TestATypedNilErrorIsItsTypeAndNeverAPanic(t *testing.T) {
+	var typedNil *url.Error
+	log, raw, safe := tee(testRules())
+	log.Error("typed nil", "error", error(typedNil), "err", fmt.Errorf("wrapped: %w", error(typedNil)))
+	if !strings.Contains(raw.String(), "typed nil") {
+		t.Fatal("the control never logged the record")
+	}
+	check(t, safe.String(), []string{`"error.type":"*url.Error"`, `"err.type":"*url.Error"`}, nil)
+
+	for name, tc := range map[string]struct {
+		err  error
+		want string
+	}{
+		"typed nil":              {typedNil, "*url.Error"},
+		"wrapped typed nil":      {fmt.Errorf("x: %w", error(typedNil)), "*url.Error"},
+		"cyclic chain":           {&cyclic{}, "*telemetry.cyclic"},
+		"panicking Unwrap":       {fmt.Errorf("x: %w", panicky{}), "telemetry.panicky"},
+		"typed-nil os.PathError": {(*os.PathError)(nil), "*fs.PathError"},
+	} {
+		done := make(chan string, 1)
+		go func() { done <- innermostType(tc.err) }()
+		select {
+		case got := <-done:
+			if got != tc.want {
+				t.Errorf("%s: innermostType = %q, want %q", name, got, tc.want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("%s: innermostType did not return: an unbounded Unwrap walk", name)
+		}
+	}
+}
+
+// The OTel error handler goes through innermostType too.
+func TestTheOTelErrorHandlerSurvivesATypedNil(t *testing.T) {
+	var buf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	handleOTelError((*url.Error)(nil))
+	if !strings.Contains(buf.String(), `"error.type":"*url.Error"`) {
+		t.Fatalf("handler output = %s", buf.String())
+	}
+}
+
+// Round-3 finding 6. An inline group (empty key) has no name to allowlist; its
+// members are classified one by one, exactly as top-level attributes are, on
+// a record and through With.
+func TestAnInlineGroupsMembersAreEachClassified(t *testing.T) {
+	log, raw, safe := tee(testRules())
+	log.Info("inline", slog.Group("", "count", 7, "stream", sentinel, "unruled", 1, "channel", chanUUID, "bogus", chanUUID))
+	log.With(slog.Group("", "count", 8, "trigger", sentinel, "channel", chanUUID)).Info("inline with")
+	if !strings.Contains(raw.String(), sentinel) || !strings.Contains(raw.String(), chanUUID) {
+		t.Fatal("the control never saw the hostile values")
+	}
+	check(t, safe.String(),
+		[]string{`"count":7`, `"count":8`, `"channel_id":"42"`},
+		[]string{sentinel, chanUUID, `"unruled"`, `"bogus"`, `"stream"`, `"trigger"`})
+}
+
+// Round-3 nits 11 and 19. The JSON time is UTC, as Python emits it, and the
+// fields ContextHandler adds stay at the top level when a caller logs under an
+// allowlisted group.
+func TestContextFieldsStayTopLevelUnderAGroupAndTimeIsUTC(t *testing.T) {
+	var buf bytes.Buffer
+	rules := testRules()
+	h := NewSafeHandler(NewJSONHandler(&buf, slog.LevelInfo), rules, testIDs())
+	sc := trace.NewSpanContext(trace.SpanContextConfig{TraceID: trace.TraceID{1}, SpanID: trace.SpanID{2}, TraceFlags: trace.FlagsSampled})
+	ctx := trace.ContextWithSpanContext(context.Background(), sc)
+	log := slog.New(h).WithGroup("upstream").With("count", 1)
+	r := slog.NewRecord(time.Date(2026, 1, 2, 3, 4, 5, 0, time.FixedZone("X", 5*3600)), slog.LevelInfo, "grouped", 0)
+	r.AddAttrs(slog.Int("stream", 2))
+	if err := log.Handler().Handle(ctx, r); err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("not JSON: %v: %s", err, buf.String())
+	}
+	for _, k := range []string{"service.name", "mino.program", "trace_id", "span_id"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("%s is not at the top level: %s", k, buf.String())
+		}
+	}
+	up, _ := got["upstream"].(map[string]any)
+	if up["count"] != float64(1) || up["stream"] != float64(2) || len(up) != 2 {
+		t.Errorf("upstream = %v, want count and stream only", got["upstream"])
+	}
+	if got["time"] != "2026-01-01T22:04:05Z" {
+		t.Errorf("time = %v, want UTC", got["time"])
+	}
+}

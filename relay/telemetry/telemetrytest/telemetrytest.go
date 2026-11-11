@@ -49,6 +49,7 @@ type Point struct {
 // Recorder holds what an installed telemetry recorded.
 type Recorder struct {
 	T      *telemetry.Telemetry
+	tb     testing.TB
 	spans  *tracetest.SpanRecorder
 	reader *sdkmetric.ManualReader
 }
@@ -56,6 +57,10 @@ type Recorder struct {
 // Install installs a recording tracer provider and a manual metric reader as
 // telemetry.Current for the test's duration. Extra options (a procstat
 // registry, a ChannelIDs) are passed to telemetry.Init.
+//
+// It is NOT parallel-safe: telemetry.Current and the OTel error handler are
+// process globals, so two tests that call Install under t.Parallel() would
+// record each other's spans and points.
 func Install(t testing.TB, opts ...telemetry.Option) *Recorder {
 	t.Helper()
 	sr := tracetest.NewSpanRecorder()
@@ -70,7 +75,7 @@ func Install(t testing.TB, opts ...telemetry.Option) *Recorder {
 		_ = tel.Shutdown(context.Background())
 		_ = tp.Shutdown(context.Background())
 	})
-	return &Recorder{T: tel, spans: sr, reader: reader}
+	return &Recorder{T: tel, tb: t, spans: sr, reader: reader}
 }
 
 // Spans returns every span started, ended or not, in start order.
@@ -122,10 +127,13 @@ func (r *Recorder) Span(name string) (Span, bool) {
 }
 
 // Points collects the manual reader and returns the data points of the
-// instrument called name (the OTel name, e.g. "mino_relay_client_sent").
+// instrument called name (the OTel name, e.g. "mino_relay_client_sent"). A
+// failed collection fails the test: an empty result must mean "nothing was
+// recorded", never "nothing could be read", or an oracle such as M3 = 0 would
+// pass on a broken reader.
 func (r *Recorder) Points(name string) []Point {
-	var rm metricdata.ResourceMetrics
-	if err := r.reader.Collect(context.Background(), &rm); err != nil {
+	rm, ok := r.collect()
+	if !ok {
 		return nil
 	}
 	var out []Point
@@ -160,8 +168,8 @@ func (r *Recorder) Points(name string) []Point {
 
 // Exemplars returns how many exemplars the collected points of name carry.
 func (r *Recorder) Exemplars(name string) int {
-	var rm metricdata.ResourceMetrics
-	if err := r.reader.Collect(context.Background(), &rm); err != nil {
+	rm, ok := r.collect()
+	if !ok {
 		return -1
 	}
 	n := 0
@@ -185,7 +193,19 @@ func (r *Recorder) Exemplars(name string) int {
 	return n
 }
 
-// Sum is the total value of name's points.
+// collect reads the manual reader once, failing the test on an error.
+func (r *Recorder) collect() (metricdata.ResourceMetrics, bool) {
+	r.tb.Helper()
+	var rm metricdata.ResourceMetrics
+	if err := r.reader.Collect(context.Background(), &rm); err != nil {
+		r.tb.Errorf("telemetrytest: collecting metrics failed, so no figure can be read: %v", err)
+		return rm, false
+	}
+	return rm, true
+}
+
+// Sum is the total value of name's points. Like Points, it fails the test
+// when the collection fails.
 func (r *Recorder) Sum(name string) float64 {
 	var total float64
 	for _, p := range r.Points(name) {

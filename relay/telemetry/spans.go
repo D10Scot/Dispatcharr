@@ -116,19 +116,36 @@ func StartStreamSwitch(ctx context.Context, link SpanRef) (context.Context, *Spa
 	return ctx, newSpan(s)
 }
 
-// InjectTraceparent writes ctx's span context into h as a W3C traceparent.
-// It writes nothing when ctx holds no valid span. With OTLP off that is the
-// case unless the tune adopted a trusted X-Relay-Traceparent: the no-op tracer
-// carries the remote parent's context, and forwarding it is harmless.
+// InjectTraceparent writes ctx's span context into h as a W3C traceparent,
+// and nothing else: a tracestate is never sent, whatever the span context
+// holds. It writes nothing when ctx holds no valid span. With OTLP off that is
+// the case unless the tune adopted a trusted X-Relay-Traceparent: the no-op
+// tracer carries the remote parent's context, and forwarding it is harmless.
 func InjectTraceparent(ctx context.Context, h http.Header) {
-	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(h))
+	c := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, c)
+	if v := c.Get(traceparentKey); v != "" {
+		h.Set(traceparentKey, v)
+	}
 }
 
 // ExtractTraceparent returns ctx carrying the remote span context in h's
 // traceparent header. Call it ONLY for a request that is already
-// authenticated: a client must never be able to choose a trace id.
+// authenticated: a client must never be able to choose a trace id. Only
+// traceparent is read; a tracestate header is free text and is never adopted.
 func ExtractTraceparent(ctx context.Context, h http.Header) context.Context {
-	return propagation.TraceContext{}.Extract(ctx, propagation.HeaderCarrier(h))
+	return extractTraceparent(ctx, h.Get(traceparentKey))
+}
+
+const traceparentKey = "traceparent"
+
+// extractTraceparent adopts v as the remote parent through a carrier holding
+// traceparent alone, so the span context's tracestate is always empty.
+func extractTraceparent(ctx context.Context, v string) context.Context {
+	if v == "" {
+		return ctx
+	}
+	return propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{traceparentKey: v})
 }
 
 // Tune is the relay.tune span of one request, owned by StreamHandler (D11).
@@ -160,9 +177,7 @@ func StartTune(ctx context.Context, r *http.Request, trusted bool) (context.Cont
 	t := Current()
 	parent := ctx
 	if trusted {
-		if v := r.Header.Get(HeaderRelayTraceparent); v != "" {
-			parent = propagation.TraceContext{}.Extract(ctx, propagation.MapCarrier{"traceparent": v})
-		}
+		parent = extractTraceparent(ctx, r.Header.Get(HeaderRelayTraceparent))
 	}
 	ctx, span := t.start(parent, SpanTune, trace.WithSpanKind(trace.SpanKindServer))
 	return ctx, &Tune{t: t, span: span, ctx: ctx}

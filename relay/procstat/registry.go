@@ -80,9 +80,19 @@ type Registry struct {
 }
 
 type seenInfo struct {
-	ticks uint64
-	pgid  int
+	ticks  uint64
+	pgid   int
+	missed int // successful snapshots in a row this identity was absent from
 }
+
+// forgetAfter is how many successful snapshots in a row an identity may be
+// absent from before it is forgotten. A pid with its start time names one
+// process, which cannot return once it has exited; the grace is only for a
+// process a snapshot failed to read for a moment, which must not be counted
+// again from zero. Without it, a group whose leader spawns a short-lived child
+// per collection would hold one identity per collection for as long as it is
+// tracked.
+const forgetAfter = 8
 
 type tracked struct {
 	pgid   int
@@ -157,9 +167,11 @@ func (r *Registry) Collect() []Sample {
 		live[g.labels] = true
 	}
 
+	var present map[identity]bool // nil unless a snapshot succeeded
 	if len(byGroup) > 0 {
 		procs, err := r.src.Snapshot()
 		if err == nil {
+			present = map[identity]bool{}
 			ticks := r.src.TicksPerSecond()
 			page := int64(r.src.PageSize())
 			for _, p := range procs {
@@ -177,6 +189,7 @@ func (r *Registry) Collect() []Sample {
 					delta = 0
 				}
 				r.seen[id] = seenInfo{ticks: p.CPUTicks, pgid: p.PGrp}
+				present[id] = true
 				// A group registered twice under different labels would
 				// double count; the spawn path registers a group once.
 				for _, l := range owners {
@@ -187,13 +200,23 @@ func (r *Registry) Collect() []Sample {
 			}
 		}
 	}
-	// Identities missing from a snapshot stay while their group is tracked:
-	// forgetting one that was only unreadable for a moment would count its CPU
-	// twice. They go with the group.
+	// An identity goes with its group. One missing from a snapshot stays for
+	// forgetAfter successful snapshots: forgetting one that was only unreadable
+	// for a moment would count its CPU twice. A failed snapshot ages nothing.
 	for id, info := range r.seen {
 		if _, ok := byGroup[info.pgid]; !ok {
 			delete(r.seen, id)
+			continue
 		}
+		if present == nil || present[id] {
+			continue
+		}
+		info.missed++
+		if info.missed >= forgetAfter {
+			delete(r.seen, id)
+			continue
+		}
+		r.seen[id] = info
 	}
 
 	out := make([]Sample, 0, len(r.acc))

@@ -236,3 +236,42 @@ func TestTrackRefusesGroupZero(t *testing.T) {
 		untrack()
 	}
 }
+
+// A leader that spawns one short-lived child per collection: each child is a
+// new identity seen once. The registry must not keep one per collection for
+// as long as the group is tracked (round-3 nit 16), and the departed
+// children's CPU must stay in the accumulator.
+func TestShortLivedChildrenAreForgottenAfterTheGrace(t *testing.T) {
+	const rounds = 1000
+	snaps := make([][]Proc, rounds)
+	for i := range snaps {
+		snaps[i] = []Proc{proc(500, 10, 1, 0), proc(600+i, uint64(1000+i), 1, 0)}
+	}
+	r := NewRegistry(&scripted{snaps: snaps})
+	r.Track(500, lab)
+	var last float64
+	for range rounds {
+		last = cpu(t, r, lab)
+	}
+	if n := len(r.seen); n > forgetAfter+1 {
+		t.Fatalf("%d identities held after %d collections, want at most %d: departed children are never forgotten", n, rounds, forgetAfter+1)
+	}
+	if want := float64(1 + rounds); last != want {
+		t.Fatalf("figure = %v, want %v: a forgotten child's CPU left the accumulator", last, want)
+	}
+}
+
+// An identity whose ticks go backwards (a /proc read racing a counter, never
+// seen for one identity) adds nothing rather than wrapping a uint64.
+func TestTicksGoingBackwardsAddNothing(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{
+		{proc(500, 10, 5, 0)},
+		{proc(500, 10, 3, 0)},
+	}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	cpu(t, r, lab)
+	if got := cpu(t, r, lab); got != 5 {
+		t.Fatalf("figure = %v, want 5: a backwards step must add zero", got)
+	}
+}

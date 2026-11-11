@@ -1,11 +1,14 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -16,6 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -176,5 +180,151 @@ func TestOneInstanceIDAcrossTracesMetricsAndLogs(t *testing.T) {
 		if !strings.Contains(h.body(path), id) {
 			t.Errorf("%s does not carry service.instance.id %s", path, id)
 		}
+	}
+}
+
+// otlpLogs starts a collector, Inits with OTLP on in the given log format and
+// a channel id mapped, and returns the telemetry and a reader for /v1/logs.
+func otlpLogs(t *testing.T, format string, extraEnv map[string]string) (*Telemetry, func() string, func() string) {
+	t.Helper()
+	var mu sync.Mutex
+	bodies := map[string][]byte{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies[r.URL.Path] = append(bodies[r.URL.Path], b...)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv(envEndpoint, srv.URL)
+	t.Setenv(envLogFormat, format)
+	for k, v := range extraEnv {
+		t.Setenv(k, v)
+	}
+	prev := otel.GetTracerProvider()
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+	cfg := LoadConfig(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if !cfg.OTLP || !cfg.Logs || cfg.LogFormat != format {
+		t.Fatalf("config = %+v", cfg)
+	}
+	tel, err := Init(context.Background(), cfg, WithChannelIDs(testIDs()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(path string) func() string {
+		return func() string {
+			mu.Lock()
+			defer mu.Unlock()
+			return string(bodies[path])
+		}
+	}
+	return tel, read("/v1/logs"), read("/v1/metrics")
+}
+
+// channelIDKV is the protobuf encoding of the OTLP KeyValue
+// {key: "channel_id", value: {string_value: "42"}}: field 1 (key) of length
+// 10, then field 2 (AnyValue) of length 4 holding field 1 (string) "42".
+const channelIDKV = "\x0a\x0achannel_id\x12\x04\x0a\x0242"
+
+// Round-3 finding 7. The otelslog bridge sits INSIDE SafeHandler in both
+// formats, so an OTLP log record carries the same channel_id mapping as the
+// JSON line and never the UUID. Without SafeHandler in front, the log
+// exporter's second pass drops the raw channel key and channel_id is lost.
+func TestOTLPLogsCarryTheMappedChannelIDInBothFormats(t *testing.T) {
+	for _, format := range []string{LogFormatText, LogFormatJSON} {
+		t.Run(format, func(t *testing.T) {
+			tel, logs, _ := otlpLogs(t, format, nil)
+			var stdout bytes.Buffer
+			log := slog.New(tel.LogHandler(&stdout, slog.NewTextHandler(io.Discard, nil)))
+			log.Error("tune failed", "channel", chanUUID, "error", &url.Error{Op: "Get", URL: "http://p/" + sentinel, Err: errors.New("x")})
+			if err := tel.Shutdown(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			body := logs()
+			if !strings.Contains(body, "tune failed") {
+				t.Fatalf("POLICY: the record did not reach /v1/logs (%d bytes)", len(body))
+			}
+			if !strings.Contains(body, channelIDKV) {
+				t.Errorf("POLICY: the OTLP record lacks channel_id=42: the bridge is not behind SafeHandler")
+			}
+			if !strings.Contains(body, "error.type") || !strings.Contains(body, "*errors.errorString") {
+				t.Errorf("POLICY: the OTLP record lacks error.type")
+			}
+			for _, bad := range []string{chanUUID, sentinel} {
+				if strings.Contains(body, bad) {
+					t.Errorf("LEAK: %q reached /v1/logs", bad)
+				}
+			}
+		})
+	}
+}
+
+// Round-3 nit 15. The OTel error handler's own line goes to stdout but never
+// to the OTLP log sink, so a failing log export cannot queue a record about
+// itself.
+func TestTheOTelErrorLineSkipsTheOTLPLogSink(t *testing.T) {
+	tel, logs, _ := otlpLogs(t, LogFormatJSON, nil)
+	var stdout bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(tel.LogHandler(&stdout, slog.NewTextHandler(io.Discard, nil))))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	otel.Handle(errors.New("export failed"))
+	slog.Info("ordinary line")
+	if err := tel.Shutdown(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stdout.String(), `"msg":"otel error"`) {
+		t.Fatalf("control: the error line did not reach stdout: %s", stdout.String())
+	}
+	body := logs()
+	if !strings.Contains(body, "ordinary line") {
+		t.Fatalf("control: an ordinary line did not reach /v1/logs (%d bytes)", len(body))
+	}
+	if strings.Contains(body, "otel error") {
+		t.Error("the OTel error line was queued for OTLP export")
+	}
+}
+
+// Round-3 nit 13. When the last step of startOTLP fails, Init returns the
+// error AND stops what it had started: the meter provider's periodic reader,
+// whose shutdown flushes one final export, and no global tracer provider is
+// left installed. The interval is an hour, so only that flush can export.
+func TestAFailedStartOTLPShutsDownWhatInitStarted(t *testing.T) {
+	prevExp := newOTLPLogExporter
+	newOTLPLogExporter = func(context.Context) (sdklog.Exporter, error) { return nil, errors.New("no log exporter") }
+	t.Cleanup(func() { newOTLPLogExporter = prevExp })
+	before := otel.GetTracerProvider()
+
+	var mu sync.Mutex
+	var metrics []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		if r.URL.Path == "/v1/metrics" {
+			mu.Lock()
+			metrics = append(metrics, b...)
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	t.Setenv(envEndpoint, srv.URL)
+	t.Setenv("OTEL_METRIC_EXPORT_INTERVAL", "3600000")
+	cfg := LoadConfig(nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	tel, err := Init(context.Background(), cfg)
+	if err == nil || tel != nil {
+		t.Fatalf("Init = %v, %v; want the log exporter's error", tel, err)
+	}
+	if otel.GetTracerProvider() != before {
+		t.Error("a failed Init left its tracer provider installed as the global")
+	}
+	if Current() == nil || Current().Config().OTLP {
+		t.Error("a failed Init was installed as Current")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(metrics) == 0 {
+		t.Error("the meter provider was not shut down: its periodic reader is still running")
 	}
 }

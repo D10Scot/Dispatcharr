@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -423,5 +424,87 @@ func TestRoutePatternsEqualTheRegisteredMuxPatterns(t *testing.T) {
 	}
 	if len(found) != 13 {
 		t.Errorf("%d patterns, want 13", len(found))
+	}
+}
+
+// Round-3 finding 5, the spec's D9 case: relay.next_source failing through the
+// RoundTripper. The *url.Error carries the provider URL in its text; only the
+// INNERMOST type (the transport's error, not *url.Error) leaves, as both the
+// exception event's type and the status description, through the real
+// redacting exporter.
+func TestANextSourceFailingThroughTheRoundTripperLeavesOnlyTheInnermostType(t *testing.T) {
+	tp, mem := redactedSpans(t)
+	if _, err := Init(context.Background(), Config{SamplerRatio: 1}, WithTracerProvider(tp)); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = Current().Shutdown(context.Background()) })
+
+	failing := roundTripFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("refused") })
+	client := &http.Client{Transport: failing}
+	ctx, ns := StartNextSource(context.Background(), ReasonTune)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://django.example/api/relay/channels/"+chanUUID+"/next-source?token="+sentinel, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = client.Do(req) //nolint:bodyclose // the stub transport returns no body
+	var uerr *url.Error
+	if !errors.As(err, &uerr) || !strings.Contains(err.Error(), sentinel) {
+		t.Fatalf("control: want a *url.Error carrying the URL, got %T %v", err, err)
+	}
+	ns.SetError(err)
+	ns.End()
+
+	spans := mem.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("exported %d spans", len(spans))
+	}
+	out := dump(spans[0].Snapshot())
+	if !strings.Contains(out, "status=Error/*errors.errorString") || !strings.Contains(out, "eattr "+attrExcType+"=*errors.errorString") {
+		t.Errorf("POLICY: want the innermost type *errors.errorString (not the outermost *url.Error) as status and event:\n%s", out)
+	}
+	for _, bad := range []string{sentinel, chanUUID, "django.example", "*url.Error"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("LEAK: %q reached the exporter:\n%s", bad, out)
+		}
+	}
+}
+
+// Round-3 finding 5: with no exception event the status description is empty,
+// whatever was set, so the "never kept" rule is what stops the text here.
+func TestAStatusDescriptionWithNoExceptionEventIsNeverKept(t *testing.T) {
+	tp, mem := redactedSpans(t)
+	_, sp := tp.Tracer("mino/relay").Start(context.Background(), SpanNextSource)
+	sp.SetStatus(codes.Error, "Get http://p/live/u/"+sentinel)
+	sp.End()
+	spans := mem.GetSpans()
+	if len(spans) != 1 {
+		t.Fatalf("exported %d spans", len(spans))
+	}
+	s := spans[0].Snapshot()
+	if s.Status().Code != codes.Error {
+		t.Errorf("POLICY: the error code was lost: %v", s.Status())
+	}
+	if d := s.Status().Description; d != "" {
+		t.Errorf("LEAK: a description with no exception event was kept: %q", d)
+	}
+}
+
+// Round-3 nit 10. The SDK's cardinality-limit overflow point carries
+// otel.metric.overflow=true and must reach OTLP as it reaches /metrics; any
+// other shape of that key is still refused.
+func TestTheOverflowSeriesPassesTheMetricBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		set  attribute.Set
+		want bool
+	}{
+		{attribute.NewSet(attribute.Bool(overflowKey, true)), true},
+		{attribute.NewSet(attribute.Bool(overflowKey, false)), false},
+		{attribute.NewSet(attribute.String(overflowKey, "true")), false},
+		{attribute.NewSet(attribute.Bool(overflowKey, true), attribute.String("channel_id", sentinel)), false},
+		{attribute.NewSet(attribute.Bool("other", true)), false},
+	} {
+		if got := validMetricAttrs(tc.set); got != tc.want {
+			t.Errorf("%v: valid = %v, want %v", tc.set.ToSlice(), got, tc.want)
+		}
 	}
 }

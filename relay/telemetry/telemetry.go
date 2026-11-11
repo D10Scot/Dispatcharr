@@ -139,27 +139,36 @@ func Init(ctx context.Context, cfg Config, opts ...Option) (*Telemetry, error) {
 	for _, opt := range opts {
 		opt(&o)
 	}
+
+	// Installed before anything is built, so no SDK error reaches the default
+	// handler, which prints the error's text. The previous handler is
+	// deliberately not restored on a failed Init or in Shutdown: this one logs
+	// only the error's type, which is strictly safer than the SDK's default, so
+	// leaving it installed can only help.
+	otel.SetErrorHandler(otel.ErrorHandlerFunc(handleOTelError))
+
 	t, err := build(ctx, cfg, &o)
 	if err != nil {
 		return nil, err
 	}
-
-	// The previous handler is deliberately not restored on a failed Init or in
-	// Shutdown: this one logs only the error's type, which is strictly safer than
-	// the SDK's default, so leaving it installed can only help.
-	otel.SetErrorHandler(otel.ErrorHandlerFunc(func(err error) {
-		// Only the type leaves, whatever handler is installed: the text of an SDK
-		// export error carries the collector URL, query string included.
-		slog.Default().Error("otel error", "error.type", innermostType(err))
-	}))
-
 	if cfg.OTLP {
 		if err := t.startOTLP(ctx, &o); err != nil {
+			// Stop what build and the first half of startOTLP started: the
+			// meter provider's periodic reader above all.
+			_ = t.Shutdown(ctx)
 			return nil, err
 		}
 	}
 	current.Store(t)
 	return t, nil
+}
+
+// handleOTelError is the OTel error handler. Only the type leaves, whatever
+// handler is installed: the text of an SDK export error carries the collector
+// URL, query string included. The record's context keeps it out of the OTLP
+// log sink, so a failing log export does not queue a record about itself.
+func handleOTelError(err error) {
+	slog.Default().ErrorContext(withoutOTLPLogs(context.Background()), "otel error", "error.type", innermostType(err))
 }
 
 func build(ctx context.Context, cfg Config, o *options) (*Telemetry, error) {
@@ -228,23 +237,21 @@ func build(ctx context.Context, cfg Config, o *options) (*Telemetry, error) {
 // exporters. It is called only when OTLP is enabled.
 func (t *Telemetry) startOTLP(ctx context.Context, o *options) error {
 	res := t.res // the one resource of this Init: one service.instance.id across all signals
+	var tp *sdktrace.TracerProvider
 	if o.tp == nil && t.cfg.Traces {
 		texp, err := otlptracehttp.New(ctx)
 		if err != nil {
 			return fmt.Errorf("telemetry: building the OTLP trace exporter: %w", redact.Error(err))
 		}
-		tp := sdktrace.NewTracerProvider(
+		tp = sdktrace.NewTracerProvider(
 			sdktrace.WithBatcher(newRedactingSpanExporter(texp)),
 			sdktrace.WithResource(res),
 			sdktrace.WithSampler(t.sampler),
 		)
-		otel.SetTracerProvider(tp)
-		otel.SetTextMapPropagator(propagation.TraceContext{})
-		t.tracer = tp.Tracer(ScopeName)
 		t.shutdown = append(t.shutdown, tp.Shutdown)
 	}
 	if t.cfg.Logs {
-		lexp, err := otlploghttp.New(ctx)
+		lexp, err := newOTLPLogExporter(ctx)
 		if err != nil {
 			return fmt.Errorf("telemetry: building the OTLP log exporter: %w", redact.Error(err))
 		}
@@ -254,8 +261,19 @@ func (t *Telemetry) startOTLP(ctx context.Context, o *options) error {
 		)
 		t.shutdown = append(t.shutdown, t.logs.Shutdown)
 	}
+	// The globals are set only once nothing else can fail, so a failed Init
+	// leaves the global tracer provider as it found it.
+	if tp != nil {
+		otel.SetTracerProvider(tp)
+		otel.SetTextMapPropagator(propagation.TraceContext{})
+		t.tracer = tp.Tracer(ScopeName)
+	}
 	return nil
 }
+
+// newOTLPLogExporter is otlploghttp.New; a test replaces it to make the last
+// step of startOTLP fail.
+var newOTLPLogExporter = func(ctx context.Context) (sdklog.Exporter, error) { return otlploghttp.New(ctx) }
 
 // Shutdown flushes and stops everything Init started. The relay calls it with
 // a two-second context after the drain.
@@ -288,10 +306,12 @@ func (t *Telemetry) Config() Config { return t.cfg }
 // in front of the JSON handler; when the OTLP log signal is on, the otelslog
 // bridge is a second sink behind the same SafeHandler. For text, only the
 // bridge (when on) sits behind SafeHandler, beside the untouched text handler.
+// Either way the bridge is inside SafeHandler, so an OTLP log record carries
+// the same channel_id mapping and classification as the JSON line.
 func (t *Telemetry) LogHandler(w io.Writer, text slog.Handler) slog.Handler {
 	var bridge slog.Handler
 	if t.logs != nil {
-		bridge = otelslog.NewHandler(ScopeName, otelslog.WithLoggerProvider(t.logs))
+		bridge = skipMarked{otelslog.NewHandler(ScopeName, otelslog.WithLoggerProvider(t.logs))}
 	}
 	if t.cfg.LogFormat == LogFormatJSON {
 		sinks := []slog.Handler{NewJSONHandler(w, slog.LevelInfo)}
@@ -305,6 +325,33 @@ func (t *Telemetry) LogHandler(w io.Writer, text slog.Handler) slog.Handler {
 	}
 	return Fanout(text, NewSafeHandler(bridge, t.rules, t.ids))
 }
+
+type noOTLPLogsKey struct{}
+
+// withoutOTLPLogs marks ctx so a record logged with it skips the OTLP log sink.
+func withoutOTLPLogs(ctx context.Context) context.Context {
+	return context.WithValue(ctx, noOTLPLogsKey{}, true)
+}
+
+// skipMarked drops the records whose context withoutOTLPLogs marked.
+type skipMarked struct{ inner slog.Handler }
+
+func (h skipMarked) Enabled(ctx context.Context, l slog.Level) bool {
+	return ctx.Value(noOTLPLogsKey{}) == nil && h.inner.Enabled(ctx, l)
+}
+
+func (h skipMarked) Handle(ctx context.Context, r slog.Record) error {
+	if ctx.Value(noOTLPLogsKey{}) != nil {
+		return nil
+	}
+	return h.inner.Handle(ctx, r)
+}
+
+func (h skipMarked) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return skipMarked{h.inner.WithAttrs(attrs)}
+}
+
+func (h skipMarked) WithGroup(name string) slog.Handler { return skipMarked{h.inner.WithGroup(name)} }
 
 func buildResource() *resource.Resource {
 	attrs := []attribute.KeyValue{

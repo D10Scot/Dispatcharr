@@ -256,3 +256,22 @@ func TestProtocolOtherThanHTTPProtobufStartsNothing(t *testing.T) {
 		t.Fatalf("OTLP=%v goroutines %d -> %d", cfg.OTLP, before, runtime.NumGoroutine())
 	}
 }
+
+// Round-3 nit 9. Once a group is untracked its RSS gauge is no longer
+// observed, so the series ends rather than reporting 0 forever; its CPU
+// counter keeps its accumulated value.
+func TestAnUntrackedGroupStopsReportingRSSButKeepsItsCPU(t *testing.T) {
+	reg := procstat.NewRegistry(fakeProc{})
+	untrack := reg.Track(500, procstat.Labels{ChannelID: 7, Kind: procstat.KindSource})
+	rec := telemetrytest.Install(t, telemetry.WithProcRegistry(reg))
+	if p := rec.Points("mino_relay_process_memory_rss"); len(p) != 1 || p[0].Value != 40960 {
+		t.Fatalf("control: RSS while tracked = %+v", p)
+	}
+	untrack()
+	if p := rec.Points("mino_relay_process_memory_rss"); len(p) != 0 {
+		t.Errorf("an untracked group still reports RSS: %+v", p)
+	}
+	if got := rec.Sum("mino_relay_process_cpu"); got != 2 {
+		t.Errorf("CPU after untrack = %v, want the accumulated 2", got)
+	}
+}
