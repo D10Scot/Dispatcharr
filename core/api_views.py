@@ -128,7 +128,9 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
         key would otherwise answer with the serializer's uniqueness error and the refusal
         could be removed with no test noticing (SSO spec 5.1).
         """
-        if AUTH_SETTINGS_KEY in keys:
+        # The serializer's CharField trims ``key``, so compare the trimmed spelling: a padded
+        # "auth_settings " is the same key once validated.
+        if any(isinstance(k, str) and k.strip() == AUTH_SETTINGS_KEY for k in keys):
             raise CodedError("use_auth_settings_endpoint")
 
     def update(self, request, *args, **kwargs):

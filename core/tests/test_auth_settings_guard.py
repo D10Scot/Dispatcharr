@@ -156,8 +156,6 @@ class AuthSettingsDjangoAdminTests(TestCase):
 
     def test_delete_queryset_itself_refuses_the_row(self):
         """Defence in depth: the hook that actually deletes also refuses."""
-        from unittest import mock
-
         from django.contrib import admin
         from django.contrib.messages.storage.fallback import FallbackStorage
         from django.test import RequestFactory
@@ -174,7 +172,6 @@ class AuthSettingsDjangoAdminTests(TestCase):
         # Without the row, the queryset deletes normally.
         model_admin.delete_queryset(request, CoreSettings.objects.filter(key="other_group"))
         self.assertFalse(CoreSettings.objects.filter(key="other_group").exists())
-        self.assertIsNotNone(mock)
 
     def test_bulk_delete_of_other_rows_still_works(self):
         self.client.post(
@@ -210,3 +207,81 @@ class AuthSettingsDjangoAdminTests(TestCase):
         self.assertEqual(response.status_code, 302)
         self.other.refresh_from_db()
         self.assertEqual((self.other.name, self.other.value), ("Renamed", {"a": 3}))
+
+
+PADDED_KEYS = ["auth_settings ", " auth_settings", "\tauth_settings\n", "  auth_settings  "]
+
+
+class AuthSettingsPaddedKeyTests(TestCase):
+    """DRF's CharField trims ``key``, so a padded spelling must be refused as the real key.
+
+    The row is ABSENT here (a database restored from a pre-S1 backup before ``migrate``):
+    with the row present the uniqueness error would answer 400 and hide the bypass.
+    """
+
+    def setUp(self):
+        User = get_user_model()
+        self.admin = User.objects.create_user(username="admin", password="x", user_level=10)
+        self.client = APIClient()
+        self.client.force_authenticate(self.admin)
+        CoreSettings.objects.filter(key=AUTH_SETTINGS_KEY).delete()
+        self.other = CoreSettings.objects.create(key="other_group", name="Other", value={"a": 1})
+
+    def _assert_nothing_written(self):
+        self.assertFalse(
+            CoreSettings.objects.filter(key=AUTH_SETTINGS_KEY).exists(),
+            "an auth_settings row was created through the generic endpoint",
+        )
+        self.other.refresh_from_db()
+        self.assertEqual((self.other.key, self.other.value), ("other_group", {"a": 1}))
+
+    def test_create_with_a_padded_key_refused(self):
+        for key in PADDED_KEYS:
+            response = self.client.post(
+                SETTINGS,
+                {"key": key, "name": "x", "value": {"password_login_enabled": False}},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 400, f"{key!r}: {response.content}")
+            self.assertEqual(response.json(), USE_AUTH_ENDPOINT, repr(key))
+        self._assert_nothing_written()
+
+    def test_rename_into_a_padded_key_refused(self):
+        for key in PADDED_KEYS:
+            response = self.client.patch(
+                f"{SETTINGS}{self.other.pk}/",
+                {"key": key, "value": {"password_login_enabled": False}},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 400, f"{key!r}: {response.content}")
+            self.assertEqual(response.json(), USE_AUTH_ENDPOINT, repr(key))
+        self._assert_nothing_written()
+
+    def test_get_auth_settings_still_defaults_after_the_refusals(self):
+        self.client.post(
+            SETTINGS, {"key": "auth_settings ", "name": "x", "value": {}}, format="json"
+        )
+        self.assertTrue(CoreSettings.get_auth_settings()["password_login_enabled"])
+
+    def test_first_layer_normalises_before_comparing(self):
+        """The view-level refusal alone, called directly."""
+        from apps.accounts.oidc.errors import CodedError
+        from core.api_views import CoreSettingsViewSet
+
+        view = CoreSettingsViewSet()
+        for key in PADDED_KEYS + [AUTH_SETTINGS_KEY]:
+            with self.assertRaises(CodedError, msg=repr(key)):
+                view._refuse_auth_settings(key)
+        view._refuse_auth_settings("other_group", None, 5)  # not strings or other keys
+
+    def test_second_layer_refuses_after_validation(self):
+        """The serializer-level refusal alone, without the view."""
+        from apps.accounts.oidc.errors import CodedError
+        from core.serializers import CoreSettingsSerializer
+
+        for key in PADDED_KEYS:
+            serializer = CoreSettingsSerializer(data={"key": key, "name": "x", "value": {}})
+            with self.assertRaises(CodedError, msg=repr(key)):
+                serializer.is_valid()
+        ok = CoreSettingsSerializer(data={"key": "other_group2", "name": "x", "value": {}})
+        self.assertTrue(ok.is_valid(), ok.errors)
