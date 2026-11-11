@@ -1278,7 +1278,7 @@ Both languages, `MINO_LOG_FORMAT=json`, one JSON object per line:
 
 | Key | Python | Go | Notes |
 |---|---|---|---|
-| `time` | `record.created` as RFC 3339 UTC with microseconds | slog's own (RFC 3339 nano) | |
+| `time` | `record.created` as RFC 3339 UTC with microseconds | slog's own (RFC 3339 UTC with milliseconds: `JSONHandler` formats it with `appendRFC3339Millis`, `log/slog/handler.go`) | |
 | `level` | `record.levelname` (`TRACE` for level 5, which the repo uses) | slog's (`DEBUG`/`INFO`/`WARN`/`ERROR`) | |
 | `msg` | `redact_text(record.getMessage())` | `scrub(msg)` in `SafeHandler` | |
 | `logger` | `record.name` | absent | |
