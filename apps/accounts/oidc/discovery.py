@@ -27,11 +27,18 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 1024 * 1024  # 1 MiB, enforced while streaming
 TIMEOUT = (5, 10)  # connect, read
-# A total bound on reading one response body, measured from before the connect. The per-read
+# A total bound on reading one response BODY, measured from before the connect. The per-read
 # timeout alone lets a server that drips a byte every few seconds hold a request until
-# uWSGI's harakiri. The deadline is checked between body reads, so the connect and the wait
-# for the status line are bounded only by TIMEOUT: the worst case is the connect timeout,
-# plus the read timeout for the headers, plus TOTAL_DEADLINE, plus one read timeout.
+# uWSGI's harakiri. The deadline is checked between body reads only. What it does not bound:
+# - the connect and the response headers. Both are bounded only by TIMEOUT, and its read
+#   value is per receive, not per phase: headers dripped a byte at a time just inside the
+#   read timeout hold the request for as long as the server keeps dripping (a review
+#   measured 55.6 s at one byte per 0.7 s). requests and urllib3 offer no whole-request
+#   timeout; bounding this needs a timer around the call (gevent.Timeout under uWSGI), a
+#   recorded follow-up;
+# - one read past the deadline: up to one read timeout, and longer for a compressed body,
+#   because urllib3's read1 keeps receiving until the decoder yields output (24.2 s
+#   measured for gzip dripped at one byte per second).
 TOTAL_DEADLINE = 15
 READ_SIZE = 65536
 CACHE_TTL = 3600
@@ -56,6 +63,17 @@ def release_db_connection():
     """
     if not connection.in_atomic_block:
         connection.close()
+
+
+# RFC 7517/7518 private and symmetric key members. A JWKS is public by definition: a key that
+# carries one is refused whatever its type. An RSA private key would otherwise load and then
+# fail inside PyJWT's verify (AttributeError, a 500); an EC or OKP private key would load and
+# verify, accepting a key the IdP should never have published.
+PRIVATE_MEMBERS = ("d", "p", "q", "dp", "dq", "qi", "oth", "k")
+
+
+def has_private_members(jwk):
+    return isinstance(jwk, dict) and any(member in jwk for member in PRIVATE_MEMBERS)
 
 
 class DiscoveryError(Exception):
@@ -174,6 +192,10 @@ def _get_json(url, provider, *, kind, not_allowed_code):
     return doc
 
 
+def _printable_ascii(value):
+    return all("!" <= c <= "~" for c in value)
+
+
 def fetch_discovery(provider):
     """Fetch and validate the provider's discovery document (uncached)."""
     doc = _get_json(
@@ -188,6 +210,12 @@ def fetch_discovery(provider):
         value = doc.get(field)
         if not isinstance(value, str) or not value:
             raise DiscoveryError("discovery_endpoint_missing")
+        # Printable ASCII only, no space: a URL the IdP means is already percent-encoded. A
+        # lone surrogate would make the authorize redirect and link/start's JSON raise, and
+        # a CR, LF, NUL or space has no business in an endpoint either. Checked before the
+        # document is cached, so a bad one is never served for the cache's hour.
+        if not _printable_ascii(value):
+            raise DiscoveryError("discovery_endpoint_invalid")
         try:
             urlparse(value)
         except ValueError:
@@ -303,9 +331,13 @@ def run_test(provider):
     except DiscoveryError as exc:
         return [exc.code]
     try:
-        fetch_jwks(provider, discovery)
+        jwks = fetch_jwks(provider, discovery)
     except DiscoveryError as exc:
         problems.append(exc.code)
+    else:
+        # The login refuses such a key (validate._select_key); the test must not call it fine.
+        if any(has_private_members(k) for k in jwks["keys"]):
+            problems.append("jwks_private_key")
     try:
         check_token_endpoint(provider, discovery)
     except DiscoveryError as exc:

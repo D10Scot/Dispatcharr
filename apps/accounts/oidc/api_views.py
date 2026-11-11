@@ -433,11 +433,15 @@ class OIDCStartView(_FlowView):
                 link_user_id=None,
                 next_value=request.query_params.get("next"),
             )
+            return started.apply_cookies(HttpResponseRedirect(started.authorize_url))
         except (discovery.DiscoveryError, flow.FlowError) as exc:
             code = "provider_unavailable" if isinstance(exc, discovery.DiscoveryError) else exc.code
             flow.login_failed(request, code, provider.slug)
-            return HttpResponseRedirect(f"{base}/login?{urlencode({'sso_error': code})}")
-        return started.apply_cookies(HttpResponseRedirect(started.authorize_url))
+        except Exception as exc:  # noqa: BLE001 - the last resort; see flow.log_unexpected
+            flow.log_unexpected("start", exc)
+            code = "provider_unavailable"
+            flow.login_failed(request, code, provider.slug, unexpected=flow.UNEXPECTED_MARKER)
+        return HttpResponseRedirect(f"{base}/login?{urlencode({'sso_error': code})}")
 
 
 class OIDCLinkStartView(_FlowView):
@@ -472,12 +476,17 @@ class OIDCLinkStartView(_FlowView):
                 link_user_id=request.user.pk,
                 next_value=body.validated_data.get("next"),
             )
+            response = Response(
+                LinkStartResponseSerializer({"authorize_url": started.authorize_url}).data
+            )
+            return started.apply_cookies(response)
         except discovery.DiscoveryError:
             raise CodedError("provider_unavailable", status_code=status.HTTP_502_BAD_GATEWAY)
         except flow.FlowError as exc:
             raise CodedError(exc.code, status_code=exc.status)
-        response = Response(LinkStartResponseSerializer({"authorize_url": started.authorize_url}).data)
-        return started.apply_cookies(response)
+        except Exception as exc:  # noqa: BLE001 - the last resort; see flow.log_unexpected
+            flow.log_unexpected("link_start", exc)
+            raise CodedError("provider_unavailable", status_code=status.HTTP_502_BAD_GATEWAY) from None
 
 
 class OIDCCallbackView(_FlowView):

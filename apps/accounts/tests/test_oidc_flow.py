@@ -10,6 +10,7 @@ import base64
 import datetime
 import hashlib
 import json
+import logging
 import threading
 import time
 import warnings
@@ -19,6 +20,7 @@ from urllib.parse import parse_qs, unquote_plus, urlsplit
 import jwt
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ec, ed25519
 import requests
 from django.conf import settings
 from django.contrib.sessions.models import Session
@@ -1845,3 +1847,256 @@ class ProviderEditDuringExchangeTests(FlowTestCase):
             f"the login applied mappings loaded before the token exchange: {response['Location']}",
         )
         self.assertEqual(User.objects.count(), users)
+
+
+# ---- fix round 3 ---------------------------------------------------------------------------
+
+
+def private_jwk(private_key, kid):
+    """The JWK of a PRIVATE key, as a broken IdP might publish it (no ``alg``)."""
+    if isinstance(private_key, ed25519.Ed25519PrivateKey):
+        jwk = json.loads(jwt.algorithms.OKPAlgorithm.to_jwk(private_key))
+    elif isinstance(private_key, ec.EllipticCurvePrivateKey):
+        jwk = json.loads(jwt.algorithms.ECAlgorithm.to_jwk(private_key))
+    else:
+        jwk = json.loads(jwt.algorithms.RSAAlgorithm.to_jwk(private_key))
+    jwk = {k: v for k, v in jwk.items() if k not in ("alg", "key_ops")}
+    jwk.update({"kid": kid, "use": "sig"})
+    return jwk
+
+
+class PrivateJwkTests(FlowTestCase):
+    """A JWKS entry carrying a private member is refused for every key type (spec 3.4).
+
+    An RSA private key used to answer 500 (PyJWT's verify has no private-key path); EC and
+    OKP private keys were accepted and the login succeeded.
+    """
+
+    def assertRefused(self, provider, jwk, signing_key, alg, kid):
+        self.op.jwks_keys = [jwk]
+        client = APIClient(raise_request_exception=False)
+        response = self.sign_in(client, provider, {"roles": ["staff"]}, key=signing_key, alg=alg, kid=kid)
+        self.assertEqual(
+            response.status_code, 302, f"a {alg} private JWK answered {response.status_code}"
+        )
+        self.assertEqual(
+            sso_error(response), "id_token_invalid",
+            f"a {alg} JWK carrying a private member was used to verify: {response['Location']}",
+        )
+        self.assertFalse(OIDCIdentity.objects.exists())
+
+    def test_rsa_private_jwk_refused(self):
+        provider = self.make_flow_provider()
+        self.assertRefused(provider, private_jwk(keys()["rsa"], "rsa1"), keys()["rsa"], "RS256", "rsa1")
+
+    def test_rsa_public_jwk_with_d_only_refused(self):
+        provider = self.make_flow_provider(id_token_alg="PS256")
+        full = private_jwk(keys()["rsa"], "rsa1")
+        jwk = dict(public_jwk(keys()["rsa"], "rsa1"), d=full["d"])
+        self.assertRefused(provider, jwk, keys()["rsa"], "PS256", "rsa1")
+
+    def test_ec_private_jwk_refused(self):
+        provider = self.make_flow_provider(id_token_alg="ES256")
+        self.assertRefused(provider, private_jwk(keys()["ec"], "ec1"), keys()["ec"], "ES256", "ec1")
+
+    def test_okp_private_jwk_refused(self):
+        key = ed25519.Ed25519PrivateKey.generate()
+        provider = self.make_flow_provider(id_token_alg="EdDSA")
+        self.assertRefused(provider, private_jwk(key, "okp1"), key, "EdDSA", "okp1")
+
+    def test_okp_public_jwk_accepted(self):
+        # The control for the OKP case: the same key, published public, signs a login in.
+        key = ed25519.Ed25519PrivateKey.generate()
+        jwk = {k: v for k, v in private_jwk(key, "okp1").items() if k != "d"}
+        provider = self.make_flow_provider(id_token_alg="EdDSA")
+        self.op.jwks_keys = [jwk]
+        response = self.sign_in(APIClient(), provider, {"roles": ["staff"]}, key=key, alg="EdDSA", kid="okp1")
+        self.assertIsNone(sso_error(response), response["Location"])
+
+    def test_test_action_reports_private_jwk(self):
+        provider = self.make_flow_provider()
+        self.op.jwks_keys = [public_jwk(keys()["rsa"], "rsa1"), private_jwk(keys()["ec"], "ec1")]
+        client, _ = admin_client()
+        response = client.post(f"{PROVIDERS}{provider.pk}/test/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertIn(
+            "jwks_private_key", response.json()["problems"],
+            "the test action called a JWKS carrying a private key fine",
+        )
+        self.assertFalse(response.json()["ok"])
+
+
+class DiscoveryEndpointCharacterTests(FlowTestCase):
+    """Every endpoint the discovery document names is printable ASCII, checked before caching."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = self.make_flow_provider()
+
+    def test_start_refuses_surrogate_in_authorization_endpoint(self):
+        self.op.discovery_extra = {"authorization_endpoint": self.op.issuer + "/authorize\ud800"}
+        response = APIClient(raise_request_exception=False).get(f"/api/accounts/oidc/{self.provider.slug}/start/")
+        self.assertEqual(
+            response.status_code, 302,
+            f"start answered {response.status_code} to a surrogate in authorization_endpoint",
+        )
+        self.assertEqual(sso_error(response), "provider_unavailable", response["Location"])
+        self.assertIsNone(
+            cache.get(discovery.discovery_cache_key(self.provider)),
+            "a discovery document with an unencodable endpoint was cached",
+        )
+
+    def test_link_start_refuses_surrogate_in_authorization_endpoint(self):
+        self.op.discovery_extra = {"authorization_endpoint": self.op.issuer + "/authorize?x=\ud800"}
+        client, _ = admin_client()
+        client.raise_request_exception = False
+        response = client.post(
+            f"/api/accounts/oidc/{self.provider.slug}/link/start/", {"next": "/users"}, format="json"
+        )
+        self.assertEqual(
+            response.status_code, 502,
+            f"link/start answered {response.status_code} to a surrogate in authorization_endpoint",
+        )
+        self.assertEqual(response.json()["code"], "provider_unavailable")
+
+    def test_every_endpoint_must_be_printable_ascii(self):
+        cases = {
+            "authorization_endpoint": ["/authorize\r\nX: y", "/author ize", "/authorize\x00", "/authorizé"],
+            "token_endpoint": ["/token\ud800", "/to ken"],
+            "jwks_uri": ["/jwks\x7f", "/jwks "],
+        }
+        for field, suffixes in cases.items():
+            for suffix in suffixes:
+                with self.subTest(field=field, value=ascii(suffix)):
+                    self.op.discovery_extra = {field: self.op.issuer + suffix}
+                    with self.assertRaises(discovery.DiscoveryError) as caught:
+                        discovery.fetch_discovery(self.provider)
+                    self.assertEqual(caught.exception.code, "discovery_endpoint_invalid")
+
+    def test_test_action_reports_invalid_endpoint(self):
+        self.op.discovery_extra = {"authorization_endpoint": self.op.issuer + "/authorize\ud800"}
+        client, _ = admin_client()
+        response = client.post(f"{PROVIDERS}{self.provider.pk}/test/")
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json()["problems"], ["discovery_endpoint_invalid"])
+
+
+UNEXPECTED_TEXT = "unexpected-" + "c0ffee5eed"
+
+
+def explode(*args, **kwargs):
+    """Stands in for any step raising an exception type nobody enumerated."""
+    raise KeyError(UNEXPECTED_TEXT)
+
+
+class LastResortTests(FlowTestCase):
+    """Each entry point answers its fixed refusal for an unenumerated exception, and says so
+    at ERROR with the class and the innermost frame only."""
+
+    FRAME = f"{__name__}:explode:"
+
+    def setUp(self):
+        super().setUp()
+        self.provider = self.make_flow_provider()
+
+    def assertLoggedLoudly(self, logs, captured, stage):
+        lines = [r.getMessage() for r in logs.records if r.levelno == logging.ERROR]
+        self.assertEqual(len(lines), 1, logs.output)
+        line = lines[0]
+        self.assertIn(flow.UNEXPECTED_MARKER, line)
+        self.assertIn(f"OIDC {stage} ", line)
+        self.assertIn("KeyError", line)
+        self.assertIn(self.FRAME, line, f"the innermost frame is not named: {line}")
+        for record in logs.records:
+            self.assertIsNone(record.exc_info, "a traceback was logged")
+        everything = " ".join(logs.output) + " ".join(text for _, text in captured)
+        self.assertNotIn(UNEXPECTED_TEXT, everything, "the exception's message reached a log")
+
+    def test_callback(self):
+        client = APIClient(raise_request_exception=False)
+        url = self.start(client, self.provider)
+        params = self.op.authorize(url, {"roles": ["staff"]})
+        with self.assertLogs("apps.accounts.oidc.flow", "DEBUG") as logs, capture_all_logs() as captured:
+            with mock.patch.object(flow.validate, "validate_id_token", side_effect=explode):
+                response = self.callback(client, self.provider, params)
+        self.assertEqual(
+            response.status_code, 302, f"an unenumerated exception answered {response.status_code}"
+        )
+        self.assertEqual(sso_error(response), "provider_unavailable", response["Location"])
+        self.assertLoggedLoudly(logs, captured, "callback")
+        event = SystemEvent.objects.filter(event_type="login_failed").latest("id")
+        self.assertEqual(event.details.get("unexpected"), flow.UNEXPECTED_MARKER)
+
+    def test_start(self):
+        client = APIClient(raise_request_exception=False)
+        with self.assertLogs("apps.accounts.oidc.flow", "DEBUG") as logs, capture_all_logs() as captured:
+            with mock.patch.object(flow, "safe_next", side_effect=explode):
+                response = client.get(f"/api/accounts/oidc/{self.provider.slug}/start/")
+        self.assertEqual(
+            response.status_code, 302, f"an unenumerated exception answered {response.status_code}"
+        )
+        self.assertEqual(sso_error(response), "provider_unavailable", response["Location"])
+        self.assertLoggedLoudly(logs, captured, "start")
+
+    def test_link_start(self):
+        client, _ = admin_client()
+        client.raise_request_exception = False
+        with self.assertLogs("apps.accounts.oidc.flow", "DEBUG") as logs, capture_all_logs() as captured:
+            with mock.patch.object(flow, "safe_next", side_effect=explode):
+                response = client.post(
+                    f"/api/accounts/oidc/{self.provider.slug}/link/start/", {"next": "/users"}, format="json"
+                )
+        self.assertEqual(
+            response.status_code, 502, f"an unenumerated exception answered {response.status_code}"
+        )
+        self.assertEqual(response.json()["code"], "provider_unavailable")
+        self.assertLoggedLoudly(logs, captured, "link_start")
+
+
+class ProvisioningSqlstateTests(FlowTestCase):
+    def test_provisioning_failed_logs_the_sqlstate(self):
+        import psycopg
+
+        def deadlock(*args, **kwargs):
+            try:
+                raise psycopg.errors.DeadlockDetected("detail " + UNEXPECTED_TEXT)
+            except psycopg.Error as exc:
+                raise OperationalError("deadlock " + UNEXPECTED_TEXT) from exc
+
+        provider = self.make_flow_provider()
+        with self.assertLogs("apps.accounts.oidc.flow", "WARNING") as logs:
+            with mock.patch.object(provisioning, "resolve", side_effect=deadlock):
+                response = self.sign_in(APIClient(raise_request_exception=False), provider, {"roles": ["staff"]})
+        self.assertEqual(sso_error(response), "provisioning_failed")
+        text = " ".join(logs.output)
+        self.assertIn("OperationalError sqlstate=40P01", text, f"no SQLSTATE in: {text}")
+        self.assertNotIn(UNEXPECTED_TEXT, text)
+
+    def test_sqlstate_refuses_anything_but_a_five_character_code(self):
+        class Fake(Exception):
+            pass
+
+        for value, expected in (("40P01", "40P01"), ("4OP01x", None), ("40 01", None), (None, None), (5, None)):
+            cause = Fake()
+            cause.sqlstate = value
+            exc = OperationalError("x")
+            exc.__cause__ = cause
+            with self.subTest(value=value):
+                self.assertEqual(flow.sqlstate(exc), expected)
+
+
+class RefreshOwnerTests(FlowTestCase):
+    """Spec 5.4: an identity that now belongs to another user refuses the refresh."""
+
+    def test_identity_of_another_user_refuses_refresh(self):
+        provider = self.make_flow_provider()
+        body = self.login(APIClient(), provider, {"roles": ["staff"], "preferred_username": "u"})
+        other = User.objects.create_user(username="other", user_level=1)
+        OIDCIdentity.objects.update(user=other)
+        # A version bump so refresh re-evaluates; the mapping still grants u's level.
+        bump_mappings(provider, [{"value": "staff", "user_level": 1}])
+        response = self.refresh(body["refresh"])
+        self.assertEqual(
+            response.status_code, 401,
+            f"a refresh was re-evaluated against an identity owned by another user: {response.status_code}",
+        )

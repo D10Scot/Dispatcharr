@@ -63,6 +63,9 @@ def _select_key(jwks, kid, alg):
     if len(matches) > 1:
         raise IdTokenInvalid()
     jwk = matches[0]
+    if discovery.has_private_members(jwk):
+        logger.warning("OIDC JWK refused: it carries a private key member")
+        raise IdTokenInvalid()
     kty = jwk.get("kty")
     if kty == "oct" or kty != _family(alg):
         raise IdTokenInvalid()

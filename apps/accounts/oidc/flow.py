@@ -285,6 +285,49 @@ def begin(request, provider, base_url, *, intent, link_user_id, next_value):
     return Started(authorize_url, base_url, binding_cookie_name(tx_id(state), base_url), binding, expire)
 
 
+# ---- the last resort -----------------------------------------------------------------
+
+UNEXPECTED_MARKER = "oidc_unexpected"
+_SQLSTATE_LEN = 5
+
+
+def sqlstate(exc):
+    """The driver's five-character SQLSTATE behind a Django ``DatabaseError``, or None.
+
+    A fixed code (``40P01`` a deadlock, ``55P03`` a lock timeout, ``23505`` a unique
+    violation) that carries no data, unlike the error's message.
+    """
+    code = getattr(exc.__cause__, "sqlstate", None)
+    if isinstance(code, str) and len(code) == _SQLSTATE_LEN and code.isascii() and code.isalnum():
+        return code
+    return None
+
+
+def _innermost_frame(exc):
+    tb = exc.__traceback__
+    if tb is None:
+        return "unknown"
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    frame = tb.tb_frame
+    return f"{frame.f_globals.get('__name__', '?')}:{frame.f_code.co_name}:{tb.tb_lineno}"
+
+
+def log_unexpected(stage, exc):
+    """Log an exception the flow did not anticipate, loudly and without its content.
+
+    The class and the innermost frame's module, function and line only: never the message,
+    a repr or a traceback, which could carry an IdP-controlled string or a secret.
+    """
+    logger.error(
+        "%s: OIDC %s answered a refusal for an unexpected %s at %s",
+        UNEXPECTED_MARKER,
+        stage,
+        type(exc).__name__,
+        _innermost_frame(exc),
+    )
+
+
 # ---- callback ------------------------------------------------------------------------
 
 
@@ -423,7 +466,9 @@ def callback(request, provider, base_url):
             # abort, answers a fixed code rather than a 500 that would put the callback's
             # query in the 5xx log. The character checks in validate and provisioning refuse
             # or strip what is known; this keeps the redirect promise when they miss one.
-            logger.warning("OIDC provisioning failed: %s", type(exc).__name__)
+            logger.warning(
+                "OIDC provisioning failed: %s sqlstate=%s", type(exc).__name__, sqlstate(exc)
+            )
             return refuse("provisioning_failed")
 
         # 9-10. Mint and park behind the one-time handoff code.
@@ -443,6 +488,13 @@ def callback(request, provider, base_url):
         )
     except FlowError as exc:
         return refuse(exc.code)
+    except Exception as exc:  # noqa: BLE001 - the last resort; see log_unexpected
+        # Every specific handler above keeps its code. This one sits outside resolve's
+        # transaction and the admin-floor lock (both have unwound by the time it runs), so
+        # it never continues a broken transaction; it keeps the promise that the callback
+        # answers a redirect, for an exception type nobody enumerated.
+        log_unexpected("callback", exc)
+        return refuse("provider_unavailable", unexpected=UNEXPECTED_MARKER)
 
     # 11. Fragment only: never sent to a server, a proxy log or a Referer.
     response = HttpResponseRedirect(f"{base_url}/login/sso#code={handoff_code}")
