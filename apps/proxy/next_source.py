@@ -283,14 +283,11 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
     try:
         logger.debug("Executing URL pattern replacement:")
         logger.debug(f"  base URL: {redact_url(input_url)}")
-        logger.debug(f"  search: {search_pattern}")
 
         # Convert JS-style backreferences in replace pattern: $<name> -> \g<name>, $1 -> \g<1>
         # Fixed conversion patterns only; timeout is reserved for the user search.
         safe_replace_pattern = regex.sub(r'\$<([^>]+)>', r'\\g<\1>', replace_pattern)
         safe_replace_pattern = convert_js_numbered_backreferences(safe_replace_pattern)
-        logger.debug(f"  replace: {replace_pattern}")
-        logger.debug(f"  safe replace: {safe_replace_pattern}")
 
         # Apply the transformation (regex module accepts JS-style (?<name>...) natively).
         # timeout bounds ReDoS from nested quantifiers in search_pattern.
@@ -301,13 +298,16 @@ def transform_url(input_url: str, search_pattern: str, replace_pattern: str) -> 
             timeout=URL_TRANSFORM_REGEX_TIMEOUT,
         )
         if match_count == 0:
-            logger.warning(f"URL pattern '{search_pattern}' did not match, falling back to original URL: {redact_url(input_url)}")
+            # The patterns are never logged: in the Xtream "simple" profile mode they
+            # are the provider login (<username>/<password>).
+            logger.warning("Profile URL pattern did not match, falling back to original URL: %s", redact_url(input_url))
         else:
             logger.info(f"Generated stream url: {redact_url(stream_url)}")
 
         return stream_url
     except Exception as e:
-        logger.error(f"Error transforming URL: {e}")
+        # Type only: a regex error's text can quote part of the pattern.
+        logger.error("Error transforming URL: %s", type(e).__name__)
         return input_url  # Return original URL on error
 
 
@@ -878,7 +878,7 @@ def _with_proxy_settings(answer):
     return answer
 
 
-def _with_output_profiles(answer, hls_output_profile_id=None):
+def _with_output_profiles(answer, hls_output_profile_id=None, channel_pk=None):
     """Every active OutputProfile's built argv, on every next-source answer.
 
     Spec § Stage 2b, the `views.py:152` row: "A control-plane response
@@ -950,6 +950,11 @@ def _with_output_profiles(answer, hls_output_profile_id=None):
         output_profiles[str(profile.id)] = {"id": profile.id, "argv": argv}
     answer["output_profiles"] = output_profiles
     answer["hls_profile"] = hls_profile
+    # Observability spec D7 / O3: the channel's numeric id, so the relay can
+    # label metrics without ever being told the UUID is a label. The caller
+    # passes it from the object it already resolved (no query here); None
+    # for a previewed Stream and for the 404.
+    answer["channel_pk"] = channel_pk
     return answer
 
 
@@ -1036,6 +1041,7 @@ def resolve_source(
     # can tell a channel from a previewed stream without a second lookup.
     resolved_object = get_stream_object(identifier)
     hls_output_profile_id = getattr(resolved_object, "hls_output_profile_id", None)
+    channel_pk = resolved_object.pk if isinstance(resolved_object, Channel) else None
 
     excluded = {int(sid) for sid in exclude_stream_ids or ()}
 
@@ -1071,19 +1077,19 @@ def resolve_source(
                 identifier, answer["source"]["stream_id"], locked_ffmpeg_profile=locked,
             )
         answer.setdefault("alternates", [])
-        return _with_output_profiles(_with_proxy_settings(answer), hls_output_profile_id)
+        return _with_output_profiles(_with_proxy_settings(answer), hls_output_profile_id, channel_pk)
 
     if target_stream_id is not None:
         info = get_stream_info_for_switch(identifier, target_stream_id)
         if "error" in info:
             return _with_output_profiles(_with_proxy_settings(
                 {"source": None, "alternates": [], "error": info["error"]}
-            ), hls_output_profile_id)
+            ), hls_output_profile_id, channel_pk)
         return _with_output_profiles(_with_proxy_settings({
             "source": _commit(identifier, info, locked_ffmpeg_profile=locked),
             "alternates": [],
             "error": None,
-        }), hls_output_profile_id)
+        }), hls_output_profile_id, channel_pk)
 
     # Failover: the ordered traversal, minus what the relay has tried and
     # minus anything resolving to the URL already playing. That last check
@@ -1103,12 +1109,12 @@ def resolve_source(
             "source": _commit(identifier, info, locked_ffmpeg_profile=locked),
             "alternates": [],
             "error": None,
-        }), hls_output_profile_id)
+        }), hls_output_profile_id, channel_pk)
     return _with_output_profiles(_with_proxy_settings({
         "source": None,
         "alternates": [],
         "error": "No alternate stream with available connections",
-    }), hls_output_profile_id)
+    }), hls_output_profile_id, channel_pk)
 
 
 def release_source(identifier, *, stream_id=None, m3u_profile_id=None, channel_pk=None):

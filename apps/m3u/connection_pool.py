@@ -93,7 +93,7 @@ def _fingerprint_from_profile_stream_url(profile) -> Optional[str]:
         logger.debug(
             "Could not derive profile %s fingerprint from stream URL: %s",
             profile.pk,
-            exc,
+            type(exc).__name__,
         )
         return None
 

@@ -3095,7 +3095,12 @@ def get_transformed_credentials(account, profile=None):
             else:
                 logger.debug(f"No active profiles found for account {account.name}, using base credentials")
         except Exception as e:
-            logger.warning(f"Could not get primary profile for account {account.name}: {e}")
+            # Type only: keep exception text out of the log (see the transform below).
+            logger.warning(
+                "Could not get primary profile for account %s: %s",
+                account.name,
+                type(e).__name__,
+            )
             profile = None
 
     from core.xtream_codes import normalize_server_url
@@ -3183,7 +3188,12 @@ def get_transformed_credentials(account, profile=None):
                     return base_url, base_username, base_password
 
             except Exception as e:
-                logger.error(f"Error transforming URL for profile {profile.name if profile else 'unknown'}: {e}")
+                # Type only: a regex error's text can quote part of the profile's pattern.
+                logger.error(
+                    "Error transforming URL for profile %s: %s",
+                    profile.name if profile else 'unknown',
+                    type(e).__name__,
+                )
                 return base_url, base_username, base_password
         else:
             # No profile or no transformation patterns
