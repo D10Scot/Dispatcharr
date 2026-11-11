@@ -1,4 +1,4 @@
-# 11. OIDC sign-in is hand-rolled on PyJWT and mints the existing JWT pair
+# 12. OIDC sign-in is hand-rolled on PyJWT and mints the existing JWT pair
 
 Date: 2026-10-31. Revised 2026-11-11: the library comparison is corrected and the size estimate redone.
 

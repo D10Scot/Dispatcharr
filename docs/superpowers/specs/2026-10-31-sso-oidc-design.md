@@ -11,7 +11,7 @@ The product is being renamed from Dispatcharr to Mino (`docs/superpowers/specs/2
 
 New Python modules live in the `dispatcharr` and `apps` packages, which the rename keeps (its C-10). User-visible strings use whatever product name the tree carries when each PR lands; its C1 decides that.
 
-ADR: `docs/adr/0011-oidc-sign-in-is-hand-rolled-on-pyjwt-and-mints-the-existing-jwt-pair.md`.
+ADR: `docs/adr/0012-oidc-sign-in-is-hand-rolled-on-pyjwt-and-mints-the-existing-jwt-pair.md`.
 
 ## Goal
 
@@ -30,7 +30,7 @@ Admins and users sign in to the web UI, and so obtain REST API credentials, thro
 
 | # | Decision |
 |---|---|
-| D1 | Hand-rolled authorization code + PKCE (S256) flow on **PyJWT** and **requests**, both already locked. No new dependency. (ADR 0011) |
+| D1 | Hand-rolled authorization code + PKCE (S256) flow on **PyJWT** and **requests**, both already locked. No new dependency. (ADR 0012) |
 | D2 | SSO ends by minting the **existing simplejwt pair** (`RefreshToken.for_user`). The SPA, WebSocket, player, recordings, VOD and catch-up need no change. |
 | D3 | The callback **never calls `django.contrib.auth.login()`** and sets no Django session. Transient state lives in Redis behind a single-use key, bound to the browser by an HttpOnly, `__Host-` prefixed cookie named per transaction (ruling B6). Linking starts only from an authenticated `POST`, so the binding exists only in the linking user's own browser. |
 | D4 | Tokens reach the SPA through a **one-time exchange code** in the URL **fragment**, redeemed by `POST`. Tokens never appear in a URL. |
@@ -115,7 +115,7 @@ Admins and users sign in to the web UI, and so obtain REST API credentials, thro
 
 ## 2. Library choice
 
-Recorded in ADR 0011. The comparison:
+Recorded in ADR 0012. The comparison:
 
 - **`mozilla-django-oidc`.** Each RP endpoint and credential is a single Django setting (`OIDC_RP_CLIENT_ID`, `OIDC_OP_AUTHORIZATION_ENDPOINT`, …). PKCE sits behind `OIDC_USE_PKCE` (default off), and success establishes a Django session (`SessionRefresh` middleware, tokens "in the user session"). Source: https://mozilla-django-oidc.readthedocs.io/en/stable/settings.html. It fails R1 (settings, not DB), multi-provider, and D3 (session).
 - **`django-allauth`**, OpenID Connect provider. Providers are declared as `APPS` entries in the `SOCIALACCOUNT_PROVIDERS` setting, one independent instance each (https://docs.allauth.org/en/latest/socialaccount/providers/openid_connect.html). allauth also has a `SocialApp` DB model, but that page does not document it for OIDC, and I did not verify a runtime-editable path. Either way it brings the allauth account framework (its own login views, email handling, session login and headless mode) for one flow, plus custom glue to hand the SPA a simplejwt pair.
@@ -981,7 +981,7 @@ Six PRs in order, S0 to S5. Each opens as a draft, gets a pinned review (`fable`
 **PR description draft:**
 
 > Adds the storage and admin API for OIDC single sign-on, the first PR of the SSO spec
-> (`docs/superpowers/specs/2026-10-31-sso-oidc-design.md`, PR S1; ADR 0011). New models
+> (`docs/superpowers/specs/2026-10-31-sso-oidc-design.md`, PR S1; ADR 0012). New models
 > `OIDCProvider` and `OIDCIdentity`, a seeded `auth_settings` settings group that the generic
 > `/api/core/settings/` endpoint refuses to write, admin CRUD with a discovery/JWKS `test` action,
 > and an Entra preset that accepts only a tenant GUID. A provider authenticates with a client
@@ -1055,7 +1055,7 @@ Six PRs in order, S0 to S5. Each opens as a draft, gets a pinned review (`fable`
 
 **PR description draft:**
 
-> Adds the OIDC authorization-code + PKCE flow (spec PR S2; ADR 0011): per-provider start and
+> Adds the OIDC authorization-code + PKCE flow (spec PR S2; ADR 0012): per-provider start and
 > callback routes, ID-token validation on PyJWT against cached discovery and JWKS, identity
 > linking on (provider, issuer, subject) with just-in-time users and a claim → user_level mapping
 > that refuses unmapped logins, and a one-time fragment handoff that gives the SPA the same
@@ -1310,7 +1310,7 @@ A documentation-backed review of the spec at `04e76269` returned NO-GO. The owne
 | A4 | An issuer ending in `/` produced a `//.well-known` discovery URL. | § 3.5, T20b |
 | A5 | Outbound fetches bypassed the repository's SSRF check. | D22, § 3.5, T20a |
 
-**Recorded, not changed:** the library comparison is corrected in § 2 and ADR 0011 (C1); what live Entra's discovery and JWKS contain is in § 3.5 (C2); sovereign clouds and External ID use the generic form (C3, § 3.6); Entra redirect URIs are validated to 256 characters (C4, § 3.6, T36).
+**Recorded, not changed:** the library comparison is corrected in § 2 and ADR 0012 (C1); what live Entra's discovery and JWKS contain is in § 3.5 (C2); sovereign clouds and External ID use the generic form (C3, § 3.6); Entra redirect URIs are validated to 256 characters (C4, § 3.6, T36).
 
 **Places where a ruling was applied other than literally:**
 
