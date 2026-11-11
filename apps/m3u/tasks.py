@@ -40,13 +40,32 @@ from .utils import (
 logger = logging.getLogger(__name__)
 
 
-_CONTENT_TYPE_RE = re.compile(r"^(application|text|audio|video)/[a-z0-9.+-]{1,40}$")
+_LOGGABLE_MEDIA_TYPES = frozenset({
+    "application/x-mpegurl", "application/vnd.apple.mpegurl", "audio/x-mpegurl",
+    "audio/mpegurl", "application/octet-stream", "application/gzip",
+    "application/x-gzip", "application/zip", "application/json",
+    "application/xml", "text/xml", "text/plain", "text/html",
+})
 
 
 def _safe_content_type(value):
-    """The media type of a Content-Type header if it is an ordinary token, else "other"."""
+    """The media type of a Content-Type header if it is a known one, else "other".
+
+    A fixed allowlist of complete types: a shape check would let provider text
+    that merely looks like a type (``text/<anything>``) through.
+    """
     token = str(value or "").split(";", 1)[0].strip().lower()
-    return token if _CONTENT_TYPE_RE.match(token) else "other"
+    return token if token in _LOGGABLE_MEDIA_TYPES else "other"
+
+
+def _safe_id(value):
+    """A provider identifier for a log line: short digits, else a placeholder.
+
+    Category and stream ids are provider-supplied and untyped; a response can
+    put a URL in one. Stored values and processing are not affected.
+    """
+    text = str(value)
+    return text if re.fullmatch(r"[0-9]{1,12}", text) else "<invalid id>"
 
 
 def _safe_content_length(value):
@@ -103,7 +122,7 @@ def _delete_channels_stopping_streams(channels):
     except Exception as e:
         # stop_channels is best-effort and normally never raises; never block
         # the DB delete on proxy teardown failure.
-        logger.warning("Failed stopping proxy sessions before channel delete: %s", e)
+        logger.warning("Failed stopping proxy sessions before channel delete: %s", type(e).__name__)
     channel_ids = [channel.id for channel in channel_list]
     Channel.objects.filter(id__in=channel_ids).delete()
     return len(channel_ids)
@@ -134,7 +153,7 @@ def _db_query_with_retry(fn, *, label="DB query", max_retries=2):
             logger.warning(
                 "%s failed (%s), resetting DB connection (%s/%s)",
                 label,
-                exc,
+                type(exc).__name__,
                 attempt + 1,
                 max_retries,
             )
@@ -174,7 +193,7 @@ def _set_m3u_account_status(
             )
     except Exception as e:
         logger.error(
-            f"Failed to set account {account_id} status to {status}: {e}"
+            f"Failed to set account {account_id} status to {status}: {type(e).__name__}"
         )
 
 
@@ -198,7 +217,7 @@ def _ensure_m3u_refresh_terminal_status(account_id):
             )
     except Exception as e:
         logger.debug(
-            f"Could not verify terminal refresh status for account {account_id}: {e}"
+            f"Could not verify terminal refresh status for account {account_id}: {type(e).__name__}"
         )
 
 _EXTINF_ATTR_RE = re.compile(r'([^\s=]+)\s*=\s*(["\'])(.*?)\2')
@@ -639,7 +658,8 @@ def fetch_m3u_lines(account, use_cache=False):
 
         except (IOError, OSError, zipfile.BadZipFile, gzip.BadGzipFile, lzma.LZMAError) as e:
             error_msg = f"Error opening file {account.file_path}: {e}"
-            logger.error(error_msg)
+            # Type only: an archive error can quote a member name.
+            logger.error("Error opening M3U file for account %s: %s", account.id, type(e).__name__)
             account.status = M3UAccount.Status.ERROR
             account.last_message = error_msg
             account.save(update_fields=["status", "last_message"])
@@ -892,7 +912,7 @@ def process_groups(account, groups, scan_start_time=None):
                 existing_rel.last_seen = scan_start_time
                 existing_rel.is_stale = False
                 relations_to_update.append(existing_rel)
-                logger.debug(f"Updated xc_id for group '{group.name}' from '{existing_xc_id}' to '{new_xc_id}' - account {account.id}")
+                logger.debug(f"Updated xc_id for group '{group.name}' from '{_safe_id(existing_xc_id)}' to '{_safe_id(new_xc_id)}' - account {account.id}")
             else:
                 # Update last_seen even if xc_id hasn't changed
                 if isinstance(existing_rel.custom_properties, str):
@@ -1039,9 +1059,9 @@ def collect_xc_streams(account_id, enabled_groups):
                 )
                 if not stream.get("name"):
                     logger.warning(
-                        "XC stream has null/empty name; using generated name '%s' "
+                        "XC stream has null/empty name; using a generated name "
                         "(stream_id=%s)",
-                        stream_name, stream.get("stream_id", "unknown"),
+                        _safe_id(stream.get("stream_id", "unknown")),
                     )
 
                 stream_id = stream.get("stream_id")
@@ -1193,7 +1213,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                 # Check if we have a valid xc_id for this group
                 if "xc_id" not in props:
                     logger.error(
-                        f"Missing xc_id for group {group_name} in batch {batch}"
+                        f"Missing xc_id for group {group_name} in a batch of {len(batch)} group(s)"
                     )
                     continue
 
@@ -1205,13 +1225,13 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
 
                 try:
                     logger.debug(
-                        f"Fetching streams for XC category: {group_name} (ID: {props['xc_id']})"
+                        f"Fetching streams for XC category: {group_name} (ID: {_safe_id(props['xc_id'])})"
                     )
                     streams = xc_client.get_live_category_streams(props["xc_id"])
 
                     if not streams:
                         logger.warning(
-                            f"No streams found for XC category {group_name} (ID: {props['xc_id']})"
+                            f"No streams found for XC category {group_name} (ID: {_safe_id(props['xc_id'])})"
                         )
                         continue
 
@@ -1224,7 +1244,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                         if not stream.get("name"):
                             logger.warning(
                                 f"XC stream has null/empty name in category {group_name}; "
-                                f"using generated name '{name}' (stream_id={stream.get('stream_id', 'unknown')})"
+                                f"using a generated name (stream_id={_safe_id(stream.get('stream_id', 'unknown'))})"
                             )
                         raw_stream_id = stream.get("stream_id", "")
                         provider_stream_id = None
@@ -1277,7 +1297,7 @@ def process_xc_category_direct(account_id, batch, groups, hash_keys):
                             stream_hashes[stream_hash] = stream_props
                 except Exception as e:
                     logger.error(
-                        f"Error processing XC category {group_name} (ID: {props['xc_id']}): {type(e).__name__}"
+                        f"Error processing XC category {group_name} (ID: {_safe_id(props['xc_id'])}): {type(e).__name__}"
                     )
                     continue
 
@@ -1728,7 +1748,7 @@ def _refresh_m3u_groups_locked(account_id, use_cache, full_refresh, scan_start_t
                     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
                 )
                 logger.warning(
-                    f"Exception in user agent handling, using fallback: {str(e)}"
+                    f"Exception in user agent handling, using fallback: {type(e).__name__}"
                 )
 
             logger.info(
@@ -1750,7 +1770,7 @@ def _refresh_m3u_groups_locked(account_id, use_cache, full_refresh, scan_start_t
                         logger.info(f"Queueing background profile refresh for account {account.name}")
                         refresh_account_profiles.delay(account.id)
                     except Exception as e:
-                        logger.warning(f"Failed to queue profile refresh task: {str(e)}")
+                        logger.warning("Failed to queue profile refresh task: %s", type(e).__name__)
                         # Don't fail the main refresh if profile refresh can't be queued
 
                     # Get categories with detailed error handling
@@ -1788,7 +1808,7 @@ def _refresh_m3u_groups_locked(account_id, use_cache, full_refresh, scan_start_t
                         for category in xc_categories:
                             cat_name = category.get("category_name", "Unknown Category")
                             cat_id = category.get("category_id", "0")
-                            logger.info(f"Adding category: {cat_name} (ID: {cat_id})")
+                            logger.info(f"Adding category: {cat_name} (ID: {_safe_id(cat_id)})")
                             groups[cat_name] = {
                                 "xc_id": cat_id,
                             }
@@ -1988,8 +2008,10 @@ def delete_m3u_refresh_task_by_id(account_id):
         return False
     except Exception as e:
         logger.error(
-            f"Error deleting periodic task for M3UAccount {account_id}: {str(e)}",
-            exc_info=True,
+            "Error deleting periodic task for M3UAccount %s: %s\n%s",
+            account_id,
+            type(e).__name__,
+            "".join(traceback.format_tb(e.__traceback__)),
         )
         return False
 
@@ -3600,7 +3622,7 @@ def _refresh_single_m3u_account_impl(account_id):
         except json.JSONDecodeError as e:
             # Handle corrupted JSON file
             logger.error(
-                f"Error parsing cached M3U data for account {account_id}: {str(e)}"
+                f"Error parsing cached M3U data for account {account_id}: {type(e).__name__}"
             )
 
             # Backup the corrupted file for potential analysis
@@ -3610,14 +3632,14 @@ def _refresh_single_m3u_account_impl(account_id):
                 logger.info(f"Renamed corrupted cache file to {backup_path}")
             except OSError as rename_err:
                 logger.warning(
-                    f"Failed to rename corrupted cache file: {str(rename_err)}"
+                    f"Failed to rename corrupted cache file: {type(rename_err).__name__}"
                 )
 
             # Reset the data to empty structures
             extinf_data = []
             groups = None
         except Exception as e:
-            logger.error(f"Unexpected error reading cached M3U data: {str(e)}")
+            logger.error("Unexpected error reading cached M3U data: %s", type(e).__name__)
             extinf_data = []
             groups = None
 
@@ -3845,7 +3867,7 @@ def _refresh_single_m3u_account_impl(account_id):
                         "channel_group_id": group_id,
                     }
                     logger.debug(
-                        f"Added group {group_name} with xc_id {custom_props['xc_id']}"
+                        f"Added group {group_name} with xc_id {_safe_id(custom_props['xc_id'])}"
                     )
                 else:
                     logger.warning(
@@ -3853,7 +3875,7 @@ def _refresh_single_m3u_account_impl(account_id):
                     )
 
             logger.info(
-                f"Filtered {len(filtered_groups)} groups for processing: {filtered_groups}"
+                f"Filtered {len(filtered_groups)} groups for processing"
             )
 
             # Collect all XC streams in a single API call and filter by enabled categories
@@ -4042,7 +4064,7 @@ def _refresh_single_m3u_account_impl(account_id):
             rollup_channel_catchup_fields(account_id)
             logger.debug(f"Catch-up field rollup complete for account {account_id}")
         except Exception as e:
-            logger.error(f"Error rolling up catch-up fields for account {account_id}: {str(e)}")
+            logger.error("Error rolling up catch-up fields for account %s: %s", account_id, type(e).__name__)
 
         # Calculate elapsed time
         elapsed_time = time.time() - start_time
@@ -4114,7 +4136,7 @@ def _refresh_single_m3u_account_impl(account_id):
                 refresh_vod_content.delay(account_id)
                 logger.info(f"VOD refresh task queued for account {account_id}")
             except Exception as e:
-                logger.error(f"Failed to queue VOD refresh for account {account_id}: {str(e)}")
+                logger.error("Failed to queue VOD refresh for account %s: %s", account_id, type(e).__name__)
 
     except Exception as e:
         logger.error("Error processing M3U for account %s: %s", account_id, type(e).__name__)

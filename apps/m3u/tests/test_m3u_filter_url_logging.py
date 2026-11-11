@@ -26,7 +26,10 @@ from unittest import mock
 
 import django.db
 import regex
-from django.test import SimpleTestCase, TestCase
+from django.test import SimpleTestCase, TestCase, TransactionTestCase
+
+from apps.channels.models import ChannelGroup, ChannelGroupM3UAccount
+from apps.m3u.models import M3UAccount
 
 from apps.m3u import tasks as m3u_tasks
 from apps.m3u.utils import _BoundedFilterPattern
@@ -37,7 +40,7 @@ OPAQUE_URL = "https://prov.example.com/channel/opaquetoken123/index.m3u8"
 SERVER_URL = "http://prov.example.com/get.php?username=srvuser&password=srvpass&type=m3u"
 SECRETS = (
     "olduser", "oldpass", "opaquetoken123", "srvuser", "srvpass",
-    "catchuptoken", "logotoken", "vlctoken",
+    "catchuptoken", "logotoken", "vlctoken", "idtoken", "typesecret", "memberfile",
 )
 
 
@@ -51,6 +54,7 @@ def compiled(filter_type, pattern, exclude):
 
 def assert_no_secret(test, records):
     for rec in records:
+        test.assertIsNone(rec.exc_info, f"{rec.name} {rec.levelname} attached a traceback")
         text = record_text(rec)
         for secret in SECRETS:
             test.assertNotIn(
@@ -265,7 +269,37 @@ class FetchLoggingTests(SimpleTestCase):
         self.assertEqual(meta, ["Response metadata: content-type=audio/x-mpegurl content-length=12"])
         self.assertEqual(m3u_tasks._safe_content_length("12 http://x/olduser"), "other")
         self.assertEqual(m3u_tasks._safe_content_type("text/http://x/olduser"), "other")
+        self.assertEqual(m3u_tasks._safe_content_type("text/srvpass"), "other")
+        self.assertEqual(m3u_tasks._safe_content_type("Application/X-MpegURL; charset=utf-8"), "application/x-mpegurl")
         assert_no_secret(self, logs.records)
+
+    def test_a_content_type_that_only_looks_like_a_type_is_not_logged(self):
+        headers = m3u_tasks.requests.structures.CaseInsensitiveDict(
+            {"Content-Type": "text/typesecret", "Content-Length": "12"}
+        )
+        body = b"#EXTM3U\n#EXTINF:-1,Chan\nhttp://prov.example.com/x.ts\n"
+        _, result, logs = self.fetch(_Response(200, body, headers=headers))
+        self.assertEqual(result[1], True)
+        meta = [r.getMessage() for r in logs.records if "Response metadata" in r.getMessage()]
+        self.assertEqual(meta, ["Response metadata: content-type=other content-length=12"])
+        assert_no_secret(self, logs.records)
+
+    def test_archive_error_text_is_not_logged(self):
+        account = SimpleNamespace(
+            id=self.ACCOUNT_ID, name="acct", server_url=None, file_path="/data/list.zip",
+            status=None, last_message=None, save=mock.Mock(),
+        )
+        err = m3u_tasks.zipfile.BadZipFile("bad member memberfile/olduser/oldpass.m3u")
+        with (
+            mock.patch.object(m3u_tasks.zipfile, "ZipFile", side_effect=err),
+            mock.patch.object(m3u_tasks, "send_m3u_update"),
+        ):
+            with capture(m3u_tasks.logger) as logs:
+                result = m3u_tasks.fetch_m3u_lines(account)
+        self.assertEqual(result, (None, False))
+        assert_no_secret(self, logs.records)
+        self.assertTrue(any("BadZipFile" in r.getMessage() for r in logs.records))
+        self.assertIn("memberfile", account.last_message, "the persisted text is unchanged")
 
     def test_provider_text_overlapping_the_server_url_cannot_unmask_it(self):
         # A body that is a substring of the server URL used to be replaced inside
@@ -445,6 +479,42 @@ class XcAndAutoSyncLoggingTests(SimpleTestCase):
         self.assertTrue(any("Found 1 categories" in r.getMessage() for r in logs.records))
         assert_no_secret(self, logs.records)
 
+    def test_url_bearing_category_id_is_not_logged(self):
+        cats = [{"category_id": "http://prov.example.com/live/olduser/oldpass/idtoken", "category_name": "Live"}]
+        logs = self.run_xc_groups(cats)
+        assert_no_secret(self, logs.records)
+        self.assertTrue(any("Adding category: Live (ID: <invalid id>)" in r.getMessage() for r in logs.records))
+
+    def test_url_bearing_stream_id_is_not_logged(self):
+        account = SimpleNamespace(
+            id=5, name="acct", server_url=SERVER_URL, username="srvuser", password="srvpass",
+            get_user_agent_string=lambda: "UA",
+        )
+        manager = mock.MagicMock()
+        manager.select_related.return_value.get.return_value = account
+        client = mock.MagicMock()
+        client.__enter__.return_value = client
+        client.server_url = "http://prov.example.com"
+        client.username, client.password = "u", "p"
+        client.get_all_live_streams.return_value = [
+            {"category_id": "1", "name": "",
+             "stream_id": "http://prov.example.com/live/olduser/oldpass/idtoken"},
+        ]
+        with (
+            mock.patch.object(m3u_tasks.M3UAccount, "objects", manager),
+            mock.patch.object(m3u_tasks, "XCClient", return_value=client),
+        ):
+            with capture(m3u_tasks.logger) as logs:
+                m3u_tasks.collect_xc_streams(5, {"Live": {"xc_id": "1"}})
+        assert_no_secret(self, logs.records)
+        self.assertTrue(any("(stream_id=<invalid id>)" in r.getMessage() for r in logs.records))
+
+    def test_safe_id_keeps_plain_ids_only(self):
+        self.assertEqual(m3u_tasks._safe_id("123"), "123")
+        self.assertEqual(m3u_tasks._safe_id(45), "45")
+        for bad in ("http://x/olduser", "12 34", "", "1" * 13, None):
+            self.assertEqual(m3u_tasks._safe_id(bad), "<invalid id>")
+
     def test_unexpected_category_response_is_not_dumped(self):
         logs = self.run_xc_groups({"error": "http://prov.example.com/live/olduser/oldpass/1.ts"})
         self.assertTrue(any("Unexpected response from XC server: dict" in r.getMessage() for r in logs.records))
@@ -459,3 +529,59 @@ class XcAndAutoSyncLoggingTests(SimpleTestCase):
         self.assertEqual(result["status"], "error")
         self.assertIn("olduser", result["error"], "the returned payload is unchanged")
         assert_no_secret(self, logs.records)
+
+
+class RefreshAutoSyncResultLoggingTests(TransactionTestCase):
+    """The refresh implementation's own auto-sync result line (not
+    sync_auto_channels' handler)."""
+
+    @mock.patch("apps.m3u.tasks.log_system_event")
+    @mock.patch("apps.m3u.tasks.send_m3u_update")
+    @mock.patch("apps.m3u.tasks.cleanup_stale_group_relationships")
+    @mock.patch("apps.m3u.tasks.cleanup_streams", return_value=0)
+    @mock.patch("apps.m3u.tasks.process_m3u_batch_direct", return_value="1 created, 0 updated")
+    @mock.patch("apps.m3u.tasks.sync_auto_channels")
+    @mock.patch("apps.m3u.tasks.refresh_m3u_groups")
+    def test_result_line_logs_status_and_counts_only(
+        self, mock_groups, mock_sync, _proc, _cs, _cg, mock_ws, _log,
+    ):
+        account = M3UAccount.objects.create(
+            name="Auto Sync Log Account", server_url="http://example.com",
+            username="user", password="pass",
+            account_type=M3UAccount.Types.XC, is_active=True,
+        )
+        group = ChannelGroup.objects.create(name="Sports")
+        ChannelGroupM3UAccount.objects.create(
+            m3u_account=account, channel_group=group, enabled=True,
+            auto_channel_sync=True, auto_sync_channel_start=100,
+            custom_properties={"xc_id": "123"},
+        )
+        mock_groups.return_value = ([], {"Sports": group.id})
+        secret_error = "range exhausted for http://prov.example.com/live/olduser/oldpass/1.ts"
+        mock_sync.return_value = {
+            "status": "error",
+            "error": secret_error,
+            "channels_created": 2,
+            "failed_stream_details": [
+                {"stream_name": "S", "group": "G", "error": secret_error},
+            ],
+        }
+        xc_stream = {
+            "name": "ESPN", "url": "http://example.com/espn.m3u8",
+            "attributes": {"group-title": "Sports", "stream_id": "1"},
+        }
+        with mock.patch("apps.m3u.tasks.collect_xc_streams", return_value=[xc_stream]):
+            with capture(m3u_tasks.logger) as logs:
+                m3u_tasks._refresh_single_m3u_account_impl(account.id)
+
+        line = [r.getMessage() for r in logs.records if "Auto channel sync result" in r.getMessage()]
+        self.assertEqual(
+            line,
+            [f"Auto channel sync result for account {account.id}: status=error counts={{'channels_created': 2}}"],
+        )
+        assert_no_secret(self, logs.records)
+        # Returned, persisted and WebSocket data are unchanged.
+        account.refresh_from_db()
+        self.assertEqual(account.status, M3UAccount.Status.ERROR)
+        self.assertIn(f"Auto-sync error: {secret_error}", account.last_message)
+        self.assertEqual(mock_ws.call_args.kwargs.get("status"), "error")
