@@ -58,20 +58,57 @@ def _safe_content_type(value):
     return token if token in _LOGGABLE_MEDIA_TYPES else "other"
 
 
-_URL_SHAPED_RE = re.compile(r"://|\?.*=|\S*/\S*/\S*")
+_WITHHELD = "<withheld: URL-shaped>"
+_LOGGABLE_NAME_CAP = 512
 
 
 def _loggable_name(value):
     """A stream or group name for a per-stream log line; URL-shaped text is withheld.
 
     A name is provider text, and an application-generated fallback name embeds
-    the raw ``stream_id``. Withheld when the text contains ``://``, or a ``?``
-    followed later by ``=``, or a whitespace-free run with two or more ``/``
-    (so ``A&E / HD`` and ``24/7 News`` pass). Logging only: the name itself is
-    never changed.
+    the raw ``stream_id``. The text (``str(value)``) is withheld, as
+    ``<withheld: URL-shaped>``, when it is longer than 512 characters (not
+    scanned), or contains ``://``, or contains a ``?`` followed later by ``=``,
+    or has a whitespace-separated token with two or more ``/`` (so ``A&E / HD``
+    and ``24/7 News`` pass). Every check is linear in the text. Logging only:
+    the name itself is never changed.
     """
     text = str(value)
-    return "<withheld: URL-shaped>" if _URL_SHAPED_RE.search(text) else text
+    if len(text) > _LOGGABLE_NAME_CAP:
+        return _WITHHELD
+    if "://" in text:
+        return _WITHHELD
+    question = text.find("?")
+    if question >= 0 and text.find("=", question + 1) >= 0:
+        return _WITHHELD
+    if any(token.count("/") >= 2 for token in text.split()):
+        return _WITHHELD
+    return text
+
+
+class _LoggableText:
+    """A name or group captured BEFORE any truncation, classified lazily, once.
+
+    Passed as a ``%s`` argument it is only formatted when the record is
+    emitted, so a level that is off costs nothing per stream. ``short()`` cuts
+    the already-classified text, so truncating the stored name can never remove
+    the marker that made it URL-shaped.
+    """
+
+    __slots__ = ("_value", "_text")
+
+    def __init__(self, value):
+        self._value = value
+        self._text = None
+
+    def __str__(self):
+        if self._text is None:
+            self._text = _loggable_name(self._value)
+        return self._text
+
+    def short(self, limit):
+        text = str(self)
+        return text if text == _WITHHELD else text[:limit]
 
 
 def _safe_id(value):
@@ -1142,8 +1179,12 @@ def _compile_m3u_stream_filters(filter_queryset):
     return compiled
 
 
-def _stream_passes_m3u_filters(name, url, group_title, compiled_filters):
-    """Return False when the first matching filter excludes the stream."""
+def _stream_passes_m3u_filters(name, url, group_title, compiled_filters, log_name=None, log_group=None):
+    """Return False when the first matching filter excludes the stream.
+
+    ``log_name``/``log_group`` are the logging-only ``_LoggableText`` of the
+    complete, untruncated name and group; they default to the arguments.
+    """
     for pattern, filter_obj in compiled_filters:
         logger.trace("Checking filter pattern %s", pattern.pattern)
         if filter_obj.filter_type == "url":
@@ -1156,7 +1197,8 @@ def _stream_passes_m3u_filters(name, url, group_title, compiled_filters):
         if pattern.search(target or ""):
             logger.debug(
                 "Stream %s (group %s) matches filter pattern %s",
-                _loggable_name(name), _loggable_name(group_title), filter_obj.regex_pattern,
+                log_name or _LoggableText(name), log_group or _LoggableText(group_title),
+                filter_obj.regex_pattern,
             )
             return not filter_obj.exclude
     return True
@@ -1435,15 +1477,21 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
     for stream_info in batch:
         try:
             name, url = stream_info["name"], stream_info["url"]
+            # Classified from the complete name, lazily and once; every sink
+            # below uses it, so truncation cannot remove the URL-shape marker.
+            log_name = _LoggableText(name)
 
             # Validate URL length - maximum of 4096 characters
             if url and len(url) > 4096:
-                logger.warning(f"Skipping stream '{_loggable_name(name)}': URL too long ({len(url)} characters, max 4096)")
+                logger.warning("Skipping stream '%s': URL too long (%d characters, max 4096)", log_name, len(url))
                 continue
 
             # Truncate name if it exceeds the model field limit
             if name and len(name) > name_max_length:
-                logger.warning(f"Stream name too long ({len(name)} > {name_max_length}), truncating: {_loggable_name(name[:80])}...")
+                logger.warning(
+                    "Stream name too long (%d > %d), truncating: %s...",
+                    len(name), name_max_length, log_name.short(80),
+                )
                 name = name[:name_max_length]
 
             tvg_id, tvg_logo = get_case_insensitive_attr(
@@ -1452,19 +1500,18 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-            logger.trace("Processing stream: %s in group %s", _loggable_name(name), _loggable_name(group_title))
+            log_group = _LoggableText(group_title)
+            logger.trace("Processing stream: %s in group %s", log_name, log_group)
 
             if compiled_filters and not _stream_passes_m3u_filters(
-                name, url, group_title, compiled_filters,
+                name, url, group_title, compiled_filters, log_name, log_group,
             ):
                 logger.debug("Stream excluded by filter, skipping.")
                 continue
 
             # Filter out disabled groups for this account
             if group_title not in groups:
-                logger.debug(
-                    f"Skipping stream in disabled or excluded group: {_loggable_name(group_title)}"
-                )
+                logger.debug("Skipping stream in disabled or excluded group: %s", log_group)
                 continue
 
             # Determine provider-specific fields first
@@ -1536,7 +1583,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             # login, and an exception may quote any of them.
             logger.error(
                 "Failed to process stream %s: %s (record keys: %s)",
-                _loggable_name(name),
+                log_name,
                 type(e).__name__,
                 sorted(stream_info) if isinstance(stream_info, dict) else type(stream_info).__name__,
             )

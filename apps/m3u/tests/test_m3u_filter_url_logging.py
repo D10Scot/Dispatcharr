@@ -132,7 +132,8 @@ class BatchLoggingTests(TestCase):
             with self.subTest(url=url):
                 info = {"name": "BBC News", "url": url, "attributes": {}}
                 logs, trace = self.run_batch(info)
-                trace.assert_any_call("Processing stream: %s in group %s", "BBC News", "Default Group")
+                lines = [c.args[0] % c.args[1:] for c in trace.call_args_list]
+                self.assertIn("Processing stream: BBC News in group Default Group", lines)
                 for call in trace.call_args_list:
                     text = repr(call)
                     for secret in SECRETS:
@@ -671,3 +672,134 @@ class GeneratedNameLoggingTests(TestCase):
         for text in errors:
             self.assertNotIn("nametoken", text)
         self.assertIn("Failed to process stream <withheld: URL-shaped>: KeyError", errors[0])
+
+
+class LoggableNameCapTests(SimpleTestCase):
+    def test_overlong_slash_only_text_is_withheld_quickly(self):
+        import time
+        started = time.monotonic()
+        self.assertEqual(m3u_tasks._loggable_name("/" * 100_000), "<withheld: URL-shaped>")
+        self.assertEqual(m3u_tasks._loggable_name("a/" * 50_000 + " "), "<withheld: URL-shaped>")
+        self.assertLess(time.monotonic() - started, 1.0)
+
+    def test_the_cap_is_512_characters(self):
+        self.assertEqual(m3u_tasks._loggable_name("a" * 512), "a" * 512)
+        self.assertEqual(m3u_tasks._loggable_name("a" * 513), "<withheld: URL-shaped>")
+
+    def test_slash_heavy_text_under_the_cap_is_linear_and_withheld(self):
+        self.assertEqual(m3u_tasks._loggable_name("/" * 500), "<withheld: URL-shaped>")
+        self.assertEqual(m3u_tasks._loggable_name("a / b / c / d"), "a / b / c / d")
+
+
+class UntruncatedClassificationTests(TestCase):
+    """The marker may sit beyond the 80- and 512-character cuts."""
+
+    GROUPS = {"Live": 1}
+
+    def collect(self, stream_id):
+        account = SimpleNamespace(
+            id=5, name="acct", server_url=SERVER_URL, username="srvuser", password="srvpass",
+            get_user_agent_string=lambda: "UA",
+        )
+        manager = mock.MagicMock()
+        manager.select_related.return_value.get.return_value = account
+        client = mock.MagicMock()
+        client.__enter__.return_value = client
+        client.server_url = "http://prov.example.com"
+        client.username, client.password = "u", "p"
+        client.get_all_live_streams.return_value = [
+            {"category_id": "1", "name": "", "stream_id": stream_id},
+        ]
+        with (
+            mock.patch.object(m3u_tasks.M3UAccount, "objects", manager),
+            mock.patch.object(m3u_tasks, "XCClient", return_value=client),
+            mock.patch.object(m3u_tasks.logger, "warning"),
+        ):
+            return m3u_tasks.collect_xc_streams(5, {"Live": {"xc_id": "1"}})
+
+    def batch(self, records, groups=None, fail=False, filters="acct"):
+        account = SimpleNamespace(account_type="XC", filters=mock.MagicMock())
+        manager = mock.MagicMock()
+        manager.select_related.return_value.get.return_value = account
+        trace_lines = []
+        stream_model = mock.MagicMock()
+        stream_model._meta.get_field.return_value.max_length = 255
+        stream_model.generate_hash_key.return_value = "h"
+        if fail:
+            stream_model.generate_hash_key.side_effect = ValueError("boom")
+        stream_model.objects.filter.return_value.select_related.return_value.only.return_value = []
+        with (
+            mock.patch.object(django.db.connections, "close_all"),
+            mock.patch.object(m3u_tasks.M3UAccount, "objects", manager),
+            mock.patch.object(m3u_tasks, "Stream", stream_model),
+            mock.patch.object(
+                m3u_tasks.logger, "trace",
+                side_effect=lambda msg, *a, **k: trace_lines.append(msg % a),
+            ),
+        ):
+            with capture(m3u_tasks.logger) as logs:
+                m3u_tasks.process_m3u_batch_direct(
+                    1, records, self.GROUPS if groups is None else groups, [],
+                    compiled_filters=compiled("name", filters, False),
+                )
+        return [record_text(r) for r in logs.records] + trace_lines
+
+    def assert_clean(self, texts):
+        for text in texts:
+            for secret in SECRETS:
+                self.assertNotIn(secret, text, f"leaked {secret!r}: {text[:200]}")
+
+    def test_second_slash_beyond_both_cuts_reaches_no_sink(self):
+        # 80 < marker < 255 < 512, and one case beyond the 512 cap.
+        for stream_id in ("nametoken/" + "x" * 300 + "/1.ts", "nametoken/" + "x" * 600 + "/1.ts"):
+            for fail in (False, True):
+                with self.subTest(length=len(stream_id), fail=fail):
+                    records = self.collect(stream_id)
+                    self.assertTrue(records[0]["name"].startswith("acct - nametoken/"))
+                    texts = self.batch(records, fail=fail)
+                    self.assert_clean(texts)
+                    self.assertTrue(any("name too long" in t for t in texts), "the warning sink ran")
+                    self.assertTrue(any("Processing stream: <withheld" in t for t in texts), "the TRACE sink ran")
+                    self.assertTrue(
+                        fail or any("Stream <withheld: URL-shaped> (group" in t for t in texts),
+                        "the filter-match sink ran",
+                    )
+                    self.assertTrue(
+                        not fail or any("Failed to process stream <withheld" in t for t in texts),
+                        "the failure sink ran",
+                    )
+
+    def test_stored_name_is_still_truncated_and_unchanged(self):
+        records = self.collect("nametoken/" + "x" * 300 + "/1.ts")
+        original = records[0]["name"]
+        self.batch(records)
+        self.assertEqual(records[0]["name"], original)
+
+    def test_disabled_group_debug_withholds_a_url_shaped_group(self):
+        records = [{"name": "acct one", "url": URL, "attributes": {"group-title": "nametoken/a/b"}}]
+        texts = self.batch(records)
+        self.assert_clean(texts)
+        self.assertTrue(any("disabled or excluded group: <withheld: URL-shaped>" in t for t in texts))
+
+    def test_helper_is_not_called_when_the_levels_are_off(self):
+        records = [{"name": "acct one", "url": URL, "attributes": {"group-title": "Live"}}]
+        account = SimpleNamespace(account_type="XC", filters=mock.MagicMock())
+        manager = mock.MagicMock()
+        manager.select_related.return_value.get.return_value = account
+        stream_model = mock.MagicMock()
+        stream_model._meta.get_field.return_value.max_length = 255
+        stream_model.generate_hash_key.return_value = "h"
+        stream_model.objects.filter.return_value.select_related.return_value.only.return_value = []
+        previous = m3u_tasks.logger.level
+        m3u_tasks.logger.setLevel(logging.INFO)
+        self.addCleanup(m3u_tasks.logger.setLevel, previous)
+        with (
+            mock.patch.object(django.db.connections, "close_all"),
+            mock.patch.object(m3u_tasks.M3UAccount, "objects", manager),
+            mock.patch.object(m3u_tasks, "Stream", stream_model),
+            mock.patch.object(m3u_tasks, "_loggable_name", wraps=m3u_tasks._loggable_name) as helper,
+        ):
+            m3u_tasks.process_m3u_batch_direct(
+                1, records, {"Live": 1}, [], compiled_filters=compiled("name", "acct", False),
+            )
+        helper.assert_not_called()
