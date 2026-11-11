@@ -293,7 +293,7 @@ jobs:
           # actions-lint.yml: a new release adding a linter must not fail an
           # unrelated PR. Keep in sync with the version the PostToolUse hook
           # checks for (.claude/hooks/run-go-checks.sh).
-          version: v2.13.2
+          version: v2.14.0
           working-directory: relay
 
       - name: Run golangci-lint (GOOS=linux)
@@ -301,7 +301,7 @@ jobs:
         env:
           GOOS: linux
         with:
-          version: v2.13.2
+          version: v2.14.0
           working-directory: relay
 
       - name: Run golangci-lint (GOOS=darwin)
@@ -309,7 +309,7 @@ jobs:
         env:
           GOOS: darwin
         with:
-          version: v2.13.2
+          version: v2.14.0
           working-directory: relay
 
   # Gate 2's Go counterpart (spec § Stage 2c, the 2c-9 row; § Testing). A bare
