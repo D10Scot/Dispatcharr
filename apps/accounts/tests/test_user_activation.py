@@ -25,6 +25,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 
 from apps.accounts import api_views as accounts_api_views
 from apps.accounts import serializers as accounts_serializers
+from apps.accounts.admin_floor import ADMIN_FLOOR_LOCK_KEY
 from apps.accounts.models import User
 from apps.channels.models import ChannelProfile
 
@@ -199,6 +200,40 @@ class UserActivationTests(TestCase):
         self.standard.refresh_from_db()
         self.assertTrue(self.standard.is_active)
 
+    def test_multipart_create_without_is_active_stays_active(self):
+        """DRF reads a missing boolean on form input as False; omission must mean absent."""
+        response = self.client.post(
+            USERS,
+            {"username": "formuser", "password": "testpass123", "user_level": 1},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 201, response.content)
+        self.assertTrue(User.objects.get(username="formuser").is_active)
+
+    def test_multipart_put_without_is_active_leaves_target_active(self):
+        response = self.client.put(
+            f"{USERS}{self.standard.pk}/",
+            {"username": self.standard.username, "user_level": 1},
+            format="multipart",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.standard.refresh_from_db()
+        self.assertTrue(
+            self.standard.is_active,
+            "a form-encoded PUT that omits is_active deactivated the user",
+        )
+
+    def test_target_deleted_before_the_lock_is_404(self):
+        real_lock = accounts_api_views.admin_floor_lock
+
+        def lock_then_delete():
+            real_lock()
+            User.objects.filter(pk=self.standard.pk).delete()
+
+        with mock.patch.object(accounts_api_views, "admin_floor_lock", lock_then_delete):
+            response = self._patch(self.standard, {"is_active": False})
+        self.assertEqual(response.status_code, 404)
+
     def test_marker_is_false_under_test(self):
         self.assertIs(settings.RUNTIME_SQLITE, False)
 
@@ -262,6 +297,13 @@ class UserActivationConcurrencyTests(TransactionTestCase):
         client.force_authenticate(user)
         return client
 
+    def test_admin_floor_lock_outside_atomic_raises(self):
+        from apps.accounts.admin_floor import admin_floor_lock
+
+        self.assertFalse(connection.in_atomic_block)
+        with self.assertRaises(RuntimeError):
+            admin_floor_lock()
+
     def test_concurrent_last_admin_deactivations_one_wins(self):
         """Two admins deactivate each other. The mutex serializes them: exactly one succeeds.
 
@@ -284,8 +326,10 @@ class UserActivationConcurrencyTests(TransactionTestCase):
                 f"{USERS}{target.pk}/", {"is_active": False}, format="json"
             )
 
+        key = ADMIN_FLOOR_LOCK_KEY
         waiting_for_lock = (
-            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
+            f"AND classid::bigint = {key >> 32} AND objid::bigint = {key & 0xFFFFFFFF}"
         )
         try:
             with mock.patch.object(accounts_api_views, "admin_floor_lock", held_lock):
@@ -424,12 +468,16 @@ class UserActivationConcurrencyTests(TransactionTestCase):
         finally:
             e1.set()
 
-        for name, t in (("A", ta), ("B", tb)):
+        for t in (ta, tb):
+            # The Django test client re-raises request exceptions through a process-wide
+            # signal, so which thread's client reports an error is not reliable: the message
+            # does not attribute it to A or B.
             self.assertIsNone(
                 t.error,
-                f"request {name} raised {t.error!r}. With the profile write inside the guarded "
-                f"transaction, A's .set() waits for the through row B's delete holds while B "
-                f"waits for A's user row: PostgreSQL's deadlock error. State at E1: {state_seen}",
+                f"a request raised {t.error!r}. With the profile write inside the guarded "
+                "transaction, the PATCH's .set() waits for the through row the delete holds "
+                "while the delete waits for the PATCH's user row: PostgreSQL's deadlock "
+                f"error. State at E1: {state_seen}",
             )
         self.assertEqual(state_seen, "b finished", "B's delete had to wait for A's user row at E1")
         self.assertEqual(tb.result.status_code, 204)

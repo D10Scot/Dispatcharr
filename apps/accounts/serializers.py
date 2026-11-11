@@ -47,7 +47,6 @@ class GroupSerializer(serializers.ModelSerializer):
         fields = ["id", "name", "permissions"]
 
 
-# 🔹 Fix for User serialization
 def apply_channel_profiles(user, profiles):
     """Replace a user's channel-profile memberships.
 
@@ -58,7 +57,20 @@ def apply_channel_profiles(user, profiles):
     user.channel_profiles.set(profiles)
 
 
+class OptionalBooleanField(serializers.BooleanField):
+    """A boolean whose omission means "absent" on every content type.
+
+    DRF's BooleanField reads a missing key on form input (multipart, urlencoded) as False on
+    a non-partial update, so a form-encoded PUT or POST that omits ``is_active`` would
+    deactivate the user.
+    """
+
+    default_empty_html = serializers.empty
+
+
+# 🔹 Fix for User serialization
 class UserSerializer(serializers.ModelSerializer):
+    is_active = OptionalBooleanField(required=False)
     password = serializers.CharField(write_only=True, required=False)
     channel_profiles = serializers.PrimaryKeyRelatedField(
         queryset=ChannelProfile.objects.all(), many=True, required=False
