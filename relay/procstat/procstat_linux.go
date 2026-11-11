@@ -5,8 +5,6 @@ package procstat
 import (
 	"encoding/binary"
 	"os"
-	"strconv"
-	"strings"
 	"unsafe"
 )
 
@@ -26,32 +24,18 @@ func SystemSource() Source {
 func (s procSource) TicksPerSecond() float64 { return s.ticks }
 func (procSource) PageSize() int             { return os.Getpagesize() }
 
-// Snapshot scans /proc/[0-9]*/stat once. A process that exits between the
-// directory listing and the read is skipped, as is any entry that does not
-// parse: a half-read process must not fail the whole collection.
+// Snapshot scans /proc/[0-9]*/stat once; snapshotFrom says which per-pid
+// failures are skipped and which fail the snapshot.
 func (procSource) Snapshot() ([]Proc, error) {
 	entries, err := os.ReadDir("/proc")
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Proc, 0, len(entries))
-	for _, e := range entries {
-		name := e.Name()
-		if name == "" || name[0] < '0' || name[0] > '9' {
-			continue
-		}
-		if _, err := strconv.Atoi(name); err != nil {
-			continue
-		}
-		raw, err := os.ReadFile("/proc/" + name + "/stat") //nolint:gosec // a numeric /proc directory entry
-		if err != nil {
-			continue
-		}
-		p, err := ParseStat(strings.TrimSpace(string(raw)))
-		if err != nil {
-			continue
-		}
-		out = append(out, p)
+	names := make([]string, len(entries))
+	for i, e := range entries {
+		names[i] = e.Name()
 	}
-	return out, nil
+	return snapshotFrom(names, func(name string) ([]byte, error) {
+		return os.ReadFile("/proc/" + name + "/stat") //nolint:gosec // a numeric /proc directory entry
+	})
 }

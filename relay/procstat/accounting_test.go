@@ -275,3 +275,95 @@ func TestTicksGoingBackwardsAddNothing(t *testing.T) {
 		t.Fatalf("figure = %v, want 5: a backwards step must add zero", got)
 	}
 }
+
+// absentFor returns n successful snapshots in which only the leader is listed.
+func absentFor(n int) [][]Proc {
+	out := make([][]Proc, n)
+	for i := range out {
+		out[i] = []Proc{proc(500, 10, 1, 0)}
+	}
+	return out
+}
+
+func child(secs int) Proc { return proc(501, 20, secs, 0) }
+
+func collectAll(t *testing.T, src *scripted) *Registry {
+	t.Helper()
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	for range len(src.snaps) - 1 {
+		r.Collect()
+	}
+	return r
+}
+
+// The reviewer's round-4 probe, literally: a child with one CPU-hour absent
+// from seven successful snapshots and back unchanged is counted once, and
+// one absent from eight is forgotten. Together they pin the grace at eight.
+func TestAnIdentityAbsentSevenTimesIsKeptAndEightTimesIsForgotten(t *testing.T) {
+	snaps := [][]Proc{{proc(500, 10, 1, 0), child(hour)}}
+	snaps = append(snaps, absentFor(7)...)
+	snaps = append(snaps, []Proc{proc(500, 10, 1, 0), child(hour + 1)})
+	src := &scripted{snaps: snaps}
+	r := collectAll(t, src)
+	if got := cpu(t, r, lab); got != 1+hour+1 {
+		t.Fatalf("after 7 absences: figure = %v s, want %v: the child was forgotten and its hour counted again", got, 1+hour+1)
+	}
+
+	snaps = [][]Proc{{proc(500, 10, 1, 0), child(hour)}}
+	snaps = append(snaps, absentFor(8)...)
+	r = collectAll(t, &scripted{snaps: snaps})
+	cpu(t, r, lab)
+	if _, held := r.seen[identity{501, 20}]; held {
+		t.Fatalf("after 8 absences the child is still held: the grace is longer than %d", forgetAfter)
+	}
+}
+
+// A failed snapshot between absences ages nothing: seven absences, a failed
+// read, then the child back unchanged is still counted once.
+func TestAFailedSnapshotAgesNothing(t *testing.T) {
+	snaps := [][]Proc{{proc(500, 10, 1, 0), child(hour)}}
+	snaps = append(snaps, absentFor(7)...)
+	src := &scripted{snaps: append(snaps, []Proc{proc(500, 10, 1, 0), child(hour)})}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	for range 8 {
+		r.Collect()
+	}
+	src.err = errors.New("proc unreadable")
+	r.Collect()
+	src.err = nil
+	if got := cpu(t, r, lab); got != 1+hour {
+		t.Fatalf("figure = %v s, want %v: a failed snapshot aged the child out", got, 1+hour)
+	}
+}
+
+// Absences must be consecutive: seven, a reappearance, seven more and back
+// again is fourteen in total but never eight in a row.
+func TestAbsencesMustBeConsecutive(t *testing.T) {
+	snaps := [][]Proc{{proc(500, 10, 1, 0), child(hour)}}
+	snaps = append(snaps, absentFor(7)...)
+	snaps = append(snaps, []Proc{proc(500, 10, 1, 0), child(hour)})
+	snaps = append(snaps, absentFor(7)...)
+	snaps = append(snaps, []Proc{proc(500, 10, 1, 0), child(hour)})
+	r := collectAll(t, &scripted{snaps: snaps})
+	if got := cpu(t, r, lab); got != 1+hour {
+		t.Fatalf("figure = %v s, want %v: a reappearance did not reset the absence count", got, 1+hour)
+	}
+}
+
+// A child that leaves its group (setpgid) for longer than the grace and
+// rejoins still exists throughout, so its hour is counted once.
+func TestAChildThatLeavesItsGroupAndRejoinsIsNotCountedTwice(t *testing.T) {
+	away := proc(501, 20, hour, 0)
+	away.PGrp = 900
+	snaps := [][]Proc{{proc(500, 10, 1, 0), child(hour)}}
+	for range 10 {
+		snaps = append(snaps, []Proc{proc(500, 10, 1, 0), away})
+	}
+	snaps = append(snaps, []Proc{proc(500, 10, 1, 0), child(hour)})
+	r := collectAll(t, &scripted{snaps: snaps})
+	if got := cpu(t, r, lab); got != 1+hour {
+		t.Fatalf("figure = %v s, want %v: a process outside its group aged out and was counted again on rejoining", got, 1+hour)
+	}
+}

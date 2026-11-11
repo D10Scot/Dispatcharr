@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
+	"math"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 func env(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -205,8 +208,24 @@ func TestAMalformedOTLPVariableKeepsOTLPOffAndIsNamedNeverEchoed(t *testing.T) {
 			t.Errorf("LEAK: %s's value was echoed: %s", name, buf)
 		}
 	}
-	// The endpoint itself, which also enables OTLP.
+	// sdk/metric reads the interval and timeout untrimmed and refuses one that
+	// overflows a time.Duration in milliseconds; both are logged with the value.
+	maxMillis := strconv.FormatInt(int64(time.Duration(math.MaxInt64)/time.Millisecond), 10)
+	for name, v := range map[string]string{
+		"OTEL_METRIC_EXPORT_INTERVAL": " 5000",
+		"OTEL_METRIC_EXPORT_TIMEOUT":  maxMillis[:len(maxMillis)-1] + "9", // one past the bound
+	} {
+		log, buf := capture()
+		if cfg := LoadConfig(env(map[string]string{envEndpoint: "http://c:4318", name: v}), log); cfg.OTLP || !strings.Contains(buf.String(), "variable="+name+"\n") {
+			t.Errorf("%s=%q: OTLP=%v, warning %q; want OTLP off and the variable named", name, v, cfg.OTLP, buf)
+		}
+	}
 	log, buf := capture()
+	if cfg := LoadConfig(env(map[string]string{envEndpoint: "http://c:4318", "OTEL_METRIC_EXPORT_INTERVAL": maxMillis}), log); !cfg.OTLP || buf.Len() != 0 {
+		t.Errorf("an interval at the bound was refused: %s", buf)
+	}
+	// The endpoint itself, which also enables OTLP.
+	log, buf = capture()
 	if cfg := LoadConfig(env(map[string]string{envEndpoint: "http://user:" + sentinel + "@c:port%zz/"}), log); cfg.OTLP || strings.Contains(buf.String(), sentinel) || !strings.Contains(buf.String(), envEndpoint) {
 		t.Errorf("a malformed %s: OTLP=%v, warning %q", envEndpoint, cfg.OTLP, buf)
 	}

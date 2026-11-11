@@ -134,6 +134,10 @@ func WithLogRules(r Rules) Option { return func(o *options) { o.rules = &r } }
 // logger providers, the OTLP metric reader and every exporter exist only when
 // cfg.OTLP is set; with it unset no goroutine starts, no connection opens and
 // the global tracer provider stays the API's no-op.
+//
+// cfg must come from LoadConfig: Init does not repeat its validation of the
+// OTLP variables, and a hand-built Config with OTLP set lets an exporter print
+// a malformed value through OTel's internal logger.
 func Init(ctx context.Context, cfg Config, opts ...Option) (*Telemetry, error) {
 	var o options
 	for _, opt := range opts {

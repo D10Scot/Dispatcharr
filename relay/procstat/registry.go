@@ -87,11 +87,12 @@ type seenInfo struct {
 
 // forgetAfter is how many successful snapshots in a row an identity may be
 // absent from before it is forgotten. A pid with its start time names one
-// process, which cannot return once it has exited; the grace is only for a
-// process a snapshot failed to read for a moment, which must not be counted
-// again from zero. Without it, a group whose leader spawns a short-lived child
-// per collection would hold one identity per collection for as long as it is
-// tracked.
+// process, which cannot return once it has exited. A live process is never
+// absent from a successful snapshot: one it could not read fails the snapshot
+// (snapshotFrom), and one outside its group is still marked present. The
+// grace is a second line behind those two, never the only one. Without
+// forgetting, a group whose leader spawns a short-lived child per collection
+// would hold one identity per collection for as long as it is tracked.
 const forgetAfter = 8
 
 type tracked struct {
@@ -175,11 +176,18 @@ func (r *Registry) Collect() []Sample {
 			ticks := r.src.TicksPerSecond()
 			page := int64(r.src.PageSize())
 			for _, p := range procs {
+				id := identity{p.PID, p.Start}
+				// Marked before the group filter: a known process that has
+				// left its group for the moment (setpgid) still exists, so it
+				// must not age towards being forgotten and counted again from
+				// zero if it rejoins.
+				if _, known := r.seen[id]; known {
+					present[id] = true
+				}
 				owners, ok := byGroup[p.PGrp]
 				if !ok {
 					continue
 				}
-				id := identity{p.PID, p.Start}
 				// A new identity starts from zero: its CPU since it was
 				// spawned is counted once, and a process that began before it
 				// was tracked loses nothing.

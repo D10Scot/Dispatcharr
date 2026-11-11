@@ -328,3 +328,18 @@ func TestAFailedStartOTLPShutsDownWhatInitStarted(t *testing.T) {
 		t.Error("the meter provider was not shut down: its periodic reader is still running")
 	}
 }
+
+// skipMarked's own Handle check, for a caller that does not ask Enabled
+// first (Fanout does; a direct caller need not): a marked record must still
+// not reach the OTLP sink.
+func TestSkipMarkedDropsAMarkedRecordEvenWithoutEnabled(t *testing.T) {
+	var buf bytes.Buffer
+	h := skipMarked{slog.NewTextHandler(&buf, nil)}
+	r := slog.NewRecord(time.Now(), slog.LevelError, "otel error", 0)
+	if err := h.Handle(withoutOTLPLogs(context.Background()), r); err != nil || buf.Len() != 0 {
+		t.Fatalf("a marked record reached the sink: %q, %v", buf.String(), err)
+	}
+	if err := h.Handle(context.Background(), r); err != nil || !strings.Contains(buf.String(), "otel error") {
+		t.Fatalf("an unmarked record was dropped: %q, %v", buf.String(), err)
+	}
+}
