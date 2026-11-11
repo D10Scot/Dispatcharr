@@ -544,6 +544,7 @@
 4	tests/test_ci_test_routing.py
 5	tests/test_credential_logging_guard.py
 9	tests/test_geventpool_conn_lifetime.py
+1	tests/test_m3u_profile_test_logging.py
 1	tests/test_migrations_apply_on_sqlite.py
 9	tests/test_process_label.py
 6	tests/test_redaction.py
