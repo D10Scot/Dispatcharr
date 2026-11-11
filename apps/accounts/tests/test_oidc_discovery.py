@@ -132,7 +132,25 @@ class TestActionTests(OPTestCase):
             self.op.json(path, {**good, field: "https://[oops"})
             response = self.client.post(f"{PROVIDERS}{provider.pk}/test/")
             self.assertEqual(response.status_code, 200, f"{field}: {response.status_code}")
-            self.assertEqual(response.json()["problems"], ["discovery_endpoint_insecure"], field)
+            self.assertEqual(response.json()["problems"], ["discovery_endpoint_invalid"], field)
+
+    def test_parseable_endpoint_with_a_disallowed_scheme_stays_insecure(self):
+        provider = make_provider(issuer=self.op.base + "/realms/x")
+        path = "/realms/x/.well-known/openid-configuration"
+        good = {
+            "issuer": self.op.base + "/realms/x",
+            "authorization_endpoint": self.op.base + "/auth",
+            "token_endpoint": self.op.base + "/token",
+            "jwks_uri": self.op.base + "/jwks",
+        }
+        for field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+            for bad in ("ftp://idp.example/x", "javascript:alert(1)"):
+                self.op.json(path, {**good, field: bad})
+                response = self.client.post(f"{PROVIDERS}{provider.pk}/test/")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(
+                    response.json()["problems"], ["discovery_endpoint_insecure"], (field, bad)
+                )
 
     def test_deeply_nested_documents_answer_a_fixed_code_not_500(self):
         self.op.serve_provider("/realms/x")

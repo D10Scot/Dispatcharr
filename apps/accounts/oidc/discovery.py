@@ -121,6 +121,10 @@ def fetch_discovery(provider):
         value = doc.get(field)
         if not isinstance(value, str) or not value:
             raise DiscoveryError("discovery_endpoint_missing")
+        try:
+            urlparse(value)
+        except ValueError:
+            raise DiscoveryError("discovery_endpoint_invalid") from None
         if not _scheme_allowed(value):
             raise DiscoveryError("discovery_endpoint_insecure")
     return doc
