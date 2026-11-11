@@ -285,6 +285,9 @@ class NextSourceResponseSerializer(serializers.Serializer):
     # inactive, or the answer is for a stream preview or the 404. An absent
     # key is a contract mismatch the relay answers an HLS entry 502 for.
     hls_profile = HLSProfileRefSerializer(allow_null=True)
+    # Observability spec D7 (O3): the channel's numeric primary key. Null for
+    # a previewed Stream and for the 404. The relay ignores it until O4.
+    channel_pk = serializers.IntegerField(allow_null=True)
 
 
 class ReleaseRequestSerializer(serializers.Serializer):
