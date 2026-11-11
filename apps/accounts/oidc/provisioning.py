@@ -102,8 +102,15 @@ def username_candidates(base):
 
 
 def _str_claim(claims, name, limit):
+    """A display field: control characters stripped, then truncated.
+
+    Display fields are never compared or used as a key, so stripping cannot merge two users,
+    and a stray control character in a profile field a user may edit at the IdP should not
+    lock that user out. Identity keys and mapping values are refused instead
+    (``validate._check_claims``, ``resolve``).
+    """
     value = claims.get(name)
-    return value[:limit] if isinstance(value, str) else ""
+    return mapping.strip_control_chars(value)[:limit] if isinstance(value, str) else ""
 
 
 def _identity_fields(provider, claims, values):
@@ -111,7 +118,7 @@ def _identity_fields(provider, claims, values):
     if provider.kind == "entra":
         for name in ("tid", "oid"):
             if isinstance(claims.get(name), str):
-                extra[name] = claims[name][:64]
+                extra[name] = mapping.strip_control_chars(claims[name])[:64]
     display = _str_claim(claims, "name", 255) or _str_claim(claims, "preferred_username", 255)
     return {
         "email_at_last_login": _str_claim(claims, "email", 254),
@@ -235,6 +242,10 @@ def resolve(provider, claims, *, intent, link_user_id):
     except mapping.GroupsOverage:
         raise Refused("groups_overage") from None
     values = mapping.claim_values(claims, provider.claim_path)
+    # A mapping value is stored and later re-mapped (D17), so it is refused, never stripped:
+    # a stripped value could match a mapping the IdP never granted.
+    if values and any(mapping.has_control_char(v) for v in values):
+        raise Refused("id_token_invalid")
     level = mapping.level_for(provider.mappings, values)
     if level is None:
         raise Refused("no_mapping")

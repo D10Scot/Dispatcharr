@@ -113,7 +113,9 @@ CREDENTIAL_RE = re.compile(
     r"|api_key|\btoken\b|_url\b|url\}"
     # OIDC (SSO spec 3.3): the client credential and key, every token, the PKCE verifier
     # and the nonce. \bnonce\b, not nonce: "nonces" and "nonce_hash" name no value.
-    r"|client_secret|client_assertion|client_key|id_token|access_token|refresh_token"
+    # id_token must not follow a letter or digit: "valid_token" and "invalid_token" contain
+    # it and name no ID token, while "raw_id_token" does. (\b would miss that last one.)
+    r"|client_secret|client_assertion|client_key|(?<![A-Za-z0-9])id_token|access_token|refresh_token"
     r"|code_verifier|\bnonce\b"
 )
 

@@ -5,6 +5,7 @@ thin: ``flow.py`` holds the protocol. Nothing here establishes a Django session.
 """
 
 import hmac
+import logging
 import re
 
 from django.db import transaction
@@ -42,6 +43,8 @@ from .serializers import (
     OIDCProviderSerializer,
     ProviderTestResultSerializer,
 )
+
+logger = logging.getLogger(__name__)
 
 
 _THUMBPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -337,6 +340,10 @@ class UINetworkAllowed(BasePermission):
         return network_access_allowed(request, "UI")
 
 
+class _ThrottleUnavailable(Exception):
+    """The ``oidc`` throttle could not reach its cache: Redis is down."""
+
+
 class _FlowView(APIView):
     """Base for start, link/start, callback and exchange: ACL, ``oidc`` throttle, headers.
 
@@ -347,6 +354,26 @@ class _FlowView(APIView):
     authentication_classes = []
     permission_classes = [UINetworkAllowed]
     throttle_classes = [OIDCRateThrottle]
+
+    def check_throttles(self, request):
+        # The throttle's cache is the Redis the transaction store needs too, so with it down
+        # no login can complete: answer sso_unavailable rather than a 500.
+        try:
+            super().check_throttles(request)
+        except discovery.CACHE_ERRORS as exc:
+            logger.warning("OIDC throttle cache unavailable: %s", type(exc).__name__)
+            raise _ThrottleUnavailable() from None
+
+    def handle_exception(self, exc):
+        if isinstance(exc, _ThrottleUnavailable):
+            # GET start and callback are browser navigations: send them to the login page.
+            base = flow.public_base_url() if self.request.method == "GET" else ""
+            if base:
+                return HttpResponseRedirect(
+                    f"{base}/login?{urlencode({'sso_error': 'sso_unavailable'})}"
+                )
+            return Response({"code": "sso_unavailable"}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+        return super().handle_exception(exc)
 
     def finalize_response(self, request, response, *args, **kwargs):
         response = super().finalize_response(request, response, *args, **kwargs)

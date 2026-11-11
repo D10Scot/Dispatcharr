@@ -396,6 +396,19 @@ class OidcCredentialNamesTests(SimpleTestCase):
         result = self.run_guard(path)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_id_token_inside_a_longer_name(self):
+        self.assertReported("raw_id_token", 'logger.info("token %s", raw_id_token)\n')
+
+    def test_id_token_is_not_matched_inside_valid_token(self):
+        for name in ("valid_token", "invalid_token"):
+            with self.subTest(name=name):
+                path = self.write(f"{name}.py", f'logger.info("x %s", {name})\n')
+                result = self.run_guard(path)
+                self.assertEqual(
+                    result.returncode, 0,
+                    f"{name} was reported as an ID token: {result.stdout + result.stderr}",
+                )
+
     def test_every_name_is_covered(self):
         tested = {n[len("test_"):] for n in dir(self) if n.startswith("test_")}
         self.assertLessEqual(set(OIDC_CREDENTIAL_NAMES), tested)

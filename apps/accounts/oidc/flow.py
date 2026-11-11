@@ -26,6 +26,7 @@ from urllib.parse import unquote, urlencode, urlsplit
 
 import redis
 from django.conf import settings
+from django.db import DatabaseError
 from django.http import HttpResponseRedirect
 from rest_framework_simplejwt.tokens import RefreshToken
 
@@ -152,6 +153,16 @@ def binding_cookie_name(tx, base_url):
     return cookie_prefix(base_url) + tx
 
 
+def is_binding_cookie_name(name, base_url):
+    """True only for the shape ``binding_cookie_name`` produces: the prefix and a ``tx_id``.
+
+    Django's request parser accepts names ``http.cookies`` refuses to write; counting such a
+    name as stale and expiring it would make ``set_cookie`` raise.
+    """
+    prefix = cookie_prefix(base_url)
+    return name.startswith(prefix) and re.fullmatch(r"[0-9a-f]{16}", name[len(prefix):]) is not None
+
+
 def _secure(base_url):
     return cookie_prefix(base_url) == HTTPS_COOKIE_PREFIX
 
@@ -267,8 +278,7 @@ def begin(request, provider, base_url, *, intent, link_user_id, next_value):
     joiner = "&" if urlsplit(endpoint).query else "?"
     authorize_url = endpoint + joiner + urlencode(params)
 
-    prefix = cookie_prefix(base_url)
-    stale = [n for n in request.COOKIES if n.startswith(prefix)]
+    stale = [n for n in request.COOKIES if is_binding_cookie_name(n, base_url)]
     # At five or more in-flight cookies, expire them all before setting the new one: bounds
     # the Cookie header at the cost of abandoning those transactions.
     expire = stale if len(stale) >= STALE_COOKIE_CAP else []
@@ -385,6 +395,17 @@ def callback(request, provider, base_url):
         except (validate.IdTokenInvalid, discovery.DiscoveryError):
             return refuse("id_token_invalid")
 
+        # The provider row was loaded before the token exchange. Re-read its version now, so
+        # an edit that landed during the exchange (a mapping change bumps it) is refused as
+        # step 4 would have refused it, rather than applying the mappings loaded earlier.
+        current = (
+            OIDCProvider.objects.filter(pk=provider.pk, enabled=True)
+            .values_list("version", flat=True)
+            .first()
+        )
+        if current != provider.version:
+            return refuse("provider_mismatch")
+
         # 8. Identity and level.
         intent = INTENT_LINK if tx.get("intent") == INTENT_LINK else INTENT_LOGIN
         try:
@@ -396,6 +417,12 @@ def callback(request, provider, base_url):
             )
         except provisioning.Refused as exc:
             return refuse(exc.code, user=exc.username or "sso")
+        except DatabaseError as exc:
+            # resolve's transaction has rolled back. A value the database refuses, or a
+            # deadlock abort, answers a fixed code rather than a 500 that would put the
+            # callback's query in the 5xx log.
+            logger.warning("OIDC provisioning failed: %s", type(exc).__name__)
+            return refuse("provisioning_failed")
 
         # 9-10. Mint and park behind the one-time handoff code.
         access, refresh_token = mint(result.user, provider, result.identity, result.level)

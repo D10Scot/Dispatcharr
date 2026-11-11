@@ -14,7 +14,7 @@ import logging
 
 import jwt
 
-from . import discovery
+from . import discovery, mapping
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +119,10 @@ def validate_id_token(provider, id_token, nonce, disco):
 def _check_claims(provider, claims, nonce):
     sub = claims.get("sub")
     if not isinstance(sub, str) or not sub or len(sub) > MAX_SUBJECT:
+        raise IdTokenInvalid()
+    # The subject is half the identity key: refused, never stripped (two subjects that differ
+    # only by a control character must not resolve to one identity).
+    if mapping.has_control_char(sub):
         raise IdTokenInvalid()
     if claims.get("iss") != provider.issuer:
         raise IdTokenInvalid()

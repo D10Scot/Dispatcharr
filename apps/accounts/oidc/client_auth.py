@@ -148,6 +148,7 @@ def exchange_code(provider, disco, *, code, redirect_uri, code_verifier):
         **auth_fields,
     }
     headers = {"Accept": "application/json", **headers}
+    discovery.release_db_connection()
     deadline = discovery.deadline_from_now()
     try:
         resp = requests.post(

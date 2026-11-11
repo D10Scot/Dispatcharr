@@ -13,10 +13,13 @@ import logging
 import time
 from urllib.parse import urlparse
 
+import redis
 import requests
 import urllib3
 from django.conf import settings
 from django.core.cache import cache
+from django.db import connection
+from django_redis.exceptions import ConnectionInterrupted
 
 from core.http_security import fetch_outbound_http, validate_outbound_http_url
 
@@ -24,9 +27,11 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 1024 * 1024  # 1 MiB, enforced while streaming
 TIMEOUT = (5, 10)  # connect, read
-# A total bound on one fetch, measured from before the connect. The per-read timeout alone
-# lets a server that drips a byte every few seconds hold a request until uWSGI's harakiri;
-# with this the worst case is TOTAL_DEADLINE plus one read timeout.
+# A total bound on reading one response body, measured from before the connect. The per-read
+# timeout alone lets a server that drips a byte every few seconds hold a request until
+# uWSGI's harakiri. The deadline is checked between body reads, so the connect and the wait
+# for the status line are bounded only by TIMEOUT: the worst case is the connect timeout,
+# plus the read timeout for the headers, plus TOTAL_DEADLINE, plus one read timeout.
 TOTAL_DEADLINE = 15
 READ_SIZE = 65536
 CACHE_TTL = 3600
@@ -34,6 +39,23 @@ JWKS_REFETCH_COOLDOWN = 60
 WELL_KNOWN = "/.well-known/openid-configuration"
 
 _REDIRECT_MESSAGES = ("More than ", "Redirect without a Location")
+# A cache outage: django-redis raises redis' own errors, or ConnectionInterrupted in older
+# versions. A cache failure is a miss, never a 500; the flow's own Redis store decides
+# whether a login can proceed.
+CACHE_ERRORS = (redis.RedisError, ConnectionInterrupted)
+
+
+def release_db_connection():
+    """Hand this request's database connection back before an outbound call.
+
+    Under ``django-db-geventpool`` a greenlet keeps the connection it first queried with until
+    the request ends, and a worker has eight. A callback waiting on a slow IdP would hold one
+    for the whole fetch; eight of them stall every database-backed request on that worker.
+    ``close()`` returns it to the pool and the next query takes one again. Inside an atomic
+    block the connection is the transaction's and is kept: no outbound call is made in one.
+    """
+    if not connection.in_atomic_block:
+        connection.close()
 
 
 class DiscoveryError(Exception):
@@ -114,6 +136,7 @@ def _get_json(url, provider, *, kind, not_allowed_code):
     """GET ``url`` under the SSRF policy and return the parsed JSON object."""
     if not _scheme_allowed(url):
         raise DiscoveryError(not_allowed_code)
+    release_db_connection()
     deadline = deadline_from_now()
     try:
         resp = fetch_outbound_http(
@@ -222,29 +245,51 @@ def get_discovery(provider):
     stale document. Only a document that passed ``fetch_discovery``'s checks is cached.
     """
     key = discovery_cache_key(provider)
-    doc = cache.get(key)
-    if isinstance(doc, dict):
+    doc = _cache_get(key)
+    # A hit counts only for this provider's issuer: a database restored under a Redis that
+    # kept its keys could otherwise pair this row with another row's document, and send the
+    # client credential to that document's token endpoint.
+    if isinstance(doc, dict) and doc.get("issuer") == provider.issuer:
         return doc
     doc = fetch_discovery(provider)
-    cache.set(key, doc, CACHE_TTL)
+    _cache_set(key, doc)
     return doc
+
+
+def _cache_get(key):
+    try:
+        return cache.get(key)
+    except CACHE_ERRORS as exc:
+        logger.warning("OIDC cache read failed: %s", type(exc).__name__)
+        return None
+
+
+def _cache_set(key, doc):
+    try:
+        cache.set(key, doc, CACHE_TTL)
+    except CACHE_ERRORS as exc:
+        logger.warning("OIDC cache write failed: %s", type(exc).__name__)
 
 
 def get_jwks(provider, discovery, *, refetch=False):
     """The JWKS, cached like discovery. ``refetch`` bypasses the cache (an unknown ``kid``)."""
     key = jwks_cache_key(provider)
     if not refetch:
-        doc = cache.get(key)
+        doc = _cache_get(key)
         if isinstance(doc, dict):
             return doc
     doc = fetch_jwks(provider, discovery)
-    cache.set(key, doc, CACHE_TTL)
+    _cache_set(key, doc)
     return doc
 
 
 def claim_jwks_refetch(provider):
     """True at most once per provider per 60 s: the unknown-``kid`` refetch cooldown."""
-    return cache.add(f"oidc:jwks-refetch:{provider.pk}", 1, JWKS_REFETCH_COOLDOWN)
+    try:
+        return cache.add(f"oidc:jwks-refetch:{provider.pk}", 1, JWKS_REFETCH_COOLDOWN)
+    except CACHE_ERRORS as exc:
+        logger.warning("OIDC cache write failed: %s", type(exc).__name__)
+        return False
 
 
 def run_test(provider):

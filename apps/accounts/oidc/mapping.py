@@ -6,8 +6,25 @@ matches nothing. The highest matched level wins. Nothing here writes, and nothin
 claim value.
 """
 
+import unicodedata
+
 # Entra's JWT group limit; the identity stores at most this many values (spec 4.1).
 MAX_STORED_VALUES = 200
+
+
+def has_control_char(value):
+    """True when ``value`` holds a Unicode control character (category Cc: C0, DEL, C1).
+
+    PostgreSQL refuses U+0000 in a text column and in ``jsonb``, so such a value would end a
+    callback in ``DataError``. An identity key or a mapping value carrying one is refused,
+    never stripped: stripping could make two different values equal.
+    """
+    return any(unicodedata.category(c) == "Cc" for c in value)
+
+
+def strip_control_chars(value):
+    """``value`` without its control characters. Only for display fields, never for a key."""
+    return "".join(c for c in value if unicodedata.category(c) != "Cc")
 
 
 class GroupsOverage(Exception):

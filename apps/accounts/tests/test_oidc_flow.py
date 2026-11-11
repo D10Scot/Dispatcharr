@@ -19,19 +19,21 @@ from urllib.parse import parse_qs, unquote_plus, urlsplit
 import jwt
 from cryptography import x509
 from cryptography.hazmat.primitives import serialization
+import requests
 from django.conf import settings
 from django.contrib.sessions.models import Session
 from django.core.cache import cache
+from django.db import OperationalError, connection
 from django.db.models import F
 from django.test import RequestFactory, override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import aware_utcnow
 
 from apps.accounts.models import OIDCIdentity, OIDCProvider, User
-from apps.accounts.oidc import client_auth, discovery, flow
+from apps.accounts.oidc import client_auth, discovery, flow, provisioning
 from apps.accounts.oidc import secrets as oidc_secrets
 from apps.proxy.authorize import _drf_user
-from core.models import SystemEvent
+from core.models import NETWORK_ACCESS_KEY, CoreSettings, SystemEvent
 
 from .oidc_flow_support import (
     BASE,
@@ -53,7 +55,13 @@ from .oidc_flow_support import (
     query_of,
     sso_error,
 )
-from .oidc_support import PROVIDERS, SECRET_SENTINEL, TENANT, admin_client, make_entra
+from .oidc_support import (
+    PROVIDERS,
+    SECRET_SENTINEL,
+    TENANT,
+    admin_client,
+    make_entra,
+)
 from .test_oidc_providers import entra_body
 
 FIVE_CLAIMS = ("auth_method", "oidc_provider", "oidc_provider_version", "oidc_level", "oidc_identity")
@@ -931,7 +939,7 @@ class ClientAuthTests(FlowTestCase):
         )
         self.op.expected_client_id = AWKWARD_CLIENT_ID
         self.op.expected_secret = awkward_secret()
-        self.sign_in(APIClient(), provider, {"roles": ["staff"], "aud": AWKWARD_CLIENT_ID})
+        response = self.sign_in(APIClient(), provider, {"roles": ["staff"], "aud": AWKWARD_CLIENT_ID})
         request = self.op.token_requests[-1]
         auth = request["headers"]["Authorization"]
         self.assertTrue(auth.startswith("Basic "))
@@ -947,6 +955,8 @@ class ClientAuthTests(FlowTestCase):
         self.assertNotIn(" ", decoded)
         self.assertEqual(decoded.count(":"), 1)
         self.assertNotIn("client_secret", request["form"])
+        # The OP accepted the credential and the login completed.
+        self.assertIsNone(sso_error(response), response["Location"])
 
     def test_post_secret_round_trips(self):
         provider = self.make_flow_provider(
@@ -1401,3 +1411,295 @@ class HandoffConcurrencyTests(FlowTransactionTestCase):
             self.assertIsNone(worker.error, repr(worker.error))
         statuses = sorted(w.result.status_code for w in workers)
         self.assertEqual(statuses, [200, 400], "one handoff code was redeemed twice" if statuses == [200, 200] else statuses)
+
+
+# ---- fix round 1 ---------------------------------------------------------------------------
+
+
+class IllNamedCookieTests(FlowTestCase):
+    """Only the shape binding_cookie_name produces counts as a stale transaction cookie.
+
+    Django's request parser accepts names http.cookies refuses to write; expiring one made
+    set_cookie raise CookieError and start answer 500.
+    """
+
+    ILL_NAMED = "; ".join(f"__Host-mino_oidc_tx_({i})=x" for i in range(5))
+
+    def setUp(self):
+        super().setUp()
+        self.provider = self.make_flow_provider()
+
+    def test_start_with_five_ill_named_prefixed_cookies(self):
+        client = APIClient(raise_request_exception=False)
+        response = client.get("/api/accounts/oidc/p1/start/", HTTP_COOKIE=self.ILL_NAMED)
+        self.assertEqual(
+            response.status_code, 302,
+            f"start answered {response.status_code} to five ill-named prefixed cookies",
+        )
+        self.assertTrue(response["Location"].startswith(self.op.issuer), response["Location"])
+        cookies = binding_cookies(response)
+        self.assertEqual([n for n, m in cookies.items() if m["max-age"] == 0], [])
+        self.assertEqual(len(cookies), 1)
+
+    def test_link_start_with_five_ill_named_prefixed_cookies(self):
+        client, _ = admin_client()
+        client.raise_request_exception = False
+        response = client.post(
+            "/api/accounts/oidc/p1/link/start/", {"next": "/users"}, format="json",
+            HTTP_COOKIE=self.ILL_NAMED,
+        )
+        self.assertEqual(
+            response.status_code, 200,
+            f"link/start answered {response.status_code} to five ill-named prefixed cookies",
+        )
+
+    def test_ill_named_cookies_do_not_count_toward_the_cap(self):
+        good = "; ".join(f"__Host-mino_oidc_tx_{i:016x}=x" for i in range(4))
+        response = APIClient().get(
+            "/api/accounts/oidc/p1/start/", HTTP_COOKIE=f"{good}; {self.ILL_NAMED}"
+        )
+        cookies = binding_cookies(response)
+        self.assertEqual(
+            [n for n, m in cookies.items() if m["max-age"] == 0], [],
+            "four well-formed cookies were expired: the ill-named ones were counted",
+        )
+
+
+class ControlCharacterTests(FlowTestCase):
+    """A validated claim carrying a control character never reaches the database as such.
+
+    sub and mapping values are refused (stripping could merge two values); display fields
+    are stripped (never compared, and a user may edit them at the IdP).
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.provider = self.make_flow_provider()
+        self.client = APIClient(raise_request_exception=False)
+
+    def _sign_in(self, claims):
+        return self.sign_in(self.client, self.provider, claims)
+
+    def test_sub_with_a_control_character_refused(self):
+        for char in ("\x00", "\x1f", "\x85"):
+            with self.subTest(char=hex(ord(char))):
+                response = self._sign_in({"sub": f"a{char}b", "roles": ["staff"]})
+                self.assertEqual(response.status_code, 302, response.status_code)
+                self.assertEqual(
+                    sso_error(response), "id_token_invalid",
+                    f"a sub carrying {hex(ord(char))} was not refused at validation",
+                )
+        self.assertFalse(OIDCIdentity.objects.exists())
+
+    def test_mapping_value_with_a_control_character_refused(self):
+        users = User.objects.count()
+        response = self._sign_in({"roles": ["staff", "x\x00y"]})
+        self.assertEqual(response.status_code, 302, response.status_code)
+        self.assertEqual(
+            sso_error(response), "id_token_invalid",
+            "a mapping value carrying NUL was not refused before provisioning",
+        )
+        self.assertEqual(User.objects.count(), users)
+
+    def test_email_control_characters_stripped(self):
+        response = self._sign_in({"roles": ["staff"], "email": "a\x00b@example.com"})
+        self.assertEqual(response.status_code, 302, response.status_code)
+        self.assertIsNone(
+            sso_error(response), f"the email's NUL reached the database: {response['Location']}"
+        )
+        identity = OIDCIdentity.objects.get()
+        self.assertEqual(identity.email_at_last_login, "ab@example.com")
+        self.assertEqual(identity.user.email, "ab@example.com")
+
+    def test_name_control_characters_stripped(self):
+        response = self._sign_in({"roles": ["staff"], "name": "a\x00b"})
+        self.assertEqual(response.status_code, 302, response.status_code)
+        self.assertIsNone(
+            sso_error(response), f"the name's NUL reached the database: {response['Location']}"
+        )
+        self.assertEqual(OIDCIdentity.objects.get().display_name, "ab")
+
+    def test_database_error_in_provisioning_is_provisioning_failed(self):
+        with mock.patch.object(
+            provisioning, "resolve", side_effect=OperationalError("deadlock detected")
+        ):
+            response = self._sign_in({"roles": ["staff"]})
+        self.assertEqual(
+            response.status_code, 302,
+            f"a DatabaseError from resolve answered {response.status_code}",
+        )
+        self.assertEqual(sso_error(response), "provisioning_failed")
+
+
+class NetworkAclTests(FlowTestCase):
+    """Spec 3.1: the UI network ACL gates providers/, start, callback and exchange."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = self.make_flow_provider()
+        # The test client's address, 127.0.0.1, is outside this allowlist.
+        CoreSettings.objects.update_or_create(
+            key=NETWORK_ACCESS_KEY,
+            defaults={"name": "Network Access", "value": {"UI": "10.99.0.0/16"}},
+        )
+
+    def assertRefused(self, response, path, flow_endpoint=True):
+        self.assertEqual(
+            response.status_code, 403,
+            f"{path} answered {response.status_code} to an address outside the UI ACL",
+        )
+        if flow_endpoint:
+            for name, value in flow.NO_STORE_HEADERS.items():
+                self.assertEqual(response.get(name), value, f"{path}: {name}")
+
+    def test_providers(self):
+        path = "/api/accounts/oidc/providers/"
+        self.assertRefused(APIClient().get(path), path, flow_endpoint=False)
+
+    def test_start(self):
+        path = "/api/accounts/oidc/p1/start/"
+        self.assertRefused(APIClient().get(path), path)
+
+    def test_callback(self):
+        path = "/api/accounts/oidc/p1/callback/"
+        self.assertRefused(APIClient().get(path, {"state": "s" * 43, "code": "c"}), path)
+
+    def test_exchange(self):
+        self.assertRefused(APIClient().post(EXCHANGE, {"code": "c" * 43}, format="json"), EXCHANGE)
+
+    def test_link_start(self):
+        client, _ = admin_client()
+        path = "/api/accounts/oidc/p1/link/start/"
+        self.assertRefused(client.post(path, {"next": "/users"}, format="json"), path)
+
+
+class ConnectionReleaseTests(FlowTransactionTestCase):
+    """The callback and start hold no database connection across an outbound IdP call.
+
+    What this proves: at the moment of every discovery, token and JWKS request in a whole
+    login, Django's handle on this thread's connection is closed and no atomic block is
+    open. Under the test backend (plain PostgreSQL) close() really closes the socket. That
+    close() hands the connection back to django-db-geventpool's pool rather than closing it
+    is read from that backend, not exercised here, and nothing here measures a worker
+    under gevent with eight concurrent callbacks.
+    """
+
+    def test_no_connection_held_across_outbound_calls(self):
+        self.require_postgresql("SQLite ignores close() on its in-memory test database")
+        provider = self.make_flow_provider()
+        seen = []
+        real_fetch = discovery.fetch_outbound_http
+        real_post = requests.post
+
+        def note(kind):
+            seen.append((kind, connection.connection is None, connection.in_atomic_block))
+
+        def fetch(url, **kwargs):
+            note("discovery" if url.endswith(discovery.WELL_KNOWN) else "jwks")
+            return real_fetch(url, **kwargs)
+
+        def post(url, **kwargs):
+            note("token")
+            return real_post(url, **kwargs)
+
+        with mock.patch.object(discovery, "fetch_outbound_http", side_effect=fetch), \
+                mock.patch.object(client_auth.requests, "post", side_effect=post):
+            self.login(APIClient(), provider, {"roles": ["staff"]})
+        self.assertEqual(sorted({kind for kind, _, _ in seen}), ["discovery", "jwks", "token"])
+        for kind, released, atomic in seen:
+            self.assertFalse(atomic, f"the {kind} request ran inside an atomic block")
+            self.assertTrue(released, f"the database connection was held across the {kind} request")
+
+
+DEAD_CACHE = {
+    "default": {
+        "BACKEND": "django_redis.cache.RedisCache",
+        "LOCATION": "redis://127.0.0.1:1/0",
+        "OPTIONS": {"CLIENT_CLASS": "django_redis.client.DefaultClient"},
+    }
+}
+
+
+class RedisOutageTests(FlowTestCase):
+    """With Redis really unreachable, the flow answers sso_unavailable, never a 500.
+
+    The cache points at a closed port, so the oidc throttle and the discovery cache meet the
+    error django-redis raises in an outage; the transaction store's client is None.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.provider = self.make_flow_provider()
+
+    def _down(self):
+        stack = mock.patch("core.utils.RedisClient.get_client", return_value=None)
+        return override_settings(CACHES=DEAD_CACHE), stack
+
+    def test_start(self):
+        caches_down, store_down = self._down()
+        with caches_down, store_down:
+            response = APIClient(raise_request_exception=False).get("/api/accounts/oidc/p1/start/")
+        self.assertEqual(
+            response.status_code, 302, f"start answered {response.status_code} with Redis down"
+        )
+        self.assertEqual(sso_error(response), "sso_unavailable")
+
+    def test_callback(self):
+        caches_down, store_down = self._down()
+        with caches_down, store_down:
+            response = APIClient(raise_request_exception=False).get(
+                "/api/accounts/oidc/p1/callback/", {"state": "s" * 43, "code": "c"}
+            )
+        self.assertEqual(
+            response.status_code, 302, f"callback answered {response.status_code} with Redis down"
+        )
+        self.assertEqual(sso_error(response), "sso_unavailable")
+
+    def test_exchange(self):
+        caches_down, store_down = self._down()
+        with caches_down, store_down:
+            response = APIClient(raise_request_exception=False).post(
+                EXCHANGE, {"code": "c" * 43}, format="json"
+            )
+        self.assertEqual(
+            response.status_code, 503, f"exchange answered {response.status_code} with Redis down"
+        )
+        self.assertEqual(response.json(), {"code": "sso_unavailable"})
+
+
+class DiscoveryCacheIssuerTests(FlowTestCase):
+    def test_cached_document_for_another_issuer_is_refetched(self):
+        provider = self.make_flow_provider()
+        poisoned = {
+            **self.op.discovery_document(),
+            "issuer": "https://other.example/op",
+            "token_endpoint": "https://other.example/op/token",
+        }
+        cache.set(discovery.discovery_cache_key(provider), poisoned, 60)
+        doc = discovery.get_discovery(provider)
+        self.assertEqual(
+            doc["issuer"], provider.issuer,
+            "a cached discovery document for another issuer was served",
+        )
+
+
+class ProviderEditDuringExchangeTests(FlowTestCase):
+    def test_mapping_edit_during_token_exchange_refused(self):
+        provider = self.make_flow_provider()
+        client = APIClient()
+        params = self.op.authorize(self.start(client, provider), {"roles": ["admins"]})
+        real = client_auth.exchange_code
+
+        def exchange_then_edit(*args, **kwargs):
+            id_token = real(*args, **kwargs)
+            bump_mappings(OIDCProvider.objects.get(pk=provider.pk), [{"value": "admins", "user_level": 0}])
+            return id_token
+
+        users = User.objects.count()
+        with mock.patch.object(client_auth, "exchange_code", side_effect=exchange_then_edit):
+            response = self.callback(client, provider, params)
+        self.assertEqual(
+            sso_error(response), "provider_mismatch",
+            f"the login applied mappings loaded before the token exchange: {response['Location']}",
+        )
+        self.assertEqual(User.objects.count(), users)

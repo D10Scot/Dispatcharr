@@ -291,10 +291,17 @@ class ProvisioningAtomicityTests(FlowTransactionTestCase):
         self.require_postgresql()
         e1, l_held = threading.Event(), threading.Event()
         original = provisioning.insert_identity
+        l_pid = []
 
         def wrapper(*args, **kwargs):
             identity = original(*args, **kwargs)
             if thread_name() == "L":
+                # The backend holding L's transaction now. Worker.pid is the one L started
+                # on, and the callback releases its connection before each IdP request, so
+                # L reconnects on another backend before it gets here.
+                with connection.cursor() as cursor:
+                    cursor.execute("SELECT pg_backend_pid()")
+                    l_pid.append(cursor.fetchone()[0])
                 l_held.set()
                 e1.wait(WAIT_TIMEOUT)
             return identity
@@ -312,7 +319,7 @@ class ProvisioningAtomicityTests(FlowTransactionTestCase):
                 deadline = time.monotonic() + WAIT_TIMEOUT
                 blocked = False
                 while time.monotonic() < deadline and not blocked:
-                    if worker_b.pid is None or worker_l.pid is None:
+                    if worker_b.pid is None or not l_pid:
                         state = "pids not recorded"
                         threading.Event().wait(0.02)  # a poll interval, not a synchroniser
                         continue
@@ -322,8 +329,8 @@ class ProvisioningAtomicityTests(FlowTransactionTestCase):
                     with connection.cursor() as cursor:
                         cursor.execute("SELECT pg_blocking_pids(%s)", [worker_b.pid])
                         blockers = cursor.fetchone()[0]
-                    state = f"B blocked by {blockers}, L is {worker_l.pid}"
-                    blocked = worker_l.pid in blockers
+                    state = f"B blocked by {blockers}, L is {l_pid[0]}"
+                    blocked = l_pid[0] in blockers
                     if not blocked:
                         threading.Event().wait(0.02)
                 self.assertTrue(blocked, f"B never waited on L's transaction: {state}")
