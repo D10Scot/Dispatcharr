@@ -33,6 +33,36 @@
       "matchManagers": ["pep621", "npm"],
       "matchUpdateTypes": ["minor", "major"],
       "automerge": false
+    },
+    {
+      "description": "Go modules (ADR 0011): the relay's only third-party code is the OpenTelemetry SDK and the Prometheus client. A week's cooldown and always a human merge, whatever the update type, because a bump moves relay/go.mod and with it the coverage floor's gomod= hash. postUpdateOptions keeps go.sum tidy for scripts/check_go_deps.sh.",
+      "matchManagers": ["gomod"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false,
+      "postUpdateOptions": ["gomodTidy"]
+    },
+    {
+      "description": "The OpenTelemetry Go modules release together and depend on each other's exact versions; a split bump does not build. One update for all of them.",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["go.opentelemetry.io/**"],
+      "groupName": "OpenTelemetry Go"
+    },
+    {
+      "description": "govulncheck, run by go-tests.yml at the version in its GOVULNCHECK_VERSION env (ADR 0011). Same cooldown as the Go modules.",
+      "matchManagers": ["custom.regex"],
+      "matchPackageNames": ["golang.org/x/vuln"],
+      "minimumReleaseAge": "7 days",
+      "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "go-tests.yml's govulncheck job pins the tool by version in an env value; `go run pkg@version` verifies it against the Go checksum database.",
+      "managerFilePatterns": ["/^\\.github/workflows/go-tests\\.yml$/"],
+      "matchStrings": ["GOVULNCHECK_VERSION: (?<currentValue>v\\S+)"],
+      "depNameTemplate": "golang.org/x/vuln",
+      "datasourceTemplate": "go"
     }
   ]
 }

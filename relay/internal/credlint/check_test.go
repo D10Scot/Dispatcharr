@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -55,7 +57,7 @@ func newCheckerWithRedact(t *testing.T) *Checker {
 	if err != nil {
 		t.Fatalf("listing the redact package: %v", err)
 	}
-	c := NewChecker()
+	c := NewChecker(nil)
 	for _, p := range pkgs {
 		if err := c.CheckPackage(p); err != nil {
 			t.Fatalf("checking %s: %v", p.ImportPath, err)
@@ -105,7 +107,7 @@ func TestTheRedactorIsExactlyRedactError(t *testing.T) {
 	if len(Redactors) != 1 || !Redactors["github.com/D10Scot/Dispatcharr/relay/redact.Error"] {
 		t.Fatalf("Redactors = %v, want exactly relay/redact.Error", Redactors)
 	}
-	c := NewChecker()
+	c := NewChecker(nil)
 	// A package that defines its own Error and calls it: NOT a redactor.
 	src := `package fixture
 import "fmt"
@@ -117,5 +119,94 @@ func f(err error) error { return fmt.Errorf("local: %w", Error(err)) } // BAD
 	}
 	if len(c.Findings) != 1 {
 		t.Fatalf("a local function named Error cleared the call: %v", c.Findings)
+	}
+}
+
+// ADR 0011: the two OpenTelemetry calls that take an error are sinks. The
+// stubs carry the real import paths and the real spellings (Span is an
+// interface, so RecordError is an interface method), so the names go/types
+// gives them are the names the allowlist must match; no real dependency is
+// needed.
+func TestTheOTelErrorSinksAreReported(t *testing.T) {
+	c := NewChecker(nil)
+	stubs := map[string]string{
+		"go.opentelemetry.io/otel/trace": `package trace
+type Span interface{ RecordError(err error) }
+`,
+		"go.opentelemetry.io/otel": `package otel
+func Handle(err error) {}
+`,
+	}
+	for _, path := range []string{"go.opentelemetry.io/otel/trace", "go.opentelemetry.io/otel"} {
+		if err := c.CheckSources(path, map[string]string{"stub.go": stubs[path]}); err != nil {
+			t.Fatalf("stub %s: %v", path, err)
+		}
+	}
+	src := `package fixture
+import (
+	"errors"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
+)
+func f(span trace.Span) {
+	span.RecordError(errors.New("boom")) // BAD
+	otel.Handle(errors.New("boom"))      // BAD
+}
+`
+	if err := c.CheckSources("example.com/fixture", map[string]string{"fixture.go": src}); err != nil {
+		t.Fatal(err)
+	}
+	got := map[int]bool{}
+	for _, f := range c.Findings {
+		got[f.Pos.Line] = true
+	}
+	for i, line := range strings.Split(src, "\n") {
+		if strings.Contains(line, "// BAD") && !got[i+1] {
+			t.Errorf("line %d was not reported: %s", i+1, line)
+		}
+	}
+	if len(c.Findings) != 2 {
+		t.Errorf("want exactly 2 findings, got %v", c.Findings)
+	}
+}
+
+// A package that is neither in the module nor in the standard library, here
+// a module reached by a local replace, resolves through the export lookup.
+// The checker with a nil lookup cannot import it; that is the failure ADR
+// 0011's O1 exists to prevent before the first dependency lands.
+func TestAModuleCachePackageResolvesThroughTheExportLookup(t *testing.T) {
+	root := t.TempDir()
+	write := func(rel, body string) {
+		t.Helper()
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("dep/go.mod", "module example.org/dep\n\ngo 1.21\n")
+	write("dep/dep.go", "package dep\n\nfunc Record(err error) {}\n")
+	write("app/go.mod", "module example.com/app\n\ngo 1.21\n\nrequire example.org/dep v0.0.0\n\nreplace example.org/dep => ../dep\n")
+	write("app/main.go", "package main\n\nimport \"example.org/dep\"\n\nfunc main() { dep.Record(nil) }\n")
+	app := filepath.Join(root, "app")
+
+	exports, err := ListExports(app, "./...")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exports["example.org/dep"] == "" {
+		t.Fatalf("no export data for the replaced module; got %d entries", len(exports))
+	}
+	src := `package fixture
+import "example.org/dep"
+func f() { dep.Record(nil) }
+`
+	if err := NewChecker(exports).CheckSources("example.com/fixture", map[string]string{"f.go": src}); err != nil {
+		t.Fatalf("with the lookup the import must resolve: %v", err)
+	}
+	if err := NewChecker(nil).CheckSources("example.com/fixture", map[string]string{"f.go": src}); err == nil {
+		t.Fatal("without the lookup the third-party import was expected to fail; the test proves nothing")
 	}
 }
