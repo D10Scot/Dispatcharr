@@ -1063,7 +1063,7 @@ def _stream_passes_m3u_filters(name, url, group_title, compiled_filters):
         if pattern.search(target or ""):
             logger.debug(
                 "Stream %s - %s matches filter pattern %s",
-                name, url, filter_obj.regex_pattern,
+                name, redact_url(url), filter_obj.regex_pattern,
             )
             return not filter_obj.exclude
     return True
@@ -1359,7 +1359,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             group_title = get_case_insensitive_attr(
                 stream_info["attributes"], "group-title", "Default Group"
             )
-            logger.trace("Processing stream: %s - %s in group %s", name, url, group_title)
+            logger.trace("Processing stream: %s - %s in group %s", name, redact_url(url), group_title)
 
             if compiled_filters and not _stream_passes_m3u_filters(
                 name, url, group_title, compiled_filters,
@@ -1439,7 +1439,8 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
                 stream_hashes[stream_hash] = stream_props
         except Exception as e:
             logger.error(f"Failed to process stream {name}: {e}")
-            logger.error(json.dumps(stream_info))
+            # The record's URL carries the provider login on Xtream-style URLs.
+            logger.error(json.dumps({**stream_info, "url": redact_url(stream_info.get("url"))}))
 
     existing_streams = {
         s.stream_hash: s
