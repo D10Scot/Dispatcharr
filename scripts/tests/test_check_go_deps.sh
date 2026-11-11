@@ -17,10 +17,11 @@ GOCACHE_DIR="$(go env GOCACHE)"
 GOMODCACHE_DIR="$(go env GOMODCACHE)"
 CASE_PATH="$(dirname "$GO_BIN"):/usr/bin:/bin"
 
-# run_env <dir> <command...>: the allowlisted child environment.
+# run_env <dir> <command...>: the allowlisted child environment. CASE_PATH_OVERRIDE
+# prepends a directory (the failing-go shim) to the constructed PATH.
 run_env() {
   local dir="$1"; shift
-  ( cd "$dir" && env -i PATH="$CASE_PATH" HOME="$TMP/home" GOCACHE="$GOCACHE_DIR" \
+  ( cd "$dir" && env -i PATH="${CASE_PATH_OVERRIDE:+$CASE_PATH_OVERRIDE:}$CASE_PATH" HOME="$TMP/home" GOCACHE="$GOCACHE_DIR" \
       GOMODCACHE="$GOMODCACHE_DIR" GOTOOLCHAIN=local GOPROXY=off GOFLAGS= \
       GOSUMDB=off GOWORK=off LANG=C "$@" )
 }
@@ -69,7 +70,7 @@ allow() { printf '%b' "$2" > "$TMP/$1/go.allowed-deps"; }
 expect() {
   local want="$1" name="$2" dir="$3" sub="${4:-}" out rc
   out="$(run_env "$TMP" bash "$SCRIPT" "$TMP/$dir" 2>&1)"; rc=$?
-  if [ "$rc" -ne "$want" ] || { [ -n "$sub" ] && [[ "$out" != *"$sub"* ]]; }; then
+  if { [ "$want" = nz ] && [ "$rc" -eq 0 ]; } || { [ "$want" != nz ] && [ "$rc" -ne "$want" ]; } || { [ -n "$sub" ] && [[ "$out" != *"$sub"* ]]; }; then
     echo "FAIL $name: expected exit $want, got $rc; output: $out"; fail=1
   else
     echo "ok   $name"
@@ -116,5 +117,33 @@ expect 1 "linked redis-named package" redisuser "links a database or Redis packa
 mkmod driveronly example.com/driveronly database/sql/driver
 allow driveronly ''
 expect 0 "database/sql/driver alone passes" driveronly "OK:"
+
+# 8. An untidy go.mod: an unused, listed requirement. Only the tidy check fires.
+mkmod untidy example.com/untidy fmt
+require untidy example.org/dep dep
+allow untidy 'example.org/dep\n'
+expect 1 "untidy go.mod" untidy "not tidy"
+
+# 9. The module-graph query fails. A shim named go fails only `list -m -f ... all`
+# and runs the real go otherwise; the check must fail, not match an empty
+# allowlist. The shim is positively asserted to be what resolves.
+SHIM="$TMP/shim"; mkdir -p "$SHIM"
+cat > "$SHIM/go" <<SHIMEOF
+#!/bin/bash
+case "\$*" in
+  *"list -m -f"*" all"*) echo "shim: go list -m failed" >&2; exit 3 ;;
+esac
+exec "$GO_BIN" "\$@"
+SHIMEOF
+chmod +x "$SHIM/go"
+CASE_PATH_OVERRIDE="$SHIM"
+shim_resolved="$(run_env "$TMP" bash -c 'command -v go')"
+if [ "$shim_resolved" != "$SHIM/go" ]; then
+  echo "FAIL: the shim does not resolve first ('$shim_resolved'); the case would test the real go"; exit 1
+fi
+mkmod failing example.com/failing fmt
+allow failing ''
+expect nz "failing module-graph query fails the check" failing "shim: go list -m failed"
+CASE_PATH_OVERRIDE=""
 
 exit "$fail"

@@ -548,7 +548,6 @@
 2	relay/session/table_test.go
 2	scripts/capture_ffmpeg_stderr.py
 1	scripts/check_credential_logging.py
-1	scripts/check_go_stdlib_only.sh
 1	scripts/check_product_name.py
 4	scripts/ci_backend_test_labels.py
 9	scripts/ci_bootstrap_backend.sh

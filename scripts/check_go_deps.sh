@@ -23,7 +23,10 @@ ALLOWLIST="go.allowed-deps"
 MAIN="$(go list -m)"
 status=0
 
-direct="$(go list -m -f '{{if not .Indirect}}{{.Path}}{{end}}' all | grep -vxF "$MAIN" | LC_ALL=C sort -u || true)"
+# The query is its own statement so a failure of `go list` exits non-zero under
+# set -e; only the filter may be empty (grep -v exits 1 on no output).
+module_paths="$(go list -m -f '{{if not .Indirect}}{{.Path}}{{end}}' all)"
+direct="$(printf '%s\n' "$module_paths" | grep -vxF "$MAIN" | LC_ALL=C sort -u || true)"
 allowed="$(grep -vE '^[[:space:]]*(#|$)' "$ALLOWLIST" | LC_ALL=C sort -u || true)"
 unexpected="$(LC_ALL=C comm -23 <(printf '%s\n' "$direct" | sed '/^$/d') <(printf '%s\n' "$allowed" | sed '/^$/d'))"
 missing="$(LC_ALL=C comm -13 <(printf '%s\n' "$direct" | sed '/^$/d') <(printf '%s\n' "$allowed" | sed '/^$/d'))"

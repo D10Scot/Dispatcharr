@@ -210,3 +210,17 @@ func f() { dep.Record(nil) }
 		t.Fatal("without the lookup the third-party import was expected to fail; the test proves nothing")
 	}
 }
+
+// Missing export data is an error, never a silent fallback to the default
+// lookup: an importer that quietly resolved a package from somewhere else
+// could type-check a sink to the wrong full name and clear it.
+func TestMissingExportDataIsAnError(t *testing.T) {
+	src := `package fixture
+import "fmt"
+func f() string { return fmt.Sprint(1) }
+`
+	err := NewChecker(map[string]string{}).CheckSources("example.com/fixture", map[string]string{"f.go": src})
+	if err == nil || !strings.Contains(err.Error(), "no export data for fmt") {
+		t.Fatalf("want an error naming the missing export data, got %v", err)
+	}
+}
