@@ -1,0 +1,216 @@
+package procstat
+
+import (
+	"errors"
+	"testing"
+)
+
+// scripted returns one prepared snapshot per Snapshot call, so every figure a
+// test expects is exact.
+type scripted struct {
+	snaps [][]Proc
+	n     int
+	err   error
+}
+
+func (s *scripted) Snapshot() ([]Proc, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	snap := s.snaps[s.n]
+	s.n++
+	return snap, nil
+}
+func (*scripted) TicksPerSecond() float64 { return 100 }
+func (*scripted) PageSize() int           { return 4096 }
+
+var lab = Labels{ChannelID: 7, Kind: KindSource}
+
+func proc(pid int, start uint64, secs int, rss int64) Proc {
+	return Proc{PID: pid, PGrp: 500, Start: start, CPUTicks: uint64(secs) * 100, RSSPages: rss}
+}
+
+func cpu(t *testing.T, r *Registry, l Labels) float64 {
+	t.Helper()
+	for _, s := range r.Collect() {
+		if s.Labels == l {
+			return s.CPUSeconds
+		}
+	}
+	t.Fatalf("no sample for %+v", l)
+	return 0
+}
+
+func TestOverlapReportsTheSumOfGrowth(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{
+		{proc(500, 10, 2, 0), proc(501, 11, 3, 0)},
+		{proc(500, 10, 4, 0), proc(501, 11, 5, 0)},
+	}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	if got := cpu(t, r, lab); got != 5 {
+		t.Fatalf("first collection = %v, want 5", got)
+	}
+	if got := cpu(t, r, lab); got != 9 {
+		t.Fatalf("second collection = %v, want 9", got)
+	}
+}
+
+// accountingFixture runs tests 1-3's snapshots up to the point test 2 begins.
+func accountingFixture() (*Registry, *scripted) {
+	src := &scripted{snaps: [][]Proc{
+		{proc(500, 10, 2, 0), proc(501, 11, 3, 0)},
+		{proc(500, 10, 4, 0), proc(501, 11, 5, 0)},
+		{proc(500, 10, 6, 0)},                      // the child departed
+		{proc(500, 10, 6, 0), proc(501, 99, 1, 0)}, // pid 501 reused
+	}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	return r, src
+}
+
+func TestADepartingChildKeepsItsAccumulatedCPU(t *testing.T) {
+	r, _ := accountingFixture()
+	cpu(t, r, lab)
+	cpu(t, r, lab)
+	// Reporting the live sum would give 6 here, a fall a backend reads as a
+	// counter reset.
+	if got := cpu(t, r, lab); got != 11 {
+		t.Fatalf("after the child left = %v, want 11 (9 + the leader's 2)", got)
+	}
+}
+
+func TestAReusedPidIsANewIdentity(t *testing.T) {
+	r, _ := accountingFixture()
+	cpu(t, r, lab)
+	cpu(t, r, lab)
+	cpu(t, r, lab)
+	// 501 came back with a different starttime at 1 s. Keyed by pid alone the
+	// delta would be 1 - 5 = -4.
+	if got := cpu(t, r, lab); got != 12 {
+		t.Fatalf("after pid reuse = %v, want 12", got)
+	}
+}
+
+func TestTwoGroupsWithOneLabelSetShareAnAccumulator(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{
+		{{PID: 500, PGrp: 500, Start: 1, CPUTicks: 200}, {PID: 600, PGrp: 600, Start: 2, CPUTicks: 300}},
+	}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	r.Track(600, lab)
+	if got := cpu(t, r, lab); got != 5 {
+		t.Fatalf("two groups = %v, want 5", got)
+	}
+}
+
+func TestUntrackIsPinnedDirectly(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{
+		{proc(500, 10, 2, 0), proc(501, 11, 3, 0)},
+		{proc(500, 10, 9, 0), proc(501, 11, 9, 0)}, // would add 13 if still read
+	}}
+	r := NewRegistry(src)
+	untrack := r.Track(500, lab)
+	if got := cpu(t, r, lab); got != 5 {
+		t.Fatalf("before untrack = %v, want 5", got)
+	}
+	untrack()
+	untrack() // harmless the second time
+	if g := r.Groups(); len(g) != 0 {
+		t.Fatalf("registry still holds %+v after untrack", g)
+	}
+	if got := cpu(t, r, lab); got != 5 {
+		t.Fatalf("a further snapshot changed the figure: %v, want 5", got)
+	}
+	for _, s := range r.Collect() {
+		if s.Labels == lab && s.Live {
+			t.Fatal("an untracked label set is still reported live")
+		}
+	}
+}
+
+func TestRSSIsTheLiveSumAndAGauge(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{
+		{proc(500, 10, 1, 10), proc(501, 11, 1, 5)},
+		{proc(500, 10, 1, 8)},
+	}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	if got := r.Collect()[0].RSSBytes; got != 15*4096 {
+		t.Fatalf("rss = %d, want %d", got, 15*4096)
+	}
+	if got := r.Collect()[0].RSSBytes; got != 8*4096 {
+		t.Fatalf("rss after a child left = %d, want %d", got, 8*4096)
+	}
+}
+
+func TestTrackingASubsetOfTheGroupsIgnoresTheRest(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{
+		{{PID: 1, PGrp: 1, Start: 1, CPUTicks: 100}, {PID: 500, PGrp: 500, Start: 2, CPUTicks: 100}},
+	}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	if got := cpu(t, r, lab); got != 1 {
+		t.Fatalf("figure = %v, want 1 (only the tracked group)", got)
+	}
+}
+
+func TestACollectionWithNothingTrackedReadsNothing(t *testing.T) {
+	r := NewRegistry(&scripted{err: errors.New("must not be read")})
+	if s := r.Collect(); s != nil {
+		t.Fatalf("Collect = %+v, want nil", s)
+	}
+}
+
+func TestAFailedSnapshotKeepsTheAccumulator(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{{proc(500, 10, 2, 0)}}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	cpu(t, r, lab)
+	src.err = errors.New("proc unreadable")
+	if got := cpu(t, r, lab); got != 2 {
+		t.Fatalf("figure after a failed read = %v, want 2", got)
+	}
+}
+
+func TestAnIdentityThatVanishesAndReturnsIsNotCountedTwice(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{
+		{proc(500, 10, 2, 0)},
+		{}, // unreadable for one scan
+		{proc(500, 10, 3, 0)},
+	}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	cpu(t, r, lab)
+	cpu(t, r, lab)
+	if got := cpu(t, r, lab); got != 3 {
+		t.Fatalf("figure = %v, want 3", got)
+	}
+}
+
+func TestDepartedIdentitiesAreForgottenWithTheirGroup(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{{proc(500, 10, 2, 0)}}}
+	r := NewRegistry(src)
+	untrack := r.Track(500, lab)
+	r.Collect()
+	untrack()
+	r.Collect()
+	if n := len(r.seen); n != 0 {
+		t.Fatalf("%d identities leaked after the group was untracked", n)
+	}
+}
+
+// Three pids on the host, two in the tracked group: the sum is the two, so a
+// reader that looks at the leader alone (2 s) or at the whole host (7 s) is wrong.
+func TestAGroupOfThreePidsWithTwoTrackedSumsTheTwo(t *testing.T) {
+	src := &scripted{snaps: [][]Proc{{
+		{PID: 500, PGrp: 500, Start: 10, CPUTicks: 200},
+		{PID: 501, PGrp: 500, Start: 11, CPUTicks: 300},
+		{PID: 900, PGrp: 900, Start: 12, CPUTicks: 200},
+	}}}
+	r := NewRegistry(src)
+	r.Track(500, lab)
+	if got := cpu(t, r, lab); got != 5 {
+		t.Fatalf("group figure = %v, want 5 (the leader and its child, not the stranger)", got)
+	}
+}
