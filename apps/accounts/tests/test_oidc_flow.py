@@ -1530,6 +1530,148 @@ class ControlCharacterTests(FlowTestCase):
         )
         self.assertEqual(sso_error(response), "provisioning_failed")
 
+    # Lone UTF-16 surrogates (category Cs): JSON's "\ud800" escape decodes to one, and no
+    # UTF-8 encoder will write it, so before fix round 2 each of these answered 500.
+
+    def test_sub_with_a_lone_surrogate_refused(self):
+        for char in ("\ud800", "\udfff"):
+            with self.subTest(char=hex(ord(char))):
+                response = self._sign_in({"sub": f"a{char}b", "roles": ["staff"]})
+                self.assertEqual(
+                    response.status_code, 302,
+                    f"a sub carrying {hex(ord(char))} answered {response.status_code}",
+                )
+                self.assertEqual(
+                    sso_error(response), "id_token_invalid",
+                    f"a sub carrying {hex(ord(char))} was not refused at validation",
+                )
+        self.assertFalse(OIDCIdentity.objects.exists())
+
+    def test_mapping_value_with_a_lone_surrogate_refused(self):
+        users = User.objects.count()
+        response = self._sign_in({"roles": ["staff", "x\ud800y"]})
+        self.assertEqual(response.status_code, 302, response.status_code)
+        self.assertEqual(
+            sso_error(response), "id_token_invalid",
+            "a mapping value carrying a lone surrogate was not refused before provisioning",
+        )
+        self.assertEqual(User.objects.count(), users)
+
+    def test_display_field_lone_surrogates_stripped(self):
+        response = self._sign_in({
+            "roles": ["staff"],
+            "email": "a\ud800b@example.com",
+            "name": "n\udfffm",
+            "preferred_username": "p\ud800u",
+            "given_name": "g\ud800n",
+            "family_name": "f\udfffn",
+        })
+        self.assertEqual(
+            response.status_code, 302,
+            f"display fields carrying lone surrogates answered {response.status_code}",
+        )
+        self.assertIsNone(sso_error(response), response["Location"])
+        identity = OIDCIdentity.objects.get()
+        self.assertEqual(identity.email_at_last_login, "ab@example.com")
+        self.assertEqual(identity.display_name, "nm")
+        self.assertEqual(identity.user.email, "ab@example.com")
+        self.assertEqual(identity.user.first_name, "gn")
+        self.assertEqual(identity.user.last_name, "fn")
+        self.assertNotIn("\ud800", identity.user.username)
+
+    def test_unicode_error_in_provisioning_is_provisioning_failed(self):
+        error = UnicodeEncodeError("utf-8", "\ud800", 0, 1, "surrogates not allowed")
+        with mock.patch.object(provisioning, "resolve", side_effect=error):
+            response = self._sign_in({"roles": ["staff"]})
+        self.assertEqual(
+            response.status_code, 302,
+            f"a UnicodeEncodeError from resolve answered {response.status_code}",
+        )
+        self.assertEqual(sso_error(response), "provisioning_failed")
+
+
+class HostileTokenShapeTests(FlowTestCase):
+    """Signed ID tokens whose JSON json.dumps cannot produce: each is a refusal, never a 500.
+
+    The token is signed with the fake OP's own key, so every refusal here comes from decoding
+    or validation, not from the signature.
+    """
+
+    def setUp(self):
+        super().setUp()
+        self.provider = self.make_flow_provider()
+        self.client = APIClient(raise_request_exception=False)
+
+    def _raw_sign_in(self, payload_template, header_json=None):
+        url = self.start(self.client, self.provider)
+        nonce = query_of(url)["nonce"]
+        now = int(time.time())
+        payload = payload_template % {
+            "iss": json.dumps(self.op.issuer), "aud": json.dumps(CLIENT_ID),
+            "nonce": json.dumps(nonce), "iat": now, "exp": now + 300,
+        }
+        header = header_json or json.dumps({"alg": "RS256", "kid": "rsa1", "typ": "JWT"})
+        signing_input = f"{b64url(header.encode())}.{b64url(payload.encode())}"
+        rsa = jwt.algorithms.RSAAlgorithm(jwt.algorithms.RSAAlgorithm.SHA256)
+        token = f"{signing_input}.{b64url(rsa.sign(signing_input.encode(), keys()['rsa']))}"
+        return self.callback(self.client, self.provider, self.op.authorize(url, raw_token=token))
+
+    BASE = (
+        '{"iss": %(iss)s, "aud": %(aud)s, "sub": "raw-1", "nonce": %(nonce)s, '
+        '"roles": ["staff"], "iat": %(iat)d, "exp": %(exp)d, EXTRA}'
+    )
+
+    def assertRefused(self, response, label):
+        self.assertEqual(response.status_code, 302, f"{label} answered {response.status_code}")
+        self.assertEqual(sso_error(response), "id_token_invalid", f"{label}: {response['Location']}")
+        self.assertFalse(OIDCIdentity.objects.exists())
+
+    def test_deep_nesting_in_the_payload_refused(self):
+        deep = "[" * 100000 + "]" * 100000
+        response = self._raw_sign_in(self.BASE.replace("EXTRA", f'"deep": {deep}'))
+        self.assertRefused(response, "a payload nested 100000 deep")
+
+    def test_deep_nesting_in_the_header_refused(self):
+        deep = "[" * 100000 + "]" * 100000
+        header = '{"alg": "RS256", "kid": "rsa1", "x": %s}' % deep
+        response = self._raw_sign_in(self.BASE.replace("EXTRA", '"x": 1'), header_json=header)
+        self.assertRefused(response, "a header nested 100000 deep")
+
+    def test_infinite_time_claims_refused(self):
+        for claim in ("exp", "iat", "nbf"):
+            for value in ("1e999", "-1e999"):
+                with self.subTest(claim=claim, value=value):
+                    OIDCIdentity.objects.all().delete()
+                    cache.clear()  # the start throttle
+                    # Duplicate JSON keys: the last value wins, so this one replaces the
+                    # template's integer.
+                    response = self._raw_sign_in(self.BASE.replace("EXTRA", f'"{claim}": {value}'))
+                    self.assertRefused(response, f"{claim}={value}")
+
+
+class EntraControlCharacterTests(FlowTestCase):
+    """Entra's oid is stored in the identity's ``extra``: stripped like a display field."""
+
+    def setUp(self):
+        super().setUp()
+        self.provider = make_entra(
+            enabled=True, client_id=CLIENT_ID, mappings=[{"value": "staff", "user_level": 1}]
+        )
+        doc = self.op.discovery_document()
+        doc["issuer"] = self.provider.issuer
+        patcher = mock.patch.object(discovery, "get_discovery", return_value=doc)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_oid_lone_surrogate_stripped(self):
+        claims = {"iss": self.provider.issuer, "tid": TENANT, "oid": "o\ud800i", "roles": ["staff"]}
+        response = self.sign_in(APIClient(raise_request_exception=False), self.provider, claims)
+        self.assertEqual(
+            response.status_code, 302, f"an oid carrying a lone surrogate answered {response.status_code}"
+        )
+        self.assertIsNone(sso_error(response), response["Location"])
+        self.assertEqual(OIDCIdentity.objects.get().extra, {"tid": TENANT, "oid": "oi"})
+
 
 class NetworkAclTests(FlowTestCase):
     """Spec 3.1: the UI network ACL gates providers/, start, callback and exchange."""

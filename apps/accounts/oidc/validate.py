@@ -27,6 +27,13 @@ ENTRA_ISSUER = "https://login.microsoftonline.com/{tenant}/v2.0"
 MAX_SUBJECT = 255
 
 
+# What decoding an ID token can raise on hostile input: PyJWT's own errors; ValueError and
+# TypeError from ill-shaped JSON or claims; ArithmeticError when a time claim is 1e999 (JSON
+# float infinity, which int() refuses with OverflowError); RecursionError when the header or
+# the payload nests deeper than the parser can follow.
+_DECODE_ERRORS = (jwt.PyJWTError, ValueError, TypeError, ArithmeticError, RecursionError)
+
+
 class IdTokenInvalid(Exception):
     """The ID token failed a check. Carries no detail by design."""
 
@@ -89,7 +96,8 @@ def validate_id_token(provider, id_token, nonce, disco):
         raise IdTokenInvalid()
     try:
         header = jwt.get_unverified_header(id_token)
-    except jwt.PyJWTError:
+    except _DECODE_ERRORS as exc:
+        logger.info("OIDC ID token header refused: %s", type(exc).__name__)
         raise IdTokenInvalid() from None
     # The header's alg is not consulted here: ``algorithms=[alg]`` below refuses any other
     # value, ``none`` and every ``HS*`` included.
@@ -108,7 +116,7 @@ def validate_id_token(provider, id_token, nonce, disco):
             leeway=LEEWAY,
             options={"require": REQUIRED},
         )
-    except (jwt.PyJWTError, ValueError, TypeError) as exc:
+    except _DECODE_ERRORS as exc:
         logger.info("OIDC ID token refused: %s", type(exc).__name__)
         raise IdTokenInvalid() from None
 

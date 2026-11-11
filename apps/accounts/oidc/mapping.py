@@ -12,19 +12,26 @@ import unicodedata
 MAX_STORED_VALUES = 200
 
 
-def has_control_char(value):
-    """True when ``value`` holds a Unicode control character (category Cc: C0, DEL, C1).
+# Cc: a control character (C0, DEL, C1). PostgreSQL refuses U+0000 in a text column and in
+# jsonb (DataError). Cs: a lone UTF-16 surrogate, which JSON's "\ud800" escape produces and
+# which no UTF-8 encoder will write (UnicodeEncodeError in the driver). Every other category,
+# format characters, private use, unassigned code points and noncharacters included, is
+# valid UTF-8 and stored as sent.
+REFUSED_CATEGORIES = frozenset({"Cc", "Cs"})
 
-    PostgreSQL refuses U+0000 in a text column and in ``jsonb``, so such a value would end a
-    callback in ``DataError``. An identity key or a mapping value carrying one is refused,
-    never stripped: stripping could make two different values equal.
+
+def has_control_char(value):
+    """True when ``value`` holds a control character or a lone surrogate (``REFUSED_CATEGORIES``).
+
+    An identity key or a mapping value carrying one is refused, never stripped: stripping
+    could make two different values equal.
     """
-    return any(unicodedata.category(c) == "Cc" for c in value)
+    return any(unicodedata.category(c) in REFUSED_CATEGORIES for c in value)
 
 
 def strip_control_chars(value):
-    """``value`` without its control characters. Only for display fields, never for a key."""
-    return "".join(c for c in value if unicodedata.category(c) != "Cc")
+    """``value`` without its control characters and lone surrogates. Display fields only."""
+    return "".join(c for c in value if unicodedata.category(c) not in REFUSED_CATEGORIES)
 
 
 class GroupsOverage(Exception):

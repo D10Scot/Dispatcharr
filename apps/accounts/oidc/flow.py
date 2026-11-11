@@ -417,10 +417,12 @@ def callback(request, provider, base_url):
             )
         except provisioning.Refused as exc:
             return refuse(exc.code, user=exc.username or "sso")
-        except DatabaseError as exc:
-            # resolve's transaction has rolled back. A value the database refuses, or a
-            # deadlock abort, answers a fixed code rather than a 500 that would put the
-            # callback's query in the 5xx log.
+        except (DatabaseError, UnicodeError) as exc:
+            # resolve's transaction has rolled back. A value the database refuses (DataError,
+            # or UnicodeEncodeError from the driver for text it cannot encode), or a deadlock
+            # abort, answers a fixed code rather than a 500 that would put the callback's
+            # query in the 5xx log. The character checks in validate and provisioning refuse
+            # or strip what is known; this keeps the redirect promise when they miss one.
             logger.warning("OIDC provisioning failed: %s", type(exc).__name__)
             return refuse("provisioning_failed")
 
