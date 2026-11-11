@@ -27,3 +27,11 @@ regexes = [
   '''^(v1\.[0-9]+\.)?16c32b6499ba30786464bfb130d785fbc3a8b817c7cc5a0e0d73316a60fd702c$''',
   '''^(v1\.[0-9]+\.)?6d24abde774fa01f0c94981f04c77f0b714398dffc379a09c580ac5e00c816d1$''',
 ]
+
+[[allowlists]]
+description = "Observability spec redaction sentinel: S3NT1NEL-pw-9d2f is a made-up value the spec's leak tests plant in a URL password, an exception message and an operator resource attribute, then assert never reaches a span, metric, structured log field or /metrics (docs/superpowers/specs/2026-10-31-observability-design.md, D9 and D13). It is a test literal and valid for nothing. It is allowlisted by exact value (regexTarget = secret) and only for the one rule that fires, never by path, so the implementation PRs' test files may carry it while a real secret in any of those files is still caught by every rule."
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = [
+  '''^S3NT1NEL-pw-9d2f$''',
+]
