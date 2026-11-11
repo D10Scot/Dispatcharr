@@ -63,9 +63,14 @@ class TestActionTests(OPTestCase):
         self.op.serve_provider("/realms/x")
         provider = make_provider(issuer=self.op.base + "/realms/x")
         before = type(provider).objects.filter(pk=provider.pk).values().get()
-        with mock.patch("apps.accounts.oidc.discovery.cache") as cache:
-            self.run_test_action(provider)
-        cache.set.assert_not_called()
+        self.run_test_action(provider)
+        from django.core.cache import cache
+
+        for prefix in ("disco", "jwks"):
+            self.assertIsNone(
+                cache.get(f"oidc:{prefix}:{provider.pk}:{provider.version}"),
+                "the test action wrote to the cache",
+            )
         self.assertEqual(type(provider).objects.filter(pk=provider.pk).values().get(), before)
 
     def test_unset_public_base_url_is_reported(self):
@@ -114,6 +119,34 @@ class TestActionTests(OPTestCase):
         self.op.raw("/realms/x/jwks", b"{}")
         self.assertEqual(self.run_test_action(provider)["problems"], ["jwks_invalid"])
 
+    def test_malformed_endpoint_urls_answer_a_fixed_code_not_500(self):
+        provider = make_provider(issuer=self.op.base + "/realms/x")
+        path = "/realms/x/.well-known/openid-configuration"
+        good = {
+            "issuer": self.op.base + "/realms/x",
+            "authorization_endpoint": self.op.base + "/auth",
+            "token_endpoint": self.op.base + "/token",
+            "jwks_uri": self.op.base + "/jwks",
+        }
+        for field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
+            self.op.json(path, {**good, field: "https://[oops"})
+            response = self.client.post(f"{PROVIDERS}{provider.pk}/test/")
+            self.assertEqual(response.status_code, 200, f"{field}: {response.status_code}")
+            self.assertEqual(response.json()["problems"], ["discovery_endpoint_insecure"], field)
+
+    def test_deeply_nested_documents_answer_a_fixed_code_not_500(self):
+        self.op.serve_provider("/realms/x")
+        provider = make_provider(issuer=self.op.base + "/realms/x")
+        nested = b"[" * 200_000
+        self.op.raw("/realms/x/jwks", nested)
+        response = self.client.post(f"{PROVIDERS}{provider.pk}/test/")
+        self.assertEqual(response.status_code, 200, "a nested JWKS body made the action fail")
+        self.assertEqual(response.json()["problems"], ["jwks_invalid"])
+        self.op.raw("/realms/x/.well-known/openid-configuration", nested)
+        response = self.client.post(f"{PROVIDERS}{provider.pk}/test/")
+        self.assertEqual(response.status_code, 200, "a nested discovery body made the action fail")
+        self.assertEqual(response.json()["problems"], ["discovery_invalid"])
+
     def test_oversized_documents_refused(self):
         self.op.serve_provider("/realms/x")
         provider = make_provider(issuer=self.op.base + "/realms/x")
@@ -144,6 +177,8 @@ class TestActionTests(OPTestCase):
         provider = make_provider(issuer="https://idp.example/realms/x")
         with mock.patch("core.http_security.socket.getaddrinfo", return_value=_addrinfo("10.0.0.5")):
             response = self.client.post(f"{PROVIDERS}{provider.pk}/test/")
+        self.assertEqual(response.status_code, 200, "the action failed instead of answering")
+        self.assertEqual(response.json()["problems"], ["discovery_not_allowed"])
         self.assertNotIn("10.0.0.5", response.content.decode())
 
 
@@ -151,7 +186,7 @@ class DiscoveryUrlTests(OPTestCase):
     def test_trailing_slash_issuer_fetches_single_slash_path(self):
         self.op.serve_provider("/realms/x/")
         provider = make_provider(issuer=self.op.base + "/realms/x/")
-        result = self.run_test_action(provider)
+        self.run_test_action(provider)
         well_known = [p for p in self.op.requests if "well-known" in p]
         self.assertEqual(
             well_known,
@@ -170,7 +205,6 @@ class DiscoveryUrlTests(OPTestCase):
             },
         )
         self.assertEqual(self.run_test_action(provider)["problems"], [])
-        self.assertIsNotNone(result)
 
     def test_trailing_slash_issuer_compared_exactly(self):
         provider = make_provider(issuer=self.op.base + "/realms/x/")

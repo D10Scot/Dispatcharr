@@ -28,6 +28,12 @@ SLUG_RE = re.compile(r"^[a-z0-9-]{1,40}$")
 CLAIM_PATH_RE = re.compile(r"^[^.\s]+(\.[^.\s]+)*$")
 ID_TOKEN_ALGS = {"RS256", "RS384", "RS512", "PS256", "PS384", "PS512", "ES256", "ES384", "EdDSA"}
 LEVELS = {0, 1, 10}
+# Every literal path segment under /api/accounts/oidc/ in the spec's section 3.1 table: the
+# first segments providers, providers-admin, settings, identities and exchange, and the
+# second segments link, start and callback. A slug equal to one would make a route ambiguous.
+RESERVED_SLUGS = frozenset(
+    {"providers", "providers-admin", "settings", "identities", "exchange", "link", "start", "callback"}
+)
 MAX_MAPPINGS = 50
 ENTRA_ISSUER = "https://login.microsoftonline.com/{tenant}/v2.0"
 ENTRA_METHODS = (OIDCProvider.AUTH_PRIVATE_KEY_JWT, OIDCProvider.AUTH_SECRET_POST)
@@ -145,6 +151,8 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
     def validate_slug(self, value):
         if not SLUG_RE.match(value):
             raise serializers.ValidationError("must match [a-z0-9-] and be 1 to 40 characters")
+        if value in RESERVED_SLUGS:
+            raise serializers.ValidationError("is reserved")
         return value
 
     def validate_scopes(self, value):
@@ -177,9 +185,9 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
                     "each entry must be an object with value and user_level"
                 )
             v, level = entry["value"], entry["user_level"]
-            if not isinstance(v, str) or not v or len(v) > 256:
-                raise serializers.ValidationError("value must be a non-empty string of at most 256 characters")
-            if isinstance(level, bool) or level not in LEVELS:
+            if not isinstance(v, str) or not v.strip() or len(v) > 256:
+                raise serializers.ValidationError("value must be a non-blank string of at most 256 characters")
+            if type(level) is not int or level not in LEVELS:
                 raise serializers.ValidationError("user_level must be 0, 1 or 10")
             if v in seen:
                 raise serializers.ValidationError("duplicate value")

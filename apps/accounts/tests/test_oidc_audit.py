@@ -3,9 +3,7 @@
 import json
 
 from django.test import TestCase
-from rest_framework.test import APIClient
 
-from apps.accounts.models import OIDCProvider
 from core.models import SystemEvent
 
 from .oidc_support import (
@@ -15,7 +13,6 @@ from .oidc_support import (
     admin_client,
     make_provider,
     set_auth_settings,
-    standard_client,
 )
 
 URL_SENTINEL = "https://sentinel-url-4b2c.example.com"
@@ -149,6 +146,3 @@ class AuthConfigAuditTests(TestCase):
 
         self.assertIn("auth_config_changed", dict(SystemEvent.EVENT_TYPES))
         self.assertIn("auth_config_changed", SUPPORTED_EVENTS)
-        self.assertIsNotNone(OIDCProvider)  # keep the import honest
-        self.assertIsNotNone(APIClient)
-        self.assertIsNotNone(standard_client)

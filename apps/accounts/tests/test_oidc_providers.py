@@ -295,6 +295,38 @@ class ProviderCrudTests(TestCase):
             response = self.client.post(PROVIDERS, generic_body(slug=bad), format="json")
             self.assertEqual(response.status_code, 400, bad)
 
+    def test_reserved_slugs_refused(self):
+        # Every literal path segment under /api/accounts/oidc/ in the spec's section 3.1
+        # table: providers, providers-admin, settings, identities, exchange (first
+        # segments), and link, start, callback (second segments).
+        for reserved in (
+            "providers", "providers-admin", "settings", "identities", "exchange",
+            "link", "start", "callback",
+        ):
+            response = self.client.post(PROVIDERS, generic_body(slug=reserved), format="json")
+            self.assertEqual(response.status_code, 400, reserved)
+            self.assertIn("slug", response.json(), reserved)
+        self.assertEqual(OIDCProvider.objects.count(), 0)
+        provider = make_provider(slug="ok-one")
+        renamed = self.client.patch(
+            f"{PROVIDERS}{provider.pk}/", {"slug": "identities"}, format="json"
+        )
+        self.assertEqual(renamed.status_code, 400)
+        self.assertEqual(
+            self.client.post(PROVIDERS, generic_body(slug="settings-2"), format="json").status_code,
+            201,
+        )
+
+    def test_put_is_not_allowed(self):
+        provider = make_provider()
+        response = self.client.put(
+            f"{PROVIDERS}{provider.pk}/", generic_body(slug="p1"), format="json"
+        )
+        self.assertEqual(response.status_code, 405)
+        self.assertEqual(self.client.patch(
+            f"{PROVIDERS}{provider.pk}/", {"display_name": "x"}, format="json"
+        ).status_code, 200)
+
     def test_claim_path_shape(self):
         for bad in ("a..b", ".a", "a.", "a b"):
             response = self.client.post(PROVIDERS, generic_body(claim_path=bad), format="json")
@@ -307,6 +339,11 @@ class ProviderCrudTests(TestCase):
             [{"value": "", "user_level": 1}],
             [{"value": "a", "user_level": 5}],
             [{"value": "a", "user_level": True}],
+            [{"value": "a", "user_level": 10.0}],
+            [{"value": "a", "user_level": 1.0}],
+            [{"value": "a", "user_level": "1"}],
+            [{"value": " ", "user_level": 1}],
+            [{"value": "\t\n", "user_level": 1}],
             [{"value": "a", "user_level": 1}, {"value": "a", "user_level": 0}],
             [{"value": "x" * 257, "user_level": 1}],
             [{"value": f"v{i}", "user_level": 1} for i in range(51)],
@@ -948,6 +985,34 @@ class ProviderCertificateTests(TestCase):
         )
         self.assertEqual(self._activate("0" * 64).status_code, 409)
 
+    def test_malformed_thumbprints_answer_409_and_write_nothing(self):
+        self._generate()
+        before = OIDCProvider.objects.get(pk=self.provider.pk)
+        bad = ["é" * 64, "é", "zz" * 32, "g" * 64, "abc", " ", "0" * 63, "0" * 65, "\u0661" * 64]
+        for thumbprint in bad:
+            response = self._activate(thumbprint)
+            self.assertEqual(response.status_code, 409, f"{thumbprint!r}: {response.content}")
+            self.assertEqual(response.json(), {"code": "pending_certificate_changed"})
+        after = OIDCProvider.objects.get(pk=self.provider.pk)
+        self.assertEqual(after.client_cert_pem, "")
+        self.assertEqual(after.pending_client_cert_pem, before.pending_client_cert_pem)
+        self.assertEqual(after.version, before.version)
+
+    def test_uppercase_hex_thumbprint_is_accepted(self):
+        generated = self._generate().json()
+        response = self._activate(generated["thumbprint_sha256"].upper())
+        self.assertEqual(response.status_code, 200, response.content)
+
+    def test_non_numeric_ids_answer_404_on_every_certificate_route(self):
+        for suffix, method in (
+            ("certificate/", "post"),
+            ("certificate/", "get"),
+            ("certificate/activate/", "post"),
+            ("test/", "post"),
+        ):
+            response = getattr(self.client, method)(f"{PROVIDERS}abc/{suffix}")
+            self.assertEqual(response.status_code, 404, f"{method} {suffix}")
+
     def test_non_admin_cannot_generate_or_download(self):
         standard, _ = standard_client()
         self.assertEqual(standard.post(self.url).status_code, 403)
@@ -1021,6 +1086,8 @@ class ProviderPartialWriteTests(TransactionTestCase):
                 thread.join(JOIN)
         finally:
             release.set()
+            if thread.ident is not None:
+                thread.join(JOIN)
         self.assertEqual(result["response"].status_code, 200, result["response"].content)
         provider = OIDCProvider.objects.get(pk=self.provider.pk)
         self.assertTrue(
@@ -1046,6 +1113,8 @@ class ProviderPartialWriteTests(TransactionTestCase):
                 thread.join(JOIN)
         finally:
             release.set()
+            if thread.ident is not None:
+                thread.join(JOIN)
         self.assertEqual(result["response"].status_code, 200, result["response"].content)
         provider = OIDCProvider.objects.get(pk=self.provider.pk)
         self.assertTrue(provider.enabled, "certificate generation wrote a stale enabled back")
@@ -1068,6 +1137,8 @@ class ProviderPartialWriteTests(TransactionTestCase):
                 thread.join(JOIN)
         finally:
             release.set()
+            if thread.ident is not None:
+                thread.join(JOIN)
         self.assertEqual(result["response"].status_code, 200, result["response"].content)
         provider = OIDCProvider.objects.get(pk=self.provider.pk)
         self.assertEqual(provider.version, start + 2, "a version bump was lost")

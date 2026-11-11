@@ -14,7 +14,6 @@ from urllib.parse import urlparse
 
 import requests
 from django.conf import settings
-from django.core.cache import cache
 
 from core.http_security import fetch_outbound_http, validate_outbound_http_url
 
@@ -22,7 +21,6 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 1024 * 1024  # 1 MiB, enforced while streaming
 TIMEOUT = (5, 10)  # connect, read
-CACHE_TTL = 3600
 WELL_KNOWN = "/.well-known/openid-configuration"
 
 _REDIRECT_MESSAGES = ("More than ", "Redirect without a Location")
@@ -47,7 +45,10 @@ def discovery_url(issuer):
 
 
 def _scheme_allowed(url):
-    scheme = urlparse(url).scheme.lower()
+    try:
+        scheme = urlparse(url).scheme.lower()
+    except ValueError:  # e.g. "https://[oops": urlparse refuses it
+        return False
     return scheme == "https" or (scheme == "http" and settings.OIDC_ALLOW_HTTP)
 
 
@@ -98,7 +99,8 @@ def _get_json(url, provider, *, kind, not_allowed_code):
         resp.close()
     try:
         doc = json.loads(body)
-    except ValueError:
+    except (ValueError, RecursionError):
+        # RecursionError: a deeply nested body inside the size cap. It is not a ValueError.
         raise DiscoveryError(f"{kind}_invalid") from None
     if not isinstance(doc, dict):
         raise DiscoveryError(f"{kind}_invalid")
@@ -151,36 +153,6 @@ def check_token_endpoint(provider, discovery):
         )
     except ValueError:
         raise DiscoveryError("token_endpoint_not_allowed") from None
-
-
-def _cache_key(prefix, provider):
-    return f"oidc:{prefix}:{provider.pk}:{provider.version}"
-
-
-def _cached(key, loader):
-    try:
-        hit = cache.get(key)
-    except Exception:  # a cache outage must not block sign-in; fetch directly
-        hit = None
-    if hit is not None:
-        return hit
-    value = loader()
-    try:
-        cache.set(key, value, CACHE_TTL)
-    except Exception:
-        pass
-    return value
-
-
-def get_discovery(provider):
-    """Cached discovery document, keyed by provider id and version (S2 reads this)."""
-    return _cached(_cache_key("disco", provider), lambda: fetch_discovery(provider))
-
-
-def get_jwks(provider, discovery=None):
-    """Cached JWKS, keyed by provider id and version (S2 reads this)."""
-    disco = discovery if discovery is not None else get_discovery(provider)
-    return _cached(_cache_key("jwks", provider), lambda: fetch_jwks(provider, disco))
 
 
 def run_test(provider):

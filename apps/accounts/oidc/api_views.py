@@ -5,6 +5,7 @@ PR S2. Nothing here establishes a session.
 """
 
 import hmac
+import re
 
 from django.db import transaction
 from django.db.models import ProtectedError
@@ -33,6 +34,9 @@ from .serializers import (
 )
 
 
+_THUMBPRINT_RE = re.compile(r"^[0-9a-f]{64}$")
+
+
 def _actor(request):
     return getattr(request.user, "username", None) or "unknown"
 
@@ -44,6 +48,8 @@ class OIDCProviderAdminViewSet(viewsets.ModelViewSet):
     serializer_class = OIDCProviderSerializer
     permission_classes = [IsAdmin]
     pagination_class = None
+    # Spec 3.1 lists GET, POST, PATCH and DELETE; there is no PUT.
+    http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
@@ -169,15 +175,23 @@ class OIDCProviderAdminViewSet(viewsets.ModelViewSet):
         body = CertificateActivateSerializer(data=request.data)
         body.is_valid(raise_exception=True)
         named = (body.validated_data.get("thumbprint_sha256") or "").strip().lower()
+        # A non-numeric id is a 404 like every other route (get_object), before any lock.
+        loaded = self.get_object()
         with transaction.atomic():
-            provider = OIDCProvider.objects.select_for_update().filter(pk=pk).first()
+            provider = OIDCProvider.objects.select_for_update().filter(pk=loaded.pk).first()
             if provider is None:
                 raise CodedError("not_found", status_code=status.HTTP_404_NOT_FOUND)
-            self.check_object_permissions(request, provider)
             pending = ""
             if provider.pending_client_cert_pem and provider.pending_client_key_encrypted:
                 pending = certificates.thumbprint_sha256(provider.pending_client_cert_pem)
-            if not named or not pending or not hmac.compare_digest(named, pending):
+            # Anything that is not 64 lowercase hex characters cannot name a certificate;
+            # it is the same refusal as a different thumbprint (and compare_digest would
+            # raise TypeError on non-ASCII text).
+            if (
+                not _THUMBPRINT_RE.match(named)
+                or not pending
+                or not hmac.compare_digest(named, pending)
+            ):
                 raise CodedError(
                     "pending_certificate_changed", status_code=status.HTTP_409_CONFLICT
                 )
@@ -197,7 +211,7 @@ class OIDCProviderAdminViewSet(viewsets.ModelViewSet):
                 provider=provider.slug,
                 fields=["client_certificate", "client_auth_method"],
             )
-        refreshed = OIDCProvider.objects.get(pk=pk)
+        refreshed = OIDCProvider.objects.get(pk=loaded.pk)
         return Response(OIDCProviderSerializer(refreshed, context={"request": request}).data)
 
 
