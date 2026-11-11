@@ -193,6 +193,21 @@ const UsersTable = () => {
         ),
       },
       {
+        header: 'Active',
+        accessorKey: 'is_active',
+        size: 90,
+        minSize: 70,
+        cell: ({ getValue }) => (
+          <Badge
+            size="sm"
+            variant="light"
+            color={getValue() === false ? 'red' : 'green'}
+          >
+            {getValue() === false ? 'Inactive' : 'Active'}
+          </Badge>
+        ),
+      },
+      {
         header: 'Username',
         accessorKey: 'username',
         size: 120,

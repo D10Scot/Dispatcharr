@@ -274,6 +274,20 @@ describe('User', () => {
       expect(screen.queryByTestId('tab-permissions')).not.toBeInTheDocument();
     });
 
+    it('active switch hidden for the current user', () => {
+      const admin = makeAdminUser();
+      setupMocks({ authUser: admin });
+      const { unmount } = render(
+        <User isOpen={true} onClose={vi.fn()} user={admin} />
+      );
+      expect(screen.queryByText('Active')).not.toBeInTheDocument();
+      unmount();
+
+      setupMocks({ authUser: admin });
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
+      expect(screen.getByText('Active')).toBeInTheDocument();
+    });
+
     it('hides Permissions tab for non-admin user', () => {
       setupMocks({ authUser: makeRegularUser() });
       render(

@@ -256,7 +256,11 @@ POSTGRES_SSL_CA_CERT = os.environ.get("POSTGRES_SSL_CA_CERT", "")
 POSTGRES_SSL_CERT = os.environ.get("POSTGRES_SSL_CERT", "")
 POSTGRES_SSL_KEY = os.environ.get("POSTGRES_SSL_KEY", "")
 
+# True only when the LIVE database is SQLite (DB_ENGINE=sqlite). Writes that depend on
+# the PostgreSQL advisory-lock floor (apps/accounts/admin_floor.py) are refused with
+# 400 requires_postgresql when it is set. settings_test.py resets it to False.
 if os.getenv("DB_ENGINE", None) == "sqlite":
+    RUNTIME_SQLITE = True
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
@@ -264,6 +268,7 @@ if os.getenv("DB_ENGINE", None) == "sqlite":
         }
     }
 else:
+    RUNTIME_SQLITE = False
     _use_geventpool_db = uses_geventpool_database_backend()
     _pg_options = {"pool": False} if _use_geventpool_db else {
         "application_name": db_application_name(),

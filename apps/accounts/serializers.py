@@ -48,6 +48,16 @@ class GroupSerializer(serializers.ModelSerializer):
 
 
 # 🔹 Fix for User serialization
+def apply_channel_profiles(user, profiles):
+    """Replace a user's channel-profile memberships.
+
+    The one helper through which both ``UserSerializer.update`` and
+    ``UserViewSet.perform_update`` write them, so a deactivating PATCH can write them after
+    its guarded transaction has committed (spec 4.4, 5.8).
+    """
+    user.channel_profiles.set(profiles)
+
+
 class UserSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, required=False)
     channel_profiles = serializers.PrimaryKeyRelatedField(
@@ -68,6 +78,7 @@ class UserSerializer(serializers.ModelSerializer):
             "custom_properties",
             "avatar_config",
             "stream_limit",
+            "is_active",
             "is_staff",
             "is_superuser",
             "last_login",
@@ -151,15 +162,24 @@ class UserSerializer(serializers.ModelSerializer):
                     ]
             instance.custom_properties = merged
 
+        # Save only the columns this request assigned. A full-row save would write back
+        # every column as the request loaded it, so a profile PATCH that started before an
+        # admin's deactivation would re-save its stale is_active=True (spec 5.8).
+        update_fields = set(validated_data)
+        if custom_properties is not None:
+            update_fields.add("custom_properties")
+
         for attr, value in validated_data.items():
             setattr(instance, attr, value)
 
         if password:
             instance.set_password(password)
+            update_fields.add("password")
 
-        instance.save()
+        if update_fields:
+            instance.save(update_fields=sorted(update_fields))
 
         if channel_profiles is not None:
-            instance.channel_profiles.set(channel_profiles)
+            apply_channel_profiles(instance, channel_profiles)
 
         return instance

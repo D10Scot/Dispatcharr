@@ -21,6 +21,12 @@ import os
 
 from dispatcharr.settings import *  # noqa: F401,F403
 
+# The star import above runs settings.py, which sets RUNTIME_SQLITE from DB_ENGINE. A test
+# process that inherits DB_ENGINE=sqlite would carry True into the suite whichever database
+# is chosen below. The marker describes the live database only; tests set it with
+# override_settings.
+RUNTIME_SQLITE = False
+
 TEST_RUNNER = "dispatcharr.test_runner.DispatcharrDiscoverRunner"
 
 # Fast password hashing for tests.

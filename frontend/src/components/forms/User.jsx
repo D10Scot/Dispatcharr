@@ -255,6 +255,12 @@ const User = ({ user = null, isOpen, onClose }) => {
                   }))}
                 />
                 <Switch
+                  label="Active"
+                  description="Inactive users cannot sign in, and their access and refresh tokens stop working"
+                  {...form.getInputProps('is_active', { type: 'checkbox' })}
+                  key={form.key('is_active')}
+                />
+                <Switch
                   label="Hide Mature Content"
                   description="Hide channels marked as mature content (admin users not affected)"
                   {...form.getInputProps('hide_adult_content', {
