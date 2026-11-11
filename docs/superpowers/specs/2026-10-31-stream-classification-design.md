@@ -1,9 +1,13 @@
 # Stream Classification and Quality-Ordered Failover
 
 **Date:** 2026-10-31
-**Status:** Draft (review rounds 1-3 addressed; see § Changelog)
-**Rulings:** the owner's rulings R1-R5 and R7 of 2026-10-31 override any default here. Appendix A restates
-them, so this document can be read without the conversation that produced them.
+**Status:** Draft (review rounds 1-7 and the 2026-11-11 code-review findings addressed; see § Changelog)
+**Rulings:** the owner's rulings R1-R5 and R7 of 2026-10-31 and R8-R10 of 2026-11-11 override any default
+here. Appendix A restates them, so this document can be read without the conversation that produced them.
+**Demo spike (R10):** before serious implementation, a throwaway demo engine is being built on branch
+`spike/classification-demo`, in its own worktree and never merged, so the owner can feed real provider lists
+through the parser and rate the result. Its findings may reopen § Parsing and § Region; a change there lands
+as an amendment to this spec before S2's plan is written.
 **Authorities:** `CLAUDE.md` (§ Video path, § State, § Known defects and traps, § Structural
 constraints, § Conventions), `CONTEXT.md`, `docs/adr/0005`, `docs/adr/0006`, `docs/adr/0010`, and
 `docs/relay-parity-matrix.md` for the two PRs (S1a, S1b) that touch the Go relay.
@@ -29,8 +33,10 @@ This spec designs four things, in the owner's order:
    review queue. Confirmed decisions are remembered, so a re-scan is stable. R2's optional LLM assist is
    **deferred to its own spec** (ruling R5; § LLM assist).
 3. **Classify quality.** Each stream gets a **quality tier**. It is derived from the name, then
-   overridden by measured stream statistics captured during real playback (R1). Nothing probes a
-   provider.
+   overridden by measured stream statistics captured during real playback (R1). A measurement never
+   expires back to the name tier: when it reaches `measured_ttl_days`, that one stream is re-measured by a
+   short, throttled, slot-reserving probe (R8, § Re-measurement at expiry). Nothing else probes a provider,
+   and an unmeasured stream is never probed.
 4. **Order.** Each served channel's `ChannelStream.order` is set best tier first, then by observed
    reliability within a tier (R4). The relay's existing failover then walks down in quality. Existing
    channels are reordered automatically once the owner enables it, new channels are proposed for admin
@@ -188,6 +194,49 @@ how the corpus is built without one).
   only through an enabled membership of that channel in one of their profiles. **A channel with no
   memberships is therefore reachable only by admins and by users with no profiles.**
 
+### Model signals on the channel tables
+
+Every receiver on `Channel`, `ChannelOverride` and `ChannelStream` at the base is in
+`apps/channels/signals.py`; no other app connects one (`git grep -n "sender=Channel\|\.connect(" 149678aa`).
+
+| Receiver | Fires on | Effect |
+|---|---|---|
+| `update_channel_tvg_id_and_logo` (`:37-51`) | `m2m_changed` `post_add` on `Channel.streams.through` | fills an empty `tvg_id`. Fires only through `channel.streams.add()`; the channel serializer creates `ChannelStream` rows directly (`apps/channels/serializers.py:723-725`) and so does not fire it |
+| `assign_compact_number_on_unhide` (`:82-130`), `release_compact_number_on_hide` (`:133-178`) | `Channel` `post_save` | return at once unless `hidden_from_output` is in `update_fields` (`:102-104`, `:150-152`) |
+| `refresh_epg_programs` (`:181-196`) | `Channel` `post_save` | when `epg_data` is in `update_fields`, or a new channel has EPG: drops the XMLTV chunk cache and queues `parse_programs_for_tvg_id` |
+| `cache_previous_override_epg`, `refresh_epg_programs_for_override` (`:199-232`) | `ChannelOverride` `pre_save` / `post_save` | the same EPG refresh when the override's `epg_data` changes. No receiver on `ChannelOverride` delete |
+| `update_channel_catchup_fields` (`:392-406`) | `ChannelStream` `post_save` / `post_delete` | rolls the catch-up flags up onto the `Channel` row |
+
+A queryset `.update()` or `bulk_update` fires none of them (`apps/channels/epg_matching.py:311`'s docstring
+says so for the EPG one). `Channel.updated_at` is `auto_now` (`apps/channels/models.py:429-432`).
+
+### Provider slots, and what a probe would have to respect
+
+- A tune reserves through `reserve_profile_slot(profile, redis_client)` (`apps/m3u/connection_pool.py:412-435`),
+  called from `Channel.get_stream()` for each active profile, the default first (`apps/channels/models.py:620-639`).
+  It runs the `reserve` op of `_SLOT_SCRIPT` (`:266` onward) with `ARGV` `(profile max, credential max)`: the
+  op refuses when `count + 1 > max`, writes nothing on a refusal, and treats a max of `0` as "not counted"
+  (`:296-316`). `release_profile_slot` runs `release` (`:438-447`). These are the only sanctioned writers of
+  the counters (CLAUDE.md § Known defects, #513).
+- The URL and user agent a tune uses come from `_resolve_live_stream_url(stream, account, profile)`
+  (`apps/proxy/next_source.py:47`, applying the profile's `transform_url`, `:271`) and
+  `M3UAccount.get_user_agent_string()` (`:435`).
+- The #513 reconciler (`apps/proxy/slot_reconciler.py`) counts as holders only the relay's channels and the
+  live VOD and catch-up records. A reservation it cannot see is safe only while it is younger than the widest
+  **in-flight window** (`in_flight_windows()`; live is `2 × (2 + 5) + 0.1` ≈ 14 s from
+  `apps/proxy/control_plane.py:37-41`, VOD is `2 × (10 + 10)` = 40 s from
+  `apps/proxy/vod_proxy/multi_worker_connection_manager.py:104-105`), because runs are spaced at least twice
+  that apart (`run_spacing_seconds()`, 80 s at the base) and every reserve and release moves the counter's
+  version. A reservation older than that whose holder is invisible is treated as leaked and given back.
+- `ffprobe` is in the runtime image: the base is `lscr.io/linuxserver/ffmpeg:version-9.0.2-cli`
+  (`docker/DispatcharrBase:115`), and the DVR already runs it (`apps/channels/tasks.py:2975-2985`). Since
+  ffmpeg 9.0 it verifies the provider's TLS certificate by default (CLAUDE.md § Test hooks).
+- The `default` Celery worker is prefork (`docker/supervisord.d/celery-default.conf`, queue `celery`) and not
+  monkey-patched, so the gevent `posix_spawn` rule does not bind it. The `dvr` worker runs threads ×20 for
+  recordings and is not used here.
+- `subprocess.TimeoutExpired` and `CalledProcessError` render the full command line in `str()`, so an argv
+  carrying a provider URL leaks it through any log of the exception.
+
 ## Decisions
 
 | | Decision | Why |
@@ -196,18 +245,19 @@ how the corpus is built without one).
 | **D2** | **Classification lives in side tables, never on `Stream`.** `StreamClassification` is one-to-one with `Stream` (primary key = `stream_id`, `on_delete=CASCADE`). It stores only what the **parser** derives from the stream's own text. Everything that depends on other inputs (decisions, measurements, health, EPG) is applied when it is read or resolved, never stored on this row. | The refresh writes `Stream` in bulk with a fixed field list (`_bulk_update_stream_refresh_batches`, `apps/m3u/tasks.py:1080-1089`). Widening it would put classification on the ingest path. Keeping the row a pure function of the stream's text is what makes D6's invalidation one fingerprint. |
 | **D3** | **A purpose-built, versioned parser, `apps/catalog/parse.py`**: pure functions, no ORM, no settings reads inside. Input `(name, group_title, tvg_id, convention)`. Output a frozen dataclass `Parsed(canonical_name, canonical_key, region, region_evidence, region_conflict, name_tier, tier_conflict, codec_hint, fps_hint, markers, variant, variant_conflict)`. `PARSER_VERSION` is an integer bumped on any behaviour change. The algorithm is phased (§ Parsing). | The existing `normalize_name` reads settings and drops the tokens this spec classifies. A pure parser can be golden-tested, property-tested and benchmarked without a database. |
 | **D4** | **Region and variant are part of every identity, never a tiebreak.** `variant` holds feed-distinguishing markers that are not quality: `+1` / `+2` (timeshift feeds) and `east` / `west`. No automatic path ever joins two streams whose regions or variants differ. A stream is never placed automatically, only by an admin decision, if it has any of: an unknown region (`""`), an unresolved region conflict, a variant conflict, or an empty key. | This is the UK/NZ trap, structurally. "Sky Arts" GB and "Sky Arts" NZ differ by region, so they are different identities by construction, not by a threshold. |
-| **D5** | **Decisions are keyed by a stable stream key and are single-valued per key.** The key is `xc:<account_id>:<stream_id>` when the provider gives an id, else `m3u:<account_id>:<sha1(name, group title, tvg_id)>`. `StreamAssignment` holds at most **one** row per key: either *assign to identity X* or *exclude*. `StreamRegionPin` holds at most **one** row per key. `PairRejection` holds one row per *(key, identity)*. Replacing a decision is an upsert in one transaction, and revoking it is a delete. Every change **requests a resolve run**, and the resolver applies decisions on every run. **A region pin ends that stream's region conflict.** | `stream_hash` changes when a hashed field changes, and the rehash task merges rows (`core/tasks.py:719`). A key derived from the provider's own id survives both. Single-valued tables make contradictory decisions unrepresentable. |
+| **D5** | **Decisions are keyed by a stable stream key and are single-valued per key.** The key is `xc:<account_id>:<stream_id>` when the provider gives an id. Otherwise it is `m3u:<account_id>:<sha1(canonical_key, region, variant)>`, from the stream's own parse **before** any pin, so a cosmetic rename (a tier or codec token, a prefix style, a group move) keeps it. A stream whose `canonical_key` is empty falls back to `m3u:<account_id>:raw:<sha1(name, group title, tvg_id)>`. Two entries in one account that parse to the same key share one decision, deliberately: same name, region and variant in one account are one feed for decision purposes. **Re-keying.** When classification changes a stream's key (a parser or convention change), a decision on the old key moves to the new key in the same transaction, if no current stream still holds the old key and no decision holds the new one. **Pruning.** Every decision row carries `last_seen_at`, refreshed (at most daily, one batched `UPDATE`) while some current stream holds its key. A daily task deletes decisions unseen for `decision_prune_days` (default 30), which also releases the `PROTECT` hold they place on an empty identity. `StreamAssignment` holds at most **one** row per key: either *assign to identity X* or *exclude*. `StreamRegionPin` holds at most **one** row per key. `PairRejection` holds one row per *(key, identity)*, and `IdentityPairRejection` one per unordered *(identity, identity)*. Replacing a decision is an upsert in one transaction, and revoking it is a delete. Every change **requests a resolve run**, and the resolver applies decisions on every run. **A region pin ends that stream's region conflict.** | `stream_hash` changes when a hashed field changes, and the rehash task merges rows (`core/tasks.py:719`). An XC key from the provider's own id survives both. A plain M3U entry has no provider id, and its hash defaults to including the name, so a rename gives a new `Stream` row; the parse tuple is the most stable thing it has. A key on the raw text (the earlier design) orphaned every decision on the first cosmetic rename and pinned its identity forever through `PROTECT`. Single-valued tables make contradictory decisions unrepresentable. |
 | **D6** | **Invalidation is "parse when the text changes, derive everything else on every run".** The only cached computation is the parse: `fingerprint = sha1(PARSER_VERSION, convention_version(account), name, group title, tvg_id)`. Classification is idempotent and needs no provider download: it reads `Stream` rows and skips unchanged fingerprints. It runs (a) after each provider refresh, (b) when an account's naming convention is saved, (c) on the admin **Re-run**, and (d) on a **daily backstop** over every active account. Identities, conflicts, EPG binding and proposals are recomputed by every resolve run. The effective tier and the health band are computed when they are **read**. | Removing the cached derived state removes the class of missed invalidations rounds 1 and 2 found. Round 3 found that a fingerprint is checked only when classification runs. (b)-(d) make sure it runs without depending on the next provider refresh, and a failed run is simply retried by the next trigger. |
 | **D7** | **Ordering control is two new columns on existing tables**: `Channel.stream_order_mode` (`auto` / `manual`, default `manual`) and `ChannelStream.pinned` (bool, default false). Under `auto`, pinned streams keep their relative admin order at the top, and every other stream is placed by D8. Under `manual`, nothing in this spec writes the channel's order. **An admin reorder of an `auto` channel switches it to `manual`.** A reorder is a request that changes the relative order of the streams kept on the channel. A **membership-only** edit (adding or removing streams, with the retained streams' relative order unchanged) keeps the mode. The response says when the mode flipped, and the UI shows the badge and a one-click "back to Auto". **Restoring a snapshot sets the channel to `manual`** under the same lock. | R3 says admin pins override everything. "Never destroy an admin's manual ordering silently" is met three ways. Every existing channel starts `manual`. A later drag is never overwritten, because it flips the channel visibly. A restore sticks. |
 | **D8** | **The ordering function, `rank_members(channel)`**, is shared by the reorder pass and by acceptance (§ Proposals). The sort key for unpinned streams is: (1) **effective tier**, best first: `UHD > FHD > HD > UNKNOWN > SD`; (2) **health band**: `good > fair > unknown > poor` (§ Reliability); (3) `backup` marker last; (4) `fps_hint` descending; (5) the stream's current `order` value, then its current position. Inactive accounts and stale streams sort last. | R4: tier, then reliability. `UNKNOWN` sits above `SD` and below `HD` because an unlabelled provider stream is more often 720p or 1080p than 576i (confirmed by R7). Key 5 is explicit rather than left to the stability of the sort. |
 | **D9** | **The relay's switch policy does not change.** The failover keeps "the next candidate after the current one, wrapping" (`order_alternates_from_current`). On a tier-sorted list that already walks down in quality, and it wraps back up to the top tier only once the lower ones are exhausted. **No climb-back** (returning to a higher tier while a lower one still plays) and **no same-tier-before-lower preference** for the streams *before* the current one in its own tier. Both are non-goals (§ Non-goals). | A switch-policy change is a live-path behaviour change. It needs a parity-matrix row and a pinned E2E, and the owner did not ask for one. The headline behaviour, best first and down in quality on failure, follows from the order alone. |
-| **D10** | **Catalog writes are short, never queue behind other writers, and lose most contention: best effort, not a guarantee.** No existing writer changes its locking. **Admin-triggered catalog actions** (accept, restore, a pin toggle, auto-order enable, detach, bind, unbind, dismiss) and **the reorder pass** each run one short transaction, for one channel and one identity:<br>(1) `SET LOCAL lock_timeout = '100ms'`.<br>(2) Lock every row the action will write or reference, up front, with `NOWAIT`. Catalog rows come first (`ContentIdentity`, then `ChannelProposal`), then non-catalog rows in a fixed order: the `Channel` row (`FOR NO KEY UPDATE`, or `FOR KEY SHARE` when bind only references it), its `ChannelStream` rows (`FOR UPDATE`, id order), the `ChannelOverride` row for detach, and the `Stream` rows of added members (`FOR KEY SHARE`, id order).<br>(3) Write. The catalog's own `ChannelStream` writes fire `update_channel_catchup_fields` (`apps/channels/signals.py:392-406`) on the `Channel` row it already holds.<br>**The resolver** locks catalog rows one identity per transaction, waits for them normally, and holds nothing else, so it cannot close a cycle.<br>On `LockNotAvailable` (55P03) or `DeadlockDetected` (40P01), a catalog transaction rolls back. A background pass retries the channel next pass. An admin action answers 409 `{"busy": true}`, and the UI says "busy, retry".<br>**The reorder pass also skips any channel saved within the last `reorder_quiet_seconds` (default 60), judged by `Channel.updated_at` (`auto_now`, `apps/channels/models.py:429`).** This is a recent-`Channel.save()` heuristic, not a recent-edit signal. A `PATCH` that changes only streams or overrides can skip `Channel.save()` (`apps/channels/serializers.py:640`, `:663-669`), and then does not move `updated_at`. `NOWAIT` remains the actual protection. The catalog's own channel writes use `.update()` and do not move `updated_at`.<br>**Rehash takes no new lock.** It only carries pins on collision (`core/tasks.py:726-736`). | **Who waits on whom.** Catalog actions never wait at acquisition. After acquisition they wait only through the 100 ms backstop, on locks they could not name in advance. Examples: a unique-index check when an existing writer has an uncommitted insert of the same `(channel, stream)` (`apps/channels/models.py:939-942`, `serializers.py:723-725`), or an FK key-share on a referenced group, logo or profile row. Existing writers can wait on catalog rows: deleting a channel runs `SET_NULL` onto `ContentIdentity.channel` and `ChannelProposal.channel`, and cascades onto `ChannelOrderSnapshot` (`apps/channels/api_views.py:919-933`). A catalog action holding those rows never waits beyond the backstop, so such a wait is short.<br>**A deadlock is still possible**, during a backstop wait, and **Postgres may choose either side as the victim**. Whichever backend's `deadlock_timeout` expires first runs the check and aborts. The catalog side catches it and retries or answers 409. An existing writer chosen as the victim fails exactly as a deadlock between two concurrent admin edits can make it fail today. The base handles `DeadlockDetected` nowhere: `git grep -n "DeadlockDetected\|40P01" 149678aa -- '*.py'` matches only tests. So an API request answers 500 and the admin retries, and a Celery task fails that run and the next scheduled run redoes it. The short transactions, `NOWAIT` and the quiet-period skip make this rare, not impossible. Round 6 showed that a timing argument cannot promise more. |
+| **D10** | **Catalog writes are short, never queue behind other writers, and lose most contention: best effort, not a guarantee.** No existing writer changes its locking. **Admin-triggered catalog actions** (accept, restore, a pin toggle, auto-order enable, detach, bind, unbind, dismiss) and **the reorder pass** each run one short transaction, for one channel and one identity:<br>(1) `SET LOCAL lock_timeout = '100ms'`.<br>(2) Lock every row the action will write or reference, up front, with `NOWAIT`. Catalog rows come first (`ContentIdentity`, then `ChannelProposal`), then non-catalog rows in a fixed order: the `Channel` row (`FOR NO KEY UPDATE`, or `FOR KEY SHARE` when bind only references it), its `ChannelStream` rows (`FOR UPDATE`, id order), the `ChannelOverride` row for detach, and the `Stream` rows of added members (`FOR KEY SHARE`, id order).<br>(3) Write. **Every catalog write to a `Channel` column goes through `save(update_fields=[...])`, never `.update()`**, so the receivers in § Model signals run exactly as they do for an admin edit: `refresh_epg_programs` when `epg_data` is written, and the two compact-number receivers return at once because the catalog never writes `hidden_from_output`. A new channel is created with `save()`. A member is added by creating its `ChannelStream` row, as the channel serializer does, which fires `update_channel_catchup_fields` on the `Channel` row the action already holds and does not fire the `m2m_changed` receiver (a new channel takes its `tvg_id` from the identity instead). Order-only changes use `bulk_update(["order", "pinned"])`, because no receiver reads either column. Detach deletes the override row, which has no delete receiver; the fold that precedes it writes the channel's own columns through `save(update_fields=...)`, so a folded `epg_data` re-queues the programme parse for an unchanged effective EPG, as an admin save of the same value would.<br>**The resolver** locks catalog rows one identity per transaction, waits for them normally, and holds nothing else, so it cannot close a cycle.<br>On `LockNotAvailable` (55P03) or `DeadlockDetected` (40P01), a catalog transaction rolls back. A background pass retries the channel next pass. An admin action answers 409 `{"busy": true}`, and the UI says "busy, retry".<br>**The reorder pass also skips any channel saved within the last `reorder_quiet_seconds` (default 60), judged by `Channel.updated_at` (`auto_now`, `apps/channels/models.py:429`).** This is a recent-`Channel.save()` heuristic, not a recent-edit signal. A `PATCH` that changes only streams or overrides can skip `Channel.save()` (`apps/channels/serializers.py:640`, `:663-669`), and then does not move `updated_at`. `NOWAIT` remains the actual protection. The catalog's own channel writes do not move `updated_at` either: `save(update_fields=[...])` runs `pre_save` (where `auto_now` sets the value) only for the listed fields, and `updated_at` is never listed. S6 pins this with a test against the installed Django rather than relying on the reading.<br>**Rehash takes no new lock.** It only carries pins on collision (`core/tasks.py:726-736`). | **Who waits on whom.** Catalog actions never wait at acquisition. After acquisition they wait only through the 100 ms backstop, on locks they could not name in advance. Examples: a unique-index check when an existing writer has an uncommitted insert of the same `(channel, stream)` (`apps/channels/models.py:939-942`, `serializers.py:723-725`), or an FK key-share on a referenced group, logo or profile row. Existing writers can wait on catalog rows: deleting a channel runs `SET_NULL` onto `ContentIdentity.channel` and `ChannelProposal.channel`, and cascades onto `ChannelOrderSnapshot` (`apps/channels/api_views.py:919-933`). A catalog action holding those rows never waits beyond the backstop, so such a wait is short.<br>**A deadlock is still possible**, during a backstop wait, and **Postgres may choose either side as the victim**. Whichever backend's `deadlock_timeout` expires first runs the check and aborts. The catalog side catches it and retries or answers 409. An existing writer chosen as the victim fails exactly as a deadlock between two concurrent admin edits can make it fail today. The base handles `DeadlockDetected` nowhere: `git grep -n "DeadlockDetected\|40P01" 149678aa -- '*.py'` matches only tests. So an API request answers 500 and the admin retries, and a Celery task fails that run and the next scheduled run redoes it. The short transactions, `NOWAIT` and the quiet-period skip make this rare, not impossible. Round 6 showed that a timing argument cannot promise more. |
 | **D11** | **Reliability is counted per exposure, at ingest, deduplicated per event.** An **exposure** is a stream being started (`channel_start`) or switched in (`stream_switch`). A **failure** is a failover away from it or a connection failure on it, plus a quarter-weight for each buffering episode. A receiver on the `relay_event_applied` signal handles each relevant event in its own transaction. It first inserts a `RelayEventReceipt(relay_boot, seq)`, which is unique. **Only if the insert succeeds** does it decay and update the stream's two counters. Receipts are kept for 30 days. The band is computed when it is read. | Round 3 showed a high-water mark is unsafe: a batch whose HTTP attempts timed out can still be applied by Django **after** a later batch, so a watermark would discard it. A unique receipt per event is order-free. Exposure counting needs no playback segments, and R4 asks only for "observed health (recent failovers, buffering events, connect failures)". |
-| **D12** | **Everything is off until the owner turns it on, in two switches**, in a new settings group `catalog_settings`: `classify_enabled` (parse, tier, identities, review queue; it never writes a channel) and `auto_order_enabled` (D8 writes for `auto` channels). Turning `classify_enabled` on **backfills**: it dispatches classification for every active account, then one resolve. Turning `auto_order_enabled` on goes through a **preview** endpoint. The preview lists every channel whose order would change, and the owner picks which channels to set to `auto`. Before the first write, each chosen channel's prior order is saved in `ChannelOrderSnapshot`. | R3 asks for automatic reordering of existing channels. The no-silent-destruction rule asks for it to be visible and reversible. |
+| **D12** | **Everything is off until the owner turns it on, in three switches**, in a new settings group `catalog_settings`: `classify_enabled` (parse, tier, identities, review queue; it never writes a channel), `auto_order_enabled` (D8 writes for `auto` channels) and `remeasure_enabled` (D17's probes; it needs `classify_enabled`). Turning `classify_enabled` on **backfills**: it dispatches classification for every active account, then one resolve. Turning `auto_order_enabled` on goes through a **preview** endpoint. The preview lists every channel whose order would change, and the owner picks which channels to set to `auto`. Before the first write, each chosen channel's prior order is saved in `ChannelOrderSnapshot`. | R3 asks for automatic reordering of existing channels. The no-silent-destruction rule asks for it to be visible and reversible. |
 | **D13** | **New channels and new members are proposals, never automatic, and the target channel is always explicit.** A `ChannelProposal` has `kind` `new_channel` (the identity has no bound channel) or `add_streams` (the identity has a bound channel that lacks some of its members). Several existing channels can belong to one identity: these **candidate channels** are computed and shown, never stored. **Binding the identity to one channel is an explicit admin act**, and changes no channel. Accepting `add_streams` **keeps the target's `stream_order_mode`**, unless the admin ticks "order this channel automatically". A channel created from `new_channel` starts `auto`, and is ranked by D8 **before acceptance commits**. Adult content is propagated conservatively (§ Proposals). | R3: propose new, admin accepts. Adding a stream to a channel changes what clients may receive, so it needs acceptance. Choosing among several candidates is a judgement about which channel the admin's clients use, and the spec must not make it. |
 | **D14** | **R2's optional LLM assist is deferred to its own spec** (ruling R5). This spec builds no part of it: no settings, no env var, no payload, no PR. The resolver passes leave a plain list of unplaced streams and open fuzzy matches. A later spec can read that list without changes here. | Rounds 2 and 3 each found a credential path through a sanitiser. The owner ruled that the LLM gets its own design and review, after this lands. |
 | **D15** | **The Go relay changes in two small PRs (S1a, S1b), and only to report.** Both attribute what they report to the **source an attempt actually runs**, captured once when that attempt starts. S1a adds `relay_boot` and `seq` to every event. It adds `from_stream_id` and `trigger` to `stream_switch`, and the attributed `stream_id` to `channel_buffering`, `channel_error` (`connection_failed`) and `channel_stop`. S1b posts `stream_stats` again, from storage owned by the attempt. **When a pending source is adopted does not change** (§ S1a). Nothing the relay decides changes, and the status endpoint's `stats` view is unchanged. | M1 and M2. A pending switch (an operator `Advance` parked during retry backoff) is still adopted only after the running attempt returns (`relay/channel/channel.go:555-566`). Until then the running source is the one producing lines. Attributing to the source being run is therefore exactly right, and needs no change to adoption. |
-| **D16** | **Naming-convention overrides live per account** in `M3UAccount.custom_properties["catalog"]`, a validated sub-dict: `default_region`, `region_tokens` (token → ISO code, or `null` to treat it as noise, e.g. `{"AR": null}`, where the provider's `AR:` means Arabic, not Argentina), `strip_prefixes` / `strip_suffixes` (literal strings), and `region_from` (an ordered subset of `["tvg_id", "name", "group", "default"]`). `convention_version` is a hash of that sub-dict. Saving it dispatches classification for that account (D6). | Conventions are per provider, so the owner fixes them where the provider is configured. The sub-dict needs no migration, and is validated by a serializer, so a typo is a 400, not a silent no-op. |
+| **D16** | **Naming-convention overrides live per account** in `M3UAccount.custom_properties["catalog"]`, a validated sub-dict: `default_region`, `region_tokens` (token → ISO code, or `null` to treat it as noise, e.g. `{"AR": null}`, where the provider's `AR:` means Arabic, not Argentina), `strip_prefixes` / `strip_suffixes` (literal strings), and `region_from` (an ordered subset of `["tvg_id", "name", "group", "default"]`). `convention_version` is a hash of that sub-dict. Saving it dispatches classification for that account (D6). **The backend (validation, `convention_version`, the save trigger) ships in S3**, settable through the account API, so a single-country provider with no region prefixes gets `default_region` before S4 starts refusing unknown-region streams. S8 adds only the form section and live preview. | Conventions are per provider, so the owner fixes them where the provider is configured. The sub-dict needs no migration, and is validated by a serializer, so a typo is a 400, not a silent no-op. |
+| **D17** | **A measurement never expires back to the name tier; it is re-measured at expiry (R8).** The effective tier is the measured tier whenever a `MeasuredResolution` row exists, whatever its age. `measured_ttl_days` (default 30) is the age at which a measurement is **due**. A due stream that is a member of at least one channel is re-measured by one short probe (§ Re-measurement at expiry), reserving its provider slot through the #513 script with one slot of headroom. A successful probe replaces the measurement, which may move the tier up or down. A refused, failed or timed-out probe leaves the last measured tier standing and is retried with backoff, up to `remeasure_max_failures`. Only due streams are probed. **An unmeasured stream is never probed, and nothing probes in bulk**: R1 otherwise stands. Off by default (`remeasure_enabled = false`). | R8 narrows R1. Reverting to the name tier on expiry let a `4K`-named SD feed climb back to the top every TTL period (2026-11-11 finding 5). Keeping the old measurement forever would freeze a feed the provider has since upgraded. A probe is the only way to learn which, and limiting it to streams that were already measured keeps R1's bound on provider traffic: the probed set never grows beyond what playback already reached. Off by default because a probe is a provider connection nobody asked to watch, and some providers penalise those; with it off, the last measurement simply stands. |
 
 ## Data model
 
@@ -224,12 +274,20 @@ beside it, and no PR's migration references a table a later PR creates.**
   - `name_tier` (small int: `0` UNKNOWN, `1` SD, `2` HD, `3` FHD, `4` UHD; D8 sets the rank, not the integer),
     `tier_conflict`;
   - `codec_hint`, `fps_hint`, `markers`, `classified_at`.
-- **`MeasuredResolution`**, one-to-one with `Stream` (CASCADE): `height`, `width` (null), and `observed_at`
-  (indexed). It is written **only** by the catalog's receiver for a `stream_stats` event with `relay: "go"` that
-  carries a resolution. No REST serializer exposes it as writable.
+- **`MeasuredResolution`**, one-to-one with `Stream` (CASCADE): `height`, `width` (null), `observed_at`
+  (indexed) and `source` (`playback` / `probe`). It is written **only** by the catalog's receiver for a
+  `stream_stats` event with `relay: "go"` that carries a resolution (`source = playback`), and from S3b by the
+  re-measurement probe (`source = probe`). No REST serializer exposes it as writable.
+- The **D16 convention backend**: validation of `custom_properties["catalog"]` in the M3U account serializer,
+  `convention_version`, and the save trigger.
 - The **`relay_event_applied`** signal in `core/relay_events.py`. It is sent after each event, including
   `stream_stats`, and carries the validated event dict. Receiver exceptions are caught and logged, so a batch
   never 500s.
+
+**S3b**
+
+- Two columns on `MeasuredResolution`: `remeasure_failures` (small int, default 0) and `next_remeasure_at`
+  (null, indexed). A playback measurement resets both. Defaults only, so the migration needs no data pass.
 
 **S4**
 
@@ -238,13 +296,15 @@ beside it, and no PR's migration references a table a later PR creates.**
   SET_NULL); `epg_state` (`bound` / `none` / `ambiguous` / `pinned`); `channel` (FK
   `dispatcharr_channels.Channel`, null, SET_NULL; set **only** by an admin, D13); `created_at`.
 - **`IdentityMember`**: `stream` (OneToOne, CASCADE), `identity` (FK, CASCADE), `how` (`decided` / `auto_tvg` /
-  `auto_key`). Each resolve run rewrites it. A stream with no row is unplaced, and the API gives the reason:
-  `conflict`, `unknown_region`, `empty_key`, `excluded`, `ambiguous_key`, `fuzzy_pending` or `review`.
+  `auto_key`). Each resolve run **diffs** it against the wanted placement and writes only what changed (§ Writes).
+  A stream with no row is unplaced, and the API gives the reason: `conflict`, `unknown_region`, `empty_key`,
+  `excluded`, `ambiguous_key`, `fuzzy_pending` or `review`.
 - **`IdentityMatch`**, the review queue: `stream` (FK), `identity` (FK, null), `related_key` (char, null; the
   near-matching key when no identity holds it), `source` (`fuzzy` / `region_conflict` / `unknown_region` /
-  `same_key`), `score` (0-100), `suggested_region`, `state` (`open` / `accepted` / `rejected`), `created_at`.
-  Each resolve pass rewrites a stream's open machine-generated rows (it deletes them and inserts afresh), so no
-  unique constraint over nullable columns is needed.
+  `same_key`), `match_key` (char, not null: `"<source>:<identity id or ''>:<related_key or ''>"`), `score`
+  (0-100), `suggested_region`, `created_at`; `unique(stream, match_key)`. The non-null `match_key` carries the
+  natural key, so no unique constraint over nullable columns is needed. A row exists exactly while the
+  resolver wants the suggestion; admin decisions live in the decision tables, never on this row (§ Writes).
 - **`FuzzyBlockResult`**: `region`, `variant`, `first_token`, `signature`, `pairs` (JSON list of
   `[key_a, key_b, score]`, one per near-matching pair, with `key_a < key_b`), `checked_at`;
   `unique(region, variant, first_token)`. `signature` is the sha1 of the block's sorted key set **plus**
@@ -252,8 +312,10 @@ beside it, and no PR's migration references a table a later PR creates.**
   changes.
 - **`StreamAssignment`** (`stream_key` **unique**, `account`, `kind` `assign`/`exclude`, and `identity`, which
   a check constraint requires when `kind = assign`), **`StreamRegionPin`** (`stream_key` **unique**, `account`,
-  `region`) and **`PairRejection`** (`unique(stream_key, identity)`). Each records `decided_by` and
-  `decided_at`. **Their identity FKs are `PROTECT`** (see the deletion rule in § Identity resolution).
+  `region`), **`PairRejection`** (`unique(stream_key, identity)`) and **`IdentityPairRejection`** (`identity_a`,
+  `identity_b`, a check constraint `identity_a_id < identity_b_id`, `unique(identity_a, identity_b)`). Each
+  records `decided_by` and `decided_at`; the three stream-keyed tables also carry `last_seen_at` (D5's
+  pruning). **Their identity FKs are `PROTECT`** (see the deletion rule in § Identity resolution).
 - **`IdentityEpgPin`**: `identity` (OneToOne, PROTECT from the identity side), `epg_data` (FK, CASCADE; null
   means "no EPG"), `decided_by`, `decided_at`.
 - **`ChannelProposal`**: `identity` (FK), `kind`, `channel` (FK, null), `stream_ids` (JSON list),
@@ -289,8 +351,15 @@ The parser runs in fixed **phases**.
 2. **Tokenise.** Split on whitespace and the separators `| [ ] ( ) : - _ / ·`. Keep `+1` / `+2` as single
    tokens. Record for each token whether it was **delimited**: bracketed (`[US]`, `(UK)`, `|NZ|`), or, as the
    first token, followed by `:` / `-` / `|` (`UK:`, `NZ -`).
-3. **Classify decorations.** Each token is checked against these classes, and a decoration is removed from the
-   word list:
+3. **Classify decorations.** First, **protected phrases** in `regions.py` are matched on the token sequence, and
+   their tokens are words wherever they sit: `uk gold`, `uktv`, `wwe raw`, and any others the plan or the R10
+   demo finds. Then each remaining token is checked against these classes, and a decoration is removed from the
+   word list. Tier, codec and fps tokens, and `+1` / `+2`, are decorations wherever they appear. The
+   **word-shaped** marker and variant tokens (`backup`, `bk`, `raw`, `alt`, `test`, `east`, `west`) are
+   decorations only when **delimited**, or when they sit in the name's **trailing run**: the longest suffix of
+   tokens each of which is a decoration of another class, `+1` / `+2`, a word-shaped marker or variant, or a
+   region token that phase 4 could consume undelimited. Anywhere else they are words, so `Test Match Special`
+   keeps `test` and `West Ham TV` keeps `west`.
 
    | Class | Tokens (case-folded) | Effect |
    |---|---|---|
@@ -300,11 +369,11 @@ The parser runs in fixed **phases**.
    | marker | `backup`, `bk`, `raw`, `alt`, `test` | kept in `markers` (sorted, de-duplicated) |
    | variant | `+1`, `+2`, `east`, `west` | kept in `variant`; two different ones set `variant_conflict` |
 
-4. **Extract the region from the name.** This works on the tokens left after phase 3. **Protected phrases** in
-   `regions.py` (`uk gold`, `uktv`, and any others the plan finds in the corpus) are kept as words. A
-   region-table token is consumed as region evidence when it is delimited (anywhere), or when it is first or last
-   **and at least one other word remains**. A lone remaining region token is kept as a word. At most one region
-   token is consumed. Two different qualifying region tokens set `region_conflict`.
+4. **Extract the region from the name.** This works on the tokens left after phase 3; protected-phrase tokens
+   are words. A region-table token is consumed as region evidence when it is delimited (anywhere), or when it is
+   first or last **and at least one other word remains and it is not a word-shaped code** (§ Region). A lone
+   remaining region token is kept as a word. At most one region token is consumed. Two different qualifying
+   region tokens set `region_conflict`.
 5. **Group fallback.** If the name gave no tier, tier tokens in the group title are used. Group region evidence
    is § Region's source 3.
 6. **Key.** Map the standalone tokens `one` … `ten` to `1` … `10`. Drop pure-punctuation tokens, then join the
@@ -316,7 +385,9 @@ The parser runs in fixed **phases**.
 **Stability properties, stated exactly.** These hold for the canonical key only:
 
 - `parse(canonical_name).canonical_key == canonical_key`.
-- Inserting or removing a decoration after phase 2 never changes `(canonical_key, region, variant)`.
+- Inserting or removing a tier, codec or fps token anywhere, or a marker token that is delimited or inside the
+  trailing run, never changes `(canonical_key, region, variant)`. (A word-shaped token outside the trailing run
+  is a word by design, and a variant token changes `variant` by definition, so the property claims neither.)
 - `name_tier` is the same whatever order the tier tokens appear in.
 
 **Golden cases written into the spec** (the corpus holds many more):
@@ -338,8 +409,21 @@ The parser runs in fixed **phases**.
 | `HD` / `` | `""` | | | HD, empty key |
 | `AR: MBC 1` / `` (default table) | `ar mbc 1` | | | UNKNOWN |
 | `A & E` repeated to 600 chars | hashed-overflow key, ≤ 512 | | | |
+| `Apple TV` / `` | `apple tv` | | | UNKNOWN (`tv` is word-shaped, not Tuvalu) |
+| `At The Races` / `` | `at the races` | | | UNKNOWN (`at` is not Austria) |
+| `Capital FM` / `` | `capital fm` | | | UNKNOWN |
+| `Me TV` / `` | `me tv` | | | UNKNOWN |
+| `UK: Apple TV` / `` | `apple tv` | GB | | UNKNOWN, **no** `region_conflict` |
+| `\|CH\| SRF 1 HD` / `` | `srf 1` | CH (delimited) | | HD |
+| `UK: Sky News` / ``, tvg_id `skynews.tv` | `sky news` | GB | | UNKNOWN, **no** `region_conflict` (`.tv` is not evidence) |
+| `WWE Raw HD` / `` | `wwe raw` | | | HD (protected phrase; no `raw` marker) |
+| `Test Match Special` / `` | `test match special` | | | UNKNOWN (no `test` marker) |
+| `West Ham TV` / `` | `west ham tv` | | | UNKNOWN (no `west` variant) |
+| `Discovery East UK HD` / `` | `discovery` | GB | `east` | HD (trailing run) |
+| `CNN Backup` / `` | `cnn` | | | UNKNOWN, markers `backup` |
 
-With `region_tokens: {"AR": null}`, `AR: MBC 1` becomes `mbc 1` with no region. The S8 golden test pins it.
+With `region_tokens: {"AR": null}`, `AR: MBC 1` becomes `mbc 1` with no region. S2's golden test pins it,
+since the parser takes the convention as input; S3 makes it settable (D16).
 
 ## Region
 
@@ -348,9 +432,18 @@ With `region_tokens: {"AR": null}`, `AR: MBC 1` becomes `mbc 1` with no region. 
 **absent** from the default table, and count only through an account's `region_tokens`. These are `ar`, `en`,
 `lat` / `latino`, `int`, `es` and `pt`.
 
+**Word-shaped codes.** Many two-letter codes are also common words or broadcast terms. `regions.py` carries
+them as one named list, `WORD_CODES`: at least `am`, `at`, `be`, `by`, `ch`, `co`, `do`, `fm`, `go`, `hi`, `id`,
+`in`, `io`, `is`, `it`, `la`, `me`, `mo`, `my`, `no`, `pa`, `so`, `to` and `tv`, plus any the R10 demo finds. A
+word-shaped code counts as region evidence **only when delimited** in the name or group (`CH:`, `[IT]`,
+`|NO|`). It never counts as an undelimited edge token and never as a tvg_id suffix. `us` is deliberately not
+in the list: `ESPN US` is far more common in live lineups than a title ending in "us", and a region pin fixes the
+exception. An account can still map any token through `region_tokens`.
+
 **Parsed evidence, strongest first.** The account's `region_from` may reorder or drop any of these sources:
 
-1. `tvg_id`: the final dot-segment of `tvg_id` is a region-table token.
+1. `tvg_id`: the final dot-segment of `tvg_id` is a region-table token that is not a word-shaped code
+   (`skynews.tv`, `x.co` and `y.me` give no region).
 2. `name`: § Parsing phase 4.
 3. `group`: a region token or a country name in the group title.
 4. `default`: the account's `default_region`.
@@ -390,15 +483,105 @@ is not pinned:
 ## Quality tier (S3)
 
 - **Name tier**: from the parse.
-- **Measured tier**: read from `MeasuredResolution` (written only from the relay's stats events), by **height**:
-  ≥ 2000 → UHD, ≥ 1000 → FHD (1080i counts), ≥ 700 → HD, otherwise SD.
-- **Effective tier**: computed when it is read. It is the measured tier if `observed_at` is within
-  `measured_ttl_days` (default 30), otherwise the name tier. The API reports which one it used.
+- **Measured tier**: read from `MeasuredResolution` (written only from the relay's stats events, and from S3b by
+  the re-measurement probe), by **height**: ≥ 2000 → UHD, ≥ 1000 → FHD (1080i counts), ≥ 700 → HD,
+  otherwise SD.
+- **Effective tier**: computed when it is read. It is the measured tier whenever a `MeasuredResolution` row
+  exists, **whatever its age** (D17, R8), otherwise the name tier. The API reports which one it used, the
+  measurement's `source` and age, and `due` when the age exceeds `measured_ttl_days` (default 30).
 
-A REST write to `Stream.stream_stats` cannot touch `MeasuredResolution`. A change to the TTL, or an expired
-measurement, takes effect the next time the tier is read. New measurements reach a channel's order at the next
-reorder pass. `video_bitrate` and `source_fps` are displayed but not used to rank (R7; a bitrate tiebreak is a possible later
+A REST write to `Stream.stream_stats` cannot touch `MeasuredResolution`. Nothing reverts to the name tier on
+expiry: a due measurement keeps its tier until a newer measurement, from playback or from S3b's probe, replaces
+it. At the S3 stopping point, before S3b exists, a measurement therefore stands indefinitely, which is the state
+`remeasure_enabled = false` keeps afterwards. New measurements reach a channel's order at the next reorder
+pass. `video_bitrate` and `source_fps` are displayed but not used to rank (R7; a bitrate tiebreak is a possible later
 follow-up, not in scope).
+
+## Re-measurement at expiry (S3b, R8)
+
+The one exception to R1's "no active probing". It is deliberately small: one task, one subprocess per probe,
+and the existing slot script.
+
+**What is probed.** A stream is a **candidate** when all of these hold: `remeasure_enabled` and
+`classify_enabled` are on; it has a `MeasuredResolution` whose `observed_at` is older than `measured_ttl_days`;
+`next_remeasure_at` is null or past; `remeasure_failures < remeasure_max_failures` (default 4); it is not stale;
+its account is active; and it is a member of at least one channel. **A stream with no measurement is never a
+candidate**, so the probed set is a subset of what playback already reached, and nothing is probed in bulk.
+
+**A playing stream is not probed.** Under a subprocess profile, S1b posts its stats every 30 s with the
+resolution, so its `observed_at` never ages past the TTL and it never becomes a candidate. A stream that was
+measured once and now plays through Proxy or Redirect can age while playing, so each run asks the relay once
+for its channel list (`relay_client`, as the #513 reconciler does) and skips every candidate the relay lists as
+a channel's current `stream_id`. If the relay cannot answer, the run starts no probe.
+
+**Where and when.** `remeasure_expired()` is a Celery task on the `default` queue (prefork, not patched, so a
+plain `subprocess.run` is correct; never the `dvr` queue), from a beat entry every 10 minutes. It takes
+`pg_try_advisory_lock(catalog_remeasure)` and returns if another run holds it. It picks candidates oldest
+`observed_at` first, **at most one per account and at most `remeasure_max_per_run` (default 10) per run**, and
+probes them **one after another**, so at most one probe is open on the whole instance at any moment.
+
+**Each probe.**
+
+1. Pick the profile as a tune would (`apps/channels/models.py:620-631`): the account's active default profile,
+   then its other active profiles. **Skip any profile with `max_streams = 1`** (see headroom).
+2. Build the URL with `_resolve_live_stream_url(stream, account, profile)` and the user agent with
+   `account.get_user_agent_string()`, both before reserving, so the slot is held only for the subprocess.
+3. **Reserve with one slot of headroom**: `reserve_profile_slot` gains an optional `headroom=0` argument and
+   passes `max(profile.max_streams - headroom, 0)` and `max(cred_max - headroom, 0)` to the unchanged `reserve`
+   op. The probe passes `headroom=1`, so the reserve succeeds only if, after the probe takes its slot, at least
+   one more remains on both the profile and the credential counter. The Lua script does not change, so the
+   fake-parity tests (`apps/m3u/tests/test_slot_script.py`) still hold it. A max of `1` would become `0`, which
+   the script reads as "not counted", which is why step 1 skips such profiles: probing would need their only
+   slot. A profile with `max_streams = 0` is unlimited, and the probe is uncounted there exactly as a tune is.
+   A refusal on every profile is **refused**: nothing is written, and the stream is tried again at the next run.
+4. Run `ffprobe -v error -rw_timeout 5000000 -analyzeduration 5000000 -probesize 5000000 -user_agent <ua>
+   -select_streams v:0 -show_entries stream=width,height -of json <url>` with `subprocess.run(argv,
+   stdout=PIPE, stderr=DEVNULL, timeout=15)`. The argv bounds itself (five seconds of I/O and of analysis), and
+   the timeout kills it if it does not.
+5. In `finally`, `release_profile_slot(profile.id)`. The probe is then one more holder on that profile for at
+   most `PROBE_HOLD_SECONDS = 20`, with exactly the release-pointer behaviour two viewers on one profile already
+   have (#356, covered by the reconciler's carry rule).
+6. Write the result in one short transaction on the catalog's own row, which no existing writer touches.
+   - **Success** (exit 0 and a positive `height`): `height`, `width`, `observed_at = now`, `source = probe`,
+     `remeasure_failures = 0`, `next_remeasure_at = null`. The tier may go up or down.
+   - **Failure** (non-zero exit, timeout, no video stream, unparsable output): the measurement is unchanged,
+     `remeasure_failures += 1`, `next_remeasure_at = now + 6 h × 2^(failures − 1)`. At
+     `remeasure_max_failures` the stream stops being a candidate until playback measures it again (a playback
+     measurement resets both columns). **The last measured tier stands throughout.** A probe failure does not
+     feed health (§ Reliability counts relay events only).
+
+**Headroom, stated exactly.** A probe never takes a slot when fewer than two are free on its profile and its
+credential counter. It can still occupy one of the free slots for up to 20 s, so a second viewer arriving in
+that window on a profile that had exactly two free may be refused there; `get_stream()` then skips to that
+channel's next stream rather than waiting (§ Verified facts). That is the whole cost, and it is why the default
+is off and only one probe is ever open.
+
+**The #513 reconciler.** A probe's reservation is not in the reconciler's holder set. It is safe for the same
+reason a tune's reservation is safe before the relay lists the channel: it is an **in-flight** reservation,
+reserved and released within `PROBE_HOLD_SECONDS`, and every reserve and release moves the counter's version,
+so no pair of reconciler runs spaced `run_spacing_seconds()` apart can see an unchanged version across a live
+probe. S3b makes this a checked invariant rather than a coincidence: `in_flight_windows()` gains
+`probe = PROBE_HOLD_SECONDS` (a function-local import, like its others), so the spacing stays at least twice the
+probe's hold. At 20 s against VOD's 40 s it changes nothing today. A probe whose worker dies before `finally`
+leaks one slot, and the reconciler gives it back like any dead holder's.
+
+**Credentials.** The URL and user agent never reach a log, an exception message or the database. The task logs
+only the stream id, the profile id and an outcome word (`ok`, `refused`, `failed`, `timeout`, `skipped`).
+`subprocess` exceptions are caught by type and never logged or re-raised with their text, because their `str()`
+carries the argv (§ Verified facts). `ffprobe`'s stderr goes to `DEVNULL`. `scripts/check_credential_logging.py`
+covers the module.
+
+**Honest limits.**
+
+- **Proxy and Redirect.** A stream only ever played through Proxy or Redirect has no measurement, so it has
+  nothing to expire and is never probed. A mislabelled `4K` name there keeps its name tier forever, as before
+  R8. Probing it would be bulk probing of unmeasured streams, which R1 still forbids. The admin's remedy is a pin
+  or a `manual` channel.
+- **TLS.** `ffprobe` 9.0 verifies the provider's certificate, and the probe ignores Stream Profiles, so a
+  provider that plays only through a custom profile with `-tls_verify 0` fails every probe and stops at
+  `remeasure_max_failures`. Its last measurement stands.
+- **A dead stream** is probed at most `remeasure_max_failures` times, over about 2 days at the defaults, and
+  then never again until playback measures it.
 
 ## Identity resolution (S4)
 
@@ -424,11 +607,17 @@ completing, the admin **Re-run**, and a 30-minute beat backstop. Each one:
      then sets `completed = target`;
    - repeats while `requested > completed`.
 3. Unlocks in `finally`.
-4. **After unlocking**, if `requested > completed`, dispatches itself again.
+4. **After unlocking, and only if every pass of this invocation succeeded**, if `requested > completed`,
+   dispatches itself again with `countdown=30` and a `chain` argument one higher than its own. At `chain = 10`
+   it does not re-dispatch, and the next requester or the backstop picks the work up.
 
-A pass that lost its session fails its final transaction, so `completed` does not advance. Every pass recomputes
-from current inputs, so a partial pass leaves nothing a later pass cannot overwrite. A crash leaves
-`requested > completed`, and the next trigger or the backstop finishes the work.
+**A pass that raises** is logged, the lock is released in `finally`, and the task does **not** re-dispatch
+itself: a deterministic failure (a bad row, a `PROTECT` error) would otherwise re-queue at once and repeat a
+full pass forever. The work waits for the next requester or the 30-minute backstop, so a persistent failure
+costs at most one pass per trigger. A pass that lost its session fails its final transaction, so `completed`
+does not advance. Every pass recomputes from current inputs, so a partial pass leaves nothing a later pass
+cannot overwrite. A crash leaves `requested > completed`, and the next trigger or the backstop finishes the
+work.
 
 **Identity anchors.** Membership is a pure function of the current classifications and decisions **at
 quiescence**, meaning once no fuzzy block awaits a re-check (pass 4). A reversed or incremental build then gives
@@ -454,8 +643,14 @@ conflict, its variant is in conflict, or its key is empty.
 
 1. **Decisions.** Assignments place streams (`decided`) or exclude them. Region pins set the effective region.
 2. **tvg anchors.** Every stream with a tvg_id joins `(tvg:<id>, region, variant)` (`auto_tvg`). The same
-   tvg_id under a different region or variant is a separate identity, and both sides get an
-   `IdentityMatch(source=region_conflict)`.
+   tvg_id under a different region or variant is a separate identity (D4).
+   - **A different region** is suspicious (the UK/NZ trap), so both sides get an
+     `IdentityMatch(source=region_conflict)` against the other identity.
+   - **The same region and a different variant raises no match.** Providers routinely copy a base channel's
+     tvg_id onto its `+1` or regional `east`/`west` feed, and D4 already keeps those apart by construction, so a
+     suggestion there would only be noise.
+   - An `IdentityPairRejection` between the two identities suppresses every match between their members in one
+     admin act ("these are different feeds"), however many streams either side has or later gains.
 3. **Key groups.** Group the remaining streams that have no tvg_id by `(canonical_key, region, variant)`.
    - A group whose key is held by **exactly one** `tvg:` identity of the same region and variant joins it
      (`auto_key`).
@@ -467,8 +662,12 @@ conflict, its variant is in conflict, or its key is empty.
    identity in that block. It is built from current streams only: undecided ones, and never existing identity
    rows.
    - **Computing a block.** One `rapidfuzz` `process.cdist` with `token_sort_ratio` over the set gives every
-     pair of distinct keys scoring at or above `fuzzy_threshold` (default 90). Each pair is stored with its score
-     in `FuzzyBlockResult.pairs`. A key is **near** if it appears in any pair.
+     pair of distinct keys scoring at or above `fuzzy_threshold` (default 90). **A pair whose keys' digit tokens
+     differ, as multisets, is dropped**: `sky sport 1` / `sky sport 2` scores 90.9 and `bein sports 1` /
+     `bein sports 2` scores 92.3, yet numbered siblings are different channels, and without this rule every
+     numbered family without a tvg_id would sit in review permanently. `sky sport 1` / `sky sports 1` keeps the
+     same digits and stays a pair. The rule is part of `FUZZY_VERSION`. Each remaining pair is stored with its
+     score in `FuzzyBlockResult.pairs`. A key is **near** if it appears in any pair.
    - **Re-checking.** A block is recomputed only when its signature changes. The signature includes the
      threshold, the scorer and `FUZZY_VERSION`, so a settings change or a code change re-checks every affected
      block with no stream changing. Changed blocks are taken in
@@ -502,12 +701,24 @@ conflict, its variant is in conflict, or its key is empty.
 7. **EPG binding** for every identity.
 8. **Proposals** (§ Proposals).
 
-`PairRejection` suppresses its match in every pass.
+`PairRejection` and `IdentityPairRejection` suppress their matches in every pass.
+
+**Writes.** Every pass computes the wanted `IdentityMember` and `IdentityMatch` sets, then **diffs** them against
+the stored rows by natural key (`stream` for a member; `(stream, match_key)` for a match). It inserts the
+missing rows, updates a row only when `identity`, `how`, `score` or `suggested_region` changed, and deletes the
+rows no longer wanted. `ContentIdentity` display fields are written only when they change. **A pass whose
+inputs did not change writes no row** to any of these tables; only `CatalogResolveState` advances. A match row
+keeps its id and `created_at` for as long as it is wanted. **Admin actions are keyed on natural keys, never on a
+match id**: Assign posts `(stream, identity)` to `assignments/`, Reject posts `(stream, identity)` to
+`rejections/`, and "different feeds" posts `(identity, identity)` to `identity-rejections/`. A pass that removed
+the suggestion in the meantime therefore cannot make the action fail or land on another row; the decision is
+recorded and applies from the next pass.
 
 **Deletion.** An identity left with no members is deleted only if nothing references it: no assignment,
 rejection, EPG pin or bound channel. The decision FKs are `PROTECT`, which enforces this. A referenced empty
 identity is kept and shown as empty. Its anchor is stable, so when the stream comes back (same stream key, same
-tvg_id or key) it rejoins the same row, and the decision still applies.
+tvg_id or key) it rejoins the same row, and the decision still applies. A decision whose key no stream has held
+for `decision_prune_days` is pruned (D5), after which its empty identity can go at the next pass.
 
 S4 measures one pass over a synthetic three-account, 300k-stream corpus, both cold (every block computed) and
 warm (unchanged signatures), and records both.
@@ -677,8 +888,10 @@ numbers. The read surface is the `health` object on `GET /api/catalog/classifica
 
 | Task | PR | Trigger | Concurrency |
 |---|---|---|---|
-| `classify_account_streams(account_id)` | S3 | `.delay()` from the refresh tail after `rollup_channel_catchup_fields` (`apps/m3u/tasks.py:3942`), in its own `try` that only logs and never sets the account status; the D12 backfill; Re-run; a daily backstop over every active account. S8 adds the convention-save trigger. | advisory lock on `(catalog_classify, account_id)` |
-| `resolve_identities()` | S4 | the requesters in § Identity resolution. S4 adds the request at the end of classification and of the EPG refresh. | advisory lock |
+| `classify_account_streams(account_id)` | S3 | `.delay()` from the refresh tail after `rollup_channel_catchup_fields` (`apps/m3u/tasks.py:3942`), in its own `try` that only logs and never sets the account status; the D12 backfill; Re-run; a daily backstop over every active account; a convention save (D16). | advisory lock on `(catalog_classify, account_id)` |
+| `remeasure_expired()` | S3b | beat, every 10 minutes. Runs only if `remeasure_enabled` and `classify_enabled`. | advisory lock `catalog_remeasure`; probes one at a time |
+| `resolve_identities(chain=0)` | S4 | the requesters in § Identity resolution. S4 adds the request at the end of classification and of the EPG refresh. | advisory lock; self-dispatch only after success, `countdown=30`, capped at `chain = 10` |
+| `prune_catalog_decisions()` | S4 | daily | none |
 | `reorder_channels(channel_ids=None)` | S6 | after each resolve run, and hourly. The hourly run picks up measurement and health changes, which are only computed when read. Runs only if `auto_order_enabled`. | D10 |
 | `prune_relay_event_receipts()` | S5 | daily | none |
 
@@ -718,14 +931,16 @@ Mantine 8 only. State goes in a new Zustand store, `frontend/src/store/catalog.j
       will fold into the channel, and says when an override's EPG will be kept.
 
     The tab also has **Dismiss** and **bulk accept** (each proposal is accepted on its own).
-  - *Review*: open `IdentityMatch` rows, grouped by stream, each with a source badge. Actions: Assign, Reject
-    pair, Pin region, Exclude, New identity.
+  - *Review*: `IdentityMatch` rows, grouped by stream, each with a source badge. Actions: Assign, Reject
+    pair, Pin region, Exclude, New identity, and on a `region_conflict` group "Different feeds" (an
+    `IdentityPairRejection`). Every action posts natural keys (§ Identity resolution, Writes).
   - *Identities*: searchable. Shows the members in D8 order, with tier, tier source, health band and provider,
     the candidate channels with **Bind**, and an EPG chooser that writes an `IdentityEpgPin`.
-  - *Status*: run times, counts per state (including `fuzzy_pending`), **Re-run**, and the enablement switches
-    with D12's preview.
+  - *Status*: run times, counts per state (including `fuzzy_pending`, and `unknown_region` per account, as a
+    hint to set that account's `default_region`), the number of due measurements and the last re-measurement
+    run's outcomes, **Re-run**, and the enablement switches with D12's preview.
 - **Channel streams table** (`frontend/src/components/tables/ChannelTableStreams.jsx`):
-  - a tier badge, marked "measured" or "from name";
+  - a tier badge, marked "measured", "measured, due" or "from name";
   - a health-band dot;
   - a pin toggle;
   - "Order: Auto / Manual";
@@ -745,12 +960,13 @@ profiles will not see it until you add it to one of theirs."* This matches `user
 **API** (`apps/catalog/api_urls.py`, at `/api/catalog/`). Every endpoint has a DRF serializer, appears in the
 drf-spectacular schema, and is `IsAdmin` with no opt-down.
 
-- **S3**: `classifications/` (with the effective tier and its source), `parse-preview/`, and `run/` (classify
-  every account, then resolve once S4 exists).
+- **S3**: `classifications/` (with the effective tier, its source, and the measurement's age and `due` flag),
+  `parse-preview/`, and `run/` (classify every account, then resolve once S4 exists). The M3U account
+  serializer accepts and validates `custom_properties["catalog"]` (D16).
 - **S4**:
   - `identities/`, with the `bind`, `unbind` and `epg-pin` actions;
-  - `matches/`, with `assign` and `reject`;
-  - `assignments/`, `region-pins/` and `rejections/`;
+  - `matches/`, read-only;
+  - `assignments/`, `region-pins/`, `rejections/` and `identity-rejections/`, each written by natural key;
   - `proposals/`, read-only.
 - **S5**: `health` on `classifications/`.
 - **S6**: `proposals/{id}/accept|dismiss`, `auto-order/preview|enable`, and `channels/{id}/order-snapshots/`
@@ -772,7 +988,12 @@ drf-spectacular schema, and is `IsAdmin` with no opt-down.
 
 ## Known-defect interactions
 
-- **Provider-slot counters (#513).** Untouched. No `INCR` or `DECR` is added.
+- **Provider-slot counters (#513).** No `INCR`, `DECR` or `SET` is added, and the Lua script is unchanged. S3b's
+  probe reserves and releases only through `reserve_profile_slot` (with its new `headroom` argument, default 0)
+  and `release_profile_slot`, and is covered by the reconciler as an in-flight reservation (§ Re-measurement at
+  expiry).
+- **Catalog channel writes and signals.** The catalog writes `Channel` columns through `save(update_fields=...)`
+  so every receiver in § Model signals behaves as for an admin edit (D10).
 - **The copied channel-authorization filter.** Untouched. No client-facing surface is added. Adult status is
   propagated (§ Proposals), so `authorize_stream`'s `hide_adult_content` check
   (`apps/proxy/authorize.py:471-474`) sees the right flag on catalog-created channels.
@@ -781,7 +1002,8 @@ drf-spectacular schema, and is `IsAdmin` with no opt-down.
 - **The boot trap.** No module that `apps/channels/models.py` imports gains an import (D1).
 - **CoreSettings blast radius.** `catalog_settings` is a ninth instance-wide group. S3 ships a data migration
   seeding its row. Any E2E test that writes it joins the allowlist (`docs/adr/0003`).
-- **Credential logging.** The parse-preview endpoint logs no URL and no payload.
+- **Credential logging.** The parse-preview endpoint logs no URL and no payload. S3b's probe builds a provider URL
+  and handles it as § Re-measurement at expiry's Credentials paragraph says.
 - **Rename ratchet (Mino spec PR R1).** If R1 has landed, a new file containing `dispatcharr` (the package
   import, the `dispatcharr-ci` profile, the `dispatcharr_channels` label) raises
   `scripts/product_name_allowlist.txt`. Each plan lists such lines, and each must be a name the rename spec
@@ -810,15 +1032,29 @@ covers:
 - an overflow;
 - an empty key;
 - a variant conflict;
-- **the trap set**: at least 20 brands present in two regions, five decorations each.
+- **the trap set**: at least 20 brands present in two regions, five decorations each;
+- **the word-trap set** (2026-11-11 findings 1 and 3): every `WORD_CODES` entry as an undelimited first and last
+  token of a plausible channel name (`Apple TV`, `Sky TV`, `At The Races`, `Me TV`, `Capital FM`, `Smooth FM`,
+  `Box Hits It`, …) parsing with no region, the same entries delimited (`[IT] Rai 1`) parsing with their
+  region, tvg_ids ending in each entry giving no region, and every word-shaped marker or variant as a leading
+  or middle word (`Test Match Special`, `Alt Rock TV`, `East Enders Classics`, `West Ham TV`, `Raw Travel`)
+  staying in the key, plus the protected phrases (`WWE Raw`);
+- **the numbered-family set** (finding 2): `Sky Sport 1` … `Sky Sport 9`, `beIN Sports 1` … `beIN Sports 15`,
+  `Sky Sports Main Event` / `Sky Sports Premier League`, for S4's fuzzy tests.
 
 Nothing in the corpus is a real URL or credential, and a test asserts no line contains `://`.
 
 **Property tests** (S2, using the shared `dispatcharr-ci` profile, registered byte-identically):
 
 - the three stability properties;
-- an edge or delimited region token yields its region code and is absent from the key;
+- a delimited region token, or an undelimited edge token that is not in `WORD_CODES`, yields its region code and
+  is absent from the key;
+- a `WORD_CODES` token as an undelimited edge token, or as a tvg_id suffix, never yields a region and never
+  raises `region_conflict`;
 - for every trap brand, under any decorations, the GB name yields GB and the NZ name yields NZ.
+
+**Convention golden** (S2): `AR: MBC 1` with and without `region_tokens: {"AR": null}`; a prefix-less name with
+`default_region: "GB"` yields GB from source 4.
 
 **Resolution tests** (S4):
 
@@ -830,7 +1066,20 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   Bindings and decisions made between runs survive.
 - **The UK/NZ trap.** A UK and an NZ stream with an equal key and an equal tvg_id produce two identities and
   conflict rows.
-- **Variants.** A tvg_id shared by a feed and its `+1` produces two identities.
+- **Variants.** A tvg_id shared by a feed and its `+1` produces two identities and **no** `IdentityMatch` row
+  for either (finding 4). The same tvg_id under GB and NZ still produces `region_conflict` rows, and one
+  `IdentityPairRejection` clears every one of them, including for a stream added to either side afterwards.
+- **Writes** (finding 10). A second pass with no input change performs no `INSERT`, `UPDATE` or `DELETE` on
+  `IdentityMember`, `IdentityMatch` or `ContentIdentity` (asserted with `CaptureQueriesContext`). A match that is
+  still wanted keeps its id and `created_at` across passes. An Assign posted by natural key after a pass deleted
+  the suggestion succeeds and applies at the next pass.
+- **Self-dispatch** (finding 7). A pass that raises does not re-dispatch (`.delay` and `.apply_async` patched,
+  asserting no call). A successful invocation with `requested > completed` re-dispatches once with
+  `countdown=30` and `chain + 1`, and at `chain = 10` does not.
+- **M3U stream keys** (finding 8). A plain M3U stream renamed from `UK: Sky Arts HD` to `UK: Sky Arts FHD` and
+  moved to another group keeps its key, so its exclusion and region pin still apply. A parser-version change
+  that alters a key moves the decision to the new key. A decision unseen for `decision_prune_days` is pruned,
+  and its empty identity is deleted at the next pass. Two empty-key streams in one account have different keys.
 - **Unplaceable streams.** Conflicted, unknown-region, variant-conflict and empty-key streams are never placed or
   proposed.
 - **Decisions.**
@@ -857,6 +1106,9 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   - **Two disjoint pairs in one block.** `sky arts` / `sky art` and `sky atlantic` / `sky atlantik` produce exactly
     two pairs of suggestions, with no cross suggestions. A cold pass and a warm pass (with an unchanged
     signature) produce identical `IdentityMatch` rows, scores included.
+  - **Numbered siblings** (finding 2). GB no-tvg `Sky Sport 1` … `Sky Sport 9` and `beIN Sports 1` …
+    `beIN Sports 15` each get their own `key:` identity with no `IdentityMatch` row, while `Sky Sport 1` /
+    `Sky Sports 1` still goes to review.
 - **Locks** (Postgres-only, two connections):
   - a second resolver returns;
   - terminating the holder's connection mid-pass leaves `completed` unchanged;
@@ -916,7 +1168,7 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   `epg_data`).
   - The effective values (`with_effective_values`) and the channel's generated M3U and XMLTV entries are
     identical before and after acceptance.
-  - The override row is gone, and the override's EPG is kept: the catalog writes none.
+  - The override row is gone, and the override's EPG is kept: the catalog writes none of the identity's.
   - An ordinary `PATCH` of the name then succeeds, and a non-empty `override` `PATCH` is refused, as on any
     manual channel.
   - A following `sync_auto_channels` run creates no new channel for the origin stream and deletes nothing.
@@ -937,6 +1189,11 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   setting is allowed. Adding an adult member to a non-adult channel without `options.adult` returns 400. With
   `skip_adult_members`, the channel stays non-adult and the adult member is not added.
 - **Failover order.** `get_stream()` and the failover branch choose the tier-sorted first stream.
+- **Signals** (finding 6). Accepting onto a manual target with a `bound` identity queues
+  `parse_programs_for_tvg_id` for the identity's `EPGData` and drops the XMLTV chunk cache (both patched and
+  asserted), exactly as an admin `PATCH` of `epg_data` does. A new channel created with EPG does the same. A
+  reorder and an accept leave `Channel.updated_at` unchanged, which pins the `save(update_fields=...)` reading
+  against the installed Django. Neither compact-number receiver writes.
 
 **Tune-path ledger:** `apps/proxy/tests/test_tune_path_query_ledger.py` passes unchanged in every PR.
 
@@ -944,9 +1201,36 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
 
 - A REST write of `stream_stats` after a valid Go measurement leaves `MeasuredResolution` and the effective tier
   unchanged.
-- A measurement older than the TTL yields the name tier, and raising the TTL brings it back at the next read.
+- A measurement older than the TTL still yields the measured tier, reported `due` (R8). Before: it yielded the
+  name tier. A newer measurement replaces it at the next read.
 - A `stream_stats` event without `relay: "go"` writes nothing.
 - A daily backstop on an unchanged account writes nothing.
+- **Conventions in S3** (finding 9). Saving `default_region: "GB"` on an account through the account API
+  dispatches classification for that account, and its prefix-less streams then classify as GB. An invalid
+  sub-dict answers 400.
+
+**Re-measurement tests** (S3b). Redis is the test container's real one (the slot script must run as Lua);
+`ffprobe` is replaced by a fake executable on a constructed `PATH`, and the suite first asserts that the fake is
+the one that resolves.
+
+- **Selection.** Only a due, channel-member, measured stream is probed. An unmeasured stream on the same channel
+  is never probed, nor a stale one, nor one on an inactive account, nor one the relay lists as playing. With the
+  relay unreachable, no probe starts. With `remeasure_enabled` off, nothing runs.
+- **Bounds.** With twelve due streams on three accounts and `remeasure_max_per_run = 10`, one run probes three
+  (one per account). A second concurrent run returns at once on the advisory lock.
+- **Headroom.** On a profile with `max_streams = 3` and two slots held, the probe is refused and writes nothing,
+  counter and version unchanged. With one slot held it reserves, and both counters are back to one afterwards.
+  A `max_streams = 1` profile is never reserved. `reserve_profile_slot` with the default `headroom=0` behaves
+  exactly as before (the existing pool tests pass unchanged).
+- **Outcomes.** A success at 576 lines on a stream measured at 1080 moves it to SD and resets the failure count.
+  A non-zero exit, a timeout and a no-video answer each keep the old measurement and tier, increment
+  `remeasure_failures` and set the backoff. After `remeasure_max_failures` the stream is no longer a candidate,
+  and a playback measurement makes it one again later.
+- **Release.** The slot is released when the fake hangs past the timeout and when it exits non-zero.
+- **Credentials.** With a provider URL carrying a username and password, no log record from a success, a
+  failure or a timeout contains `://`, the username or the password.
+- **Reconciler.** `run_spacing_seconds()` is at least `2 × PROBE_HOLD_SECONDS`, and `in_flight_windows()` has
+  a `probe` entry.
 
 **Health tests** (S5):
 
@@ -975,14 +1259,16 @@ closing keyword.
 | S1a | none | events carry identity and attribution |
 | S1b | S1a | `stream_stats` posted again |
 | S2 | none | parser, inert |
-| S3 | S2 | tiers visible, read-only (name-only until S1b's data arrives) |
+| S3 | S2 | tiers visible, read-only (name-only until S1b's data arrives); conventions settable by API; a measurement never reverts |
+| S3b | S3, S1b | due measurements re-measured by probe, off by default |
 | S4 | S3 | identities, review queue, decisions, binding, read-only proposals; **writes no channel** |
 | S5 | S3 (settings, signal), S1a (data) | health visible on `classifications/` |
 | S6 | S4, S5 | ordering and acceptance, the headline behaviour (API-driven) |
 | S7 | S6 | the full UI |
-| S8 | S3 (backend), S7 (UI section) | naming conventions |
+| S8 | S7 | the naming-convention form section |
 
-Each stopping point passes its smoke check (§ Test strategy).
+Each stopping point passes its smoke check (§ Test strategy). S3b is independent of S4-S8: it can land any time
+after S3 and S1b, and a stopping point without it simply keeps every measurement.
 
 ### S0 — this spec
 
@@ -1120,9 +1406,12 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 
 **Changes.**
 
-- `StreamClassification` and `MeasuredResolution`.
+- `StreamClassification` (with D5's parse-tuple `stream_key`) and `MeasuredResolution`.
 - The `relay_event_applied` signal and the `stream_stats` receiver.
-- `classify_account_streams`, with its triggers: the refresh tail, the backfill, Re-run and the daily backstop.
+- `classify_account_streams`, with its triggers: the refresh tail, the backfill, Re-run, the daily backstop and
+  a convention save.
+- The D16 backend: the account serializer's validation of `custom_properties["catalog"]`, `convention_version`,
+  and the save dispatch (moved here from S8, finding 9).
 - The `catalog_settings` getter, and a seeding migration.
 - `classifications/`, `parse-preview/` and `run/`.
 - The smoke check.
@@ -1131,23 +1420,63 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 **Break-checks.**
 
 - Read the measured tier from `Stream.stream_stats`. The REST-write test reddens.
-- Store the effective tier. The TTL-raise test reddens.
+- Revert to the name tier once `observed_at` is older than the TTL. The expired-measurement test reddens,
+  reporting the name tier.
 - Make the backstop write every row. The unchanged-account test reddens.
+- Leave the convention out of `convention_version`. The `default_region` save test reddens: the streams stay
+  unknown-region.
+- Drop the save dispatch. The same test reddens with no classification dispatched.
 
 **PR description draft:**
 
 > Classifies every live stream behind the off-by-default `classify_enabled` setting: a parse row per
-> stream, rebuilt only when its text changes, run after each provider refresh, on enablement, on demand and
-> by a daily backstop that needs no provider download; plus a catalog-owned measured resolution written
-> only from the relay's stats events. The effective tier is computed when read. Writes no channel. Spec PR S3.
+> stream, rebuilt only when its text changes, run after each provider refresh, on enablement, on demand, on
+> a naming-convention save and by a daily backstop that needs no provider download; plus a catalog-owned
+> measured resolution written only from the relay's stats events, which never reverts to the name tier on
+> age. Per-account naming conventions (default region, region-token overrides) are settable through the
+> account API. The effective tier is computed when read. Writes no channel. Spec PR S3.
+
+### S3b — re-measurement at expiry (R8)
+
+**Changes.**
+
+- The two `MeasuredResolution` columns.
+- `reserve_profile_slot`'s optional `headroom` argument (default 0; the Lua script is unchanged).
+- `apps/catalog/remeasure.py` and the `remeasure_expired` task with its beat entry, per § Re-measurement at
+  expiry.
+- `catalog_settings` keys `remeasure_enabled` (default `false`), `remeasure_max_per_run` (10) and
+  `remeasure_max_failures` (4).
+- The `probe` entry in `apps/proxy/slot_reconciler.py`'s `in_flight_windows()`.
+- The due count and last-run outcomes on `classifications/` and the Status payload.
+- The smoke check.
+
+**Break-checks.**
+
+- Pass the profile's own max to the reserve (no headroom). The headroom test reddens: the probe reserves the
+  second-to-last slot.
+- Drop the "has a measurement" filter. The selection test reddens, probing the unmeasured stream.
+- Move the release out of `finally`. The release test reddens on the timeout case, with the counter left at two.
+- Log the caught `TimeoutExpired`. The credentials test reddens, finding `://` in the record.
+- Clear the measurement on failure. The outcomes test reddens, reporting the name tier.
+
+**PR description draft:**
+
+> Owner ruling R8: when a stream's quality measurement reaches its TTL, re-measure that one stream rather than
+> let it fall back to its name. Behind an off-by-default switch, a throttled task probes only streams that were
+> already measured by playback and sit on a channel, one probe at a time across the instance and at most one
+> per account per run, with `ffprobe` bounded to a few seconds. Each probe reserves its provider slot through
+> the existing slot script with one slot of headroom, so it never takes the last free slot, and releases it in
+> `finally`; the reconciler covers it as an in-flight reservation. A failed or refused probe keeps the last
+> measured tier and backs off. No provider URL or credential is logged. Spec PR S3b.
 
 ### S4 — identities, review queue, decisions, EPG binding and proposals
 
 **Changes.**
 
-- The S4 models.
-- `resolve_identities`, with its advisory lock, durable counter, anchors and order-independent fuzzy
-  eligibility (`FuzzyBlockResult`).
+- The S4 models, `IdentityPairRejection` and the decision tables' `last_seen_at` included.
+- `resolve_identities`, with its advisory lock, durable counter, success-only capped self-dispatch, anchors,
+  order-independent fuzzy eligibility (`FuzzyBlockResult`) with the digit-token rule, and diffed writes.
+- D5's re-keying in classification, the `last_seen_at` refresh and `prune_catalog_decisions`.
 - EPG binding and pins.
 - Proposal computation.
 - The endpoints.
@@ -1165,6 +1494,11 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - Use the first-seen name as `display_name`. The reversed-order determinism test reddens.
 - Make the decision FKs `CASCADE`. The disappear-and-return test reddens.
 - Advance `completed` without the ownership check. The killed-connection test reddens.
+- Drop the digit-token rule. The numbered-siblings test reddens with `sky sport 1` / `sky sport 2` in review.
+- Raise a match for a variant-only tvg_id difference. The variants test reddens with `IdentityMatch` rows.
+- Delete and re-insert every match each pass. The no-change writes test reddens on the captured `DELETE`.
+- Self-dispatch in `finally`. The self-dispatch test reddens on the failing pass.
+- Key M3U decisions on the raw text. The rename test reddens with the exclusion lost.
 
 **PR description draft:**
 
@@ -1227,6 +1561,9 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - Skip the pre-commit ranking. The first-tune test reddens.
 - Create the channel non-adult. The `authorize_stream` adult test reddens.
 - Let accept set `auto` unconditionally. The manual-target test reddens.
+- Write the accepted channel's `epg_data` with `.update()`. The signals test reddens: no programme parse is
+  queued.
+- Add `updated_at` to the catalog's `update_fields`. The signals test reddens on the moved timestamp.
 
 **PR description draft:**
 
@@ -1256,29 +1593,26 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 > enablement) and tier, health, pin and order-mode controls on a channel's streams. Mantine and Zustand
 > only. Spec PR S7.
 
-### S8 — per-account naming conventions
+### S8 — the naming-convention form
 
-**Changes.**
-
-- D16 validation in the M3U account serializer.
-- Classification dispatched when the convention is saved.
-- The form section and the live preview.
-- The `AR:` golden case.
+**Changes.** The M3U account form's "Naming convention" section and its live preview (through
+`parse-preview/`), writing the D16 sub-dict that S3 already validates and acts on. Vitest for the section.
 
 **Break-checks.**
 
-- Leave the convention out of `convention_version`. The re-parse test reddens.
-- Drop the save dispatch. The "an edit reclassifies without a refresh" test reddens.
+- Leave `default_region` out of the posted sub-dict. The form test reddens on the payload it posts.
+- Drop the preview's convention argument. The preview test reddens: `AR: MBC 1` still shows region AR.
 
 **PR description draft:**
 
-> Lets an admin teach the classifier a provider's naming convention per account (default region,
-> region-token overrides such as `AR:` meaning Arabic, strip prefixes/suffixes, region-source order), with a
-> live preview; saving it reclassifies that account at once. Spec PR S8.
+> Adds the form for per-account naming conventions (default region, region-token overrides such as `AR:`
+> meaning Arabic, strip prefixes/suffixes, region-source order), with a live preview. The backend has been
+> settable through the account API since S3; this is the UI. Spec PR S8.
 
 ## Non-goals
 
-- **No active probing** (R1).
+- **No active probing** (R1), **with one exception**: R8's re-measurement of a stream whose measurement is due
+  (D17, S3b). An unmeasured stream is never probed, nothing is probed in bulk, and the probe is off by default.
 - **No LLM assist in this spec** (R5; § LLM assist).
 - **No relay switch-policy change** (D9). That rules out climb-back, and also "same tier before lower" for streams
   that sit earlier in the current tier. The smallest later change would be Django-only: rotate within the
@@ -1306,6 +1640,15 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
   writer as the victim (D10). That is rare, by design, but possible.
 - **Sync windows.** § Sync changes lists the race windows that remain against a sync run already in progress.
 - **Health ingest** adds one receipt insert and one locked row update per relevant event, on the API process.
+- **Re-measurement probes** (S3b) open provider connections nobody is watching. Some providers count or penalise
+  those. Bounded: off by default, one probe open instance-wide, at most one per account per 10-minute run,
+  never the last two free slots, at most 20 s each, and only for streams playback already measured. A second
+  viewer arriving inside a probe's 20 s on a profile with exactly two free slots is served that channel's next
+  stream instead.
+- **Word-shaped codes and phrases** are curated lists (`WORD_CODES`, protected phrases). A provider whose
+  convention the lists miss either loses a region (fixed by `default_region` or `region_tokens`) or keeps a
+  marker in the key (fixed by a protected phrase in a parser bump). The R10 demo exists to find these before S2.
+- **M3U decision sharing.** Two entries in one account that parse to the same key share one decision (D5).
 
 ## Resolved questions (ruling R7)
 
@@ -1323,7 +1666,7 @@ The owner accepted the defaults on every open question (ruling R7, 2026-10-31). 
 - **Q6, tier-block rotation (D9's non-goal): yes, as a separate Django-only follow-up,** filed as #620. It is out
   of scope for this spec.
 
-## Appendix A — owner rulings (2026-10-31)
+## Appendix A — owner rulings (2026-10-31 and 2026-11-11)
 
 - **R1 Quality measurement: name + passive.** Parse quality hints from stream name and group
   (UHD/4K/FHD/HD/SD/HEVC/50fps/…), overridden by measured `Stream.stream_stats` captured during real playback.
@@ -1341,9 +1684,19 @@ The owner accepted the defaults on every open question (ruling R7, 2026-10-31). 
   inherited requirement.
 - **R6** (process: the planner stays on Opus) has no bearing on the design.
 - **R7 (2026-10-31): the open questions are resolved to their defaults.** See § Resolved questions.
+- **R8 (2026-11-11): quality re-measurement at expiry.** When a stream's measured resolution reaches
+  `measured_ttl_days`, do not silently revert to the name tier. Re-measure the stream at that point to see
+  whether anything changed, and let the fresh result move it up (or keep it down). This is a narrow,
+  deliberate exception to R1's "no active probing": only streams whose measurement is expiring are probed,
+  never unmeasured streams in bulk. Until the re-measurement completes, the last measured tier stands.
+- **R9 (2026-11-11): the ten code-review findings on `5bcd5944` are accepted**, and the spec is reopened for a
+  fix round. Finding 5 (measurement expiry reverting to the name tier) is resolved by R8.
+- **R10 (2026-11-11): a demo first.** Before serious implementation, build a demo categorisation engine the
+  owner can feed a provider list into and rate the categorisation. A throwaway spike in a separate worktree,
+  not merged (branch `spike/classification-demo`).
 
 R1's "overridden by measured `Stream.stream_stats`" is met by `MeasuredResolution`, which is written from the same
-`stream_stats` events.
+`stream_stats` events. R8 narrows R1's "no active probing" to D17 and S3b and to nothing else.
 
 ## Changelog
 
@@ -1397,3 +1750,24 @@ R1's "overridden by measured `Stream.stream_stats`" is met by `MeasuredResolutio
     membership inserts. The stop loop and the remaining windows are described accurately, and the unconditional
     claims are removed.
   - **Break-check** (finding 3). It now removes the whole non-waiting protection, with an ordering oracle.
+- 2026-10-31: review round 7 (PASS, two nits applied at head `5bcd5944`).
+- 2026-11-11: owner rulings R8-R10, and ten `/code-review` findings on `5bcd5944` accepted as R9. Then:
+  - **Region** (finding 1). Word-shaped two-letter codes (`tv`, `fm`, `at`, `me`, …) count only when delimited,
+    never as an undelimited edge token or a tvg_id suffix. Golden and corpus trap cases added.
+  - **Fuzzy** (finding 2). A pair whose digit tokens differ is never near, so numbered siblings are not
+    sent to review.
+  - **Markers** (finding 3). Word-shaped marker and variant tokens are decorations only when delimited or in the
+    trailing run; protected phrases (`wwe raw`) are matched first. The stability property is restated exactly.
+  - **tvg_id variants** (finding 4). A variant-only difference under one tvg_id raises no match;
+    `IdentityPairRejection` clears a region conflict between two identities in one act.
+  - **Measurement expiry** (finding 5, by R8). A measurement never reverts to the name tier; D17 and PR S3b
+    re-measure due streams with a throttled, headroom-gated probe through the #513 slot script, off by default.
+  - **Signals** (finding 6). Catalog `Channel` writes go through `save(update_fields=...)`, with every receiver
+    on the channel tables listed (§ Model signals); `updated_at` is still not moved.
+  - **Self-dispatch** (finding 7). Only after a successful invocation, with a 30 s countdown and a chain cap of 10.
+  - **M3U keys** (finding 8). Keyed on the parse tuple, re-keyed on a parser or convention change, and pruned
+    after `decision_prune_days`.
+  - **Conventions** (finding 9). The D16 backend moves to S3; S8 is the form only.
+  - **Writes** (finding 10). The resolver diffs and upserts by natural key and writes nothing when unchanged;
+    admin actions post natural keys.
+  - **R10.** The demo engine on `spike/classification-demo` may reopen § Parsing and § Region before S2.
