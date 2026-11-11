@@ -364,8 +364,9 @@ class OutboundPolicyTests(TestCase):
         self.assertEqual(ok.json()["problems"], [])
 
     def test_discovered_token_endpoint_checked_at_callback(self):
-        from .oidc_flow_support import FlowOP, query_of
+        from .oidc_flow_support import FlowOP, forbid_last_resort, query_of
 
+        forbid_last_resort(self)
         # The discovery cache is keyed by pk and version, and SQLite reuses a rolled-back
         # pk, so a document an earlier test cached would answer this one without a fetch.
         cache.clear()
@@ -394,8 +395,9 @@ class OutboundPolicyTests(TestCase):
         self.assertEqual(op.token_requests, [])
 
     def test_loopback_needs_env_switch_for_the_flow(self):
-        from .oidc_flow_support import FlowOP, query_of
+        from .oidc_flow_support import FlowOP, forbid_last_resort, query_of
 
+        forbid_last_resort(self)
         # The discovery cache is keyed by pk and version, and SQLite reuses a rolled-back
         # pk, so a document an earlier test cached would answer this one without a fetch.
         cache.clear()

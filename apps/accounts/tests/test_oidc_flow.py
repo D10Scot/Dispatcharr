@@ -2019,6 +2019,7 @@ class LastResortTests(FlowTestCase):
     at ERROR with the class and the innermost frame only."""
 
     FRAME = f"{__name__}:explode:"
+    expects_last_resort = True
 
     def setUp(self):
         super().setUp()

@@ -21,6 +21,7 @@ from contextlib import contextmanager
 import time
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from unittest import mock
 from urllib.parse import parse_qs, unquote_plus, urlsplit
 
 import jwt
@@ -280,6 +281,36 @@ def decode_unverified(token):
     return jwt.decode(token, options={"verify_signature": False})
 
 
+def forbid_last_resort(testcase):
+    """Fail ``testcase`` if the flow's last-resort handler answered during it.
+
+    The last resort answers ``provider_unavailable``, the same code as the specific
+    discovery handlers, so without this guard a test pinning one of those handlers would
+    stay green with the handler gone. A test that means to reach it sets
+    ``expects_last_resort = True``.
+    """
+    from apps.accounts.oidc import flow
+
+    fired = []
+    original = flow.log_unexpected
+
+    def guard(stage, exc):
+        fired.append(f"{stage}: {type(exc).__name__} at {flow._innermost_frame(exc)}")
+        original(stage, exc)
+
+    def check():
+        if fired and not getattr(testcase, "expects_last_resort", False):
+            raise AssertionError(
+                "the last-resort handler answered where a specific one should have: "
+                + "; ".join(fired)
+            )
+
+    patcher = mock.patch.object(flow, "log_unexpected", side_effect=guard)
+    patcher.start()
+    testcase.addCleanup(patcher.stop)
+    testcase.addCleanup(check)
+
+
 class FlowMixin:
     """Shared fixtures: one OP per class, a fresh cache and ``auth_settings`` per test."""
 
@@ -297,6 +328,7 @@ class FlowMixin:
         cache.clear()  # the oidc throttle and the discovery/JWKS caches
         self.op.reset()
         set_auth_settings(public_base_url=self.base_url)
+        forbid_last_resort(self)
 
     def make_flow_provider(self, **overrides):
         fields = dict(
