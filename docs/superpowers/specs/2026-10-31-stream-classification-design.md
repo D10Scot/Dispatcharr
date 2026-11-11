@@ -250,7 +250,7 @@ says so for the EPG one). `Channel.updated_at` is `auto_now` (`apps/channels/mod
 | **D7** | **Ordering control is two new columns on existing tables**: `Channel.stream_order_mode` (`auto` / `manual`, default `manual`) and `ChannelStream.pinned` (bool, default false). Under `auto`, pinned streams keep their relative admin order at the top, and every other stream is placed by D8. Under `manual`, nothing in this spec writes the channel's order. **An admin reorder of an `auto` channel switches it to `manual`.** A reorder is a request that changes the relative order of the streams kept on the channel. A **membership-only** edit (adding or removing streams, with the retained streams' relative order unchanged) keeps the mode. The response says when the mode flipped, and the UI shows the badge and a one-click "back to Auto". **Restoring a snapshot sets the channel to `manual`** under the same lock. | R3 says admin pins override everything. "Never destroy an admin's manual ordering silently" is met three ways. Every existing channel starts `manual`. A later drag is never overwritten, because it flips the channel visibly. A restore sticks. |
 | **D8** | **The ordering function, `rank_members(channel)`**, is shared by the reorder pass and by acceptance (§ Proposals). The sort key for unpinned streams is: (1) **effective tier**, best first: `UHD > FHD > HD > UNKNOWN > SD`; (2) **health band**: `good > fair > unknown > poor` (§ Reliability); (3) `backup` marker last; (4) `fps_hint` descending; (5) the stream's current `order` value, then its current position. Inactive accounts and stale streams sort last. | R4: tier, then reliability. `UNKNOWN` sits above `SD` and below `HD` because an unlabelled provider stream is more often 720p or 1080p than 576i (confirmed by R7). Key 5 is explicit rather than left to the stability of the sort. |
 | **D9** | **The relay's switch policy does not change.** The failover keeps "the next candidate after the current one, wrapping" (`order_alternates_from_current`). On a tier-sorted list that already walks down in quality, and it wraps back up to the top tier only once the lower ones are exhausted. **No climb-back** (returning to a higher tier while a lower one still plays) and **no same-tier-before-lower preference** for the streams *before* the current one in its own tier. Both are non-goals (§ Non-goals). | A switch-policy change is a live-path behaviour change. It needs a parity-matrix row and a pinned E2E, and the owner did not ask for one. The headline behaviour, best first and down in quality on failure, follows from the order alone. |
-| **D10** | **Catalog writes are short, never queue behind other writers, and lose most contention: best effort, not a guarantee.** No existing writer changes its locking. **Admin-triggered catalog actions** (accept, restore, a pin toggle, auto-order enable, detach, bind, unbind, dismiss) and **the reorder pass** each run one short transaction, for one channel and one identity:<br>(1) `SET LOCAL lock_timeout = '100ms'`.<br>(2) Lock every row the action will write or reference, up front, with `NOWAIT`. Catalog rows come first (`ContentIdentity`, then `ChannelProposal`), then non-catalog rows in a fixed order: the `Channel` row (`FOR NO KEY UPDATE`, or `FOR KEY SHARE` when bind only references it), its `ChannelStream` rows (`FOR UPDATE`, id order), the `ChannelOverride` row for detach, and the `Stream` rows of added members (`FOR KEY SHARE`, id order).<br>(3) Write. **Every catalog write to a `Channel` column goes through `save(update_fields=[...])`, never `.update()`**, so the receivers in § Model signals run exactly as they do for an admin edit: `refresh_epg_programs` when `epg_data` is written, and the two compact-number receivers return at once because the catalog never writes `hidden_from_output`. A new channel is created with `save()`. A member is added by creating its `ChannelStream` row, as the channel serializer does, which fires `update_channel_catchup_fields` on the `Channel` row the action already holds and does not fire the `m2m_changed` receiver (a new channel takes its `tvg_id` from the identity instead). Order-only changes use `bulk_update(["order", "pinned"])`, because no receiver reads either column. Detach deletes the override row, which has no delete receiver; the fold that precedes it writes the channel's own columns through `save(update_fields=...)`, so a folded `epg_data` re-queues the programme parse for an unchanged effective EPG, as an admin save of the same value would.<br>**The resolver** locks catalog rows one identity per transaction, waits for them normally, and holds nothing else, so it cannot close a cycle.<br>On `LockNotAvailable` (55P03) or `DeadlockDetected` (40P01), a catalog transaction rolls back. A background pass retries the channel next pass. An admin action answers 409 `{"busy": true}`, and the UI says "busy, retry".<br>**The reorder pass also skips any channel saved within the last `reorder_quiet_seconds` (default 60), judged by `Channel.updated_at` (`auto_now`, `apps/channels/models.py:429`).** This is a recent-`Channel.save()` heuristic, not a recent-edit signal. A `PATCH` that changes only streams or overrides can skip `Channel.save()` (`apps/channels/serializers.py:640`, `:663-669`), and then does not move `updated_at`. `NOWAIT` remains the actual protection. The catalog's own channel writes do not move `updated_at` either: `save(update_fields=[...])` runs `pre_save` (where `auto_now` sets the value) only for the listed fields, and `updated_at` is never listed. S6 pins this with a test against the installed Django rather than relying on the reading.<br>**Rehash takes no new lock.** It only carries pins on collision (`core/tasks.py:726-736`). | **Who waits on whom.** Catalog actions never wait at acquisition. After acquisition they wait only through the 100 ms backstop, on locks they could not name in advance. Examples: a unique-index check when an existing writer has an uncommitted insert of the same `(channel, stream)` (`apps/channels/models.py:939-942`, `serializers.py:723-725`), or an FK key-share on a referenced group, logo or profile row. Existing writers can wait on catalog rows: deleting a channel runs `SET_NULL` onto `ContentIdentity.channel` and `ChannelProposal.channel`, and cascades onto `ChannelOrderSnapshot` (`apps/channels/api_views.py:919-933`). A catalog action holding those rows never waits beyond the backstop, so such a wait is short.<br>**A deadlock is still possible**, during a backstop wait, and **Postgres may choose either side as the victim**. Whichever backend's `deadlock_timeout` expires first runs the check and aborts. The catalog side catches it and retries or answers 409. An existing writer chosen as the victim fails exactly as a deadlock between two concurrent admin edits can make it fail today. The base handles `DeadlockDetected` nowhere: `git grep -n "DeadlockDetected\|40P01" 149678aa -- '*.py'` matches only tests. So an API request answers 500 and the admin retries, and a Celery task fails that run and the next scheduled run redoes it. The short transactions, `NOWAIT` and the quiet-period skip make this rare, not impossible. Round 6 showed that a timing argument cannot promise more. |
+| **D10** | **Catalog writes are short, never queue behind other writers, and lose most contention: best effort, not a guarantee.** No existing writer changes its locking. **Admin-triggered catalog actions** (accept, restore, a pin toggle, auto-order enable, detach, bind, unbind, dismiss) and **the reorder pass** each run one short transaction, for one channel and one identity:<br>(1) `SET LOCAL lock_timeout = '100ms'`.<br>(2) Lock every row the action will write or reference, up front, with `NOWAIT`. Catalog rows come first (`ContentIdentity`, then `ChannelProposal`), then non-catalog rows in a fixed order: the `Channel` row (`FOR NO KEY UPDATE`, or `FOR KEY SHARE` when bind only references it), its `ChannelStream` rows (`FOR UPDATE`, id order), the `ChannelOverride` row for detach, and the `Stream` rows of added members (`FOR KEY SHARE`, id order).<br>(3) Write. **One rule for the receivers in § Model signals: database effects run inside the transaction, external effects (Redis, the Celery broker) run only from `transaction.on_commit`.** The catalog writes `Channel` columns with `QuerySet.update()`, which fires no receiver, and then states each receiver's effect itself:<br>- `refresh_epg_programs`: whenever the action writes `epg_data` (accept onto a manual target, a new channel with EPG, a detach fold that carries an override's EPG), it registers one `on_commit` callback that calls `invalidate_epg_chunk_cache()` (`apps/output/streaming_chunk_cache.py:245`) and `dispatch_program_refresh_for_epg_ids({epg_id})` (`apps/epg/tasks.py:2477`, the helper sync's bulk path already uses). The task therefore runs only after the mapping is committed, so `is_epg_mapped_to_channel` (`apps/epg/tasks.py:1672-1676`) sees it; a rollback (409, deadlock) drops the callback; and no Redis scan or broker publish happens while channel locks are held.<br>- A new channel is created with `save()` **without** `epg_data`, so its `post_save` does nothing external (the compact-number receivers return on `created`, and `refresh_epg_programs` sees no EPG); `epg_data` is then set by `.update()` under the rule above.<br>- The two compact-number receivers: nothing to do, because the catalog never writes `hidden_from_output`.<br>- `update_channel_catchup_fields`: a member is added by creating its `ChannelStream` row, as the channel serializer does. That fires this receiver synchronously, which is correct under the rule: its whole effect is one `.update()` on the `Channel` row the action already holds.<br>- `update_channel_tvg_id_and_logo` (`m2m_changed`): not fired, as on the serializer's path; a new channel takes its `tvg_id` from the identity.<br>- The `ChannelOverride` receivers: detach deletes the override, which has no delete receiver, and the fold writes the channel's own columns, so neither fires; any EPG effect follows the first bullet.<br>Order-only changes use `bulk_update(["order", "pinned"])`, because no receiver reads either column.<br>**The resolver** locks catalog rows one identity per transaction, waits for them normally, and holds nothing else, so it cannot close a cycle.<br>On `LockNotAvailable` (55P03) or `DeadlockDetected` (40P01), a catalog transaction rolls back. A background pass retries the channel next pass. An admin action answers 409 `{"busy": true}`, and the UI says "busy, retry".<br>**The reorder pass also skips any channel saved within the last `reorder_quiet_seconds` (default 60), judged by `Channel.updated_at` (`auto_now`, `apps/channels/models.py:429`).** This is a recent-`Channel.save()` heuristic, not a recent-edit signal. A `PATCH` that changes only streams or overrides can skip `Channel.save()` (`apps/channels/serializers.py:640`, `:663-669`), and then does not move `updated_at`. `NOWAIT` remains the actual protection. The catalog's own channel writes do not move `updated_at` either, because `QuerySet.update()` never applies `auto_now`; S6's signals test pins it.<br>**Rehash takes no new lock.** It only carries pins on collision (`core/tasks.py:726-736`). | **Who waits on whom.** Catalog actions never wait at acquisition. After acquisition they wait only through the 100 ms backstop, on locks they could not name in advance. Examples: a unique-index check when an existing writer has an uncommitted insert of the same `(channel, stream)` (`apps/channels/models.py:939-942`, `serializers.py:723-725`), or an FK key-share on a referenced group, logo or profile row. Existing writers can wait on catalog rows: deleting a channel runs `SET_NULL` onto `ContentIdentity.channel` and `ChannelProposal.channel`, and cascades onto `ChannelOrderSnapshot` (`apps/channels/api_views.py:919-933`). A catalog action holding those rows never waits beyond the backstop, so such a wait is short.<br>**A deadlock is still possible**, during a backstop wait, and **Postgres may choose either side as the victim**. Whichever backend's `deadlock_timeout` expires first runs the check and aborts. The catalog side catches it and retries or answers 409. An existing writer chosen as the victim fails exactly as a deadlock between two concurrent admin edits can make it fail today. The base handles `DeadlockDetected` nowhere: `git grep -n "DeadlockDetected\|40P01" 149678aa -- '*.py'` matches only tests. So an API request answers 500 and the admin retries, and a Celery task fails that run and the next scheduled run redoes it. The short transactions, `NOWAIT` and the quiet-period skip make this rare, not impossible. Round 6 showed that a timing argument cannot promise more. |
 | **D11** | **Reliability is counted per exposure, at ingest, deduplicated per event.** An **exposure** is a stream being started (`channel_start`) or switched in (`stream_switch`). A **failure** is a failover away from it or a connection failure on it, plus a quarter-weight for each buffering episode. A receiver on the `relay_event_applied` signal handles each relevant event in its own transaction. It first inserts a `RelayEventReceipt(relay_boot, seq)`, which is unique. **Only if the insert succeeds** does it decay and update the stream's two counters. Receipts are kept for 30 days. The band is computed when it is read. | Round 3 showed a high-water mark is unsafe: a batch whose HTTP attempts timed out can still be applied by Django **after** a later batch, so a watermark would discard it. A unique receipt per event is order-free. Exposure counting needs no playback segments, and R4 asks only for "observed health (recent failovers, buffering events, connect failures)". |
 | **D12** | **Everything is off until the owner turns it on, in three switches**, in a new settings group `catalog_settings`: `classify_enabled` (parse, tier, identities, review queue; it never writes a channel), `auto_order_enabled` (D8 writes for `auto` channels) and `remeasure_enabled` (D17's probes; it needs `classify_enabled`). Turning `classify_enabled` on **backfills**: it dispatches classification for every active account, then one resolve. Turning `auto_order_enabled` on goes through a **preview** endpoint. The preview lists every channel whose order would change, and the owner picks which channels to set to `auto`. Before the first write, each chosen channel's prior order is saved in `ChannelOrderSnapshot`. | R3 asks for automatic reordering of existing channels. The no-silent-destruction rule asks for it to be visible and reversible. |
 | **D13** | **New channels and new members are proposals, never automatic, and the target channel is always explicit.** A `ChannelProposal` has `kind` `new_channel` (the identity has no bound channel) or `add_streams` (the identity has a bound channel that lacks some of its members). Several existing channels can belong to one identity: these **candidate channels** are computed and shown, never stored. **Binding the identity to one channel is an explicit admin act**, and changes no channel. Accepting `add_streams` **keeps the target's `stream_order_mode`**, unless the admin ticks "order this channel automatically". A channel created from `new_channel` starts `auto`, and is ranked by D8 **before acceptance commits**. Adult content is propagated conservatively (§ Proposals). | R3: propose new, admin accepts. Adding a stream to a channel changes what clients may receive, so it needs acceptance. Choosing among several candidates is a judgement about which channel the admin's clients use, and the spec must not make it. |
@@ -351,8 +351,11 @@ The parser runs in fixed **phases**.
 2. **Tokenise.** Split on whitespace and the separators `| [ ] ( ) : - _ / ·`. Keep `+1` / `+2` as single
    tokens. Record for each token whether it was **delimited**: bracketed (`[US]`, `(UK)`, `|NZ|`), or, as the
    first token, followed by `:` / `-` / `|` (`UK:`, `NZ -`).
-3. **Classify decorations.** First, **protected phrases** in `regions.py` are matched on the token sequence, and
-   their tokens are words wherever they sit: `uk gold`, `uktv`, `wwe raw`, and any others the plan or the R10
+3. **Classify decorations.** First, the **unconditional** decorations are marked: tier, codec and fps tokens and
+   `+1` / `+2`, which are decorations wherever they appear. Then **protected phrases** in `regions.py` are matched
+   on the **projection** of the token sequence with those unconditional decorations removed, so a quality label
+   inside a phrase cannot break it: `WWE HD Raw` projects to `wwe raw` and `UK FHD Gold` to `uk gold`. A matched
+   phrase's tokens are words wherever they sit: `uk gold`, `uktv`, `wwe raw`, and any others the plan or the R10
    demo finds. Then each remaining token is checked against these classes, and a decoration is removed from the
    word list. Tier, codec and fps tokens, and `+1` / `+2`, are decorations wherever they appear. The
    **word-shaped** marker and variant tokens (`backup`, `bk`, `raw`, `alt`, `test`, `east`, `west`) are
@@ -385,7 +388,7 @@ The parser runs in fixed **phases**.
 **Stability properties, stated exactly.** These hold for the canonical key only:
 
 - `parse(canonical_name).canonical_key == canonical_key`.
-- Inserting or removing a tier, codec or fps token anywhere, or a marker token that is delimited or inside the
+- Inserting or removing a tier, codec or fps token anywhere (inside a protected phrase included), or a marker token that is delimited or inside the
   trailing run, never changes `(canonical_key, region, variant)`. (A word-shaped token outside the trailing run
   is a word by design, and a variant token changes `variant` by definition, so the property claims neither.)
 - `name_tier` is the same whatever order the tier tokens appear in.
@@ -417,6 +420,8 @@ The parser runs in fixed **phases**.
 | `\|CH\| SRF 1 HD` / `` | `srf 1` | CH (delimited) | | HD |
 | `UK: Sky News` / ``, tvg_id `skynews.tv` | `sky news` | GB | | UNKNOWN, **no** `region_conflict` (`.tv` is not evidence) |
 | `WWE Raw HD` / `` | `wwe raw` | | | HD (protected phrase; no `raw` marker) |
+| `WWE HD Raw` / `` | `wwe raw` | | | HD (phrase matched on the projection) |
+| `UK FHD Gold` / `UK Entertainment` | `uk gold` | GB (group) | | FHD (phrase matched on the projection) |
 | `Test Match Special` / `` | `test match special` | | | UNKNOWN (no `test` marker) |
 | `West Ham TV` / `` | `west ham tv` | | | UNKNOWN (no `west` variant) |
 | `Discovery East UK HD` / `` | `discovery` | GB | `east` | HD (trailing run) |
@@ -505,43 +510,70 @@ and the existing slot script.
 **What is probed.** A stream is a **candidate** when all of these hold: `remeasure_enabled` and
 `classify_enabled` are on; it has a `MeasuredResolution` whose `observed_at` is older than `measured_ttl_days`;
 `next_remeasure_at` is null or past; `remeasure_failures < remeasure_max_failures` (default 4); it is not stale;
-its account is active; and it is a member of at least one channel. **A stream with no measurement is never a
-candidate**, so the probed set is a subset of what playback already reached, and nothing is probed in bulk.
+its account is active; it is a member of at least one channel; and **no channel it is on has Redirect as its
+effective stream profile** (`Channel.get_stream_profile()`, `apps/channels/models.py:493`). **A stream with no
+measurement is never a candidate**, so the probed set is a subset of what playback already reached, and nothing
+is probed in bulk.
 
 **A playing stream is not probed.** Under a subprocess profile, S1b posts its stats every 30 s with the
 resolution, so its `observed_at` never ages past the TTL and it never becomes a candidate. A stream that was
-measured once and now plays through Proxy or Redirect can age while playing, so each run asks the relay once
-for its channel list (`relay_client`, as the #513 reconciler does) and skips every candidate the relay lists as
-a channel's current `stream_id`. If the relay cannot answer, the run starts no probe.
+measured once and now plays through **Proxy** can age while playing; the relay registers Proxy channels, so
+before each probe the task asks the relay for its channel list (`relay_client`, as the #513 reconciler does) and
+skips the candidate if the relay lists it as a channel's current `stream_id` (`relay/httpapi/channels.go:207-233`).
+If the relay cannot answer, the run starts no further probe. **Redirect is excluded by the channel rule above,
+not by the list**: Redirect playback registers no channel (`relay/httpapi/stream.go:282-290`), so the list
+cannot see it.
 
-**Where and when.** `remeasure_expired()` is a Celery task on the `default` queue (prefork, not patched, so a
-plain `subprocess.run` is correct; never the `dvr` queue), from a beat entry every 10 minutes. It takes
-`pg_try_advisory_lock(catalog_remeasure)` and returns if another run holds it. It picks candidates oldest
-`observed_at` first, **at most one per account and at most `remeasure_max_per_run` (default 10) per run**, and
-probes them **one after another**, so at most one probe is open on the whole instance at any moment.
+**Where and when.** `remeasure_expired()` is a Celery task on the `celery` queue, consumed by the default
+prefork worker (`docker/supervisord.d/celery-default.conf:2`; not monkey-patched, so a plain `subprocess.run`
+is correct; never the `dvr` queue), from a beat entry every 10 minutes. It takes
+`pg_try_advisory_lock(catalog_remeasure)` and returns if another run holds it. It walks candidates oldest
+`observed_at` first, **at most one per account**, and **starts at most `remeasure_max_per_run` (default 10)
+probes per run**. A refusal costs one script call and no provider connection, so it does not count against
+that budget; the walk stops after `10 × remeasure_max_per_run` candidates. Probes run **one after another**, so
+at most one probe is open on the whole instance at any moment.
 
 **Each probe.**
 
-1. Pick the profile as a tune would (`apps/channels/models.py:620-631`): the account's active default profile,
+1. **Re-check, then fix the generation.** Immediately before the probe, re-read the candidate's
+   `MeasuredResolution` and re-evaluate every candidate condition above, the relay check included. If any fails
+   (playback measured it since selection, a channel moved to Redirect, the stream went stale), skip it with
+   outcome `skipped`. Otherwise remember the row's `observed_at` as the **selected generation**.
+2. Pick the profile as a tune would (`apps/channels/models.py:620-631`): the account's active default profile,
    then its other active profiles. **Skip any profile with `max_streams = 1`** (see headroom).
-2. Build the URL with `_resolve_live_stream_url(stream, account, profile)` and the user agent with
-   `account.get_user_agent_string()`, both before reserving, so the slot is held only for the subprocess.
-3. **Reserve with one slot of headroom**: `reserve_profile_slot` gains an optional `headroom=0` argument and
+3. Build the URL with `_resolve_live_stream_url(stream, account, profile)` and the user agent with
+   `account.get_user_agent_string()`, both before reserving, so the slot is held only for the subprocess. This
+   path, and the reservation's own fingerprint derivation, both reach `transform_url`, which is credential-safe
+   only after prerequisite **P1** (§ Credentials).
+4. **Reserve with one slot of headroom**: `reserve_profile_slot` gains an optional `headroom=0` argument and
    passes `max(profile.max_streams - headroom, 0)` and `max(cred_max - headroom, 0)` to the unchanged `reserve`
    op. The probe passes `headroom=1`, so the reserve succeeds only if, after the probe takes its slot, at least
    one more remains on both the profile and the credential counter. The Lua script does not change, so the
    fake-parity tests (`apps/m3u/tests/test_slot_script.py`) still hold it. A max of `1` would become `0`, which
-   the script reads as "not counted", which is why step 1 skips such profiles: probing would need their only
+   the script reads as "not counted", which is why step 2 skips such profiles: probing would need their only
    slot. A profile with `max_streams = 0` is unlimited, and the probe is uncounted there exactly as a tune is.
-   A refusal on every profile is **refused**: nothing is written, and the stream is tried again at the next run.
-4. Run `ffprobe -v error -rw_timeout 5000000 -analyzeduration 5000000 -probesize 5000000 -user_agent <ua>
-   -select_streams v:0 -show_entries stream=width,height -of json <url>` with `subprocess.run(argv,
-   stdout=PIPE, stderr=DEVNULL, timeout=15)`. The argv bounds itself (five seconds of I/O and of analysis), and
-   the timeout kills it if it does not.
-5. In `finally`, `release_profile_slot(profile.id)`. The probe is then one more holder on that profile for at
-   most `PROBE_HOLD_SECONDS = 20`, with exactly the release-pointer behaviour two viewers on one profile already
-   have (#356, covered by the reconciler's carry rule).
-6. Write the result in one short transaction on the catalog's own row, which no existing writer touches.
+   A refusal on every profile is **refused**: the Lua writes nothing, and the catalog sets
+   `next_remeasure_at = now + 1 h` on that candidate, conditional on the selected generation, **without**
+   counting a failure. The deferral is what lets later accounts' candidates through when an older one sits on a
+   permanently full provider.
+5. Run `timeout -k 2 15 ffprobe -v error -rw_timeout 5000000 -analyzeduration 5000000 -probesize 5000000
+   -user_agent <ua> -select_streams v:0 -show_entries stream=width,height -of json <url>` with
+   `subprocess.run(argv, stdout=PIPE, stderr=DEVNULL, timeout=20)`. **The wall-clock bound does not depend on
+   the Python parent**: coreutils `timeout` is its own process, puts itself and `ffprobe` in their own process
+   group, sends `SIGTERM` at 15 s and `SIGKILL` at 17 s, and keeps doing so if the Celery child is killed
+   (`SIGKILL` from a hard time limit, an OOM kill), because nothing kills it with its parent. `ffprobe`'s own
+   `-rw_timeout` and analysis limits usually end it within about five seconds. The runtime image is
+   Ubuntu-based (`docker/DispatcharrBase:24-41` installs from Ubuntu's keyserver and a PPA keyed on
+   `lsb_release`), where coreutils is an Essential package, and S3b's smoke test asserts that `timeout` and
+   `ffprobe` both resolve in the CI base image. This is the Python counterpart of the relay's `Pdeathsig`
+   rule (CLAUDE.md § Known defects: a provider-reading subprocess must not outlive its parent).
+6. In `finally`, `release_profile_slot(profile.id)`. The probe is then one more holder on that profile for at
+   most `PROBE_HOLD_SECONDS = 20` (the 17 s kill bound plus margin), with exactly the release-pointer behaviour
+   two viewers on one profile already have (#356, covered by the reconciler's carry rule).
+7. **Write the result only onto the selected generation.** Two writers touch this row: the S3 playback receiver
+   (unconditional, because a playback measurement is newer truth) and this task. Every probe write is one
+   `UPDATE … WHERE stream_id = <id> AND observed_at = <selected generation>`; zero rows updated means playback
+   superseded the selection while the probe ran, and the result is discarded with outcome `superseded`.
    - **Success** (exit 0 and a positive `height`): `height`, `width`, `observed_at = now`, `source = probe`,
      `remeasure_failures = 0`, `next_remeasure_at = null`. The tier may go up or down.
    - **Failure** (non-zero exit, timeout, no video stream, unparsable output): the measurement is unchanged,
@@ -557,19 +589,36 @@ channel's next stream rather than waiting (§ Verified facts). That is the whole
 is off and only one probe is ever open.
 
 **The #513 reconciler.** A probe's reservation is not in the reconciler's holder set. It is safe for the same
-reason a tune's reservation is safe before the relay lists the channel: it is an **in-flight** reservation,
-reserved and released within `PROBE_HOLD_SECONDS`, and every reserve and release moves the counter's version,
-so no pair of reconciler runs spaced `run_spacing_seconds()` apart can see an unchanged version across a live
-probe. S3b makes this a checked invariant rather than a coincidence: `in_flight_windows()` gains
-`probe = PROBE_HOLD_SECONDS` (a function-local import, like its others), so the spacing stays at least twice the
-probe's hold. At 20 s against VOD's 40 s it changes nothing today. A probe whose worker dies before `finally`
-leaks one slot, and the reconciler gives it back like any dead holder's.
+reason a tune's reservation is safe before the relay lists the channel: it is an **in-flight** reservation, and
+every reserve and release moves the counter's version, so no pair of reconciler runs spaced
+`run_spacing_seconds()` apart can see an unchanged version across a live probe. The argument needs a real upper
+bound on the provider connection, and step 5 gives one that holds even if the worker dies: the connection is
+gone by 17 s. S3b makes the invariant checked: `in_flight_windows()` gains `probe = PROBE_HOLD_SECONDS` (a
+function-local import, like its others), so the spacing stays at least twice the probe's hold. At 20 s against
+VOD's 40 s it changes nothing today. A probe whose worker dies before `finally` leaks one counted slot, which the
+reconciler gives back like any dead holder's, at least two runs (over 80 s) later, long after `timeout` has
+killed the connection.
 
 **Credentials.** The URL and user agent never reach a log, an exception message or the database. The task logs
-only the stream id, the profile id and an outcome word (`ok`, `refused`, `failed`, `timeout`, `skipped`).
-`subprocess` exceptions are caught by type and never logged or re-raised with their text, because their `str()`
-carries the argv (§ Verified facts). `ffprobe`'s stderr goes to `DEVNULL`. `scripts/check_credential_logging.py`
-covers the module.
+only the stream id, the profile id and an outcome word (`ok`, `refused`, `failed`, `timeout`, `skipped`,
+`superseded`). `subprocess` exceptions are caught by type and never logged or re-raised with their text,
+because their `str()` carries the argv (§ Verified facts). `ffprobe`'s stderr goes to `DEVNULL`.
+**The probe also reaches existing helpers that are not credential-safe today**, and this is a defect on the
+tune path as well, not one S3b introduces: `transform_url` (`apps/proxy/next_source.py:271-311`) logs the raw
+search pattern at WARNING when it does not match (`:304`), the raw search, replace and safe-replace patterns at
+DEBUG (`:286`, `:292-293`), and the regex exception text at ERROR (`:310`). The frontend's XC "simple" mode
+builds those patterns from the old and new username and password (`applyXcSimplePatterns`,
+`frontend/src/utils/forms/M3uProfileUtils.js:138-149`). `transform_url` is reached from the tune
+(`next_source.py:71`), from slot fingerprinting on every pooled M3U reserve
+(`apps/m3u/connection_pool.py:83`) and from the profile preview (`dispatcharr/consumers.py:163`).
+`scripts/check_credential_logging.py` misses it because the names are `*_pattern` and because it does not model
+exception text (`:95-98`). **S3b therefore depends on a prerequisite fix PR, P1**: `transform_url` never logs a
+pattern or replacement, says only that the profile's pattern did not match (naming the profile id where the
+caller has one), and logs only the exception type; `_fingerprint_from_profile_stream_url`'s DEBUG line
+(`connection_pool.py:92-97`) logs only the exception type. P1's tests call the real helpers with
+credential-bearing XC-simple patterns under DEBUG logging, for a match, a no-match and a malformed pattern, and
+assert no record contains either username or password. S3b's own credentials test then runs the whole probe
+path, reservation included, under DEBUG.
 
 **Honest limits.**
 
@@ -577,6 +626,15 @@ covers the module.
   nothing to expire and is never probed. A mislabelled `4K` name there keeps its name tier forever, as before
   R8. Probing it would be bulk probing of unmeasured streams, which R1 still forbids. The admin's remedy is a pin
   or a `manual` channel.
+- **Redirect occupancy is unsupported, not solved.** A stream on a Redirect channel is never probed, so a
+  Redirect viewer of *that* stream never shares its provider with a probe of it. What remains: a Redirect
+  viewer holds a real provider connection that no counter records, because the relay releases the tune's slot
+  before sending the 302 (`relay/httpapi/redirect.go:111-133`). On an account that also serves Redirect
+  channels, the counters therefore under-count real connections, and the probe's headroom is only as good as
+  those counters, exactly as an ordinary tune's capacity check is today. A provider limit can be exceeded by one
+  probe there. This spec does not track Redirect viewers; doing so would be a relay change.
+- **Profile changes mid-probe.** A channel switched to Redirect after step 1's re-check is not noticed by a
+  probe already running; the probe ends within 17 s.
 - **TLS.** `ffprobe` 9.0 verifies the provider's certificate, and the probe ignores Stream Profiles, so a
   provider that plays only through a custom profile with `-tls_verify 0` fails every probe and stops at
   `remeasure_max_failures`. Its last measurement stands.
@@ -992,8 +1050,9 @@ drf-spectacular schema, and is `IsAdmin` with no opt-down.
   probe reserves and releases only through `reserve_profile_slot` (with its new `headroom` argument, default 0)
   and `release_profile_slot`, and is covered by the reconciler as an in-flight reservation (§ Re-measurement at
   expiry).
-- **Catalog channel writes and signals.** The catalog writes `Channel` columns through `save(update_fields=...)`
-  so every receiver in § Model signals behaves as for an admin edit (D10).
+- **Catalog channel writes and signals.** Every receiver in § Model signals is accounted for explicitly (D10
+  step 3): database effects inside the transaction, the EPG cache invalidation and programme-refresh dispatch
+  only from `on_commit`.
 - **The copied channel-authorization filter.** Untouched. No client-facing surface is added. Adult status is
   propagated (§ Proposals), so `authorize_stream`'s `hide_adult_content` check
   (`apps/proxy/authorize.py:471-474`) sees the right flag on catalog-created channels.
@@ -1003,7 +1062,8 @@ drf-spectacular schema, and is `IsAdmin` with no opt-down.
 - **CoreSettings blast radius.** `catalog_settings` is a ninth instance-wide group. S3 ships a data migration
   seeding its row. Any E2E test that writes it joins the allowlist (`docs/adr/0003`).
 - **Credential logging.** The parse-preview endpoint logs no URL and no payload. S3b's probe builds a provider URL
-  and handles it as § Re-measurement at expiry's Credentials paragraph says.
+  and handles it as § Re-measurement at expiry's Credentials paragraph says. The helpers it shares with the tune
+  path log credential-bearing profile patterns today; prerequisite P1 fixes that for both.
 - **Rename ratchet (Mino spec PR R1).** If R1 has landed, a new file containing `dispatcharr` (the package
   import, the `dispatcharr-ci` profile, the `dispatcharr_channels` label) raises
   `scripts/product_name_allowlist.txt`. Each plan lists such lines, and each must be a name the rename spec
@@ -1038,7 +1098,8 @@ covers:
   `Box Hits It`, …) parsing with no region, the same entries delimited (`[IT] Rai 1`) parsing with their
   region, tvg_ids ending in each entry giving no region, and every word-shaped marker or variant as a leading
   or middle word (`Test Match Special`, `Alt Rock TV`, `East Enders Classics`, `West Ham TV`, `Raw Travel`)
-  staying in the key, plus the protected phrases (`WWE Raw`);
+  staying in the key, plus every protected phrase with a tier, codec or fps token inserted between its words
+  (`WWE HD Raw`, `UK FHD Gold`) parsing exactly as the bare phrase does;
 - **the numbered-family set** (finding 2): `Sky Sport 1` … `Sky Sport 9`, `beIN Sports 1` … `beIN Sports 15`,
   `Sky Sports Main Event` / `Sky Sports Premier League`, for S4's fuzzy tests.
 
@@ -1077,7 +1138,8 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   asserting no call). A successful invocation with `requested > completed` re-dispatches once with
   `countdown=30` and `chain + 1`, and at `chain = 10` does not.
 - **M3U stream keys** (finding 8). A plain M3U stream renamed from `UK: Sky Arts HD` to `UK: Sky Arts FHD` and
-  moved to another group keeps its key, so its exclusion and region pin still apply. A parser-version change
+  moved to another group keeps its key, so its exclusion and region pin still apply. So do `WWE Raw HD` renamed
+  to `WWE HD Raw`, and `UK Gold` renamed to `UK FHD Gold` in the same group (round 8 finding 7). A parser-version change
   that alters a key moves the decision to the new key. A decision unseen for `decision_prune_days` is pruned,
   and its empty identity is deleted at the next pass. Two empty-key streams in one account have different keys.
 - **Unplaceable streams.** Conflicted, unknown-region, variant-conflict and empty-key streams are never placed or
@@ -1189,11 +1251,18 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   setting is allowed. Adding an adult member to a non-adult channel without `options.adult` returns 400. With
   `skip_adult_members`, the channel stays non-adult and the adult member is not added.
 - **Failover order.** `get_stream()` and the failover branch choose the tier-sorted first stream.
-- **Signals** (finding 6). Accepting onto a manual target with a `bound` identity queues
-  `parse_programs_for_tvg_id` for the identity's `EPGData` and drops the XMLTV chunk cache (both patched and
-  asserted), exactly as an admin `PATCH` of `epg_data` does. A new channel created with EPG does the same. A
-  reorder and an accept leave `Channel.updated_at` unchanged, which pins the `save(update_fields=...)` reading
-  against the installed Django. Neither compact-number receiver writes.
+- **Signals** (finding 6; Postgres-only, `TransactionTestCase`, so commits are real). The cache invalidation and
+  the refresh dispatch are wrapped to record, at the moment each runs, three facts: whether the connection is
+  in an atomic block, whether a second connection's `is_epg_mapped_to_channel(epg)` is true, and the call
+  itself.
+  - **Commit visibility.** Accepting onto a manual target with a `bound` identity, and accepting a new channel
+    with EPG, each run both effects exactly once, outside any atomic block, with the mapping already visible
+    to the second connection.
+  - **Rollback suppression.** An accept forced to fail after its `epg_data` write (a hook raising
+    `LockNotAvailable` before commit) runs neither effect.
+  - **No external work under locks.** Neither effect runs while the accept's transaction is open: a hook
+    paused just before commit observes zero calls.
+  - A reorder and an accept leave `Channel.updated_at` unchanged, and neither compact-number receiver writes.
 
 **Tune-path ledger:** `apps/proxy/tests/test_tune_path_query_ledger.py` passes unchanged in every PR.
 
@@ -1209,15 +1278,30 @@ Nothing in the corpus is a real URL or credential, and a test asserts no line co
   dispatches classification for that account, and its prefix-less streams then classify as GB. An invalid
   sub-dict answers 400.
 
-**Re-measurement tests** (S3b). Redis is the test container's real one (the slot script must run as Lua);
-`ffprobe` is replaced by a fake executable on a constructed `PATH`, and the suite first asserts that the fake is
-the one that resolves.
+**Re-measurement tests** (S3b). Redis is the test container's real one (the slot script must run as Lua). The
+module invokes `ffprobe` and `timeout` by absolute paths held in two module constants, never by `PATH` lookup,
+so a test that points the `ffprobe` constant at a fake script cannot fall through to the real tool; the suite
+first asserts the constant is the fake. The smoke test asserts that the real `timeout` and `ffprobe` resolve in
+the CI base image.
 
 - **Selection.** Only a due, channel-member, measured stream is probed. An unmeasured stream on the same channel
-  is never probed, nor a stale one, nor one on an inactive account, nor one the relay lists as playing. With the
-  relay unreachable, no probe starts. With `remeasure_enabled` off, nothing runs.
+  is never probed, nor a stale one, nor one on an inactive account, nor one the relay lists as playing, nor one
+  on any channel whose effective stream profile is Redirect. With the relay unreachable, no probe starts. With
+  `remeasure_enabled` off, nothing runs.
 - **Bounds.** With twelve due streams on three accounts and `remeasure_max_per_run = 10`, one run probes three
   (one per account). A second concurrent run returns at once on the advisory lock.
+- **Fair progress** (round 8 finding 6). `remeasure_max_per_run = 1`; account A's candidate is older and its
+  only profile is full; account B's is younger and has room. One run is refused on A, defers A's candidate by
+  1 h with `remeasure_failures` unchanged, and probes B. The next run within the hour does not try A.
+- **Fencing** (round 8 finding 3). (a) Playback measures the selected stream after selection and before
+  launch: the re-check skips it, no slot is reserved and no subprocess runs. (b) Playback measures it while the
+  fake probe is blocked: the probe's success write updates zero rows, the playback measurement and its
+  `source = playback` survive, and the outcome is `superseded`. (c) As (b) with a failing fake: no failure is
+  counted and no backoff is set.
+- **Parent death** (round 8 finding 2). In a child Python process, run one probe against a fake `ffprobe`
+  that records its pid and sleeps 300 s, with the bounds shortened through the module constants
+  (`timeout -k 1 2`). `SIGKILL` the child process once the fake's pid file appears. The fake's pid is gone
+  within 3 s plus a 2 s margin, with no Python parent left to enforce anything.
 - **Headroom.** On a profile with `max_streams = 3` and two slots held, the probe is refused and writes nothing,
   counter and version unchanged. With one slot held it reserves, and both counters are back to one afterwards.
   A `max_streams = 1` profile is never reserved. `reserve_profile_slot` with the default `headroom=0` behaves
@@ -1227,8 +1311,11 @@ the one that resolves.
   `remeasure_failures` and set the backoff. After `remeasure_max_failures` the stream is no longer a candidate,
   and a playback measurement makes it one again later.
 - **Release.** The slot is released when the fake hangs past the timeout and when it exits non-zero.
-- **Credentials.** With a provider URL carrying a username and password, no log record from a success, a
-  failure or a timeout contains `://`, the username or the password.
+- **Credentials.** Under DEBUG logging, with an M3U profile whose XC-simple patterns carry a username and
+  password, and a provider URL carrying them too, no log record from the whole path (URL resolution through
+  the real `_resolve_live_stream_url` and `transform_url`, the reservation with its fingerprint derivation, a
+  refusal, a success, a failure, a timeout, and a malformed pattern) contains `://`, the username or the
+  password. This test passes only on top of P1.
 - **Reconciler.** `run_spacing_seconds()` is at least `2 × PROBE_HOLD_SECONDS`, and `in_flight_windows()` has
   a `probe` entry.
 
@@ -1256,11 +1343,12 @@ closing keyword.
 
 | PR | Needs | Stopping point |
 |---|---|---|
+| P1 | none | `transform_url` and slot fingerprinting log no pattern, replacement or exception text (a pre-existing tune-path defect; § Re-measurement at expiry, Credentials) |
 | S1a | none | events carry identity and attribution |
 | S1b | S1a | `stream_stats` posted again |
 | S2 | none | parser, inert |
 | S3 | S2 | tiers visible, read-only (name-only until S1b's data arrives); conventions settable by API; a measurement never reverts |
-| S3b | S3, S1b | due measurements re-measured by probe, off by default |
+| S3b | S3, S1b, P1 | due measurements re-measured by probe, off by default |
 | S4 | S3 | identities, review queue, decisions, binding, read-only proposals; **writes no channel** |
 | S5 | S3 (settings, signal), S1a (data) | health visible on `classifications/` |
 | S6 | S4, S5 | ordering and acceptance, the headline behaviour (API-driven) |
@@ -1268,11 +1356,32 @@ closing keyword.
 | S8 | S7 | the naming-convention form section |
 
 Each stopping point passes its smoke check (§ Test strategy). S3b is independent of S4-S8: it can land any time
-after S3 and S1b, and a stopping point without it simply keeps every measurement.
+after S3, S1b and P1, and a stopping point without it simply keeps every measurement. P1 is a small fix PR on
+its own branch, with its own issue (cited with `Refs`), and is worth landing whether or not S3b follows.
 
 ### S0 — this spec
 
 Docs only. It cites a tracking issue with `Refs`, if one is filed.
+
+### P1 — `transform_url` logs no credential (prerequisite fix)
+
+A fix for a pre-existing defect on the tune path, found while reviewing S3b (§ Re-measurement at expiry,
+Credentials). Its own issue, its own branch, and a closing keyword for that issue only in P1's own description.
+
+**Changes.** In `apps/proxy/next_source.py`'s `transform_url`: delete the three DEBUG lines that print the
+search, replace and safe-replace patterns; make the no-match WARNING say only that the pattern did not match
+(the caller may pass a profile id to name); make the ERROR log only `type(e).__name__`. In
+`apps/m3u/connection_pool.py`'s `_fingerprint_from_profile_stream_url`, log only the exception type.
+
+**Tests.** The real helpers, under `assertLogs` at DEBUG, with XC-simple patterns built as the frontend builds
+them (`olduser/oldpass` → `newuser/newpass`): a matching URL, a non-matching URL, and a malformed pattern. No
+record contains `olduser`, `oldpass`, `newuser` or `newpass`. The transformed URL is unchanged from today in the
+matching case.
+
+**Break-checks.** Restore the no-match WARNING's pattern. The no-match test reddens naming `oldpass`. For the
+ERROR line, the plan first pins a malformed pattern whose `regex` exception text quotes a credential fragment (a
+replacement naming a missing group, `$<oldpass>`, is the first candidate to try); restoring `{e}` then reddens
+the malformed-pattern test naming `oldpass`.
 
 ### S1a — attribution and event identity (Go, reporting only)
 
@@ -1394,6 +1503,8 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - Remove `nz` from the table. The trap property reddens, reporting region `""` where NZ was expected.
 - Extract the region before removing decorations. The `Sky Arts UK FHD HEVC 50FPS` golden case reddens.
 - Truncate before normalising. The overflow golden case reddens.
+- Match protected phrases on the raw token sequence instead of the projection. The `WWE HD Raw` golden case
+  reddens with key `wwe` and marker `raw`.
 
 **PR description draft:**
 
@@ -1458,16 +1569,25 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - Move the release out of `finally`. The release test reddens on the timeout case, with the counter left at two.
 - Log the caught `TimeoutExpired`. The credentials test reddens, finding `://` in the record.
 - Clear the measurement on failure. The outcomes test reddens, reporting the name tier.
+- Run `ffprobe` without the `timeout` wrapper. The parent-death test reddens: the fake's pid is still alive
+  after the bound.
+- Write the result without the `observed_at` condition. The fencing test (b) reddens: the playback measurement
+  is overwritten with `source = probe`.
+- Skip the deferral on refusal. The fair-progress test reddens: B is never probed.
+- Drop the Redirect-channel condition. The selection test reddens, probing the stream on the Redirect channel.
 
 **PR description draft:**
 
 > Owner ruling R8: when a stream's quality measurement reaches its TTL, re-measure that one stream rather than
 > let it fall back to its name. Behind an off-by-default switch, a throttled task probes only streams that were
 > already measured by playback and sit on a channel, one probe at a time across the instance and at most one
-> per account per run, with `ffprobe` bounded to a few seconds. Each probe reserves its provider slot through
-> the existing slot script with one slot of headroom, so it never takes the last free slot, and releases it in
-> `finally`; the reconciler covers it as an in-flight reservation. A failed or refused probe keeps the last
-> measured tier and backs off. No provider URL or credential is logged. Spec PR S3b.
+> per account per run, never on a Redirect channel, with `ffprobe` under coreutils `timeout` so it dies within
+> 17 s even if the worker does. Each probe re-checks eligibility just before it runs, reserves its provider
+> slot through the existing slot script with one slot of headroom, so it never takes the last free slot, and
+> releases it in `finally`; the reconciler covers it as an in-flight reservation. Results are written only onto
+> the measurement that was selected, so playback always wins a race. A failed probe keeps the last measured
+> tier and backs off; a refused one defers so other accounts get their turn. No provider URL or credential is
+> logged (on top of P1). Spec PR S3b.
 
 ### S4 — identities, review queue, decisions, EPG binding and proposals
 
@@ -1561,9 +1681,10 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 - Skip the pre-commit ranking. The first-tune test reddens.
 - Create the channel non-adult. The `authorize_stream` adult test reddens.
 - Let accept set `auto` unconditionally. The manual-target test reddens.
-- Write the accepted channel's `epg_data` with `.update()`. The signals test reddens: no programme parse is
-  queued.
-- Add `updated_at` to the catalog's `update_fields`. The signals test reddens on the moved timestamp.
+- Write the accepted channel's `epg_data` with `save(update_fields=["epg_data"])` and drop the `on_commit`
+  callback. The no-external-work test reddens: the receiver dispatches inside the open transaction.
+- Run the callback's two calls inline instead of from `on_commit`. The rollback-suppression test reddens with
+  one dispatch on a rolled-back accept.
 
 **PR description draft:**
 
@@ -1601,7 +1722,8 @@ The plan confirms that the new test label is picked up by `dispatcharr/test_disc
 **Break-checks.**
 
 - Leave `default_region` out of the posted sub-dict. The form test reddens on the payload it posts.
-- Drop the preview's convention argument. The preview test reddens: `AR: MBC 1` still shows region AR.
+- Drop the preview's convention argument. The preview test reddens: `AR: MBC 1` keeps `ar` in its canonical key
+  (`ar mbc 1`), where the convention gives `mbc 1`.
 
 **PR description draft:**
 
@@ -1771,3 +1893,22 @@ R1's "overridden by measured `Stream.stream_stats`" is met by `MeasuredResolutio
   - **Writes** (finding 10). The resolver diffs and upserts by natural key and writes nothing when unchanged;
     admin actions post natural keys.
   - **R10.** The demo engine on `spike/classification-demo` may reopen § Parsing and § Region before S2.
+- 2026-11-11: review round 8 (FAIL, 0 blocking, 7 should-fix, 2 nit). Findings 1, 2, 4, 5, 7, 8, 9 and 10 of
+  the code review were confirmed resolved. Then:
+  - **EPG side effects** (finding 1). Catalog `Channel` writes use `.update()`, and every receiver's effect is
+    stated: database effects in the transaction, the EPG cache invalidation and refresh dispatch from
+    `on_commit` only. Tests for commit visibility, rollback suppression and no external work under locks.
+  - **Probe lifetime** (finding 2). `ffprobe` runs under coreutils `timeout -k 2 15`, a bound that holds if the
+    worker dies. A parent-death test.
+  - **Fencing** (finding 3). Eligibility is re-checked just before each probe, and every probe write is
+    conditional on the selected `observed_at`; a superseded result is discarded. The false "no other writer"
+    claim is corrected.
+  - **Redirect** (finding 4). Streams on a Redirect channel are never probed; the remaining under-count of
+    Redirect viewers is stated as unsupported.
+  - **Credentials** (finding 5). A pre-existing tune-path leak in `transform_url` (raw patterns at WARNING and
+    DEBUG, exception text at ERROR) is reported, and S3b now depends on a prerequisite fix PR, P1.
+  - **Starvation** (finding 6). A refusal defers that candidate by 1 h without counting a failure, and does not
+    spend the run's probe budget.
+  - **Protected phrases** (finding 7). Matched on a projection without unconditional decorations, so
+    `WWE HD Raw` and `UK FHD Gold` parse as the bare phrases.
+  - **Nits.** The task's queue is `celery`; S8's break-check asserts `ar` kept in the key.
