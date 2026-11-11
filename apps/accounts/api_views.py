@@ -22,7 +22,7 @@ from dispatcharr.utils import (
     setup_ip_allowed,
 )
 
-from .models import User
+from .models import OIDCProvider, User
 from . import serializers as account_serializers
 from .admin_floor import admin_floor_lock
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
@@ -165,8 +165,10 @@ class TokenRefreshView(TokenRefreshView):
 
 @csrf_exempt  # Bootstrap only; POST is IP-gated and closes once an admin exists.
 def initialize_superuser(request):
-    # If an admin-level user already exists, the system is configured
-    if User.objects.filter(user_level__gte=10).exists():
+    # If an admin-level user already exists, the system is configured. So is an instance
+    # with an SSO provider: it holds an IdP credential and SSO-provisioned users and must
+    # not be claimable from the LAN whatever emptied its admin set (SSO spec 4.4).
+    if User.objects.filter(user_level__gte=10).exists() or OIDCProvider.objects.exists():
         return JsonResponse(_setup_status_payload(request, superuser_exists=True))
 
     if request.method == "POST":

@@ -43,6 +43,23 @@ class InitializeSuperuserTests(TestCase):
         self.assertIn("client_ip", data)
         self.assertIn("setup_allowed", data)
 
+    def test_closed_when_a_provider_exists(self):
+        """An SSO-configured instance must not be claimable from the LAN (SSO spec 4.4)."""
+        from apps.accounts.models import OIDCProvider
+
+        OIDCProvider.objects.create(
+            slug="kc", display_name="KC", issuer="https://idp.example/realms/x", client_id="c"
+        )
+        self.assertFalse(User.objects.filter(user_level__gte=10).exists())
+        self.assertTrue(self.client.get(self.url).json()["superuser_exists"])
+        response = self.client.post(
+            self.url,
+            data='{"username": "intruder", "password": "pw12345678"}',
+            content_type="application/json",
+        )
+        self.assertTrue(response.json()["superuser_exists"])
+        self.assertFalse(User.objects.filter(username="intruder").exists(), "POST created a user")
+
     def test_returns_false_when_no_users_exist(self):
         """Empty database should return false"""
         response = self.client.get(self.url)
