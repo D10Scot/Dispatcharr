@@ -20,8 +20,9 @@ logger = logging.getLogger(__name__)
 SERVICE_API = "mino-api"
 SERVICE_WORKER = "mino-worker"
 
-# pid -> True once init has reached a decision in that process. Keyed on the
-# pid so that a forked child (a new pid) initialises itself.
+# The pid of the process in which init last reached a decision (installed
+# providers or refused). A forked child has a new pid, so init runs again there
+# and, if the parent had installed providers, warns and builds nothing.
 _initialised_pid = None
 # The pid that actually built providers; None while nothing is installed.
 _installed_pid = None

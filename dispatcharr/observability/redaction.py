@@ -44,17 +44,14 @@ _ROUTE_RE = re.compile(r"^[\w/<>:^$?()\[\]{}|\\+*.,=-]{1,256}$")
 _HOSTNAME_RE = re.compile(r"^[A-Za-z0-9.-]{1,253}$")
 _DOTTED_RE = re.compile(r"^[A-Za-z0-9_][\w.]{0,127}$")
 _IDENT_RE = re.compile(r"^[A-Za-z_]\w{0,63}$")
-_UUID_RE = re.compile(
-    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
-)
+_UUID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+_UUID_RE = re.compile("^" + _UUID_PATTERN + "$")
 _DIGITS_RE = re.compile(r"^\d{1,19}$")
 _SQL_OR_REDIS_NAME_RE = re.compile(r"^[A-Z]{2,16}( [A-Z]{2,16})?$")
 _RUN_NAME_RE = re.compile(r"^(run|apply_async)/([A-Za-z0-9_][\w.]{0,127})$")
 _CODE_PATH_RE = re.compile(r"^[^\n\r]{1,512}$")
 _CODE_FUNCTION_RE = re.compile(r"^[\w<>.$-]{1,128}$")
-_UUID_ANYWHERE = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
-)
+_UUID_ANYWHERE = re.compile(_UUID_PATTERN)
 _FRAME_RE = re.compile(r"^[^\n\r]{1,400}:\d+ in [\w<>.$-]{1,128}$")
 
 
@@ -152,9 +149,7 @@ def _clean_attributes(attributes, rules):
 # ---------------------------------------------------------------------------
 
 _URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s\"'<>]+")
-_UUID_ANYWHERE_RE = re.compile(
-    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
-)
+_UUID_ANYWHERE_RE = re.compile(r"\b" + _UUID_PATTERN + r"\b")
 # relay/control/mediasession.go: "v1." + 22-character sid + "." + 43-character MAC.
 _HLS_TOKEN_RE = re.compile(r"\bv1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b")
 _LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{32,}\b")

@@ -598,5 +598,6 @@
 6	tests/test_uwsgi_inis_are_lazy.py
 2	tests/test_wait_for_redis.py
 6	tests/test_websocket_consumer_filter.py
+5	tests/test_wsgi_uwsgi_master.py
 1	uv.lock
 1	version.py
