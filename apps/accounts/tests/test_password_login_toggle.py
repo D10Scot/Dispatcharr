@@ -41,7 +41,14 @@ from .oidc_flow_support import (
     join_all,
     run_threads,
 )
-from .oidc_support import PROVIDERS, SETTINGS, admin_client, make_provider, set_auth_settings
+from .oidc_support import (
+    PROVIDERS,
+    SETTINGS,
+    admin_client,
+    make_entra,
+    make_provider,
+    set_auth_settings,
+)
 
 TOKEN = "/api/accounts/token/"
 LOGIN_ALIAS = "/api/accounts/auth/login/"
@@ -51,6 +58,7 @@ BOOTSTRAP = "/api/accounts/initialize-superuser/"
 CORE_SETTINGS = "/api/core/settings/"
 PLACEHOLDER_PASSWORD = "placeholder-pw-1"
 PLACEHOLDER_SECRET = "placeholder-secret-rotated"
+NEW_TENANT = "99999999-8888-7777-6666-555555555555"
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
@@ -200,6 +208,16 @@ class PasswordLoginGateTests(TestCase):
         set_password_login(False)
         body = APIClient().get(BOOTSTRAP).json()
         self.assertIs(body["superuser_exists"], False)
+
+    def test_bootstrap_post_creates_the_first_admin_while_off(self):
+        # The POST half: first-run setup still creates the admin while password login is off.
+        set_password_login(False)
+        response = APIClient().post(
+            BOOTSTRAP, {"username": "first", "password": PLACEHOLDER_PASSWORD}, format="json"
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(response.json(), {"superuser_exists": True})
+        self.assertEqual(User.objects.get(username="first").user_level, User.UserLevel.ADMIN)
 
     def test_login_page_config_reports_the_toggle(self):
         self.assertEqual(
@@ -396,6 +414,19 @@ class LockoutGuardTests(_GuardMixin, FlowTestCase):
         )
         self.assertTrue(stored_enabled())
 
+    @override_settings(PASSWORD_LOGIN_FORCE=True)
+    def test_rule_applies_under_the_override(self):
+        # Break-glass forces password login on; it does not exempt the switch from the rule.
+        # A password admin signed in under the override cannot turn the stored value off.
+        password_user("adm", User.UserLevel.ADMIN)
+        access = obtain("adm").json()["access"]
+        response = self.switch_off(bearer(access))
+        self.assertEqual(
+            response.status_code, 409, "the lockout rule was skipped under PASSWORD_LOGIN_FORCE"
+        )
+        self.assertIn("not_sso_session", response.json()["reasons"])
+        self.assertTrue(stored_enabled())
+
     def test_api_key_admin_refused(self):
         admin = password_user("adm", User.UserLevel.ADMIN)
         admin.api_key = "placeholder-api-key-value-2"
@@ -589,6 +620,131 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
         client = self.admin_client
         return lambda: client.patch(f"{PROVIDERS}{provider.pk}/", {"enabled": False}, format="json")
 
+    def hold_at_lock(self, thread_name):
+        """Hold the named thread just before it takes the auth_settings row lock, after its
+        view loaded the provider. Returns (entered, release)."""
+        entered, release = threading.Event(), threading.Event()
+        real = auth_settings.lock_row
+
+        def held():
+            if threading.current_thread().name == thread_name:
+                entered.set()
+                release.wait(WAIT_TIMEOUT)
+            return real()
+
+        patcher = mock.patch.object(auth_settings, "lock_row", side_effect=held)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return entered, release
+
+    def test_held_disable_decides_on_the_reloaded_provider(self):
+        # The update path's floor decides on the provider reloaded under the lock. Password
+        # login off, P enabled and Q disabled. A PATCH {enabled: false} of Q is held after the
+        # view loaded Q (enabled=False); Q is enabled; P is disabled (allowed, Q is enabled);
+        # the PATCH is released. Q is now the last enabled provider, so it must be refused.
+        OIDCProvider.update_columns(self.q.pk, {"enabled": False})
+        set_password_login(False)
+        entered, release = self.hold_at_lock("held-disable")
+        client = self.admin_client
+        worker = Worker(self._disable(self.q), "held-disable")
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the PATCH never reached the lock")
+            self.assertEqual(
+                client.patch(f"{PROVIDERS}{self.q.pk}/", {"enabled": True}, format="json").status_code,
+                200,
+            )
+            self.assertEqual(self._disable(self.p)().status_code, 200)
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(worker.error, repr(worker.error))
+        self.assertTrue(
+            OIDCProvider.objects.filter(enabled=True).exists(),
+            "forbidden state: a disable decided on the pre-lock instance (enabled=False) and "
+            "disabled the last enabled provider while password login is off "
+            f"(PATCH {worker.result.status_code})",
+        )
+        self.assertEqual(worker.result.status_code, 409)
+        self.assertEqual(worker.result.json()["reasons"], ["last_enabled_provider"])
+
+    def test_command_disable_racing_disable_of_only_provider_serialized(self):
+        # manage.py password_login --disable takes the auth_settings row lock for its floor
+        # check and write. Password login on, Q the only enabled provider. The command is held
+        # after its floor check, inside its transaction; a PATCH disabling Q starts. With the
+        # lock the PATCH waits, then sees password login off and is refused.
+        OIDCProvider.update_columns(self.p.pk, {"enabled": False})
+        set_password_login(True)
+        entered, release = threading.Event(), threading.Event()
+        real = CoreSettings._update_group
+
+        def held(*args, **kwargs):
+            if threading.current_thread().name == "command":
+                entered.set()
+                release.wait(WAIT_TIMEOUT)
+            return real(*args, **kwargs)
+
+        patcher = mock.patch.object(CoreSettings, "_update_group", side_effect=held)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        command = Worker(
+            lambda: call_command("password_login", "--disable", stdout=io.StringIO()), "command"
+        )
+        disable = Worker(self._disable(self.q), "disable-q")
+        try:
+            run_threads(command)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the command never reached its write")
+            run_threads(disable)
+            # Without the lock the PATCH completes here, while the command is held.
+            disable.join(2)
+            release.set()
+        finally:
+            release.set()
+            join_all([command, disable], [release])
+        self.assertIsNone(command.error, repr(command.error))
+        self.assertIsNone(disable.error, repr(disable.error))
+        off = not stored_enabled()
+        enabled = OIDCProvider.objects.filter(enabled=True).count()
+        self.assertFalse(
+            off and enabled == 0,
+            "forbidden state: password login is off and no provider is enabled "
+            f"(command --disable committed, PATCH {disable.result.status_code}): "
+            "the command's floor check did not hold the auth_settings row lock",
+        )
+        self.assertEqual(disable.result.status_code, 409)
+
+    def test_locked_patch_does_not_write_back_stale_entra_columns(self):
+        # validate() fills entra_tenant_id, issuer and client_assertion_alg from the instance
+        # loaded before the lock on every Entra PATCH. A locked PATCH {enabled: false} held
+        # after that load, released after another admin changed the tenant, must write only
+        # what it sent: the newer tenant and its issuer stay.
+        entra = make_entra(slug="entra", enabled=True)
+        set_password_login(True)
+        entered, release = self.hold_at_lock("held-entra")
+        client = self.admin_client
+        worker = Worker(self._disable(entra), "held-entra")
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the PATCH never reached the lock")
+            response = client.patch(
+                f"{PROVIDERS}{entra.pk}/", {"entra_tenant_id": NEW_TENANT}, format="json"
+            )
+            self.assertEqual(response.status_code, 200, response.content)
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(worker.error, repr(worker.error))
+        self.assertEqual(worker.result.status_code, 200, worker.result.content)
+        row = OIDCProvider.objects.get(pk=entra.pk)
+        self.assertFalse(row.enabled)
+        self.assertEqual(
+            (row.entra_tenant_id, row.issuer),
+            (NEW_TENANT, f"https://login.microsoftonline.com/{NEW_TENANT}/v2.0"),
+            "a locked PATCH wrote back the stale Entra columns validate() filled in",
+        )
+
     def test_concurrent_disables_of_last_two_providers_one_wins(self):
         set_password_login(False)
         barrier_around_evaluate(self)
@@ -688,18 +844,7 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
         # P is now the last enabled provider, so the DELETE must be refused.
         OIDCProvider.update_columns(self.p.pk, {"enabled": False})
         set_password_login(False)
-        entered, release = threading.Event(), threading.Event()
-        real = auth_settings.lock_row
-
-        def held():
-            if threading.current_thread().name == "held-delete":
-                entered.set()
-                release.wait(WAIT_TIMEOUT)
-            return real()
-
-        patcher = mock.patch.object(auth_settings, "lock_row", side_effect=held)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        entered, release = self.hold_at_lock("held-delete")
         client = self.admin_client
         worker = Worker(lambda: client.delete(f"{PROVIDERS}{self.p.pk}/"), "held-delete")
         try:

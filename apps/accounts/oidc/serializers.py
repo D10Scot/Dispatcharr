@@ -296,6 +296,16 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
             # A new secret never inherits the old one's expiry date.
             data.setdefault("client_secret_expires_at", None)
         changes = {k: v for k, v in data.items() if getattr(instance, k) != v}
+        # The columns this request owns: what it changed against the instance it loaded, and
+        # what it sent explicitly (a value re-sent equal to a stale instance still counts, such
+        # as enabled=false). validate() fills the Entra columns from the pre-lock instance on
+        # every PATCH; unsent and unchanged, they are not this request's to write back.
+        sent = set(getattr(self, "initial_data", None) or ())
+        if "client_secret" in sent:
+            sent |= {"client_secret_encrypted", "client_secret_expires_at"}
+        if "entra_tenant_id" in sent:
+            sent.add("issuer")
+        owned = set(changes) | (sent & set(data))
         # Spec 5.5: a write that sets enabled to false takes the auth_settings lock, as does a
         # slug or kind change (spec 3.6). Any other edit, enabling included, takes none.
         needs_lock = data.get("enabled") is False or bool({"slug", "kind"} & set(changes))
@@ -310,7 +320,7 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
                 current = OIDCProvider.objects.filter(pk=instance.pk).first()
                 if current is None:
                     raise CodedError("not_found", status_code=404)
-                changes = {k: v for k, v in data.items() if getattr(current, k) != v}
+                changes = {k: data[k] for k in owned if getattr(current, k) != data[k]}
                 if current.enabled and changes.get("enabled") is False:
                     reasons = guard.evaluate(
                         password_login_enabled=values["password_login_enabled"],
