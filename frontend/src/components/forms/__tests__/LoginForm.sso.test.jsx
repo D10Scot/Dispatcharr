@@ -78,6 +78,7 @@ describe('LoginForm single sign-on', () => {
   it.each([
     ['client_auth_failed', /rejected this application/i],
     ['last_admin', /last active administrator/i],
+    ['ui_access_denied', /Streamer account and cannot log into the web UI/i],
   ])('renders fixed copy for sso_error=%s', async (code, copy) => {
     window.history.pushState({}, '', `/login?sso_error=${code}`);
     API.getAuthConfig.mockResolvedValue(config());

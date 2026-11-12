@@ -95,6 +95,8 @@ export const SSO_ERROR_COPY = {
   sso_unavailable:
     'Single sign-on is temporarily unavailable. Try again shortly.',
   sso_not_configured: 'Single sign-on is not configured on this server.',
+  ui_access_denied:
+    'This account is a Streamer account and cannot log into the web UI. Your M3U and stream URLs still work. Contact an admin to upgrade your account level.',
   exchange_failed:
     'Sign-in could not be completed after the identity provider returned. Start again.',
 };
@@ -292,7 +294,10 @@ export const buildProviderPayload = ({
     prompt_select_account: values.prompt_select_account,
     mappings: values.mappings
       .filter((m) => m.value.trim() !== '')
-      .map((m) => ({ value: m.value, user_level: Number(m.user_level) })),
+      .map((m) => ({
+        value: m.value.trim(),
+        user_level: Number(m.user_level),
+      })),
   };
   if (!provider) payload.kind = values.kind;
   if (values.kind === 'entra') {

@@ -35,7 +35,11 @@ import API from './api';
 import { Notifications } from '@mantine/notifications';
 import M3URefreshNotification from './components/M3URefreshNotification';
 import 'allotment/dist/style.css';
-import { SSO_LANDING_PATH } from './utils/sso/ssoUtils';
+import {
+  DEFAULT_ROUTE,
+  SSO_LANDING_PATH,
+  ssoErrorMessage,
+} from './utils/sso/ssoUtils';
 import { showNotification } from './utils/notificationUtils';
 
 const drawerWidth = 240;
@@ -113,6 +117,13 @@ const App = () => {
       }
     };
 
+    // Read before any await: once initData flips the store, the router's
+    // wildcard redirect moves the URL away from /login under our feet.
+    const landedCode =
+      window.location.pathname === '/login'
+        ? new URLSearchParams(window.location.search).get('sso_error')
+        : null;
+
     const checkAuth = async () => {
       try {
         // The SSO handoff runs BEFORE any refresh: a stale password pair would
@@ -125,7 +136,22 @@ const App = () => {
             return;
           }
           if (await initializeAuth()) {
-            await initData();
+            try {
+              await initData();
+            } catch (error) {
+              // Same cases the password login handles: a Streamer cannot use
+              // the web UI; anything else is a failed bootstrap. Never leave
+              // the user on the loader.
+              useAuthStore.getState().clearSession();
+              goTo(
+                `/login?sso_error=${
+                  error?.message === 'Unauthorized'
+                    ? 'ui_access_denied'
+                    : 'exchange_failed'
+                }`
+              );
+              return;
+            }
             if (handoff.intent === 'link') {
               showNotification({
                 title: 'Single sign-on',
@@ -145,6 +171,18 @@ const App = () => {
         if (loggedIn) {
           await initData();
           // Logos are now loaded at the end of initData, no need for background loading
+          // A refused link attempt comes back as /login?sso_error=...: the user is
+          // still signed in, so the login page never mounts. Show the fixed copy
+          // for the code (unknown codes get generic text, never the raw value),
+          // drop the parameter and continue to the normal landing page.
+          if (landedCode !== null) {
+            showNotification({
+              title: 'Single sign-on',
+              message: ssoErrorMessage(landedCode),
+              color: 'red',
+            });
+            goTo(DEFAULT_ROUTE);
+          }
         } else {
           await logout();
         }

@@ -10,6 +10,9 @@ const SsoIdentities = ({ userId, isAdmin, isSelf }) => {
   const [identities, setIdentities] = useState([]);
   const [providers, setProviders] = useState([]);
   const [message, setMessage] = useState('');
+  // The identity or provider slug awaiting a second click.
+  const [confirmUnlink, setConfirmUnlink] = useState(null);
+  const [confirmLink, setConfirmLink] = useState(null);
 
   const load = useCallback(async () => {
     if (isAdmin) {
@@ -38,6 +41,7 @@ const SsoIdentities = ({ userId, isAdmin, isSelf }) => {
     setMessage('');
     try {
       await API.deleteOidcIdentity(identity.id);
+      setConfirmUnlink(null);
       await load();
     } catch (error) {
       setMessage(adminErrorLines(error).join(' '));
@@ -48,7 +52,9 @@ const SsoIdentities = ({ userId, isAdmin, isSelf }) => {
     setMessage('');
     try {
       const { authorize_url: url } = await API.startSsoLink(slug, '/users');
-      if (typeof url === 'string' && url) window.location.assign(url);
+      if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
+        window.location.assign(url);
+      }
     } catch (error) {
       setMessage(
         error?.body?.code === 'sso_not_configured'
@@ -75,29 +81,80 @@ const SsoIdentities = ({ userId, isAdmin, isSelf }) => {
                   identity.subject
                 }`}
               </Text>
-              <Button
-                size="xs"
-                variant="default"
-                color="red"
-                onClick={() => unlink(identity)}
-                data-testid={`sso-unlink-${identity.id}`}
-              >
-                Unlink
-              </Button>
+              {confirmUnlink === identity.id ? (
+                <Group gap="xs">
+                  <Text size="xs" c="dimmed">
+                    This person's next single sign-on sign-in will create a new
+                    account with no history.
+                  </Text>
+                  <Button
+                    size="xs"
+                    color="red"
+                    onClick={() => unlink(identity)}
+                    data-testid={`sso-unlink-confirm-${identity.id}`}
+                  >
+                    Confirm unlink
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() => setConfirmUnlink(null)}
+                  >
+                    Cancel
+                  </Button>
+                </Group>
+              ) : (
+                <Button
+                  size="xs"
+                  variant="default"
+                  color="red"
+                  onClick={() => setConfirmUnlink(identity.id)}
+                  data-testid={`sso-unlink-${identity.id}`}
+                >
+                  Unlink
+                </Button>
+              )}
             </Group>
           ))
         ))}
       {isSelf &&
         providers.map((provider) => (
-          <Button
-            key={provider.slug}
-            size="xs"
-            variant="default"
-            onClick={() => link(provider.slug)}
-            data-testid={`sso-link-${provider.slug}`}
-          >
-            {`Link SSO account (${provider.display_name})`}
-          </Button>
+          <Stack key={provider.slug} gap="xs">
+            <Button
+              size="xs"
+              variant="default"
+              onClick={() => setConfirmLink(provider.slug)}
+              data-testid={`sso-link-${provider.slug}`}
+            >
+              {`Link SSO account (${provider.display_name})`}
+            </Button>
+            {confirmLink === provider.slug && (
+              <Stack gap="xs" data-testid="sso-link-warning">
+                <Text size="sm">
+                  After linking, this provider's role mapping sets your level on
+                  every sign-in through it. If it maps you to a lower level than
+                  you have now (for example, an administrator mapped to
+                  Standard), you will be demoted.
+                </Text>
+                <Group gap="xs">
+                  <Button
+                    size="xs"
+                    onClick={() => link(provider.slug)}
+                    data-testid="sso-link-confirm"
+                  >
+                    Continue to the provider
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() => setConfirmLink(null)}
+                  >
+                    Cancel
+                  </Button>
+                </Group>
+              </Stack>
+            )}
+          </Stack>
         ))}
       {message && (
         <Text size="sm" c="red" role="alert">

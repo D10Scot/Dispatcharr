@@ -58,6 +58,9 @@ const OidcProviderForm = ({
   const [secretExpiry, setSecretExpiry] = useState(
     initialProvider?.client_secret_expires_at ?? ''
   );
+  // A new secret never inherits the old one's expiry date (spec 5.2): typing a
+  // secret clears the date unless the administrator has set one for it.
+  const [expiryTouched, setExpiryTouched] = useState(false);
   const [saving, setSaving] = useState(false);
   const [lines, setLines] = useState([]);
   const [testResult, setTestResult] = useState(null);
@@ -94,6 +97,7 @@ const OidcProviderForm = ({
         ? await API.updateOidcProvider(provider.id, payload)
         : await API.createOidcProvider(payload);
       setSecret('');
+      setExpiryTouched(false);
       setProvider(saved);
       onSaved?.(saved);
     } catch (error) {
@@ -223,11 +227,17 @@ const OidcProviderForm = ({
           credential={credential}
           onCredentialChange={setCredential}
           secret={secret}
-          onSecretChange={setSecret}
+          onSecretChange={(value) => {
+            setSecret(value);
+            if (!expiryTouched) setSecretExpiry('');
+          }}
           authMethod={authMethod}
           onAuthMethodChange={setAuthMethod}
           secretExpiry={secretExpiry}
-          onSecretExpiryChange={setSecretExpiry}
+          onSecretExpiryChange={(value) => {
+            setExpiryTouched(true);
+            setSecretExpiry(value);
+          }}
           onReload={reload}
         />
 
@@ -329,8 +339,8 @@ const OidcProviderForm = ({
 
         {lines.length > 0 && (
           <Alert color="red" variant="light" data-testid="sso-provider-error">
-            {lines.map((l) => (
-              <div key={l}>{l}</div>
+            {lines.map((l, i) => (
+              <div key={`${i}-${l}`}>{l}</div>
             ))}
           </Alert>
         )}
@@ -346,7 +356,7 @@ const OidcProviderForm = ({
               : [
                   ...(testResult.error ?? []),
                   ...(testResult.problems ?? []).map(testProblemMessage),
-                ].map((l) => <div key={l}>{l}</div>)}
+                ].map((l, i) => <div key={`${i}-${l}`}>{l}</div>)}
           </Alert>
         )}
 

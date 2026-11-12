@@ -159,3 +159,38 @@ describe('buildProviderPayload', () => {
     ]);
   });
 });
+
+describe('round 1 additions', () => {
+  it('ssoStartUrl drops an off-origin next', () => {
+    expect(ssoStartUrl('entra', '//evil.example')).toBe(
+      '/api/accounts/oidc/entra/start/'
+    );
+  });
+  it('a Streamer sign-in has the same copy the password login shows', () => {
+    expect(ssoErrorMessage('ui_access_denied')).toMatch(
+      /Streamer account and cannot log into the web UI/
+    );
+  });
+  it('provider_unavailable does not claim the provider is down', () => {
+    const copy = ssoErrorMessage('provider_unavailable');
+    expect(copy).not.toMatch(
+      /could not be reached|unreachable|is down|not reachable/i
+    );
+    expect(copy).toMatch(/could not be completed/i);
+  });
+  it('mapping values are trimmed', () => {
+    const values = {
+      ...emptyProviderValues('generic'),
+      mappings: [{ value: ' Mino.Admin ', user_level: '10' }],
+    };
+    const payload = buildProviderPayload({
+      values,
+      provider: null,
+      credential: 'certificate',
+      secret: '',
+      authMethod: 'client_secret_basic',
+      secretExpiry: '',
+    });
+    expect(payload.mappings).toEqual([{ value: 'Mino.Admin', user_level: 10 }]);
+  });
+});

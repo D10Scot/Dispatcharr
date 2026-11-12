@@ -3,6 +3,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import App from '../App';
 import useAuthStore from '../store/auth';
 import API from '../api';
+import { showNotification } from '../utils/notificationUtils';
 
 const stub = vi.hoisted(() => (name) => ({
   default: () => <div data-testid={name} />,
@@ -26,6 +27,7 @@ vi.mock('../components/M3URefreshNotification', () => stub('x13'));
 vi.mock('../WebSocket', () => ({
   WebsocketProvider: ({ children }) => <>{children}</>,
 }));
+vi.mock('../utils/notificationUtils', () => ({ showNotification: vi.fn() }));
 vi.mock('../api', () => ({
   default: {
     fetchSuperUser: vi.fn(),
@@ -136,5 +138,95 @@ describe('App SSO handoff', () => {
     await waitFor(() =>
       expect(screen.getByTestId('users-page')).toBeInTheDocument()
     );
+  });
+
+  it.each([
+    ['a Streamer', 'Unauthorized', 'ui_access_denied'],
+    ['a bootstrap failure', 'boom', 'exchange_failed'],
+  ])(
+    'ends on the login page, not the loader, for %s after a good exchange',
+    async (_n, message, code) => {
+      API.exchangeSsoCode.mockResolvedValue({
+        access: jwt(),
+        refresh: 'new-refresh',
+        next: '/',
+        intent: 'login',
+      });
+      initData.mockRejectedValue(new Error(message));
+
+      render(<App />);
+
+      await waitFor(() => expect(window.location.pathname).toBe('/login'));
+      expect(window.location.search).toBe(`?sso_error=${code}`);
+      expect(screen.getByTestId('login-page')).toBeInTheDocument();
+      expect(
+        screen.queryByTestId('sso-handoff-loader')
+      ).not.toBeInTheDocument();
+      expect(localStorage.getItem('refreshToken')).toBeNull();
+    }
+  );
+});
+
+describe('App refused link attempt', () => {
+  let initData;
+
+  beforeEach(() => {
+    localStorage.clear();
+    vi.clearAllMocks();
+    API.fetchSuperUser.mockResolvedValue({ superuser_exists: true });
+    localStorage.setItem('refreshToken', 'good-refresh');
+    API.refreshToken.mockResolvedValue({ access: jwt() });
+    initData = vi.fn().mockResolvedValue();
+    useAuthStore.setState({
+      isAuthenticated: false,
+      isInitialized: false,
+      isInitializing: false,
+      initData: vi.fn(async () => {
+        await initData();
+        useAuthStore.setState({ isAuthenticated: true, isInitialized: true });
+      }),
+    });
+  });
+
+  afterEach(() => {
+    window.history.pushState({}, '', '/');
+  });
+
+  it('shows the fixed copy for a known code, strips it and lands on the app', async () => {
+    window.history.pushState({}, '', '/login?sso_error=link_conflict');
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('channels-page')).toBeInTheDocument()
+    );
+    expect(showNotification).toHaveBeenCalledTimes(1);
+    expect(showNotification.mock.calls[0][0].message).toMatch(
+      /already linked to a different user/
+    );
+    expect(window.location.search).toBe('');
+  });
+
+  it('shows generic text for an unknown code, never the raw value', async () => {
+    window.history.pushState({}, '', '/login?sso_error=%3Cb%3Eraw%3C%2Fb%3E');
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('channels-page')).toBeInTheDocument()
+    );
+    const { message } = showNotification.mock.calls[0][0];
+    expect(message).toMatch(/could not complete/i);
+    expect(message).not.toContain('raw');
+    expect(window.location.search).toBe('');
+  });
+
+  it('shows nothing when there is no sso_error', async () => {
+    window.history.pushState({}, '', '/login');
+    render(<App />);
+    await waitFor(() =>
+      expect(screen.getByTestId('channels-page')).toBeInTheDocument()
+    );
+    expect(showNotification).not.toHaveBeenCalled();
   });
 });

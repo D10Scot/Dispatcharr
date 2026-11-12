@@ -22,13 +22,13 @@ import logo from '../../assets/logo.png';
 import { showNotification } from '../../utils/notificationUtils.js';
 import API from '../../api';
 import SsoSignIn from './SsoSignIn';
-import { safeNextPath } from '../../utils/sso/ssoUtils';
 
 const readLoginParams = () => {
   const params = new URLSearchParams(window.location.search);
   return {
     ssoError: params.get('sso_error'),
-    next: safeNextPath(params.get('next')),
+    // Validated where it is used (ssoStartUrl), never taken raw into a URL.
+    next: params.get('next'),
   };
 };
 

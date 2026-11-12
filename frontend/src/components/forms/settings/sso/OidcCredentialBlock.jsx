@@ -256,8 +256,8 @@ const OidcCredentialBlock = ({
       )}
       {lines.length > 0 && (
         <Alert color="red" variant="light" data-testid="sso-credential-error">
-          {lines.map((l) => (
-            <div key={l}>{l}</div>
+          {lines.map((l, i) => (
+            <div key={`${i}-${l}`}>{l}</div>
           ))}
         </Alert>
       )}

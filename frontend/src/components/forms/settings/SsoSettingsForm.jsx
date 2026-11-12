@@ -21,8 +21,8 @@ import {
 const ErrorLines = ({ lines, testId }) =>
   lines.length > 0 ? (
     <Alert color="red" variant="light" data-testid={testId}>
-      {lines.map((l) => (
-        <div key={l}>{l}</div>
+      {lines.map((l, i) => (
+        <div key={`${i}-${l}`}>{l}</div>
       ))}
     </Alert>
   ) : null;
@@ -38,6 +38,7 @@ const SsoSettingsForm = () => {
   const [listLines, setListLines] = useState([]);
   // null: list view. { provider, kind }: the editor.
   const [editing, setEditing] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   const load = useCallback(async () => {
     try {
@@ -79,6 +80,7 @@ const SsoSettingsForm = () => {
     setListLines([]);
     try {
       await API.deleteOidcProvider(provider.id);
+      setConfirmDelete(null);
       await load();
     } catch (error) {
       setListLines(adminErrorLines(error));
@@ -227,14 +229,35 @@ const SsoSettingsForm = () => {
                       >
                         Edit
                       </Button>
-                      <Button
-                        size="xs"
-                        variant="default"
-                        color="red"
-                        onClick={() => removeProvider(p)}
-                      >
-                        Delete
-                      </Button>
+                      {confirmDelete === p.id ? (
+                        <>
+                          <Button
+                            size="xs"
+                            color="red"
+                            onClick={() => removeProvider(p)}
+                            data-testid={`sso-delete-confirm-${p.slug}`}
+                          >
+                            Confirm delete
+                          </Button>
+                          <Button
+                            size="xs"
+                            variant="subtle"
+                            onClick={() => setConfirmDelete(null)}
+                          >
+                            Cancel
+                          </Button>
+                        </>
+                      ) : (
+                        <Button
+                          size="xs"
+                          variant="default"
+                          color="red"
+                          onClick={() => setConfirmDelete(p.id)}
+                          data-testid={`sso-delete-${p.slug}`}
+                        >
+                          Delete
+                        </Button>
+                      )}
                     </Group>
                   </Table.Td>
                 </Table.Tr>

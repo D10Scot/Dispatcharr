@@ -275,4 +275,89 @@ describe('SsoSettingsForm', () => {
       /must be https/i
     );
   });
+
+  it('typing a new secret does not re-send the old expiry date', async () => {
+    API.updateOidcProvider.mockResolvedValue(provider());
+    await open(provider({ client_secret_expires_at: '2026-12-01' }));
+    expect(screen.getByTestId('sso-secret-expiry')).toHaveValue('2026-12-01');
+
+    await userEvent.type(
+      screen.getByTestId('sso-client-secret'),
+      'fresh-secret'
+    );
+    await userEvent.click(screen.getByTestId('sso-provider-save'));
+
+    await waitFor(() => expect(API.updateOidcProvider).toHaveBeenCalled());
+    const payload = API.updateOidcProvider.mock.calls[0][1];
+    expect(payload.client_secret).toBe('fresh-secret');
+    expect(
+      payload.client_secret_expires_at,
+      'a new secret must not carry the old expiry date'
+    ).toBeNull();
+  });
+
+  it('sends the expiry the administrator sets for a new secret', async () => {
+    API.updateOidcProvider.mockResolvedValue(provider());
+    await open(provider({ client_secret_expires_at: '2026-12-01' }));
+
+    await userEvent.type(
+      screen.getByTestId('sso-client-secret'),
+      'fresh-secret'
+    );
+    await userEvent.clear(screen.getByTestId('sso-secret-expiry'));
+    await userEvent.type(screen.getByTestId('sso-secret-expiry'), '2027-06-30');
+    await userEvent.click(screen.getByTestId('sso-provider-save'));
+
+    await waitFor(() => expect(API.updateOidcProvider).toHaveBeenCalled());
+    expect(
+      API.updateOidcProvider.mock.calls[0][1].client_secret_expires_at
+    ).toBe('2027-06-30');
+  });
+
+  it('clears the secret field after a save, so a second save sends none', async () => {
+    API.updateOidcProvider.mockResolvedValue(provider());
+    await open(provider());
+
+    await userEvent.type(
+      screen.getByTestId('sso-client-secret'),
+      'typed-value'
+    );
+    await userEvent.click(screen.getByTestId('sso-provider-save'));
+    await waitFor(() =>
+      expect(API.updateOidcProvider).toHaveBeenCalledTimes(1)
+    );
+
+    await waitFor(() =>
+      expect(
+        screen.getByTestId('sso-client-secret'),
+        'the secret field must be emptied after a save'
+      ).toHaveValue('')
+    );
+    await userEvent.click(screen.getByTestId('sso-provider-save'));
+    await waitFor(() =>
+      expect(API.updateOidcProvider).toHaveBeenCalledTimes(2)
+    );
+    expect(
+      Object.hasOwn(API.updateOidcProvider.mock.calls[1][1], 'client_secret')
+    ).toBe(false);
+  });
+
+  it('the secret field is a password input', async () => {
+    await open(provider());
+    expect(screen.getByTestId('sso-client-secret')).toHaveAttribute(
+      'type',
+      'password'
+    );
+  });
+
+  it('deleting a provider needs a second click', async () => {
+    API.getOidcProviders.mockResolvedValue([provider()]);
+    API.deleteOidcProvider.mockResolvedValue('');
+    wrap(<SsoSettingsForm />);
+
+    await userEvent.click(await screen.findByTestId('sso-delete-entra'));
+    expect(API.deleteOidcProvider).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByTestId('sso-delete-confirm-entra'));
+    expect(API.deleteOidcProvider).toHaveBeenCalledWith(7);
+  });
 });
