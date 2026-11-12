@@ -3,6 +3,7 @@ import logging
 import traceback
 import json
 
+from dispatcharr.observability.redaction import redact_exception, redact_text
 from dispatcharr.utils import redact_url
 
 logger = logging.getLogger(__name__)
@@ -84,14 +85,16 @@ class Client:
             # Check if response is empty
             if not response.content:
                 error_msg = f"XC API returned empty response from {url}"
-                logger.error(error_msg)
+                logger.error(f"XC API returned empty response from {redact_url(url)}")
                 raise ValueError(error_msg)
 
             # Check for common blocking responses before trying to parse JSON
             response_text = response.text.strip()
             if response_text.lower() in ['blocked', 'forbidden', 'access denied', 'unauthorized']:
                 error_msg = f"XC API request blocked by server from {url}. Response: {response_text}"
-                logger.error(error_msg)
+                logger.error(
+                    f"XC API request blocked by server from {redact_url(url)}. Response: {response_text}"
+                )
                 logger.error(f"This may indicate IP blocking, User-Agent filtering, or rate limiting")
                 raise ValueError(error_msg)
 
@@ -99,8 +102,8 @@ class Client:
                 data = response.json()
             except requests.exceptions.JSONDecodeError as json_err:
                 error_msg = f"XC API returned invalid JSON from {url}. Response: {response.text[:1000]}"
-                logger.error(error_msg)
-                logger.error(f"JSON decode error: {str(json_err)}")
+                logger.error(f"XC API returned invalid JSON from {redact_url(url)}")
+                logger.error(f"JSON decode error: {redact_exception(json_err)}")
 
                 # Check if it looks like an HTML error page
                 if response_text.startswith('<'):
@@ -116,19 +119,18 @@ class Client:
 
             return data
         except requests.RequestException as e:
-            error_msg = f"XC API Request failed: {str(e)}"
-            logger.error(error_msg)
+            logger.error(f"XC API Request failed: {redact_exception(e)}")
             logger.error(
                 f"Request details: URL={redact_url(url)}, Params={sorted(params or {})}"
             )
             raise
         except ValueError as e:
             # This could be from JSON parsing or our explicit raises
-            logger.error(f"XC API Invalid response: {str(e)}")
+            logger.error(f"XC API Invalid response: {redact_text(str(e))}")
             raise
         except Exception as e:
-            logger.error(f"XC API Unexpected error: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"XC API Unexpected error: {redact_text(str(e))}")
+            logger.error(redact_text(traceback.format_exc()))
             raise
 
     def authenticate(self):

@@ -114,6 +114,56 @@ class XtreamClientLoggingTests(SimpleTestCase):
                 )
         assert_no_secret(self, logs.records)
 
+    ENDPOINT = "player_api.php?username=fakeuser&password=fakepass"
+    CRED_URL = "http://prov.example.com/player_api.php?username=fakeuser&password=fakepass"
+
+    def run_failing(self, expected, **session_get):
+        client = self.make_client()
+        client.session.get = MagicMock(**session_get)
+        with capture(xtream_codes.logger) as logs:
+            with self.assertRaises(expected):
+                client._make_request(self.ENDPOINT, dict(self.PARAMS))
+        assert_no_secret(self, logs.records)
+
+    def test_request_exception_text_with_the_full_url_is_not_logged(self):
+        # requests quotes the full request URL, query string included.
+        self.run_failing(
+            requests.ConnectionError,
+            side_effect=requests.ConnectionError(
+                f"HTTPConnectionPool: Max retries exceeded with url: {self.CRED_URL}"
+            ),
+        )
+
+    def test_http_error_text_with_the_full_url_is_not_logged(self):
+        response = MagicMock(content=b"x", text="x")
+        response.raise_for_status.side_effect = requests.HTTPError(
+            f"403 Client Error: Forbidden for url: {self.CRED_URL}"
+        )
+        self.run_failing(requests.HTTPError, return_value=response)
+
+    def test_empty_blocked_and_invalid_json_responses_log_no_url_secret(self):
+        empty = MagicMock(content=b"", text="")
+        blocked = MagicMock(content=b"blocked", text="blocked")
+        bad_json = MagicMock(content=b"<html>", text="<html>")
+        bad_json.json.side_effect = requests.exceptions.JSONDecodeError("bad", "<html>", 0)
+        for label, response in (("empty", empty), ("blocked", blocked), ("json", bad_json)):
+            with self.subTest(label):
+                self.run_failing(ValueError, return_value=response)
+
+    def test_unexpected_exception_text_and_traceback_log_no_secret(self):
+        self.run_failing(KeyError, side_effect=KeyError(self.CRED_URL))
+
+    def test_the_raised_error_text_is_unchanged(self):
+        # Logging only: callers still receive the same message.
+        client = self.make_client()
+        client.session.get = MagicMock(return_value=MagicMock(content=b"", text=""))
+        with self.assertRaises(ValueError) as caught:
+            client._make_request("player_api.php", {})
+        self.assertEqual(
+            str(caught.exception),
+            "XC API returned empty response from http://prov.example.com/player_api.php",
+        )
+
 
 class ImageProxyLoggingTests(TestCase):
     URL = "http://fakeuser:fakepass@prov.example.com/logo/1.png"

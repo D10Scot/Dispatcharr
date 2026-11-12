@@ -124,6 +124,11 @@ KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
     does not model at all: `requests` embeds the full URL in its exception
     text, so `logger.error(f"{e}")` around a provider fetch leaks while naming
     nothing the pattern looks for.
+    core/xtream_codes.py logged `f"XC API Request failed: {str(e)}"` that way
+    (and, through error_msg variables, the request URL) until it was found by
+    a separate review, not by this check; it is fixed there and pinned by
+    core/tests/test_credential_logging_url_sites.py. Exception-text detection
+    is deliberately not attempted here.
 
 All three are follow-ups, not gaps to work around with the ignore marker.
 """
