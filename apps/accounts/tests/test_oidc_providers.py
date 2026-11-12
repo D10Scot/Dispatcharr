@@ -1221,8 +1221,10 @@ class SettingsEndpointTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(response.json()["public_base_url"], "https://mino.example.com")
 
-    def test_password_toggle_off_is_refused_unconditionally(self):
-        # Even for an admin, with a provider and with a valid URL in the same request.
+    def test_password_toggle_off_without_an_sso_session_is_refused_by_the_guard(self):
+        # S4 replaced S1's unconditional refusal with the lockout guard (spec 5.5). An admin
+        # with no SSO token, with a provider and with a valid URL in the same request, is
+        # refused on every condition of the rule, and nothing is written.
         make_provider(enabled=True)
         for body in (
             {"password_login_enabled": False},
@@ -1230,7 +1232,13 @@ class SettingsEndpointTests(TestCase):
         ):
             response = self.client.patch(SETTINGS, body, format="json")
             self.assertEqual(response.status_code, 409)
-            self.assertEqual(response.json(), {"code": "password_toggle_unavailable"})
+            self.assertEqual(
+                response.json(),
+                {
+                    "code": "lockout_guard",
+                    "reasons": ["not_sso_session", "provider_not_enabled", "not_admin_at_sign_in"],
+                },
+            )
         values = CoreSettings.get_auth_settings()
         self.assertTrue(values["password_login_enabled"])
         self.assertEqual(values["public_base_url"], "", "the refused request still wrote a URL")

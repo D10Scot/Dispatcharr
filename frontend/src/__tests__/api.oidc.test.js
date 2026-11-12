@@ -2,6 +2,7 @@
 // @vitest-environment-options {"url": "http://localhost:9191/login"}
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import API from '../api';
+import { notifications } from '@mantine/notifications';
 
 vi.mock('@mantine/notifications', () => ({
   notifications: { show: vi.fn() },
@@ -87,5 +88,18 @@ describe('OIDC browser endpoints', () => {
     const [url, options] = fetchMock.mock.calls[0];
     expect(resolved([url]).pathname).toBe('/api/accounts/oidc/providers/');
     expect(options.headers?.Authorization).toBeUndefined();
+  });
+  it('a password login refused while it is off shows fixed copy, never the server text', async () => {
+    notifications.show.mockClear();
+    fetchMock.mockImplementation(() =>
+      json({ code: 'password_login_disabled', detail: 'server text' }, 403)
+    );
+
+    await expect(API.login('u', 'p')).rejects.toMatchObject({ status: 403 });
+
+    expect(notifications.show).toHaveBeenCalledTimes(1);
+    const shown = notifications.show.mock.calls[0][0];
+    expect(shown.message).toMatch(/password sign-in is turned off/i);
+    expect(shown.message).not.toMatch(/server text|password_login_disabled/);
   });
 });

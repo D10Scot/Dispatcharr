@@ -17,11 +17,16 @@ import {
   Anchor,
   Code,
   Checkbox,
+  Alert,
 } from '@mantine/core';
 import logo from '../../assets/logo.png';
 import { showNotification } from '../../utils/notificationUtils.js';
 import API from '../../api';
 import SsoSignIn from './SsoSignIn';
+import {
+  CHANGEPASSWORD_COMMAND,
+  RECOVERY_DOC_URL,
+} from '../../utils/sso/ssoUtils';
 
 const readLoginParams = () => {
   const params = new URLSearchParams(window.location.search);
@@ -119,6 +124,7 @@ const LoginForm = () => {
 
   const providers = authConfig?.providers ?? [];
   const showPasswordForm = authConfig?.password_login_enabled !== false;
+  const passwordForced = authConfig?.password_login_forced === true;
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -212,6 +218,33 @@ const LoginForm = () => {
           </Text>
           <Divider style={{ width: '100%' }} />
         </Stack>
+        {passwordForced && (
+          <Alert
+            color="orange"
+            variant="light"
+            mb="md"
+            data-testid="password-login-forced"
+          >
+            Password sign-in is on because the server was started with
+            MINO_PASSWORD_LOGIN_FORCE=1, a recovery override. An operator should
+            remove it once recovery is done.
+          </Alert>
+        )}
+        {!showPasswordForm && (
+          <Text size="sm" c="dimmed" mb="md" data-testid="password-login-off">
+            Password sign-in is turned off. If you cannot sign in with a
+            provider, an operator with shell access can turn it back on:{' '}
+            <Anchor
+              href={RECOVERY_DOC_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              size="sm"
+            >
+              recovery procedure
+            </Anchor>
+            .
+          </Text>
+        )}
         {(providers.length > 0 || ssoError) && (
           <Stack mb={showPasswordForm ? 'md' : 0}>
             <SsoSignIn providers={providers} errorCode={ssoError} next={next} />
@@ -337,9 +370,8 @@ const LoginForm = () => {
             <Text weight={500} size="sm" mb={8}>
               If running with Docker:
             </Text>
-            <Code block>
-              docker exec &lt;container_name&gt; python manage.py changepassword
-              &lt;username&gt;
+            <Code block data-testid="forgot-password-command">
+              {CHANGEPASSWORD_COMMAND}
             </Code>
           </div>
           <div>
@@ -349,9 +381,20 @@ const LoginForm = () => {
             <Code block>python manage.py changepassword &lt;username&gt;</Code>
           </div>
           <Text size="sm" color="dimmed">
-            The command will prompt for a new password. Replace
-            <code>&lt;container_name&gt;</code> with your Docker container name
-            and <code>&lt;username&gt;</code> with the account username.
+            The command prompts for a new password. Replace{' '}
+            <code>&lt;container&gt;</code> with your Docker container name and{' '}
+            <code>&lt;username&gt;</code> with the account username. It runs
+            through the login shell so it reaches the same database as the
+            server. If password sign-in is turned off, see the{' '}
+            <Anchor
+              href={RECOVERY_DOC_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              size="sm"
+            >
+              recovery procedure
+            </Anchor>
+            .
           </Text>
           <Text size="sm" color="dimmed" italic>
             Please contact your system administrator to perform a password

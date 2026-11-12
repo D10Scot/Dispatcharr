@@ -3,6 +3,7 @@ import {
   Alert,
   Badge,
   Button,
+  Anchor,
   Group,
   Loader,
   Stack,
@@ -16,6 +17,7 @@ import OidcProviderForm from './sso/OidcProviderForm';
 import {
   adminErrorLines,
   credentialWarningMessage,
+  RECOVERY_DOC_URL,
 } from '../../../utils/sso/ssoUtils';
 
 const ErrorLines = ({ lines, testId }) =>
@@ -39,6 +41,9 @@ const SsoSettingsForm = () => {
   // null: list view. { provider, kind }: the editor.
   const [editing, setEditing] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
+  const [passwordLines, setPasswordLines] = useState([]);
+  const [passwordSaving, setPasswordSaving] = useState(false);
+  const [forced, setForced] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -60,6 +65,35 @@ const SsoSettingsForm = () => {
   useEffect(() => {
     load();
   }, [load]);
+
+  // The break-glass override is reported only by the public login-page config
+  // (the settings body is the stored value). A failure here shows no banner.
+  useEffect(() => {
+    let live = true;
+    Promise.resolve(API.getAuthConfig())
+      .then((config) => {
+        if (live) setForced(config?.password_login_forced === true);
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, []);
+
+  const togglePasswordLogin = async (enabled) => {
+    setPasswordLines([]);
+    setPasswordSaving(true);
+    try {
+      const updated = await API.updateAuthSettings({
+        password_login_enabled: enabled,
+      });
+      setSettings(updated);
+    } catch (error) {
+      setPasswordLines(adminErrorLines(error));
+    } finally {
+      setPasswordSaving(false);
+    }
+  };
 
   const saveBaseUrl = async () => {
     setBaseLines([]);
@@ -279,20 +313,42 @@ const SsoSettingsForm = () => {
       </Stack>
 
       <Stack gap="xs">
-        {/* Display only. The working "off" arrives with the lockout guard and
-            break-glass (spec S4); until then the server refuses it, so the UI
-            does not offer it. */}
+        {forced && (
+          <Alert
+            color="orange"
+            variant="light"
+            data-testid="sso-password-forced"
+          >
+            MINO_PASSWORD_LOGIN_FORCE is on, so password sign-in is allowed
+            whatever this switch says. Remove the variable and restart once
+            recovery is done.
+          </Alert>
+        )}
         <Switch
           label="Password sign-in"
           checked={passwordEnabled}
-          disabled
-          readOnly
+          disabled={passwordSaving}
+          onChange={(e) => togglePasswordLogin(e.currentTarget.checked)}
           data-testid="sso-password-toggle"
         />
         <Text size="xs" c="dimmed">
-          Password sign-in cannot be turned off in this version. While it is off
-          in a later version, a wrong provider edit can lock everyone out.
+          Turning password sign-in off needs a single sign-on session that
+          signed you in as Admin through an enabled provider. While it is off,
+          the last enabled provider cannot be disabled or deleted, and API keys
+          keep working. If single sign-on breaks, an operator with shell access
+          can switch password sign-in back on:{' '}
+          <Anchor
+            href={RECOVERY_DOC_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            size="xs"
+            data-testid="sso-recovery-link"
+          >
+            recovery procedure
+          </Anchor>
+          .
         </Text>
+        <ErrorLines lines={passwordLines} testId="sso-password-error" />
       </Stack>
     </Stack>
   );

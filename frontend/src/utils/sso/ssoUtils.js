@@ -172,8 +172,6 @@ export const testProblemMessage = (code) =>
 
 /** Fixed copy for a coded admin-API error, or null when there is none. */
 const ADMIN_ERROR_COPY = {
-  password_toggle_unavailable:
-    'Turning password sign-in off is not available in this version.',
   pending_certificate_changed:
     'Another administrator generated a newer certificate. The block has been reloaded: check the thumbprint and activate again.',
   public_base_url_insecure:
@@ -228,8 +226,20 @@ export const credentialWarningMessage = (warning) => {
     : `The credential for the single sign-on provider “${slug}” expires in ${days} day${days === 1 ? '' : 's'}.`;
 };
 
-export const ENTRA_SETUP_DOC_URL =
-  'https://github.com/D10Scot/Dispatcharr/blob/main/docs/sso-entra-setup.md';
+// One base for every operator page, so the repository name appears once.
+const DOCS_BASE = 'https://github.com/D10Scot/Dispatcharr/blob/main/docs/';
+
+export const ENTRA_SETUP_DOC_URL = `${DOCS_BASE}sso-entra-setup.md`;
+
+export const RECOVERY_DOC_URL = `${DOCS_BASE}sso-recovery.md`;
+
+// Spec 5.3: the fixed copy for a password sign-in refused while it is off.
+export const PASSWORD_LOGIN_DISABLED_COPY =
+  'Password sign-in is turned off on this server. Sign in with a provider instead.';
+
+// Spec 5.6: an operator with shell access recovers through the login shell.
+export const CHANGEPASSWORD_COMMAND =
+  "docker exec -it <container> su - dispatch -c 'cd /app && python manage.py changepassword <username>'";
 
 export const MAPPING_LEVELS = [
   { value: '0', label: 'Streamer' },
@@ -308,4 +318,62 @@ export const buildProviderPayload = ({ values, provider, credentialState }) => {
     Object.assign(payload, credentialPayload(credentialState, values.kind));
   }
   return payload;
+};
+
+const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/**
+ * The body for an EDIT: only the fields the administrator changed from
+ * `baseline` (the form values of the provider as the server last returned
+ * it), plus the credential keys the credential block produces. The provider
+ * PATCH carries no concurrency check (`version` is read-only), so a field sent
+ * unchanged would overwrite a newer value written meanwhile, by another
+ * administrator or by the provider list's enable switch: a credential save
+ * from a form opened while the provider was disabled would quietly disable it
+ * again. `client_auth_method` follows the same rule: it decides which
+ * credential the provider uses, so it is sent only when it differs from the
+ * provider as last loaded, never re-sent from a form opened before another
+ * administrator activated a certificate. A new provider sends everything.
+ */
+export const providerEditPayload = ({
+  values,
+  baseline,
+  provider,
+  credentialState,
+}) => {
+  const full = buildProviderPayload({ values, provider, credentialState });
+  if (!provider || !baseline) return full;
+  const base = buildProviderPayload({
+    values: baseline,
+    provider,
+    credentialState: null,
+  });
+  const out = {};
+  for (const [key, value] of Object.entries(full)) {
+    if (!Object.hasOwn(base, key) || !sameValue(base[key], value)) {
+      out[key] = value;
+    }
+  }
+  const loaded = credentialState?.provider ?? provider;
+  if (
+    Object.hasOwn(out, 'client_auth_method') &&
+    out.client_auth_method === loaded.client_auth_method
+  ) {
+    delete out.client_auth_method;
+  }
+  return out;
+};
+
+/**
+ * Values after a reload: every field the administrator has not touched (it
+ * still equals `baseline`) takes the fresh server value; a field they edited
+ * keeps their edit.
+ */
+export const rebaseProviderValues = (values, baseline, fresh) => {
+  const freshValues = providerToValues(fresh);
+  const out = { ...values };
+  for (const key of Object.keys(freshValues)) {
+    if (sameValue(values[key], baseline?.[key])) out[key] = freshValues[key];
+  }
+  return out;
 };

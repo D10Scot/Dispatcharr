@@ -262,6 +262,19 @@ POSTGRES_SSL_KEY = os.environ.get("POSTGRES_SSL_KEY", "")
 # cannot be enabled from the web.
 OIDC_ALLOW_HTTP = os.environ.get("MINO_OIDC_ALLOW_HTTP") == "1"
 
+# Break-glass (SSO spec 5.6): MINO_PASSWORD_LOGIN_FORCE=1 turns password login on whatever the
+# database says. Exactly "1"; any other value is ignored with one WARNING. Read once here from
+# the deployment's environment, so nothing reachable from the web can set it.
+_password_login_force_raw = os.environ.get("MINO_PASSWORD_LOGIN_FORCE")
+PASSWORD_LOGIN_FORCE = _password_login_force_raw == "1"
+if _password_login_force_raw is not None and not PASSWORD_LOGIN_FORCE:
+    import logging as _logging
+
+    # The value is not echoed: it is the operator's, and only "1" means anything.
+    _logging.getLogger("mino.settings").warning(
+        "MINO_PASSWORD_LOGIN_FORCE is set to a value other than 1 and is ignored"
+    )
+
 # True only when the LIVE database is SQLite (DB_ENGINE=sqlite). Writes that depend on
 # the PostgreSQL advisory-lock floor (apps/accounts/admin_floor.py) are refused with
 # 400 requires_postgresql when it is set. settings_test.py resets it to False.

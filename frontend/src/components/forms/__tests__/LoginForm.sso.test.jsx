@@ -153,4 +153,70 @@ describe('LoginForm single sign-on', () => {
     expect(assigned).toHaveBeenCalledWith('/api/accounts/oidc/entra/start/');
     vi.unstubAllGlobals();
   });
+  it('a password-off login page explains it and links the recovery procedure', async () => {
+    API.getAuthConfig.mockResolvedValue(
+      config({ password_login_enabled: false })
+    );
+    renderLogin();
+
+    const note = await screen.findByTestId('password-login-off');
+    expect(note).toHaveTextContent(/password sign-in is turned off/i);
+    expect(note.querySelector('a')).toHaveAttribute(
+      'href',
+      expect.stringMatching(/docs\/sso-recovery\.md$/)
+    );
+  });
+
+  it('shows no password-off note while password sign-in is on', async () => {
+    API.getAuthConfig.mockResolvedValue(config());
+    renderLogin();
+
+    await screen.findByTestId('sso-login-entra');
+    expect(screen.queryByTestId('password-login-off')).toBeNull();
+    expect(screen.queryByTestId('password-login-forced')).toBeNull();
+  });
+
+  it('shows a banner while the break-glass override is on', async () => {
+    API.getAuthConfig.mockResolvedValue(
+      config({ password_login_enabled: true, password_login_forced: true })
+    );
+    renderLogin();
+
+    expect(
+      await screen.findByTestId('password-login-forced')
+    ).toHaveTextContent(/MINO_PASSWORD_LOGIN_FORCE=1/);
+    expect(screen.getByLabelText(/username/i)).toBeInTheDocument();
+  });
+
+  it('client_auth_failed links the recovery procedure', async () => {
+    window.history.pushState({}, '', '/login?sso_error=client_auth_failed');
+    API.getAuthConfig.mockResolvedValue(config());
+    renderLogin();
+
+    expect(await screen.findByTestId('sso-recovery-link')).toHaveAttribute(
+      'href',
+      expect.stringMatching(/docs\/sso-recovery\.md$/)
+    );
+  });
+
+  it('no recovery link for an error a user cannot fix with it', async () => {
+    window.history.pushState({}, '', '/login?sso_error=no_mapping');
+    API.getAuthConfig.mockResolvedValue(config());
+    renderLogin();
+
+    await screen.findByTestId('sso-error');
+    expect(screen.queryByTestId('sso-recovery-link')).toBeNull();
+  });
+
+  it('the forgot-password command runs through the login shell', async () => {
+    API.getAuthConfig.mockResolvedValue(config());
+    renderLogin();
+
+    await userEvent.click(await screen.findByText('Forgot password?'));
+    expect(
+      await screen.findByTestId('forgot-password-command')
+    ).toHaveTextContent(
+      "docker exec -it <container> su - dispatch -c 'cd /app && python manage.py changepassword <username>'"
+    );
+  });
 });

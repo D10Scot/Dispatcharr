@@ -5,6 +5,9 @@ import {
   computeRedirectUri,
   emptyProviderValues,
   lockoutGuardMessages,
+  providerEditPayload,
+  providerToValues,
+  rebaseProviderValues,
   postLoginDestination,
   safeNextPath,
   ssoErrorMessage,
@@ -214,5 +217,89 @@ describe('round 1 additions', () => {
       secretExpiry: '',
     });
     expect(payload.mappings).toEqual([{ value: 'Mino.Admin', user_level: 10 }]);
+  });
+});
+
+describe('providerEditPayload and rebaseProviderValues', () => {
+  const server = {
+    id: 1,
+    display_name: 'X',
+    slug: 'x',
+    kind: 'generic',
+    enabled: false,
+    issuer: 'https://i',
+    client_id: 'c',
+    scopes: 'openid',
+    claim_path: 'roles',
+    mappings: [{ value: 'a', user_level: 10 }],
+  };
+
+  it('sends everything for a new provider', () => {
+    const values = providerToValues(server);
+    const payload = providerEditPayload({
+      values,
+      baseline: null,
+      provider: null,
+      credentialState: null,
+    });
+    expect(payload.enabled).toBe(false);
+    expect(payload.kind).toBe('generic');
+  });
+
+  it('sends only changed fields for an edit', () => {
+    const baseline = providerToValues(server);
+    const values = { ...baseline, client_id: 'c2' };
+    expect(
+      providerEditPayload({
+        values,
+        baseline,
+        provider: server,
+        credentialState: null,
+      })
+    ).toEqual({ client_id: 'c2' });
+  });
+
+  it('does not re-send an unchanged client_auth_method', () => {
+    // A form opened while the provider used a secret: an unrelated save must
+    // not re-send the method, or it would switch back a certificate another
+    // administrator activated meanwhile.
+    const loaded = { ...server, client_auth_method: 'client_secret_post' };
+    const baseline = providerToValues(loaded);
+    const values = { ...baseline, display_name: 'Y' };
+    expect(
+      providerEditPayload({
+        values,
+        baseline,
+        provider: loaded,
+        credentialState: initialCredentialState(loaded),
+      }),
+      'an unchanged client_auth_method was re-sent'
+    ).toEqual({ display_name: 'Y' });
+  });
+
+  it('sends client_auth_method when the administrator switches it', () => {
+    const loaded = { ...server, client_auth_method: 'private_key_jwt' };
+    const baseline = providerToValues(loaded);
+    const state = credentialReducer(initialCredentialState(loaded), {
+      type: 'credential',
+      value: 'secret',
+    });
+    expect(
+      providerEditPayload({
+        values: baseline,
+        baseline,
+        provider: loaded,
+        credentialState: state,
+      })
+    ).toEqual({ client_auth_method: 'client_secret_basic' });
+  });
+
+  it('rebases untouched fields and keeps edited ones', () => {
+    const baseline = providerToValues(server);
+    const values = { ...baseline, client_id: 'mine' };
+    const fresh = { ...server, enabled: true, client_id: 'theirs' };
+    const rebased = rebaseProviderValues(values, baseline, fresh);
+    expect(rebased.enabled).toBe(true);
+    expect(rebased.client_id).toBe('mine');
   });
 });

@@ -51,6 +51,7 @@
 1	apps/accounts/oidc/flow.py
 1	apps/accounts/permissions.py
 6	apps/accounts/tests/test_accounts.py
+2	apps/accounts/tests/test_password_login_toggle.py
 1	apps/accounts/throttling.py
 1	apps/backups/apps.py
 6	apps/backups/services.py
@@ -593,6 +594,7 @@
 4	tests/test_observability_propagation.py
 3	tests/test_observability_redaction.py
 3	tests/test_observability_wsgi_cold_import.py
+2	tests/test_password_login_force_setting.py
 9	tests/test_process_label.py
 6	tests/test_redaction.py
 2	tests/test_relay_event_visibility.py
