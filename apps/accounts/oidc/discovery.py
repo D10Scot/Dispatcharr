@@ -27,19 +27,22 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 1024 * 1024  # 1 MiB, enforced while streaming
 TIMEOUT = (5, 10)  # connect, read
-# TOTAL_DEADLINE bounds one whole outbound exchange (discovery, JWKS, the token POST): DNS,
-# connect, the request, the response headers and the body, measured from just before the
-# request starts. How it is enforced depends on the process:
+# TOTAL_DEADLINE bounds one whole outbound exchange (discovery, JWKS, the token POST, and the
+# admin "test" action's token-endpoint check), measured from just before it starts. How it is
+# enforced depends on the process:
 # - under gevent's socket monkey-patching (the uWSGI API workers, which serve every caller:
 #   the admin "test" action, start, link/start and the callback) ``run_bounded`` arms one
-#   ``gevent.Timeout`` around the whole call. Every socket wait there is a cooperative wait,
-#   so the timer interrupts the call wherever it waits, and the exchange answers its fixed
-#   "unreachable"/"token_exchange_failed" code at the deadline. The tests drive a dripped
-#   header read and a dripped body read; name resolution and the connect sit under the same
-#   timer but no test stalls them. Measured while writing this (a 1.5 s deadline, one byte
-#   per 0.1 s): dripped headers and a dripped gzip body each ended at 1.50-1.51 s, where
-#   without gevent the same calls ran 8.1 s (as long as the server dripped) and 5.2 s.
-#   apps/accounts/tests/test_oidc_outbound_deadline.py pins it at a 0.5 s deadline;
+#   ``gevent.Timeout`` around the whole call: the SSRF check and its name resolution, the
+#   connect, the request, the response headers and the body. Every socket wait there is a
+#   cooperative wait, so the timer interrupts the call wherever it waits, and the exchange
+#   answers its fixed "unreachable"/"token_exchange_failed" code at the deadline. The
+#   database connection is released before the call, so none is held across it. The tests
+#   (apps/accounts/tests/test_oidc_outbound_deadline.py, at a 0.5 s deadline) drive a
+#   dripped header read, a dripped body read and a stalled resolver at each of discovery,
+#   JWKS and the token POST; a stalled connect or TLS handshake sits under the same timer
+#   but no test stalls one. Measured while writing this (a 1.5 s deadline, one byte per
+#   0.1 s): dripped headers and a dripped gzip body each ended at 1.50-1.51 s, where
+#   without gevent the same calls ran 8.1 s (as long as the server dripped) and 5.2 s;
 # - without it (``manage.py runserver``, a management command, Celery, Daphne, the test
 #   runner itself) nothing can interrupt a blocking read, and no thread or signal is added
 #   to try. There the old bounds still apply and only they: TIMEOUT per connect and per
@@ -414,8 +417,15 @@ def run_test(provider):
         # The login refuses such a key (validate._select_key); the test must not call it fine.
         if any(has_private_members(k) for k in jwks["keys"]):
             problems.append("jwks_private_key")
+    # The check resolves the endpoint's host, so it is bounded like a fetch. A resolver that
+    # does not answer within the deadline answers the code an unresolvable host answers.
+    release_db_connection()
     try:
-        check_token_endpoint(provider, discovery)
+        run_bounded(
+            lambda deadline: check_token_endpoint(provider, discovery),
+            on_expiry=lambda: DiscoveryError("token_endpoint_not_allowed"),
+            label="token endpoint check",
+        )
     except DiscoveryError as exc:
         problems.append(exc.code)
     return problems
