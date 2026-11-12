@@ -60,7 +60,25 @@ REDACTED = "***"
 
 # Query parameter names whose *values* are masked (compared case-insensitively,
 # after percent-decoding the name).
-SENSITIVE_QUERY_KEYS = frozenset({"password", "username", "token", "api_key"})
+SENSITIVE_QUERY_KEYS = frozenset(
+    {
+        "password",
+        "username",
+        "token",
+        "api_key",
+        # OIDC (SSO spec 3.3): an authorization code, the state that redeems it, and every
+        # token or client credential the flow handles.
+        "code",
+        "state",
+        "session_state",
+        "id_token",
+        "access_token",
+        "refresh_token",
+        "client_secret",
+        "client_assertion",
+        "code_verifier",
+    }
+)
 
 # Header names whose values are masked. Compared case-insensitively after
 # normalising ``_`` to ``-`` and dropping a leading ``http-``, so the same set

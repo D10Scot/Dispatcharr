@@ -11,9 +11,9 @@
  * The rule is "any write to /api/core/settings/", with no key list, because
  * the data model makes that exact. `core/models.py:CoreSettings` is not one
  * row per setting: `key` is unique, `value` is a JSONField, and each row is a
- * whole settings *group* — eight of them (`stream_settings`, `dvr_settings`,
+ * whole settings *group* — nine of them (`stream_settings`, `dvr_settings`,
  * `backup_settings`, `proxy_settings`, `network_access`, `system_settings`,
- * `epg_settings`, `user_limit_settings`). Every one is instance-wide, so there
+ * `epg_settings`, `user_limit_settings`, `auth_settings`). Every one is instance-wide, so there
  * is no such thing as a scoped write, nothing to maintain, and no group
  * someone can forget to enumerate — including `epg_settings`, which has no
  * seeding migration and must be POSTed into existence before it can be

@@ -17,9 +17,25 @@ import {
   Anchor,
   Code,
   Checkbox,
+  Alert,
 } from '@mantine/core';
 import logo from '../../assets/logo.png';
 import { showNotification } from '../../utils/notificationUtils.js';
+import API from '../../api';
+import SsoSignIn from './SsoSignIn';
+import {
+  CHANGEPASSWORD_COMMAND,
+  RECOVERY_DOC_URL,
+} from '../../utils/sso/ssoUtils';
+
+const readLoginParams = () => {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    ssoError: params.get('sso_error'),
+    // Validated where it is used (ssoStartUrl), never taken raw into a URL.
+    next: params.get('next'),
+  };
+};
 
 const LoginForm = () => {
   const login = useAuthStore((s) => s.login);
@@ -35,6 +51,9 @@ const LoginForm = () => {
   const [savePassword, setSavePassword] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  // null until the login configuration arrives (or fails): both show the password form.
+  const [authConfig, setAuthConfig] = useState(null);
+  const [{ ssoError, next }] = useState(readLoginParams);
 
   // Simple base64 encoding/decoding for localStorage
   // Note: This is obfuscation, not encryption. Use browser's password manager for real security.
@@ -85,6 +104,27 @@ const LoginForm = () => {
       }
     }
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => API.getAuthConfig())
+      .then((config) => {
+        if (!cancelled && config && Array.isArray(config.providers)) {
+          setAuthConfig(config);
+        }
+      })
+      .catch(() => {
+        // Fail open to the password form: SSO is optional, the form always worked.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const providers = authConfig?.providers ?? [];
+  const showPasswordForm = authConfig?.password_login_enabled !== false;
+  const passwordForced = authConfig?.password_login_forced === true;
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -178,90 +218,127 @@ const LoginForm = () => {
           </Text>
           <Divider style={{ width: '100%' }} />
         </Stack>
-        <form onSubmit={handleSubmit}>
-          <Stack>
-            <TextInput
-              label="Username"
-              name="username"
-              value={formData.username}
-              onChange={handleInputChange}
-              required
-            />
+        {passwordForced && (
+          <Alert
+            color="orange"
+            variant="light"
+            mb="md"
+            data-testid="password-login-forced"
+          >
+            Password sign-in is on because the server was started with
+            MINO_PASSWORD_LOGIN_FORCE=1, a recovery override. An operator should
+            remove it once recovery is done.
+          </Alert>
+        )}
+        {!showPasswordForm && (
+          <Text size="sm" c="dimmed" mb="md" data-testid="password-login-off">
+            Password sign-in is turned off. If you cannot sign in with a
+            provider, an operator with shell access can turn it back on:{' '}
+            <Anchor
+              href={RECOVERY_DOC_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              size="sm"
+            >
+              recovery procedure
+            </Anchor>
+            .
+          </Text>
+        )}
+        {(providers.length > 0 || ssoError) && (
+          <Stack mb={showPasswordForm ? 'md' : 0}>
+            <SsoSignIn providers={providers} errorCode={ssoError} next={next} />
+            {showPasswordForm && providers.length > 0 && (
+              <Divider label="or" labelPosition="center" />
+            )}
+          </Stack>
+        )}
+        {showPasswordForm && (
+          <form onSubmit={handleSubmit}>
+            <Stack>
+              <TextInput
+                label="Username"
+                name="username"
+                value={formData.username}
+                onChange={handleInputChange}
+                required
+              />
 
-            <TextInput
-              label="Password"
-              type="password"
-              name="password"
-              value={formData.password}
-              onChange={handleInputChange}
-              // required
-            />
+              <TextInput
+                label="Password"
+                type="password"
+                name="password"
+                value={formData.password}
+                onChange={handleInputChange}
+                // required
+              />
 
-            <Group justify="space-between" align="center">
-              <Group align="center" spacing="xs">
-                <Checkbox
-                  label="Remember me"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.currentTarget.checked)}
-                  size="sm"
-                />
-                {rememberMe && (
+              <Group justify="space-between" align="center">
+                <Group align="center" spacing="xs">
                   <Checkbox
-                    label="Save password"
-                    checked={savePassword}
-                    onChange={(e) => setSavePassword(e.currentTarget.checked)}
+                    label="Remember me"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.currentTarget.checked)}
                     size="sm"
                   />
-                )}
-              </Group>
-              <Anchor
-                size="sm"
-                component="button"
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  setForgotPasswordOpened(true);
-                }}
-              >
-                Forgot password?
-              </Anchor>
-            </Group>
-
-            <div
-              style={{
-                position: 'relative',
-                height: '0',
-                overflow: 'visible',
-                marginBottom: '-4px',
-              }}
-            >
-              {savePassword && (
-                <Text
-                  size="xs"
-                  color="red"
-                  style={{
-                    marginTop: '-10px',
-                    marginBottom: '0',
-                    lineHeight: '1.2',
+                  {rememberMe && (
+                    <Checkbox
+                      label="Save password"
+                      checked={savePassword}
+                      onChange={(e) => setSavePassword(e.currentTarget.checked)}
+                      size="sm"
+                    />
+                  )}
+                </Group>
+                <Anchor
+                  size="sm"
+                  component="button"
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setForgotPasswordOpened(true);
                   }}
                 >
-                  ⚠ Password will be stored locally without encryption. Only use
-                  on trusted devices.
-                </Text>
-              )}
-            </div>
+                  Forgot password?
+                </Anchor>
+              </Group>
 
-            <Button
-              type="submit"
-              fullWidth
-              loading={isLoading}
-              disabled={isLoading}
-              loaderProps={{ type: 'dots' }}
-            >
-              {isLoading ? 'Logging you in...' : 'Login'}
-            </Button>
-          </Stack>
-        </form>
+              <div
+                style={{
+                  position: 'relative',
+                  height: '0',
+                  overflow: 'visible',
+                  marginBottom: '-4px',
+                }}
+              >
+                {savePassword && (
+                  <Text
+                    size="xs"
+                    color="red"
+                    style={{
+                      marginTop: '-10px',
+                      marginBottom: '0',
+                      lineHeight: '1.2',
+                    }}
+                  >
+                    ⚠ Password will be stored locally without encryption. Only
+                    use on trusted devices.
+                  </Text>
+                )}
+              </div>
+
+              <Button
+                type="submit"
+                fullWidth
+                loading={isLoading}
+                disabled={isLoading}
+                loaderProps={{ type: 'dots' }}
+              >
+                {isLoading ? 'Logging you in...' : 'Login'}
+              </Button>
+            </Stack>
+          </form>
+        )}
 
         {storedVersion.version && (
           <Text
@@ -293,9 +370,8 @@ const LoginForm = () => {
             <Text weight={500} size="sm" mb={8}>
               If running with Docker:
             </Text>
-            <Code block>
-              docker exec &lt;container_name&gt; python manage.py changepassword
-              &lt;username&gt;
+            <Code block data-testid="forgot-password-command">
+              {CHANGEPASSWORD_COMMAND}
             </Code>
           </div>
           <div>
@@ -305,9 +381,20 @@ const LoginForm = () => {
             <Code block>python manage.py changepassword &lt;username&gt;</Code>
           </div>
           <Text size="sm" color="dimmed">
-            The command will prompt for a new password. Replace
-            <code>&lt;container_name&gt;</code> with your Docker container name
-            and <code>&lt;username&gt;</code> with the account username.
+            The command prompts for a new password. Replace{' '}
+            <code>&lt;container&gt;</code> with your Docker container name and{' '}
+            <code>&lt;username&gt;</code> with the account username. It runs
+            through the login shell so it reaches the same database as the
+            server. If password sign-in is turned off, see the{' '}
+            <Anchor
+              href={RECOVERY_DOC_URL}
+              target="_blank"
+              rel="noopener noreferrer"
+              size="sm"
+            >
+              recovery procedure
+            </Anchor>
+            .
           </Text>
           <Text size="sm" color="dimmed" italic>
             Please contact your system administrator to perform a password
