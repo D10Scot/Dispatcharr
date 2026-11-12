@@ -159,12 +159,12 @@ def _mask_slash(text):
 
     1. after a leading ``//``, userinfo (an ``@`` before the next ``/``,
        ``?`` or ``#``, with no whitespace) is masked up to the last ``@``;
-    2. a path holding a ``%`` or a backslash is not interpreted: it becomes
-       ``/***``, because what the server routes is its decoded form. The path
-       is the text before the first literal ``?`` or ``#``, or the whole text
-       when what follows holds a ``/``: ``request.path`` is decoded, so that
-       can be the rest of a route whose credential holds a ``?`` or ``#``.
-       A query or fragment that is not part of the path is kept, masked;
+    2. text holding a ``%`` or a backslash anywhere, query and fragment
+       included, is not interpreted: all of it becomes ``/***``, because what
+       the server routes is its decoded form, and ``request.path`` is decoded,
+       so a ``?`` or ``#`` in it can belong to a credential and what follows
+       can be the rest of the route. No step depends on what follows the
+       first ``?`` or ``#``;
     3. otherwise every segment the raw Xtream masks hit is masked, reading the
        whole text and the path alone (``request.path`` is decoded, so a ``?``
        in it can belong to a credential), each from the first segment and,
@@ -182,11 +182,10 @@ def _mask_slash(text):
             text = "//" + authority.rpartition("@")[2] + text[2 + len(authority):]
     end = _QUERY_OR_FRAGMENT_RE.search(text)
     head = text[:end.start()] if end else text
-    rest = text[len(head):]
-    # A rest holding "/" can be the rest of a route whose credential holds a
-    # "?" or "#" (request.path is decoded), so it is then part of the path.
-    if _OPAQUE_PATH_RE.search(text if "/" in rest else head):
-        return "/" + utils.REDACTED + ("" if "/" in rest else _redact_tail(rest))
+    # Nothing here depends on what follows the first "?" or "#": a "%" or a
+    # backslash anywhere in the text makes all of it unreadable.
+    if _OPAQUE_PATH_RE.search(text):
+        return "/" + utils.REDACTED
     starts = (0, 2) if text.startswith("//") and not _SPACE_RE.search(text) else (0,)
     masked = set()
     for reading in (text, head):

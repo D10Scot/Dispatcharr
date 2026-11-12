@@ -767,7 +767,7 @@ REDACT_TEXT_TABLE = (
     ("/a%2Fb", "/***"),
     ("/x/%41", "/***"),
     ("/a%zz/b%", "/***"),
-    (f"/a%20b?password={Q_PASS}", "/***?password=***"),
+    (f"/a%20b?password={Q_PASS}", "/***"),
     # request lines
     (f"GET /movie/{Q_USER}/{Q_PASS}/1.mp4?username={Q_USER}&password={Q_PASS} HTTP/1.1",
      "GET /movie/***/***/1.mp4?username=***&password=*** HTTP/1.1"),
@@ -778,7 +778,7 @@ REDACT_TEXT_TABLE = (
     (f"/get.php?username={Q_USER}&password={Q_PASS}&type=m3u_plus",
      "/get.php?username=***&password=***&type=m3u_plus"),
     (f"/x?PASSWORD={Q_PASS}", "/x?PASSWORD=***"),
-    (f"/x?pass%77ord={Q_PASS}", "/x?pass%77ord=***"),
+    (f"/x?pass%77ord={Q_PASS}", "/***"),
     (f"/x?password={Q_PASS}&a=1&password={Q_PASS}", "/x?password=***&a=1&password=***"),
     # fragments
     (f"GET /player_api.php#password={Q_PASS} HTTP/1.1", "GET /player_api.php#password=*** HTTP/1.1"),
@@ -830,7 +830,7 @@ REDACT_TEXT_TABLE = (
     (f"uri://movie/{Q_USER}/{Q_PASS}/1.mp4", "uri://movie/***/***/1.mp4"),
     (f"http://h/%6dovie/{Q_USER}/{Q_PASS}/1.mp4", "http://h/***"),
     (f"http://h/movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4", "http://h/***"),
-    (f"http://{Q_USER}:{Q_PASS}@h/%6dovie/a/b?token={Q_PASS}", "http://***@h/***?token=***"),
+    (f"http://{Q_USER}:{Q_PASS}@h/%6dovie/a/b?token={Q_PASS}", "http://***@h/***"),
     (f"http://h\\live\\{Q_USER}\\{Q_PASS}\\1.ts", "http://h/***"),
     (f"word:///%6dovie/{Q_USER}/{Q_PASS}/1.mp4", "word:///***"),
     # given up (round 7, "percent-encoded host"): a host holding an encoded
@@ -875,18 +875,18 @@ REDACT_TEXT_TABLE = (
     (f"rtsp://{Q_USER}:{Q_PASS}@cam%2Flive/ch/main/av", "rtsp://***@cam%2Flive/ch/main/av"),
     (f"http://{Q_USER}:{Q_PASS}@h%2Fmovie%2Fa%2Fb", "http://***@h%2Fmovie%2Fa%2Fb"),
     (f"http://{Q_USER}:{Q_PASS}@%2Flive/a/b", "http://***@%2Flive/a/b"),
-    # review round 5, C: the encoded path is "/***"; the real query and
-    # fragment are masked as they are
-    (f"http://h/%6dovie/a/b/c%3Fd?token={Q_PASS}", "http://h/***?token=***"),
-    (f"http://h/%6dovie/a/b/c%3Fd?username={Q_USER}&password={Q_PASS}",
-     "http://h/***?username=***&password=***"),
-    (f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}", "http://h/***?password=***"),
-    (f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}", "http://h/***#token=***"),
-    (f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}", "http://h/***?password=***"),
+    # review round 5, C: a "%" anywhere makes the whole path, query and
+    # fragment included, "/***" (round 7 addendum: no step depends on what
+    # follows the first "?" or "#")
+    (f"http://h/%6dovie/a/b/c%3Fd?token={Q_PASS}", "http://h/***"),
+    (f"http://h/%6dovie/a/b/c%3Fd?username={Q_USER}&password={Q_PASS}", "http://h/***"),
+    (f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}", "http://h/***"),
+    (f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}", "http://h/***"),
+    (f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}", "http://h/***"),
     # review round 6, D: likewise for a whole path
-    (f"/%6cive/a/b/c%3Fd?password={Q_PASS}", "/***?password=***"),
-    (f"/%6dovie/a/b/c%23d?username={Q_USER}&password={Q_PASS}", "/***?username=***&password=***"),
-    (f"/get.php%3Fx/%6cive/a/b/c?username={Q_USER}&password={Q_PASS}", "/***?username=***&password=***"),
+    (f"/%6cive/a/b/c%3Fd?password={Q_PASS}", "/***"),
+    (f"/%6dovie/a/b/c%23d?username={Q_USER}&password={Q_PASS}", "/***"),
+    (f"/get.php%3Fx/%6cive/a/b/c?username={Q_USER}&password={Q_PASS}", "/***"),
     # review round 6, E: userinfo in a token that starts "//"
     (f"//{Q_USER}:{Q_PASS}@h/x", "//***@h/x"),
     (f'"//{Q_USER}:{Q_PASS}@cdn.example/app.js"', '"//***@cdn.example/app.js"'),
@@ -912,6 +912,14 @@ REDACT_TEXT_TABLE = (
     # the same reading masks a credential as the last segment before a query
     (f"/live/{Q_USER}/{Q_PASS}?token={Q_PASS}", "/live/***/***"),
     (f"/live/{Q_USER}/{Q_PASS}/1.ts?token={Q_PASS}", "/live/***/***/1.ts?token=***"),
+    # review round 7, M (addendum): a pair nested in the query of a whole-path
+    # string is masked whether or not the query also has a sensitive key; the
+    # whole text is always read as a path (dc436dfa..7fe0a903 agree, a24d58c1
+    # left the pair when the key was present)
+    (f"/x?a=1/live/{Q_USER}/{Q_PASS}/1.ts&password=z", "/x?a=1/live/***/***/1.ts&password=***"),
+    (f"/live/a/b/1?next=/movie/{Q_USER}/{Q_PASS}/2&password=p", "/live/***/***/1?next=/movie/***/***/2&password=***"),
+    (f"/x?a=1/live/{Q_USER}/{Q_PASS}/1.ts&b=z", "/x?a=1/live/***/***/1.ts&b=z"),
+    (f"/live/a/b/1?next=/movie/{Q_USER}/{Q_PASS}/2&b=p", "/live/***/***/1?next=/movie/***/***/2&b=p"),
     # review round 7, I: a prefix-word host with a path that only matches
     # decoded; the encoded path is "/***"
     (f"//u@movie/%6cive/{Q_USER}/{Q_PASS}/1.ts", "/***"),
@@ -983,8 +991,6 @@ ORDINARY_UNCHANGED = (
     '/assets/index-4f2a9c.css',
     '/proxy/vod/movie/7a2c/',
     '/hls/abc123/index.m3u8',
-    '/search?q=live%20tv',
-    '/search?q=a%2Fb',
     'see https://example.com/docs/setup for details',
     'https://example.com/',
     'https://example.com/a/b/c',
@@ -1043,6 +1049,9 @@ ORDINARY_UNCHANGED = (
     '/timeshift/',
 )
 ORDINARY_OVER_MASKED = (
+    # a "%" in the query makes the whole token "/***" (round 7 addendum)
+    ('/search?q=live%20tv', '/***'),
+    ('/search?q=a%2Fb', '/***'),
     ('Not Found: //a/b/c/5', 'Not Found: //a/***/***/5'),
     ('"GET //admin/a/b/3 HTTP/1.1" 404 9', '"GET //admin/***/***/3 HTTP/1.1" 404 9'),
     ('/static/js/1.js', '/***/***/1.js'),
