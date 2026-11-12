@@ -34,7 +34,7 @@ export type Capability = {
 
 export const CONTAINER_LIFECYCLE: Capability = {
   name: 'the `instance` fixture (container lifecycle)',
-  why: 'Restarts, replaces and upgrades the container, or stops and starts one supervisord program inside it — the subject of the lifecycle and streaming-split projects, and meaningless once the relay is a separate process.',
+  why: 'Restarts, replaces and upgrades the container, stops and starts one supervisord program inside it, or runs a management command in it for break-glass recovery — the subject of the lifecycle and streaming-split projects and of the sso break-glass spec, and meaningless once the relay is a separate process.',
   allow: [
     // The two lifecycle specs are the container's lifecycle, by definition.
     // `fixtures/instance.ts` owns the fixture and `fixtures/index.ts` wires it
@@ -53,6 +53,11 @@ export const CONTAINER_LIFECYCLE: Capability = {
     // in the same sense, which is why it has its own project and its own CI
     // container.
     'tests/streaming-split/process-restart.spec.ts',
+    // SSO spec PR S5: runs one management command (`password_login`) inside
+    // its own scoped container, through `instance.manage()`, to recover from
+    // password-off state that the shared container must never hold. It never
+    // calls `up`/`restart`/`recreate`/`down`.
+    'tests/sso/break-glass.spec.ts',
   ],
 };
 
@@ -86,6 +91,10 @@ export const CONTAINER_INTROSPECTION: Capability = {
     // Builds the `docker` and `manage.py` command lines the container is
     // driven with.
     'fixtures/instance.ts',
+    // The pure builder of that `manage.py` line, moved out of `instance.ts`
+    // (SSO spec 5.6) so the recovery-doc guard can import it without a
+    // container capability. It runs nothing.
+    'fixtures/manage-command.ts',
     // `pgrep -x ffmpeg`, to count transcodes container-wide.
     'tests/streaming-greybox/output-profile-sharing.spec.ts',
   ],

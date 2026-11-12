@@ -22,7 +22,7 @@
 1	.github/workflows/docker-build.yml
 2	.github/workflows/domain-fuzz-campaign.lock.yml
 3	.github/workflows/domain-fuzz-campaign.md
-20	.github/workflows/e2e-tests.yml
+26	.github/workflows/e2e-tests.yml
 4	.github/workflows/go-tests.yml
 2	.github/workflows/issue-remediation.lock.yml
 4	.github/workflows/issue-remediation.md
@@ -51,6 +51,7 @@
 1	apps/accounts/oidc/flow.py
 1	apps/accounts/permissions.py
 6	apps/accounts/tests/test_accounts.py
+2	apps/accounts/tests/test_password_login_toggle.py
 1	apps/accounts/throttling.py
 1	apps/backups/apps.py
 6	apps/backups/services.py
@@ -308,8 +309,8 @@
 1	e2e-upstream/test/vod-asset.test.ts
 1	e2e-upstream/test/xc-envelope.test.ts
 3	e2e-upstream/test/xc-router.test.ts
-71	e2e/COVERAGE.md
-50	e2e/README.md
+73	e2e/COVERAGE.md
+55	e2e/README.md
 1	e2e/fixtures/api.ts
 2	e2e/fixtures/auth.ts
 3	e2e/fixtures/index.ts
@@ -340,7 +341,8 @@
 3	e2e/tests/frontend/plugin-zip.ts
 3	e2e/tests/frontend/plugins.spec.ts
 2	e2e/tests/frontend/settings.spec.ts
-58	e2e/tests/guards/e2e-up-stacks.spec.ts
+73	e2e/tests/guards/e2e-up-stacks.spec.ts
+15	e2e/tests/guards/sso-scope.spec.ts
 3	e2e/tests/lifecycle/durable-state.ts
 8	e2e/tests/lifecycle/upgrade-migrations.spec.ts
 1	e2e/tests/pristine/first-run-setup-and-login.spec.ts
@@ -367,6 +369,9 @@
 4	e2e/tests/seeded/xc-ingest.spec.ts
 1	e2e/tests/seeded/xc-output.spec.ts
 4	e2e/tests/seeded/xc-vod-catalogue.spec.ts
+11	e2e/tests/sso/scope.ts
+1	e2e/tests/sso/sign-in.spec.ts
+1	e2e/tests/sso/sso.setup.ts
 2	e2e/tests/streaming-failover/catchup-redirect.spec.ts
 1	e2e/tests/streaming-failover/mid-stream-switch.spec.ts
 26	e2e/tests/streaming-greybox/nginx-stream-buffering.spec.ts
@@ -409,6 +414,7 @@
 2	frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js
 4	frontend/src/utils/components/__tests__/pluginUtils.test.js
 2	frontend/src/utils/components/pluginUtils.js
+1	frontend/src/utils/sso/ssoUtils.js
 2	manage.py
 1	metrics/build/__main__.py
 1	metrics/curated/defects.yml
@@ -592,6 +598,7 @@
 4	tests/test_observability_propagation.py
 3	tests/test_observability_redaction.py
 3	tests/test_observability_wsgi_cold_import.py
+2	tests/test_password_login_force_setting.py
 9	tests/test_process_label.py
 6	tests/test_redaction.py
 2	tests/test_relay_event_visibility.py

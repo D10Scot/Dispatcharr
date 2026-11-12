@@ -31,6 +31,7 @@ from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from rest_framework_simplejwt.serializers import TokenRefreshSerializer
 from rest_framework_simplejwt.tokens import RefreshToken
 from .oidc import refresh as oidc_refresh
+from . import password_login
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,21 @@ class TokenObtainPairView(TokenObtainPairView):
         client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
 
+        # SSO spec 5.3: while password login is off (and break-glass is not on) no password
+        # is checked at all. Read fresh from Postgres on every request (spec 5.1).
+        forced = password_login.forced()
+        if not (forced or password_login.stored_enabled()):
+            log_system_event(
+                event_type='login_failed',
+                user=username or 'unknown',
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason=password_login.DISABLED_CODE,
+            )
+            return Response(
+                {"code": password_login.DISABLED_CODE}, status=status.HTTP_403_FORBIDDEN
+            )
+
         try:
             logger.debug(f"Attempting JWT login for user={username}")
             response = super().post(request, *args, **kwargs)
@@ -103,12 +119,15 @@ class TokenObtainPairView(TokenObtainPairView):
                         user.last_login = timezone.now()
                         user.save(update_fields=['last_login'])
 
-                        # Log successful login
+                        # Log successful login. Under break-glass every password
+                        # login says so (spec 5.6).
+                        extra = {"break_glass": True} if forced else {}
                         log_system_event(
                             event_type='login_success',
                             user=username,
                             client_ip=client_ip,
                             user_agent=user_agent,
+                            **extra,
                         )
                         logger.info(f"Login success: user={username} ip={client_ip}")
                     except User.DoesNotExist:
@@ -144,8 +163,9 @@ class OIDCAwareTokenRefreshSerializer(TokenRefreshSerializer):
 
     A refresh token carrying ``auth_method == "oidc"`` is refused when its provider is
     disabled or deleted, and is re-evaluated against the provider's current mappings when the
-    provider's version has moved since the token was minted (D17). A password-issued token is
-    untouched. The token's claims are never rewritten.
+    provider's version has moved since the token was minted (D17). A password-issued token
+    (any token without that claim) is refused while password login is off and break-glass is
+    not on (D13, spec 5.3). The token's claims are never rewritten.
     """
 
     def validate(self, attrs):
@@ -154,7 +174,13 @@ class OIDCAwareTokenRefreshSerializer(TokenRefreshSerializer):
         except TokenError:
             # simplejwt's own validate raises the same error; the view maps it to 401.
             return super().validate(attrs)
-        if token.payload.get("auth_method") == "oidc":
+        if token.payload.get("auth_method") != "oidc":
+            # D13: a password-issued pair stops refreshing once password login is off, so
+            # only its access-token tail (at most 30 minutes) survives the switch. The
+            # break-glass override turns this refusal off (spec 5.6).
+            if not password_login.allowed():
+                raise InvalidToken()
+        else:
             try:
                 oidc_refresh.check(token.payload)
             except AdminFloorBusy:
@@ -440,6 +466,14 @@ class UserViewSet(viewsets.ModelViewSet):
             if "password" in request.data and not user.has_usable_password():
                 return Response(
                     {"code": "password_not_allowed"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            # While password login is off nobody sets a password here, whoever they are
+            # (SSO spec 5.3, T12): a password set now would be one more credential nothing
+            # accepts, until break-glass turns it into a way round the IdP.
+            if "password" in request.data and not password_login.allowed():
+                return Response(
+                    {"code": password_login.DISABLED_CODE},
+                    status=status.HTTP_400_BAD_REQUEST,
                 )
 
             serializer = UserSerializer(user, data=request.data, partial=True)

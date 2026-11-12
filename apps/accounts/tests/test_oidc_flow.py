@@ -1219,7 +1219,20 @@ class RefreshReevaluationTests(FlowTransactionTestCase):
             self.assertEqual(self.refresh(password.json()["refresh"]).status_code, 200)
         with CaptureQueriesContext(connection) as sso:
             self.assertEqual(self.refresh(body["refresh"]).status_code, 200)
-        extra = len(sso.captured_queries) - len(baseline.captured_queries)
+
+        def toggle_reads(captured):
+            return [
+                q["sql"] for q in captured
+                if "core_coresettings" in q["sql"] and "auth_settings" in q["sql"]
+            ]
+
+        # D13 (spec 5.3): a password-issued refresh reads the password-login toggle once; an
+        # SSO refresh is decided from its auth_method claim and never reads it.
+        self.assertEqual(len(toggle_reads(baseline.captured_queries)), 1,
+                         [q["sql"] for q in baseline.captured_queries])
+        self.assertEqual(toggle_reads(sso.captured_queries), [],
+                         "an OIDC refresh read the password-login toggle (auth_settings)")
+        extra = len(sso.captured_queries) - (len(baseline.captured_queries) - 1)
         self.assertEqual(extra, 1, [q["sql"] for q in sso.captured_queries])
         provider_reads = [q for q in sso.captured_queries if "accounts_oidcprovider" in q["sql"]]
         self.assertEqual(len(provider_reads), 1)
