@@ -88,6 +88,21 @@ class LiveRedisTestCase(SimpleTestCase):
             keys = list(self.redis.scan_iter(match=pattern, count=1000))
             if keys:
                 self.redis.delete(*keys)
+        # Guard: nothing of this test's slot keys may survive the deletes above.
+        # base % 10 == 0, so `{prefix}[0-9]` with no trailing `*` is exactly the
+        # ids base .. base + 9, and each pattern names its key family, so no
+        # other test's id or unrelated key can match.
+        prefix = str(self.base)[:-1]
+        left = sorted(
+            key
+            for pattern in (
+                f"*profile_connections:{prefix}[0-9]",
+                f"profile_credential_release:{prefix}[0-9]",
+                f"*server_group_connections:{self.base}:*",
+            )
+            for key in self.redis.scan_iter(match=pattern, count=1000)
+        )
+        self.assertEqual(left, [], "tearDown left slot keys behind for the next test to read (#650)")
 
     @staticmethod
     def profile_keys(base):
@@ -444,7 +459,10 @@ class SlotScriptFakeParityProperties(LiveRedisTestCase):
         ops=_OPS,
     )
     def test_the_fake_matches_the_lua_after_every_step(self, profile_starts, cred_starts, ops):
-        self.base += 100  # a fresh namespace per example; tearDown's patterns still cover it
+        # A fresh namespace per example. Hypothesis runs setUp and tearDown once
+        # around all the examples, so the finally below deletes each example's
+        # keys and tearDown covers only the last base.
+        self.base += 100
         profiles = {
             n: self.profile(off, cap, login=login) for n, (off, cap, login) in _PROFILES.items()
         }
