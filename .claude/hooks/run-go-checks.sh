@@ -44,7 +44,7 @@ set -uo pipefail
 # shellcheck source=_hook_common.sh
 source "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/_hook_common.sh"
 
-GOLANGCI_EXPECTED_VERSION="2.14.0"
+GOLANGCI_EXPECTED_VERSION="2.15.0"
 
 INPUT="$(cat)"
 FILE="$(printf '%s' "$INPUT" | jq -r '.tool_response.filePath // .tool_input.file_path // empty')"
