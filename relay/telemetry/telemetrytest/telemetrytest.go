@@ -38,9 +38,8 @@ type Span struct {
 	Status      string // "unset", "error" or "ok"
 	Description string
 	Ended       bool
-	// Sampled is the span context's sampled bit; TraceFlags is the whole flags
-	// byte, so a test can see a W3C Level 2 bit (0x02) survive.
-	Sampled    bool
+	// TraceFlags is the span context's whole flags byte, so a test can see a
+	// W3C Level 2 bit (0x02) survive.
 	TraceFlags byte
 }
 
@@ -188,7 +187,6 @@ func (r *Recorder) Spans() []Span {
 			Attrs:        map[string]any{},
 			Status:       "unset",
 			Ended:        ended[s.SpanContext().SpanID().String()],
-			Sampled:      s.SpanContext().IsSampled(),
 			TraceFlags:   byte(s.SpanContext().TraceFlags()),
 		}
 		if p := s.Parent(); p.IsValid() {

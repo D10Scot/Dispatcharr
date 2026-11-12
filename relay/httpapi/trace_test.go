@@ -524,15 +524,17 @@ func TestUntrustedTraceContextIsIgnored(t *testing.T) {
 // sends 03: sampled plus the W3C Level 2 random-trace-id bit.
 func TestTrustedTraceparentFlags(t *testing.T) {
 	for _, tc := range []struct {
-		name        string
-		flags       byte
-		inherits    bool
-		wantSampled bool
-		wantFlags   byte
+		name      string
+		flags     byte
+		inherits  bool
+		wantFlags byte
 	}{
-		{"flags 01 (sampled)", 0x01, true, true, 0x01},
-		{"flags 03 (sampled plus random-trace-id), as Django sends", 0x03, true, true, 0x03},
-		{"flags 04 is out of range, so the relay starts a root", 0x04, false, true, 0x01},
+		// The child's flags are the parent's | 0x01 (sampled).
+		{"flags 00 (not sampled)", 0x00, true, 0x01},
+		{"flags 01 (sampled)", 0x01, true, 0x01},
+		{"flags 02 (random-trace-id only)", 0x02, true, 0x03},
+		{"flags 03 (sampled plus random-trace-id), as Django sends", 0x03, true, 0x03},
+		{"flags 04 is out of range, so the relay starts a root", 0x04, false, 0x01},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rec := telemetrytest.Install(t)
@@ -548,9 +550,6 @@ func TestTrustedTraceparentFlags(t *testing.T) {
 			}
 			if !tc.inherits && (span.ParentSpanID != "" || span.TraceID == parentTrace) {
 				t.Errorf("relay.tune is under %q in trace %s, want a root span", span.ParentSpanID, span.TraceID)
-			}
-			if span.Sampled != tc.wantSampled {
-				t.Errorf("relay.tune sampled = %v, want %v", span.Sampled, tc.wantSampled)
 			}
 			if span.TraceFlags != tc.wantFlags {
 				t.Errorf("relay.tune trace flags = %#02x, want %#02x", span.TraceFlags, tc.wantFlags)
