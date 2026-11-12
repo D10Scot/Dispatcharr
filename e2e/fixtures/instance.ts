@@ -53,6 +53,8 @@ import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 
+import { manageExecArgs } from './manage-command';
+
 const run = promisify(execFile);
 
 /**
@@ -86,14 +88,6 @@ const UPSTREAM_IMAGE =
  */
 const READY_ATTEMPTS = process.env.DISPATCHARR_E2E_READY_ATTEMPTS ?? '120';
 
-/**
- * `docker/entrypoint.sh`: `POSTGRES_USER=${POSTGRES_USER:-dispatch}`, and every
- * `manage.py` invocation in that file runs as `su - "$POSTGRES_USER"`. The
- * login dash is not cosmetic — the same file notes that `su -` strips the
- * environment and that it publishes PATH through the login profile precisely
- * so this form works.
- */
-const APP_USER = 'dispatch';
 
 /**
  * These three must stay *below* the calling project's Playwright timeout, or
@@ -376,20 +370,13 @@ export class Instance {
    * anything.
    */
   async manage(argv: string[]): Promise<ManageResult> {
-    for (const arg of argv) {
-      if (!/^[A-Za-z0-9._/=-]+$/.test(arg)) {
-        throw new Error(
-          `instance.manage() argument ${JSON.stringify(arg)} contains ` +
-            'characters that are not plain tokens. This runs through a shell ' +
-            'inside the container; quote-free arguments only.'
-        );
-      }
-    }
-    const command = `cd /app && python manage.py ${argv.join(' ')}`;
+    // The line itself is built in ./manage-command, which docs/sso-recovery.md
+    // is checked against; it throws on a non-plain-token argument.
+    const execArgs = manageExecArgs(CONTAINER, argv);
     try {
       const { stdout, stderr } = await run(
         'docker',
-        ['exec', CONTAINER, 'su', '-', APP_USER, '-c', command],
+        execArgs,
         { timeout: DOCKER_TIMEOUT_MS, maxBuffer: MAX_BUFFER }
       );
       return { code: 0, stdout, stderr };

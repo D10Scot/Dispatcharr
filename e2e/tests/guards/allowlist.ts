@@ -86,6 +86,10 @@ export const CONTAINER_INTROSPECTION: Capability = {
     // Builds the `docker` and `manage.py` command lines the container is
     // driven with.
     'fixtures/instance.ts',
+    // The pure builder of that `manage.py` line, moved out of `instance.ts`
+    // (SSO spec 5.6) so the recovery-doc guard can import it without a
+    // container capability. It runs nothing.
+    'fixtures/manage-command.ts',
     // `pgrep -x ffmpeg`, to count transcodes container-wide.
     'tests/streaming-greybox/output-profile-sharing.spec.ts',
   ],
