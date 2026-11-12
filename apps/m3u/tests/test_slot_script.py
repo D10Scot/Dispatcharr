@@ -76,15 +76,27 @@ class LiveRedisTestCase(SimpleTestCase):
     def tearDown(self):
         if self.redis is None:
             return
+        # Profile ids are `self.base` plus a one-digit offset, so their keys are
+        # named exactly. A `{self.base}*` prefix pattern does not match them:
+        # str(base + 1) does not start with str(base), and the keys leaked into
+        # the next test's range (#650).
+        self.redis.delete(*self.profile_keys(self.base))
         for pattern in (
-            f"*profile_connections:{self.base}*",
             f"*server_group_connections:{self.base}:*",
-            f"profile_credential_release:{self.base}*",
             f"stream_profile:{self.base}*",
         ):
             keys = list(self.redis.scan_iter(match=pattern, count=1000))
             if keys:
                 self.redis.delete(*keys)
+
+    @staticmethod
+    def profile_keys(base):
+        """Every per-profile key the script can write for ids base .. base + 9."""
+        keys = []
+        for pid in range(base, base + 10):
+            counter = profile_connections_key(pid)
+            keys += [counter, slot_version_key(counter), profile_credential_release_key(pid)]
+        return keys
 
     def profile(self, offset, max_streams, *, login=None):
         """A profile stand-in: in ServerGroup `self.base` when login is set."""
@@ -442,6 +454,10 @@ class SlotScriptFakeParityProperties(LiveRedisTestCase):
         keys += [self.cred_key("x"), self.cred_key("y"), f"stream_profile:{self.base}9"]
         keys += [slot_version_key(k) for k in list(keys)]
         fake = _DictRedis()
+        # The fake starts empty, so the live Redis must too: whatever another
+        # test or an earlier example left under these names is cleared before
+        # this example seeds them (#650).
+        self.redis.delete(*keys)
         try:
             for n, value in profile_starts.items():
                 if value is not None:
