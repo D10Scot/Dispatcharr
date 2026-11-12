@@ -27,7 +27,7 @@ from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.accounts.models import OIDCProvider, User
-from apps.accounts.oidc import guard
+from apps.accounts.oidc import auth_settings, guard
 from apps.accounts.oidc.serializers import OIDCProviderSerializer
 from core.models import AUTH_SETTINGS_KEY, CoreSettings, SystemEvent
 
@@ -121,11 +121,22 @@ class PasswordLoginGateTests(TestCase):
 
     def test_wrong_password_while_off_is_refused_without_checking_it(self):
         # The gate runs before any credential is checked: no password oracle while off.
+        # simplejwt binds ``authenticate`` at import (serializers.py, simplejwt 5.5.1), so the
+        # patch target is that bound name, not django.contrib.auth's.
+        target = "rest_framework_simplejwt.serializers.authenticate"
+        # Positive control: with password login on, this patch IS on the login path.
+        with mock.patch(target, return_value=None) as authenticate:
+            self.assertEqual(obtain(password="wrong").status_code, 401)
+        self.assertEqual(authenticate.call_count, 1, "the patch is not on the login path")
+
         set_password_login(False)
-        with mock.patch("django.contrib.auth.authenticate") as authenticate:
+        with mock.patch(target) as authenticate:
             response = obtain(password="wrong")
         self.assertEqual(response.status_code, 403)
-        authenticate.assert_not_called()
+        self.assertEqual(
+            authenticate.call_count, 0,
+            "the password was checked while password login was off (a password oracle)",
+        )
 
     def test_fresh_read_beats_warmed_stale_cache(self):
         # Warm the Redis group cache while the row says enabled, then flip the row with a
@@ -668,6 +679,53 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
             "a stale credential PATCH re-saved enabled=False and emptied the enabled set",
         )
         self.assertTrue(OIDCProvider.objects.get(pk=self.p.pk).enabled)
+
+    def test_held_delete_decides_on_the_reloaded_provider(self):
+        # The delete path's floor (spec 5.5) decides on the provider reloaded under the lock,
+        # never on the instance the view loaded before it. Password login off, P disabled and
+        # Q enabled. A DELETE of P is held after the view loaded P (enabled=False), before the
+        # lock; P is enabled; Q is disabled (allowed, P is enabled); the DELETE is released.
+        # P is now the last enabled provider, so the DELETE must be refused.
+        OIDCProvider.update_columns(self.p.pk, {"enabled": False})
+        set_password_login(False)
+        entered, release = threading.Event(), threading.Event()
+        real = auth_settings.lock_row
+
+        def held():
+            if threading.current_thread().name == "held-delete":
+                entered.set()
+                release.wait(WAIT_TIMEOUT)
+            return real()
+
+        patcher = mock.patch.object(auth_settings, "lock_row", side_effect=held)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        client = self.admin_client
+        worker = Worker(lambda: client.delete(f"{PROVIDERS}{self.p.pk}/"), "held-delete")
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the DELETE never reached the lock")
+            self.assertEqual(
+                client.patch(f"{PROVIDERS}{self.p.pk}/", {"enabled": True}, format="json").status_code,
+                200,
+            )
+            self.assertEqual(
+                client.patch(f"{PROVIDERS}{self.q.pk}/", {"enabled": False}, format="json").status_code,
+                200,
+            )
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(worker.error, repr(worker.error))
+        self.assertTrue(
+            OIDCProvider.objects.filter(enabled=True).exists(),
+            "forbidden state: a DELETE decided on the pre-lock instance (enabled=False) and "
+            f"removed the last enabled provider while password login is off "
+            f"(DELETE {worker.result.status_code})",
+        )
+        self.assertEqual(worker.result.status_code, 409)
+        self.assertEqual(worker.result.json()["reasons"], ["last_enabled_provider"])
 
 
 class PasswordLoginCommandTests(TestCase):
