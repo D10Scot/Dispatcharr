@@ -15,7 +15,12 @@ the log calls are inside Django.
 ``RequestLogCredentialFilter`` hands its handler a *copy* of each record from
 ``REDACTED_LOGGER_TREES`` with the credentials masked in the message template,
 every string argument and the formatted traceback, and with the attached
-``request`` object dropped. The original record is never mutated (a filter
+``request`` object dropped. Two passes do the masking: by pattern (the Xtream
+path shapes and sensitive query keys, wherever they appear) and by value (the
+username, password and sensitive query values the attached request itself
+names, in their decoded, percent-encoded and unicode-escaped spellings, at
+least ``MIN_SCRUBBED_VALUE_LENGTH`` characters long), so a credential in a
+form or position the patterns miss is still removed. The original record is never mutated (a filter
 returning a record replaces it for that handler only, Python 3.12+). Records
 outside the trees pass through as themselves, and no record is suppressed: an
 operator still sees that a 401 happened and on which route
@@ -49,7 +54,7 @@ This module is imported while settings load, so it imports nothing from
 import copy
 import logging
 import re
-from urllib.parse import quote
+from urllib.parse import quote, unquote
 
 # Loggers whose records are redacted, matched as the name itself or a dotted
 # descendant. ``django.channels.server`` is the request line of the
@@ -69,9 +74,10 @@ FILTER_NAME = "request_log_credentials"
 _TOKEN_PUNCTUATION = "'\"<>()[]{},;"
 _TOKEN_RE = re.compile(r"\S+")
 
-# A credential shorter than this is not scrubbed by value from a traceback:
-# replacing every occurrence of a one- to three-character string would leave
-# the traceback unreadable. Its path position is still masked.
+# A credential shorter than this is not scrubbed by value: replacing every
+# occurrence of a one- to three-character string would shred unrelated text
+# (a one-letter password would mask that letter everywhere). Its path and
+# query positions are still masked by pattern.
 MIN_SCRUBBED_VALUE_LENGTH = 4
 
 
@@ -137,12 +143,19 @@ def redact_text(text):
 
 
 def _spellings(value):
-    return {
+    """The value as decoded, percent-encoded (two ways) and unicode-escaped.
+
+    Django unicode-escapes the string arguments of django.request records;
+    a raw request line carries the percent-encoded form.
+    """
+    forms = {
         value,
+        unquote(value),
         quote(value, safe=""),
         quote(value),
         value.encode("unicode_escape").decode("ascii"),
     }
+    return {form for form in forms if len(form) >= MIN_SCRUBBED_VALUE_LENGTH}
 
 
 def _request_credentials(request):
@@ -165,12 +178,17 @@ def _request_credentials(request):
     return sorted(spelled, key=len, reverse=True)
 
 
-def _redact_traceback(text, request):
-    text = redact_text(text)
-    if request is not None:
-        for value in _request_credentials(request):
-            text = text.replace(value, _utils().REDACTED)
+def _scrub_values(text, values):
+    """Replace every listed value in ``text``; longest first, so no fragment survives."""
+    if not isinstance(text, str):
+        return text
+    for value in values:
+        text = text.replace(value, _utils().REDACTED)
     return text
+
+
+def _redact_traceback(text, values):
+    return _scrub_values(redact_text(text), values)
 
 
 def _redact_args(args):
@@ -189,17 +207,36 @@ def redact_record(record):
     # (and path, GET and META) carry the credentials. No configured handler
     # needs it; AdminEmailHandler, the one Django handler that reads it,
     # tolerates its absence. django.server's ``request`` is the socket.
+    from django.http import HttpRequest
+
     request = getattr(record, "request", None)
-    http_request = request if hasattr(request, "path") else None
+    http_request = request if isinstance(request, HttpRequest) else None
+
+    # The values the request itself names as credentials (route kwargs and
+    # sensitive query keys), in every spelling: scrubbed from the message,
+    # the arguments and the traceback in addition to the pattern pass, so a
+    # credential in a form or position the patterns miss is still removed.
+    values = _request_credentials(http_request) if http_request is not None else []
 
     clone = copy.copy(record)
     clone.msg = redact_text(record.msg)
     clone.args = _redact_args(record.args)
+    if values:
+        # Scrub the RENDERED message, not the template and each argument
+        # apart: a value can straddle the two. When the scrub changes
+        # nothing the template and the arguments (non-strings included) are
+        # kept as they are; when it does, the rendered text is stored with
+        # no arguments, which every formatter renders unchanged.
+        rendered = clone.getMessage()
+        scrubbed = _scrub_values(rendered, values)
+        if scrubbed != rendered:
+            clone.msg = scrubbed
+            clone.args = ()
     if record.exc_info and record.exc_info[0] is not None:
         text = record.exc_text or logging.Formatter().formatException(record.exc_info)
-        clone.exc_text = _redact_traceback(text, http_request)
+        clone.exc_text = _redact_traceback(text, values)
     elif record.exc_text:
-        clone.exc_text = _redact_traceback(record.exc_text, http_request)
+        clone.exc_text = _redact_traceback(record.exc_text, values)
     if http_request is not None:
         del clone.request
     return clone
@@ -213,15 +250,37 @@ class RequestLogCredentialFilter(logging.Filter):
             return redact_record(record)
         except Exception:  # noqa: BLE001 - a log call must never raise
             # Fail closed on the content, open on the record: the operator
-            # still learns that something was logged, and from where.
-            clone = copy.copy(record)
-            clone.msg = "[request log record withheld: redaction failed]"
-            clone.args = ()
-            clone.exc_info = None
-            clone.exc_text = None
-            if hasattr(clone, "request"):
-                del clone.request
-            return clone
+            # still learns that something was logged, and from where. A
+            # message whose % formatting fails when it is rendered for the
+            # value scrub lands here too, which keeps logging's own
+            # "--- Logging error ---" dump of the raw arguments off stderr.
+            return _withheld(record)
+
+
+_WITHHELD = "[request log record withheld: redaction failed]"
+
+
+def _withheld(record):
+    try:
+        clone = copy.copy(record)
+        clone.msg = _WITHHELD
+        clone.args = ()
+        clone.exc_info = None
+        clone.exc_text = None
+        clone.stack_info = None
+        if "request" in vars(clone):
+            del clone.request
+        return clone
+    except Exception:  # noqa: BLE001 - not even the copy may raise here
+        return logging.LogRecord(
+            str(getattr(record, "name", "django")),
+            getattr(record, "levelno", logging.ERROR),
+            "",
+            0,
+            _WITHHELD,
+            (),
+            None,
+        )
 
 
 def _attach(handler_config):

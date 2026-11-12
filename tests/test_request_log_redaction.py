@@ -22,7 +22,9 @@ swapped for buffers; no handler is replaced and no filter is added by a test,
 so a test cannot pass on a configuration production does not run.
 ``RealConfigurationTests`` checks that premise.
 """
+import copy
 import io
+import socket
 import logging
 from unittest import mock
 from urllib.parse import quote
@@ -30,13 +32,14 @@ from urllib.parse import quote
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.exceptions import SuspiciousFileOperation
-from django.test import Client, SimpleTestCase, TestCase, override_settings
-from django.urls import URLPattern, URLResolver, get_resolver
+from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.urls import URLPattern, URLResolver, get_resolver, resolve
 
 from core.request_log_redaction import (
     REDACTED_LOGGER_TREES,
     RequestLogCredentialFilter,
     redact_record,
+    with_request_log_redaction,
 )
 from dispatcharr.observability import logs as observability_logs
 from dispatcharr.utils import redact_url
@@ -289,7 +292,7 @@ class DevelopmentServerLogTests(_SinkAssertions, SimpleTestCase):
         from django.core.servers.basehttp import WSGIRequestHandler
 
         handler = WSGIRequestHandler.__new__(WSGIRequestHandler)
-        handler.request = mock.Mock()
+        handler.request = mock.Mock(spec=socket.socket)  # runserver's is the socket
         handler.client_address = ("127.0.0.1", 50000)
         handler.log_message(
             '"%s" %s %s',
@@ -424,7 +427,7 @@ class FilterUnitTests(SimpleTestCase):
                     self.assertEqual(redact_record(record).getMessage(), "/movie/***/***/1.mp4")
 
     def test_the_original_record_is_never_mutated_and_the_request_is_dropped(self):
-        request = mock.Mock(path=f"/movie/{USER}/{PASSWORD}/1.mp4")
+        request = _xc_request(f"/movie/{USER}/{PASSWORD}/1.mp4")
         record = self._record("django.request", "%s: %s", "Unauthorized", request.path, request=request)
         out = RequestLogCredentialFilter().filter(record)
         self.assertIsNot(out, record)
@@ -445,3 +448,194 @@ class FilterUnitTests(SimpleTestCase):
         self.assertNotIn(PASSWORD, out.getMessage())
         self.assertEqual(out.name, "django.request")
         self.assertEqual(out.levelno, logging.WARNING)
+
+
+def _xc_request(path, **query):
+    """A real HttpRequest for ``path``, resolved the way the handler resolves it."""
+    request = RequestFactory().get(path, query)
+    request.resolver_match = resolve(request.path_info)
+    return request
+
+
+class ValueScrubTests(SimpleTestCase):
+    """The second pass: the values the attached request names as credentials."""
+
+    def _record(self, msg, *args, request=None, name="django.request"):
+        record = logging.LogRecord(name, logging.WARNING, __file__, 1, msg, args, None)
+        if request is not None:
+            record.request = request
+        return record
+
+    def test_a_form_the_patterns_miss_is_scrubbed_by_value(self):
+        request = _xc_request(f"/movie/{quote(NONASCII_USER)}/{quote(NONASCII_PASSWORD)}/1.mp4")
+        self.assertEqual(request.resolver_match.kwargs["password"], NONASCII_PASSWORD)
+        record = self._record(
+            "lookup failed: user=%s pw=%s raw=%s",
+            NONASCII_USER,
+            quote(NONASCII_PASSWORD, safe=""),
+            f"x{NONASCII_PASSWORD}y",
+            request=request,
+        )
+        # The control: the pattern pass alone leaves all three.
+        patterned = copy.copy(record)
+        patterned.request = None
+        self.assertIn(NONASCII_USER, redact_record(patterned).getMessage())
+        message = RequestLogCredentialFilter().filter(record).getMessage()
+        for value in (NONASCII_USER, NONASCII_PASSWORD):
+            for form in _forms(value):
+                self.assertNotIn(form, message)
+        self.assertEqual(message, "lookup failed: user=*** pw=*** raw=x***y")
+
+    def test_query_string_values_are_scrubbed_by_value(self):
+        request = _xc_request("/player_api.php", username=USER, password=PASSWORD)
+        record = self._record("%s: %s (echo %s)", "Unauthorized", "/player_api.php",
+                              f"login {USER}:{PASSWORD}", request=request)
+        message = RequestLogCredentialFilter().filter(record).getMessage()
+        self.assertNotIn(USER, message)
+        self.assertNotIn(PASSWORD, message)
+        self.assertEqual(message, "Unauthorized: /player_api.php (echo login ***:***)")
+
+    def test_a_one_character_password_does_not_shred_the_message(self):
+        request = _xc_request("/movie/u/a/1.mp4")
+        self.assertEqual(request.resolver_match.kwargs["password"], "a")
+        record = self._record("%s: %s", "Unauthorized", "a banana at a cafe", request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "Unauthorized: a banana at a cafe")
+        self.assertEqual(out.args, ("Unauthorized", "a banana at a cafe"))
+
+    def test_a_non_string_argument_is_left_alone(self):
+        request = _xc_request(f"/movie/{USER}/{PASSWORD}/1.mp4")
+        record = self._record("%s answered %d after %.1fs", "the view", 401, 0.25, request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.args, ("the view", 401, 0.25))
+        self.assertIs(type(out.args[1]), int)
+        self.assertEqual(out.getMessage(), "the view answered 401 after 0.2s")
+
+    def test_a_template_that_cannot_render_is_withheld_not_raised(self):
+        request = _xc_request(f"/movie/{USER}/{PASSWORD}/1.mp4")
+        record = self._record("%d items for %s", "not-a-number", PASSWORD, request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertTrue(out)
+        self.assertEqual(out.getMessage(), "[request log record withheld: redaction failed]")
+        self.assertNotIn("request", vars(out))
+
+
+class PlacementTests(_SinkAssertions, SimpleTestCase):
+    """The filter sits on HANDLERS, so a child logger and the OTel bridge cannot miss it.
+
+    A filter on a logger applies only to records logged on that exact logger;
+    django.security.DisallowedHost (and every other per-exception
+    django.security.<Name>) is a descendant, and a record propagating up the
+    tree never passes a parent logger's filters. Every handler such a record
+    reaches carries the filter instead (RealConfigurationTests checks that
+    structurally).
+    """
+
+    def setUp(self):
+        self.sinks = _ProductionSinks(self)
+
+    def test_a_child_logger_record_reaching_the_otel_bridge(self):
+        request = _xc_request("/player_api.php", username=USER, password=PASSWORD)
+        logging.getLogger("django.security.DisallowedHost").error(
+            "Invalid host for %s", f"/live/{USER}/{PASSWORD}/1.ts", extra={"request": request}
+        )
+        self.assertNoCredential(self.sinks, USER, PASSWORD)
+        self.assertIn(
+            "django.security.DisallowedHost Invalid host for /live/***/***/1.ts",
+            self.sinks.console.getvalue(),
+        )
+        [bridged] = [r for r in self.sinks.otel.records if r.name == "django.security.DisallowedHost"]
+        self.assertEqual(bridged.getMessage(), "Invalid host for /live/***/***/1.ts")
+        self.assertNotIn("request", vars(bridged))
+
+    def test_the_configured_console_filter_drops_the_request(self):
+        request = _xc_request("/player_api.php", username=USER, password=PASSWORD)
+        self.assertIn(PASSWORD, repr(request))
+        record = logging.LogRecord(
+            "django.request", logging.WARNING, __file__, 1, "%s: %s",
+            ("Unauthorized", "/player_api.php"), None,
+        )
+        record.request = request
+        out = _handler("", "console").filter(record)
+        self.assertNotIn("request", vars(out))
+        self.assertNotIn(PASSWORD, repr(vars(out)))
+        self.assertIs(record.request, request)
+
+
+class CompositionTests(SimpleTestCase):
+    """What with_request_log_redaction adds, pinned exactly.
+
+    tests/test_observability_logs.py pins settings.LOGGING as this function
+    applied to the D8 configuration; this pins the function itself, so a
+    change to either side reddens one of the two.
+    """
+
+    BASE = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {"verbose": {"format": "{message}", "style": "{"}},
+        "handlers": {
+            "console": {"class": "logging.StreamHandler", "formatter": "verbose", "level": 5},
+            "otel": {"class": "dispatcharr.observability.logs.OtelBridgeHandler", "level": 5},
+        },
+        "loggers": {"apps": {"handlers": ["console", "otel"], "level": 20, "propagate": False}},
+        "root": {"handlers": ["console", "otel"], "level": 20},
+    }
+
+    EXPECTED = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "filters": {
+            "request_log_credentials": {"()": "core.request_log_redaction.RequestLogCredentialFilter"},
+            "require_debug_true": {"()": "django.utils.log.RequireDebugTrue"},
+            "require_debug_false": {"()": "django.utils.log.RequireDebugFalse"},
+        },
+        "formatters": {
+            "verbose": {"format": "{message}", "style": "{"},
+            "django.server": {
+                "()": "django.utils.log.ServerFormatter",
+                "format": "[{server_time}] {message}",
+                "style": "{",
+            },
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler", "formatter": "verbose", "level": 5,
+                "filters": ["request_log_credentials"],
+            },
+            "otel": {
+                "class": "dispatcharr.observability.logs.OtelBridgeHandler", "level": 5,
+                "filters": ["request_log_credentials"],
+            },
+            "django.console": {
+                "class": "logging.StreamHandler", "level": "INFO",
+                "filters": ["require_debug_true", "request_log_credentials"],
+            },
+            "django.mail_admins": {
+                "class": "django.utils.log.AdminEmailHandler", "level": "ERROR",
+                "filters": ["require_debug_false", "request_log_credentials"],
+            },
+            "django.server": {
+                "class": "logging.StreamHandler", "formatter": "django.server", "level": "INFO",
+                "filters": ["request_log_credentials"],
+            },
+        },
+        "loggers": {
+            "apps": {"handlers": ["console", "otel"], "level": 20, "propagate": False},
+            "django": {"handlers": ["django.console", "django.mail_admins"], "level": "INFO"},
+            "django.server": {"handlers": ["django.server"], "level": "INFO", "propagate": False},
+        },
+        "root": {"handlers": ["console", "otel"], "level": 20},
+    }
+
+    def test_exactly_what_it_adds(self):
+        self.assertEqual(with_request_log_redaction(self.BASE), self.EXPECTED)
+
+    def test_the_input_is_not_mutated(self):
+        base = copy.deepcopy(self.BASE)
+        with_request_log_redaction(base)
+        self.assertEqual(base, self.BASE)
+
+    def test_applying_it_twice_adds_nothing_more(self):
+        once = with_request_log_redaction(self.BASE)
+        self.assertEqual(with_request_log_redaction(once), once)
