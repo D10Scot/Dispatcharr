@@ -64,6 +64,8 @@ func serveFMP4(
 	w.Header().Set("Content-Type", ContentTypeFMP4)
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
+	// The remux started: the init segment below is the tune's first byte.
+	arm(w)
 	rc := http.NewResponseController(w)
 	if err := rc.Flush(); err != nil {
 		return

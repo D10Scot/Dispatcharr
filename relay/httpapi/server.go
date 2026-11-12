@@ -29,6 +29,12 @@ type Config struct {
 	// Control is what the internal control routes need. Only read when
 	// DevRoutes is set.
 	Control ControlDeps
+
+	// Metrics serves the Prometheus exposition of the metric catalogue
+	// (observability spec D4). Registered as GET /metrics in every shape,
+	// beside the probes and outside DevRoutes; nil registers nothing. nginx
+	// routes nothing to it (D6): it is reached on the relay's own port only.
+	Metrics http.Handler
 }
 
 // Server owns the routing table. One per process.
@@ -58,6 +64,9 @@ func New(cfg Config) *Server {
 	// every failure it exists to catch.
 	s.mux.HandleFunc("GET /healthz", ok)
 	s.mux.Handle("GET /readyz", ReadyHandler(cfg.Health))
+	if cfg.Metrics != nil {
+		s.mux.Handle("GET /metrics", cfg.Metrics)
+	}
 
 	if cfg.DevRoutes {
 		// The dev-only route flag spec line 1795 names.

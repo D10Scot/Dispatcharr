@@ -16,11 +16,14 @@ import (
 // to for a channel deleted mid-playback (apps/proxy/next_source.py:961-1011);
 // the Python relay reads them out of its own metadata hash
 // (live_proxy/server.py:2364-2367) and this relay reads them off the channel's
-// SourceInfo. channel_pk is the Channel's numeric primary key, which is on no
-// contract field, so this relay never sends it -- the Python relay's normal
-// stop path sends it from the hash, and Django uses it only in that same
-// deleted-channel fallback, to delete a key it would otherwise leave behind
-// (CLAUDE.md § Known defects, #190). Recorded as a stated divergence.
+// SourceInfo. channel_pk is the Channel's numeric primary key. Since
+// observability O3 the next-source answer carries it (NextSourceAnswer.
+// ChannelPK), but the relay reads it only to label telemetry and still never
+// sends it here -- the Python relay's normal stop path sent it from the hash,
+// and Django uses it only in that same deleted-channel fallback, to delete a
+// key it would otherwise leave behind (CLAUDE.md § Known defects, #190).
+// Recorded as a stated divergence; sending it is a release-contract change
+// of its own, not part of the telemetry work that brought the field.
 type ReleaseRequest struct {
 	StreamID     *int `json:"stream_id"`
 	M3UProfileID *int `json:"m3u_profile_id"`
