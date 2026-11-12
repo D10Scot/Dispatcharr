@@ -84,6 +84,7 @@ const HeaderRelayTraceparent = "X-Relay-Traceparent"
 var RoutePatterns = []string{
 	"GET /healthz",
 	"GET /readyz",
+	"GET /metrics",
 	"GET /proxy/ts/stream/{channelID}",
 	"GET /live/{username}/{password}/{channelID}",
 	"GET /{username}/{password}/{channelID}",
@@ -113,8 +114,15 @@ var (
 	triggers         = setOf(TriggerHealthMonitor, TriggerMaxRetries, TriggerBufferingTimeout)
 	formats          = setOf(FormatMPEGTS, FormatFMP4, FormatHLS)
 	kinds            = setOf("source", "output", "fmp4", "hls")
-	channelStates    = setOf("initializing", "connecting", "waiting_for_clients", "active", "buffering", "error", "stopping", "stopped")
+	channelStates    = setOf(channelStateList...)
 )
+
+// channelStateList is M1's closed label set, in a fixed order: every
+// channel.State value. M1 observes each of them on every collection, zero
+// when no channel is in it, so an idle relay still exports the family and a
+// state's series goes to 0 rather than going stale when its last channel
+// leaves it.
+var channelStateList = []string{"initializing", "connecting", "waiting_for_clients", "active", "buffering", "error", "stopping", "stopped"}
 
 func setOf(vs ...string) map[string]struct{} {
 	m := make(map[string]struct{}, len(vs))

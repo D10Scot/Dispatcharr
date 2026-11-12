@@ -12,6 +12,7 @@ import (
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -59,6 +60,9 @@ type Telemetry struct {
 	rewindCap  atomic.Pointer[func() (int64, bool)]
 	procs      *procstat.Registry
 	completion atomic.Int64
+	// procWarned is when procstatFailed last logged, in UnixNano: the warning
+	// is rate limited to one per procstatWarnEvery.
+	procWarned atomic.Int64
 
 	res      *resource.Resource
 	mp       *sdkmetric.MeterProvider
@@ -107,6 +111,7 @@ type options struct {
 	procs   *procstat.Registry
 	ids     *ChannelIDs
 	rules   *Rules
+	logExp  sdklog.Exporter
 }
 
 // WithTracerProvider makes spans use tp and skips building an OTLP tracer
@@ -127,6 +132,12 @@ func WithChannelIDs(ids *ChannelIDs) Option { return func(o *options) { o.ids = 
 
 // WithLogRules replaces DefaultRules.
 func WithLogRules(r Rules) Option { return func(o *options) { o.rules = &r } }
+
+// WithLogExporter builds the OTLP log signal's logger provider over exp, with
+// a synchronous processor, whether or not cfg.OTLP is set. The redacting
+// exporter still sits in front of exp, so a test sees exactly what the
+// collector would. It is a test seam, not a production option.
+func WithLogExporter(exp sdklog.Exporter) Option { return func(o *options) { o.logExp = exp } }
 
 // Init builds the telemetry for cfg and installs it as Current.
 //
@@ -167,6 +178,28 @@ func Init(ctx context.Context, cfg Config, opts ...Option) (*Telemetry, error) {
 	return t, nil
 }
 
+// procstatWarnEvery bounds how often a failing /proc read is logged. A
+// collection runs on every scrape and every OTLP export, so one warning per
+// collection would be noise; none at all would let a persistently unreadable
+// /proc (a hidepid=1 mount, say) silence M8 and M9 with nothing saying why.
+const procstatWarnEvery = 10 * time.Minute
+
+// procstatFailed is the procstat registry's error hook. It logs the error's
+// type only: a path under /proc names a pid, and the text is never needed to
+// know that the read is failing.
+func (t *Telemetry) procstatFailed(err error) {
+	now := time.Now().UnixNano()
+	last := t.procWarned.Load()
+	if last != 0 && now-last < int64(procstatWarnEvery) {
+		return
+	}
+	if !t.procWarned.CompareAndSwap(last, now) {
+		return
+	}
+	slog.Default().Warn("could not read /proc; process CPU and memory have no reading this collection",
+		"error.type", innermostType(err))
+}
+
 // handleOTelError is the OTel error handler. Only the type leaves, whatever
 // handler is installed: the text of an SDK export error carries the collector
 // URL, query string included. The record's context keeps it out of the OTLP
@@ -186,6 +219,7 @@ func build(ctx context.Context, cfg Config, o *options) (*Telemetry, error) {
 	if t.procs == nil {
 		t.procs = procstat.Default
 	}
+	t.procs.SetErrorHook(t.procstatFailed)
 	ratio := cfg.SamplerRatio
 	if ratio == 0 && !cfg.OTLP {
 		ratio = 1
@@ -234,6 +268,13 @@ func build(ctx context.Context, cfg Config, o *options) (*Telemetry, error) {
 	if err := t.instruments(mp.Meter(ScopeName)); err != nil {
 		return nil, err
 	}
+	if o.logExp != nil {
+		t.logs = sdklog.NewLoggerProvider(
+			sdklog.WithProcessor(sdklog.NewSimpleProcessor(newRedactingLogExporter(o.logExp, t.rules))),
+			sdklog.WithResource(res),
+		)
+		t.shutdown = append(t.shutdown, t.logs.Shutdown)
+	}
 	return t, nil
 }
 
@@ -254,7 +295,7 @@ func (t *Telemetry) startOTLP(ctx context.Context, o *options) error {
 		)
 		t.shutdown = append(t.shutdown, tp.Shutdown)
 	}
-	if t.cfg.Logs {
+	if t.cfg.Logs && o.logExp == nil {
 		lexp, err := newOTLPLogExporter(ctx)
 		if err != nil {
 			return fmt.Errorf("telemetry: building the OTLP log exporter: %w", redact.Error(err))

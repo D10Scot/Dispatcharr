@@ -6,13 +6,17 @@
 package telemetrytest
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -46,13 +50,46 @@ type Point struct {
 	Start, Time time.Time
 }
 
+// LogRecord is one record as the OTLP log exporter received it, after the
+// redacting exporter: what a collector would be sent.
+type LogRecord struct {
+	Severity string
+	Body     string
+	Attrs    map[string]any
+}
+
 // Recorder holds what an installed telemetry recorded.
 type Recorder struct {
 	T      *telemetry.Telemetry
 	tb     testing.TB
 	spans  *tracetest.SpanRecorder
 	reader *sdkmetric.ManualReader
+	logs   *logSink
 }
+
+// logSink is an sdklog.Exporter that keeps every record it is given.
+type logSink struct {
+	mu      sync.Mutex
+	records []LogRecord
+}
+
+func (s *logSink) Export(_ context.Context, records []sdklog.Record) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range records {
+		r := &records[i]
+		attrs := map[string]any{}
+		r.WalkAttributes(func(kv attribute.KeyValue) bool {
+			attrs[string(kv.Key)] = kv.Value.AsInterface()
+			return true
+		})
+		s.records = append(s.records, LogRecord{Severity: r.SeverityText(), Body: r.Body().String(), Attrs: attrs})
+	}
+	return nil
+}
+
+func (*logSink) Shutdown(context.Context) error   { return nil }
+func (*logSink) ForceFlush(context.Context) error { return nil }
 
 // Install installs a recording tracer provider and a manual metric reader as
 // telemetry.Current for the test's duration. Extra options (a procstat
@@ -63,11 +100,16 @@ type Recorder struct {
 // record each other's spans and points.
 func Install(t testing.TB, opts ...telemetry.Option) *Recorder {
 	t.Helper()
+	return install(t, telemetry.LogFormatText, opts)
+}
+
+func install(t testing.TB, format string, opts []telemetry.Option) *Recorder {
+	t.Helper()
 	sr := tracetest.NewSpanRecorder()
 	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(sr), sdktrace.WithSampler(sdktrace.AlwaysSample()))
 	reader := sdkmetric.NewManualReader()
 	all := append([]telemetry.Option{telemetry.WithTracerProvider(tp), telemetry.WithMetricReader(reader)}, opts...)
-	tel, err := telemetry.Init(context.Background(), telemetry.Config{SamplerRatio: 1, LogFormat: telemetry.LogFormatText}, all...)
+	tel, err := telemetry.Init(context.Background(), telemetry.Config{SamplerRatio: 1, LogFormat: format}, all...)
 	if err != nil {
 		t.Fatalf("telemetrytest: Init: %v", err)
 	}
@@ -76,6 +118,54 @@ func Install(t testing.TB, opts ...telemetry.Option) *Recorder {
 		_ = tp.Shutdown(context.Background())
 	})
 	return &Recorder{T: tel, tb: t, spans: sr, reader: reader}
+}
+
+// InstallJSONLogs is Install with the relay's JSON log format and a recording
+// OTLP log exporter, and with slog.Default replaced, for the test's duration,
+// by the Telemetry's own LogHandler writing JSON lines to the returned buffer.
+// A test then drives real relay code and reads both sinks: the buffer (the
+// JSON sink) and Logs (the OTLP sink).
+func InstallJSONLogs(t testing.TB, opts ...telemetry.Option) (*Recorder, *SyncBuffer) {
+	t.Helper()
+	sink := &logSink{}
+	rec := install(t, telemetry.LogFormatJSON, append([]telemetry.Option{telemetry.WithLogExporter(sink)}, opts...))
+	rec.logs = sink
+	buf := &SyncBuffer{}
+	prev := slog.Default()
+	slog.SetDefault(slog.New(rec.T.LogHandler(buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	return rec, buf
+}
+
+// SyncBuffer is the JSON sink: written by the goroutines a test drives and
+// read by the test, so both sides take its lock.
+type SyncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *SyncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+// String is everything written so far.
+func (b *SyncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// Logs returns every record the OTLP log sink received. It is empty unless
+// the Recorder came from InstallJSONLogs.
+func (r *Recorder) Logs() []LogRecord {
+	if r.logs == nil {
+		return nil
+	}
+	r.logs.mu.Lock()
+	defer r.logs.mu.Unlock()
+	return append([]LogRecord(nil), r.logs.records...)
 }
 
 // Spans returns every span started, ended or not, in start order.

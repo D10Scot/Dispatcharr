@@ -39,6 +39,7 @@ import (
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/ffmpeg"
+	"github.com/D10Scot/Dispatcharr/relay/procstat"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
@@ -376,6 +377,12 @@ type Config struct {
 	// ChannelID is the channel this pipeline serves, for logs.
 	ChannelID string
 
+	// ChannelPK and ProfileID label the remux's process group for M8 and M9
+	// (observability D7): the channel's numeric id, and the Output Profile
+	// whose transcode this remux reads, zero for the channel's own ring.
+	ChannelPK int
+	ProfileID int
+
 	// Source is the channel's TS ring: the remux's fd 0.
 	Source *buffer.Ring
 
@@ -416,6 +423,11 @@ type Remux struct {
 	// stand-in has no bitstream filter to drop, so the retry is the same
 	// process.
 	ArgvNoBSF []string
+}
+
+// procLabels is the remux's procstat label set.
+func (c Config) procLabels() procstat.Labels {
+	return procstat.Labels{ChannelID: c.ChannelPK, Kind: procstat.KindFMP4, ProfileID: c.ProfileID}
 }
 
 func (c Config) command() string {
@@ -534,6 +546,7 @@ func Start(ctx context.Context, cfg Config) (*Pipeline, error) {
 		cancel()
 		return nil, fmt.Errorf("output: starting the remux: %w", redact.Error(err))
 	}
+	proc.Track(cfg.procLabels())
 	p := &Pipeline{
 		cfg: cfg,
 		log: log,
@@ -620,6 +633,7 @@ func (p *Pipeline) run(ctx context.Context, proc *ffmpeg.Process) {
 			p.log.Error("the remux could not be restarted", "error", redact.Error(startErr))
 			return
 		}
+		retry.Track(p.cfg.procLabels())
 		proc = retry
 	}
 }

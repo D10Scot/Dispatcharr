@@ -224,3 +224,26 @@ func readableFile(path string) bool {
 	_, err := os.ReadFile(path) //nolint:gosec // an operator-configured certificate path, read as the exporter will
 	return err == nil
 }
+
+// EndpointForLog is OTEL_EXPORTER_OTLP_ENDPOINT as scheme://host[:port] only:
+// no userinfo, path, query or fragment (D12). It is what the one INFO line
+// main writes when OTLP export starts may name, and it mirrors the Python
+// bootstrap's endpoint_for_log. An endpoint with no scheme or host renders as
+// "(unparseable)" rather than as any part of the value.
+func EndpointForLog(getenv func(string) string) string {
+	if getenv == nil {
+		getenv = os.Getenv
+	}
+	u, err := url.Parse(strings.TrimSpace(getenv(envEndpoint)))
+	if err != nil || u.Scheme == "" || u.Hostname() == "" {
+		return "(unparseable)"
+	}
+	host := u.Hostname()
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	if port := u.Port(); port != "" {
+		return u.Scheme + "://" + host + ":" + port
+	}
+	return u.Scheme + "://" + host
+}

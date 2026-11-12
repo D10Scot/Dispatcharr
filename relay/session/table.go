@@ -545,7 +545,8 @@ func (t *Table) Run(ctx context.Context) {
 	}
 }
 
-// Len is how many sessions the table holds, for tests.
+// Len is how many sessions the table holds: M5's observation
+// (mino_relay_hls_sessions), which main reads on every collection.
 func (t *Table) Len() int {
 	t.mu.Lock()
 	defer t.mu.Unlock()

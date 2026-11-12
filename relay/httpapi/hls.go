@@ -13,6 +13,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/hls"
 	"github.com/D10Scot/Dispatcharr/relay/session"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // The HLS output's HTTP half (Phase 4 spec D2-D5, D13; § The contract; §
@@ -212,7 +213,7 @@ func pipelineEnded(p *hls.Pipeline) bool {
 
 // startPipeline is the start func AttachHLS takes: it builds the pipeline's
 // Config from the channel and the process-wide HLS state, and starts it.
-func startPipeline(ctx context.Context, deps StreamDeps, ch *channel.Channel, mode hls.Mode, log *slog.Logger) func(hls.Source) (*hls.Pipeline, error) {
+func startPipeline(ctx context.Context, deps StreamDeps, ch *channel.Channel, mode hls.Mode, profileID int, log *slog.Logger) func(hls.Source) (*hls.Pipeline, error) {
 	return func(src hls.Source) (*hls.Pipeline, error) {
 		// ctx is context.Background(), NOT the entering request's: one
 		// pipeline is shared by every session on the channel, so the first
@@ -221,6 +222,8 @@ func startPipeline(ctx context.Context, deps StreamDeps, ch *channel.Channel, mo
 		// its own failure, all of which are reached on every path.
 		return hls.Start(ctx, hls.Config{
 			ChannelID:    ch.ID(),
+			ChannelPK:    ch.PK(),
+			ProfileID:    profileID,
 			Source:       src,
 			Mode:         mode,
 			JoinBehind:   ch.Tuning().JoinBehind,
@@ -283,7 +286,7 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 
 	// 2. Attach to the channel's HLS pipeline for its key, starting one if
 	// none runs.
-	p, started, releaseOutput, err := ch.AttachHLS(key, startPipeline(context.Background(), deps, ch, mode, log))
+	p, started, releaseOutput, err := ch.AttachHLS(key, startPipeline(context.Background(), deps, ch, mode, profile.ID, log))
 	if err != nil {
 		release()
 		var failed *channel.ErrHLSOutputFailed
@@ -421,10 +424,11 @@ func serveHLSEntry(w http.ResponseWriter, r *http.Request, deps StreamDeps, ch *
 		return
 	}
 
-	// 8. The multivariant.
+	// 8. The multivariant, the tune's first byte.
 	w.Header().Set("Content-Type", contentTypePlaylist)
 	w.Header().Set("Cache-Control", "no-store")
 	w.WriteHeader(http.StatusOK)
+	arm(w)
 	if _, err := w.Write(body); err == nil {
 		client.Sent(len(body), now())
 	}
@@ -510,7 +514,15 @@ func HLSHandler(deps StreamDeps) http.HandlerFunc {
 			return
 		}
 		defer deps.Sessions.End(sid)
-		serveHLSResource(w, r, deps, lookup, now)
+		// M3 (observability D11): the HLS handler counts what it serves
+		// under the session's channel, through the same wrapper the tune
+		// uses, with no tune of its own; write arms it immediately before a
+		// playlist or segment body, so the error answers are not counted.
+		fw := telemetry.NewFirstWriteWriter(w, nil)
+		if ch, ok := sessionChannel(lookup); ok {
+			fw.SetLabels(ch.PK(), telemetry.FormatHLS)
+		}
+		serveHLSResource(fw, r, deps, lookup, now)
 	}
 }
 
@@ -587,6 +599,7 @@ func serveHLSResource(w http.ResponseWriter, r *http.Request, deps StreamDeps, l
 		return
 	}
 	write := func(body []byte) {
+		arm(w)
 		if _, err := w.Write(body); err == nil && lookup.Client != nil {
 			lookup.Client.Sent(len(body), now())
 		}

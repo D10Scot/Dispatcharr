@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/redact"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // AuthorizePath is the dev fallback's route, spec D5 exception 2.
@@ -137,17 +139,40 @@ const DeniedBodyLimit = 4 << 10
 // (ConnectTimeout + ReadTimeout) to the tune's critical path for a fault that
 // a second attempt against the same misconfigured or overloaded Django will
 // meet again.
+//
+// It owns relay.authorize (observability D11): a child of relay.tune, ended
+// before this returns with allowed, denied or unavailable.
 func (c *Client) Authorize(ctx context.Context, req AuthorizeRequest) (*Decision, error) {
+	ctx, span := telemetry.StartAuthorize(ctx)
+	defer span.End()
+	decision, status, err := c.authorize(ctx, req)
+	if status != 0 {
+		span.SetStatusCode(status)
+	}
+	var denied *Denied
+	switch {
+	case err == nil:
+		span.SetOutcome(telemetry.OutcomeAllowed)
+	case errors.As(err, &denied):
+		span.SetOutcome(telemetry.OutcomeDenied)
+	default:
+		span.SetOutcome(telemetry.OutcomeUnavailable)
+		span.SetError(err)
+	}
+	return decision, err
+}
+
+func (c *Client) authorize(ctx context.Context, req AuthorizeRequest) (*Decision, int, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("encoding the authorize request: %w", err) // credential-logging: ok - encoding/json reports a TYPE it cannot encode, never a field's value
+		return nil, 0, fmt.Errorf("encoding the authorize request: %w", err) // credential-logging: ok - encoding/json reports a TYPE it cannot encode, never a field's value
 	}
 
 	base := c.BaseURL
 	if base == "" {
 		resolved, baseErr := BaseURL()
 		if baseErr != nil {
-			return nil, baseErr
+			return nil, 0, baseErr
 		}
 		base = resolved
 	}
@@ -162,16 +187,18 @@ func (c *Client) Authorize(ctx context.Context, req AuthorizeRequest) (*Decision
 
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, base+AuthorizePath, bytes.NewReader(body))
 	if err != nil {
-		return nil, fmt.Errorf("building the request for %s: %w", AuthorizePath, redact.Error(err))
+		return nil, 0, fmt.Errorf("building the request for %s: %w", AuthorizePath, redact.Error(err))
 	}
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set(HeaderInternal, InternalPrincipalToken(c.Secret))
 	request.Header.Set(HeaderInternalRequest,
 		InternalRequestHeader(c.Secret, http.MethodPost, AuthorizePath, body, now().Unix()))
+	// The trace context of relay.authorize (D11); no header is signed.
+	telemetry.InjectTraceparent(ctx, request.Header)
 
 	response, err := httpClient.Do(request)
 	if err != nil {
-		return nil, &Unavailable{Path: AuthorizePath, Reason: "transport failure", Err: err}
+		return nil, 0, &Unavailable{Path: AuthorizePath, Reason: "transport failure", Err: err}
 	}
 	defer func() { _ = response.Body.Close() }()
 
@@ -179,21 +206,21 @@ func (c *Client) Authorize(ctx context.Context, req AuthorizeRequest) (*Decision
 	switch {
 	case status >= 200 && status < 300:
 	case status >= 300 && status < 400:
-		return nil, &Unavailable{Path: AuthorizePath, Reason: fmt.Sprintf("answered %d; a redirect is never followed", status)}
+		return nil, status, &Unavailable{Path: AuthorizePath, Reason: fmt.Sprintf("answered %d; a redirect is never followed", status)}
 	case status == http.StatusUnauthorized, status == http.StatusForbidden,
 		status == http.StatusNotFound, status == http.StatusTooManyRequests:
 		// A DECISION, not an outage: these are the four statuses
 		// AuthorizeDenied is raised with (apps/proxy/authorize.py), and each
 		// must reach the viewer as itself.
-		return nil, &Denied{Status: status, Body: deniedBody(response)}
+		return nil, status, &Denied{Status: status, Body: deniedBody(response)}
 	case status >= 400 && status < 500:
 		// Every other 4xx is the contract being wrong -- a 400 from the
 		// serializer, a 403 from IsInternalRelay on a SECRET_KEY mismatch
 		// between roles -- and must fail loudly rather than be reported to
 		// the viewer as a refusal of their tune.
-		return nil, &Refused{Path: AuthorizePath, Status: status}
+		return nil, status, &Refused{Path: AuthorizePath, Status: status}
 	default:
-		return nil, &Unavailable{Path: AuthorizePath, Reason: fmt.Sprintf("answered %d", status)}
+		return nil, status, &Unavailable{Path: AuthorizePath, Reason: fmt.Sprintf("answered %d", status)}
 	}
 
 	// The decision is entirely in the headers; an undrained body keeps the
@@ -208,7 +235,7 @@ func (c *Client) Authorize(ctx context.Context, req AuthorizeRequest) (*Decision
 		RelayName:       response.Header.Get(HeaderRelayName),
 		OutputFormat:    response.Header.Get(HeaderRelayOutputFormat),
 		ClientIP:        response.Header.Get(HeaderRelayClientIP),
-	}, nil
+	}, status, nil
 }
 
 // deniedBody reads the denial's JSON body, or nil.

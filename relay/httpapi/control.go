@@ -10,6 +10,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 	"github.com/D10Scot/Dispatcharr/relay/session"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // controlLog and controlClock are the two nil-defaults every control handler
@@ -305,7 +306,22 @@ func AdvanceHandler(deps ControlDeps) http.HandlerFunc {
 			return
 		}
 
+		// relay.stream_switch (observability D11), owned here because this
+		// is the one place holding both the request's context -- Django's
+		// requests client span, adopted by RequireInternal -- and the
+		// channel, whose publishing tune it links to. Advance itself is
+		// unchanged.
+		_, span := telemetry.StartStreamSwitch(r.Context(), ch.TuneRef())
+		if ch.PK() > 0 {
+			span.SetChannelID(ch.PK())
+		}
 		applied := ch.Advance(channel.Resolved{Source: source, Info: infoFrom(candidate)}, req.ResetTried)
+		if applied {
+			span.SetOutcome(telemetry.OutcomeApplied)
+		} else {
+			span.SetOutcome(telemetry.OutcomeUnchanged)
+		}
+		span.End()
 		// change_stream_url reports SUCCESS for an unchanged URL even though
 		// update_url returned False: ":487-490 -- update_url() returns False
 		// for same URL; still success so metadata refreshes". The relay has

@@ -61,10 +61,10 @@ func (t *Telemetry) instruments(m metric.Meter) error {
 
 	_, err = m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		if f := t.channels.Load(); f != nil {
-			for state, n := range (*f)() {
-				if in(channelStates, state) {
-					o.ObserveInt64(chGauge, int64(n), metric.WithAttributes(attribute.String("state", state)))
-				}
+			// Zero-filled over the closed set; a state outside it is dropped.
+			counts := (*f)()
+			for _, state := range channelStateList {
+				o.ObserveInt64(chGauge, int64(counts[state]), metric.WithAttributes(attribute.String("state", state)))
 			}
 		}
 		if f := t.clients.Load(); f != nil {
@@ -101,7 +101,10 @@ func (t *Telemetry) instruments(m metric.Meter) error {
 				attribute.String("profile_id", strconv.Itoa(s.Labels.ProfileID)),
 			)
 			o.ObserveFloat64(cpuCounter, s.CPUSeconds, attrs)
-			if s.Live {
+			// A failed snapshot is no reading: M9 has no point for it rather
+			// than a false zero. M8 still reports its accumulator, which a
+			// failed snapshot only leaves where it was.
+			if s.Live && s.RSSKnown {
 				o.ObserveInt64(rssGauge, s.RSSBytes, attrs)
 			}
 		}
@@ -128,13 +131,27 @@ func (t *Telemetry) ObserveRewind(usage func() int64, limit func() (int64, bool)
 
 // ClientSent adds n to M3. A format outside the closed set is not recorded.
 func (t *Telemetry) ClientSent(ctx context.Context, channelID int, format string, n int) {
-	if n <= 0 || !in(formats, format) {
-		return
+	if opt, ok := clientSentAttrs(channelID, format); ok {
+		t.clientSentWith(ctx, opt, n)
 	}
-	t.clientSent.Add(ctx, int64(n), metric.WithAttributes(
+}
+
+// clientSentAttrs builds M3's attribute set once, so a writer that records
+// every write can reuse it. ok is false for a format outside the closed set.
+func clientSentAttrs(channelID int, format string) (metric.AddOption, bool) {
+	if !in(formats, format) {
+		return nil, false
+	}
+	return metric.WithAttributeSet(attribute.NewSet(
 		attribute.String("channel_id", strconv.Itoa(channelID)),
 		attribute.String("format", format),
-	))
+	)), true
+}
+
+func (t *Telemetry) clientSentWith(ctx context.Context, opt metric.AddOption, n int) {
+	if n > 0 {
+		t.clientSent.Add(ctx, int64(n), opt)
+	}
 }
 
 // Failover adds one to M4. A trigger or outcome outside its closed set is not recorded.
