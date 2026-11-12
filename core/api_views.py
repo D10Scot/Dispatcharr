@@ -17,6 +17,7 @@ from .models import (
     OutputProfile,
     CoreSettings,
     STREAM_SETTINGS_KEY,
+    AUTH_SETTINGS_KEY,
     DVR_SETTINGS_KEY,
     NETWORK_ACCESS_KEY,
 )
@@ -40,6 +41,7 @@ from apps.accounts.permissions import (
     permission_classes_by_action,
 )
 from dispatcharr.utils import get_client_ip
+from apps.accounts.oidc.errors import CodedError
 
 
 logger = logging.getLogger(__name__)
@@ -119,8 +121,21 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
         except KeyError:
             return [Authenticated()]
 
+    def _refuse_auth_settings(self, *keys):
+        """``auth_settings`` is written only through ``/api/accounts/oidc/settings/``.
+
+        Runs before the serializer validates, in every direction: a rename into the unique
+        key would otherwise answer with the serializer's uniqueness error and the refusal
+        could be removed with no test noticing (SSO spec 5.1).
+        """
+        # The serializer's CharField trims ``key``, so compare the trimmed spelling: a padded
+        # "auth_settings " is the same key once validated.
+        if any(isinstance(k, str) and k.strip() == AUTH_SETTINGS_KEY for k in keys):
+            raise CodedError("use_auth_settings_endpoint")
+
     def update(self, request, *args, **kwargs):
         instance = self.get_object()
+        self._refuse_auth_settings(instance.key, request.data.get("key"))
         old_value = instance.value
         response = super().update(request, *args, **kwargs)
 
@@ -154,7 +169,12 @@ class CoreSettingsViewSet(viewsets.ModelViewSet):
 
         return response
 
+    def destroy(self, request, *args, **kwargs):
+        self._refuse_auth_settings(self.get_object().key)
+        return super().destroy(request, *args, **kwargs)
+
     def create(self, request, *args, **kwargs):
+        self._refuse_auth_settings(request.data.get("key"))
         response = super().create(request, *args, **kwargs)
         # If creating DVR settings with offset values, reschedule upcoming recordings
         try:

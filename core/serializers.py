@@ -3,7 +3,8 @@ import json
 import ipaddress
 
 from rest_framework import serializers
-from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, PROXY_SETTINGS_KEY
+from .models import CoreSettings, UserAgent, StreamProfile, OutputProfile, AUTH_SETTINGS_KEY, DVR_SETTINGS_KEY, NETWORK_ACCESS_KEY, PROXY_SETTINGS_KEY
+from apps.accounts.oidc.errors import CodedError
 
 
 class UserAgentSerializer(serializers.ModelSerializer):
@@ -45,6 +46,14 @@ class CoreSettingsSerializer(serializers.ModelSerializer):
     class Meta:
         model = CoreSettings
         fields = "__all__"
+
+    def validate_key(self, value):
+        # Second layer of the auth_settings refusal (SSO spec 5.1): the view checks the raw
+        # request, this checks what validation produced, so no spelling of the key that the
+        # serializer normalises to "auth_settings" is ever written through this endpoint.
+        if value.strip() == AUTH_SETTINGS_KEY:
+            raise CodedError("use_auth_settings_endpoint")
+        return value
 
     def update(self, instance, validated_data):
         if instance.key == NETWORK_ACCESS_KEY:
