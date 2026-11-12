@@ -25,6 +25,9 @@ Replace `<container>` with the container's name. `dispatch` is the default datab
 your deployment sets `POSTGRES_USER`, use that name instead. Commands that prompt for input
 (`changepassword`, `createsuperuser`) need `-it`.
 
+Each command first prints the server's start-up log lines and warnings. The expected output
+shown below is the command's own lines, which come last.
+
 ## The procedure
 
 ### 1. Turn password sign-in back on
