@@ -4,6 +4,7 @@ import {
   Route,
   Routes,
   Navigate,
+  useNavigate,
 } from 'react-router-dom';
 import Sidebar from './components/Sidebar';
 import Login from './pages/Login';
@@ -23,7 +24,7 @@ import useAuthStore from './store/auth';
 import useLocalStorage from './hooks/useLocalStorage';
 import FloatingVideo from './components/FloatingVideo';
 import { WebsocketProvider } from './WebSocket';
-import { Box, AppShell, MantineProvider } from '@mantine/core';
+import { Box, AppShell, Center, Loader, MantineProvider } from '@mantine/core';
 import '@mantine/core/styles.css'; // Ensure Mantine global styles load
 import '@mantine/notifications/styles.css';
 import '@mantine/dropzone/styles.css';
@@ -34,10 +35,27 @@ import API from './api';
 import { Notifications } from '@mantine/notifications';
 import M3URefreshNotification from './components/M3URefreshNotification';
 import 'allotment/dist/style.css';
+import { SSO_LANDING_PATH } from './utils/sso/ssoUtils';
+import { showNotification } from './utils/notificationUtils';
 
 const drawerWidth = 240;
 const miniDrawerWidth = 60;
 const defaultRoute = '/channels';
+
+// Shown at /login/sso while the handoff runs, so neither route-table branch
+// redirects away from the URL that still carries the loader's work.
+const SsoHandoffLoader = () => (
+  <Center style={{ height: '100vh' }} data-testid="sso-handoff-loader">
+    <Loader aria-label="Signing you in" />
+  </Center>
+);
+
+// The auth effect lives outside <Router>, so it reaches navigation through this.
+const NavigateBridge = ({ navigateRef }) => {
+  const navigate = useNavigate();
+  navigateRef.current = navigate;
+  return null;
+};
 
 const App = () => {
   const [open, setOpen] = useLocalStorage('dispatcharr_sidebar_open', true);
@@ -46,6 +64,8 @@ const App = () => {
   const logout = useAuthStore((s) => s.logout);
   const initData = useAuthStore((s) => s.initData);
   const initializeAuth = useAuthStore((s) => s.initializeAuth);
+  const completeSsoHandoff = useAuthStore((s) => s.completeSsoHandoff);
+  const navigateRef = useRef(null);
   const setSuperuserStatus = useAuthStore((s) => s.setSuperuserStatus);
 
   const authCheckStarted = useRef(false);
@@ -85,8 +105,42 @@ const App = () => {
     if (authCheckStarted.current) return;
     authCheckStarted.current = true;
 
+    const goTo = (target) => {
+      if (navigateRef.current) {
+        navigateRef.current(target, { replace: true });
+      } else {
+        window.location.replace(target);
+      }
+    };
+
     const checkAuth = async () => {
       try {
+        // The SSO handoff runs BEFORE any refresh: a stale password pair would
+        // otherwise be refreshed first, and a refused refresh hard-navigates to
+        // /login, aborting the very exchange meant to replace it.
+        if (window.location.pathname === SSO_LANDING_PATH) {
+          const handoff = await completeSsoHandoff();
+          if (!handoff.ok) {
+            goTo(`/login?sso_error=${encodeURIComponent(handoff.ssoError)}`);
+            return;
+          }
+          if (await initializeAuth()) {
+            await initData();
+            if (handoff.intent === 'link') {
+              showNotification({
+                title: 'Single sign-on',
+                message: 'Your single sign-on account is now linked.',
+                color: 'green',
+              });
+            }
+            goTo(handoff.next);
+            return;
+          }
+          useAuthStore.getState().clearSession();
+          goTo('/login?sso_error=exchange_failed');
+          return;
+        }
+
         const loggedIn = await initializeAuth();
         if (loggedIn) {
           await initData();
@@ -101,7 +155,7 @@ const App = () => {
     };
 
     checkAuth();
-  }, [initializeAuth, initData, logout]);
+  }, [initializeAuth, initData, logout, completeSsoHandoff]);
 
   return (
     <MantineProvider
@@ -112,6 +166,7 @@ const App = () => {
     >
       <WebsocketProvider>
         <Router>
+          <NavigateBridge navigateRef={navigateRef} />
           <AppShell
             header={{
               height: 0,
@@ -164,9 +219,19 @@ const App = () => {
                         <Route path="/settings" element={<Settings />} />
                         <Route path="/logos" element={<LogosPage />} />
                         <Route path="/vods" element={<VODsPage />} />
+                        <Route
+                          path={SSO_LANDING_PATH}
+                          element={<SsoHandoffLoader />}
+                        />
                       </>
                     ) : (
-                      <Route path="/login" element={<Login />} />
+                      <>
+                        <Route path="/login" element={<Login />} />
+                        <Route
+                          path={SSO_LANDING_PATH}
+                          element={<SsoHandoffLoader />}
+                        />
+                      </>
                     )}
                     <Route
                       path="*"

@@ -226,6 +226,119 @@ export default class API {
     });
   }
 
+  // ---- Single sign-on (OIDC) -------------------------------------------------
+  // The browser-facing endpoints use origin-relative URLs, never `host`: in dev
+  // `host` is the :5656 origin, and the binding cookie that `link/start` sets and
+  // `exchange` needs is only sent same-origin. Vite proxies /api/ to :5656.
+
+  /** Login-page configuration. Unauthenticated: must not trigger a token refresh. */
+  static async getAuthConfig() {
+    return await request('/api/accounts/oidc/providers/', { auth: false });
+  }
+
+  /** Redeem the one-time handoff code. Unauthenticated, so a stale pair cannot abort it. */
+  static async exchangeSsoCode(code) {
+    return await request('/api/accounts/oidc/exchange/', {
+      auth: false,
+      method: 'POST',
+      body: { code },
+    });
+  }
+
+  /** Begin linking an SSO account to the signed-in user; resolves { authorize_url }. */
+  static async startSsoLink(slug, next) {
+    return await request(
+      `/api/accounts/oidc/${encodeURIComponent(slug)}/link/start/`,
+      { method: 'POST', body: next ? { next } : {} }
+    );
+  }
+
+  // Admin API. These throw the raw error so forms can render fixed copy for
+  // the response's `code`; they show no notification of their own.
+
+  static async getAuthSettings() {
+    return await request(`${host}/api/accounts/oidc/settings/`);
+  }
+
+  static async updateAuthSettings(values) {
+    return await request(`${host}/api/accounts/oidc/settings/`, {
+      method: 'PATCH',
+      body: values,
+    });
+  }
+
+  static async getOidcProviders() {
+    return await request(`${host}/api/accounts/oidc/providers-admin/`);
+  }
+
+  static async createOidcProvider(values) {
+    return await request(`${host}/api/accounts/oidc/providers-admin/`, {
+      method: 'POST',
+      body: values,
+    });
+  }
+
+  static async updateOidcProvider(id, values) {
+    return await request(`${host}/api/accounts/oidc/providers-admin/${id}/`, {
+      method: 'PATCH',
+      body: values,
+    });
+  }
+
+  static async deleteOidcProvider(id) {
+    return await request(`${host}/api/accounts/oidc/providers-admin/${id}/`, {
+      method: 'DELETE',
+    });
+  }
+
+  static async testOidcProvider(id) {
+    return await request(
+      `${host}/api/accounts/oidc/providers-admin/${id}/test/`,
+      { method: 'POST' }
+    );
+  }
+
+  static async generateOidcCertificate(id) {
+    return await request(
+      `${host}/api/accounts/oidc/providers-admin/${id}/certificate/`,
+      { method: 'POST' }
+    );
+  }
+
+  static async activateOidcCertificate(id, thumbprint) {
+    return await request(
+      `${host}/api/accounts/oidc/providers-admin/${id}/certificate/activate/`,
+      { method: 'POST', body: { thumbprint_sha256: thumbprint } }
+    );
+  }
+
+  /** The public certificate (PEM text) of a slot. The key is never downloadable. */
+  static async downloadOidcCertificate(id, slot) {
+    const token = await API.getAuthToken();
+    const response = await fetch(
+      `${host}/api/accounts/oidc/providers-admin/${id}/certificate/?slot=${encodeURIComponent(slot)}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!response.ok) {
+      const error = new Error(`HTTP error! Status: ${response.status}`);
+      error.status = response.status;
+      throw error;
+    }
+    return await response.text();
+  }
+
+  static async getOidcIdentities(userId) {
+    return await request(
+      `${host}/api/accounts/oidc/identities/?user=${encodeURIComponent(userId)}`
+    );
+  }
+
+  static async deleteOidcIdentity(id) {
+    return await request(`${host}/api/accounts/oidc/identities/${id}/`, {
+      method: 'DELETE',
+    });
+  }
+
   static async getChannels() {
     try {
       // Paginate through channels to avoid heavy single response

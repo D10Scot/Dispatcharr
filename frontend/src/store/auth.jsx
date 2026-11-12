@@ -11,6 +11,12 @@ import useUsersStore from './users';
 import API from '../api';
 import { USER_LEVELS } from '../constants';
 import { DEFAULT_ADMIN_ORDER, DEFAULT_USER_ORDER } from '../config/navigation';
+import { showNotification } from '../utils/notificationUtils.js';
+import {
+  credentialWarningMessage,
+  postLoginDestination,
+  safeNextPath,
+} from '../utils/sso/ssoUtils.js';
 
 const decodeToken = (token) => {
   if (!token) return null;
@@ -142,6 +148,11 @@ const useAuthStore = create((set, get) => ({
 
       // Note: Logos are loaded after the Channels page tables finish loading
       // This is handled by the tables themselves signaling completion
+
+      if (user.user_level >= USER_LEVELS.ADMIN) {
+        // Not awaited: a notice must never delay or fail the bootstrap.
+        get().showCredentialWarnings();
+      }
     } catch (error) {
       console.error('Error initializing data:', error);
       set({ isInitializing: false });
@@ -173,21 +184,110 @@ const useAuthStore = create((set, get) => ({
       : localStorage.getItem('accessToken');
   },
 
+  // Store a token pair exactly as a password login does. It REPLACES any stored
+  // pair and resets the initialisation flags so the next initData reloads `user`
+  // (initData skips an initialised session).
+  loginWithTokens: ({ access, refresh }) => {
+    const expiration = decodeToken(access);
+    set({
+      accessToken: access,
+      refreshToken: refresh,
+      tokenExpiration: expiration,
+      isInitialized: false,
+      isInitializing: false,
+    });
+    localStorage.setItem('accessToken', access);
+    localStorage.setItem('refreshToken', refresh);
+    localStorage.setItem('tokenExpiration', expiration);
+  },
+
+  // Drop the stored pair without calling the backend (logout() sends the
+  // possibly stale token through the refreshing request wrapper).
+  clearSession: () => {
+    set({
+      accessToken: null,
+      refreshToken: null,
+      tokenExpiration: null,
+      isAuthenticated: false,
+      isInitialized: false,
+      isInitializing: false,
+      user: null,
+    });
+    localStorage.removeItem('accessToken');
+    localStorage.removeItem('refreshToken');
+    localStorage.removeItem('tokenExpiration');
+  },
+
+  // Redeem the single-use handoff code the callback left in the URL fragment
+  // (spec 4, 5.7). Order matters: the fragment is read and REMOVED from the
+  // address bar before any network call, so it can never reach history, a
+  // Referer or a retry. The code is held in a local only: not logged, not stored.
+  completeSsoHandoff: async () => {
+    const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
+    const code = params.get('code');
+    window.history.replaceState(
+      null,
+      '',
+      window.location.pathname + window.location.search
+    );
+
+    const fail = (ssoError) => {
+      get().clearSession();
+      return { ok: false, ssoError };
+    };
+    if (!code) return fail('exchange_failed');
+
+    let response;
+    try {
+      response = await API.exchangeSsoCode(code);
+    } catch (error) {
+      return fail(
+        error?.body?.code === 'sso_unavailable'
+          ? 'sso_unavailable'
+          : 'exchange_failed'
+      );
+    }
+    if (!response?.access || !response?.refresh) {
+      return fail('exchange_failed');
+    }
+
+    get().loginWithTokens(response);
+    const intent = response.intent === 'link' ? 'link' : 'login';
+    // The server validated `next`; validate again, it is a navigation target.
+    const next =
+      intent === 'link'
+        ? '/users'
+        : postLoginDestination(safeNextPath(response.next));
+    return { ok: true, intent, next };
+  },
+
+  // One notification per credential that is expiring or expired (spec 5.2).
+  // A failure of the call is ignored.
+  showCredentialWarnings: async () => {
+    try {
+      const settings = await API.getAuthSettings();
+      const warnings = Array.isArray(settings?.credential_warnings)
+        ? settings.credential_warnings
+        : [];
+      warnings.forEach((warning) => {
+        showNotification({
+          title: 'Single sign-on credential',
+          message: credentialWarningMessage(warning),
+          color: warning?.state === 'expired' ? 'red' : 'yellow',
+          autoClose: false,
+        });
+      });
+    } catch {
+      // ignored by design
+    }
+  },
+
   // Action to login
   login: async ({ username, password }) => {
     try {
       const response = await API.login(username, password);
       if (response.access) {
-        const expiration = decodeToken(response.access);
-        set({
-          accessToken: response.access,
-          refreshToken: response.refresh,
-          tokenExpiration: expiration, // 1 hour from now
-        });
-        // Store in localStorage
-        localStorage.setItem('accessToken', response.access);
-        localStorage.setItem('refreshToken', response.refresh);
-        localStorage.setItem('tokenExpiration', expiration);
+        get().loginWithTokens(response);
 
         // Don't start background loading here - let it happen after app initialization
       }

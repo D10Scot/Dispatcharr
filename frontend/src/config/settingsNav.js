@@ -3,6 +3,7 @@ import {
   ArrowLeftRight,
   DatabaseBackup,
   FileOutput,
+  KeyRound,
   Menu,
   Monitor,
   Network,
@@ -25,6 +26,7 @@ const UserAgentsTable = lazy(() => import('../components/tables/UserAgentsTable.
 const NetworkAccessForm = lazy(() => import('../components/forms/settings/NetworkAccessForm.jsx'));
 const SystemSettingsForm = lazy(() => import('../components/forms/settings/SystemSettingsForm.jsx'));
 const UserLimitsForm = lazy(() => import('../components/forms/settings/UserLimitsForm.jsx'));
+const SsoSettingsForm = lazy(() => import('../components/forms/settings/SsoSettingsForm.jsx'));
 const BackupManager = lazy(() => import('../components/backups/BackupManager.jsx'));
 
 // Component lives on each section so it can never drift out of sync with the
@@ -75,6 +77,14 @@ export const SETTINGS_GROUPS = [
     sections: [
       { id: 'system-settings', label: 'System Settings', icon: Settings2, Component: SystemSettingsForm },
       { id: 'user-limits', label: 'User Limits', icon: Users, Component: UserLimitsForm },
+    ],
+  },
+  {
+    id: 'security',
+    label: 'Security',
+    adminOnly: true,
+    sections: [
+      { id: 'single-sign-on', label: 'Single sign-on', icon: KeyRound, Component: SsoSettingsForm },
     ],
   },
   {

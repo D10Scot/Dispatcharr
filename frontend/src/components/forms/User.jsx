@@ -38,6 +38,7 @@ import {
 } from '../../utils/forms/UserUtils.js';
 import { generateSecurePassword } from '../../utils/securePassword';
 import { selectableOutputProfiles } from '../../utils/outputProfiles';
+import SsoIdentities from './SsoIdentities';
 
 const User = ({ user = null, isOpen, onClose }) => {
   const profiles = useChannelsStore((s) => s.profiles);
@@ -119,6 +120,7 @@ const User = ({ user = null, isOpen, onClose }) => {
   const isAdmin = authUser.user_level == USER_LEVELS.ADMIN;
   const isEditingSelf = authUser.id === user?.id;
   const showPermissions = isAdmin && !isEditingSelf;
+  const showSso = Boolean(user?.id) && (isAdmin || isEditingSelf);
 
   const canGenerateKey =
     authUser.user_level == USER_LEVELS.ADMIN || authUser.id === user?.id;
@@ -186,6 +188,7 @@ const User = ({ user = null, isOpen, onClose }) => {
             )}
             <TabsTab value="epg">EPG Defaults</TabsTab>
             <TabsTab value="api">API &amp; XC</TabsTab>
+            {showSso && <TabsTab value="sso">Single sign-on</TabsTab>}
           </TabsList>
 
           <TabsPanel value="account">
@@ -307,6 +310,16 @@ const User = ({ user = null, isOpen, onClose }) => {
               </Group>
             </Stack>
           </TabsPanel>
+
+          {showSso && (
+            <TabsPanel value="sso">
+              <SsoIdentities
+                userId={user.id}
+                isAdmin={isAdmin}
+                isSelf={isEditingSelf}
+              />
+            </TabsPanel>
+          )}
 
           <TabsPanel value="api">
             <Stack gap="sm">
