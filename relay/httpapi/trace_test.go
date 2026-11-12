@@ -478,8 +478,9 @@ func TestARefusedNextSourceEndsTheTuneRefused(t *testing.T) {
 	noUUIDAnywhere(t, rec)
 }
 
-// 4. Untrusted context is ignored: X-Relay-Traceparent without the marker,
-// and a bare traceparent with it, both leave relay.tune a root.
+// 4. Untrusted context is ignored: X-Relay-Traceparent without the marker or
+// beside a forged one, and a bare traceparent with a valid one, all leave
+// relay.tune a root.
 func TestUntrustedTraceContextIsIgnored(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -493,6 +494,14 @@ func TestUntrustedTraceContextIsIgnored(t *testing.T) {
 		{"a bare traceparent with the marker", func() http.Header {
 			h := trustedHeader(traceUUID, false)
 			h.Set("Traceparent", telemetrytest.Traceparent(parentTrace, parentSpan))
+			return h
+		}},
+		// A non-empty marker that is not this relay's: one minted under
+		// another secret. Only the real HMAC check, not the marker's
+		// presence, keeps a client from choosing the trace id.
+		{"x-relay-traceparent with a forged marker", func() http.Header {
+			h := trustedHeader(traceUUID, true)
+			h.Set(control.HeaderAuthorized, control.RelayTrustToken("not-"+testSecret))
 			return h
 		}},
 	} {

@@ -445,6 +445,10 @@ func (m *Manager) take(id string) *Channel {
 // property of the code rather than of four call sites.
 func (m *Manager) removeLocked(c *Channel, site string) {
 	delete(m.channels, c.id)
+	// The UUID's mapping goes with the map entry, so a line the channel logs
+	// after this (its stop, its release) renders channel_id "0" in the JSON
+	// and OTLP sinks: no id, never the UUID. The safe direction; the docs
+	// page (observability O7) says so.
 	telemetry.Current().ChannelIDs().Delete(c.id)
 	select {
 	case <-c.released:

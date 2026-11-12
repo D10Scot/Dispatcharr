@@ -61,10 +61,10 @@ func (t *Telemetry) instruments(m metric.Meter) error {
 
 	_, err = m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
 		if f := t.channels.Load(); f != nil {
-			for state, n := range (*f)() {
-				if in(channelStates, state) {
-					o.ObserveInt64(chGauge, int64(n), metric.WithAttributes(attribute.String("state", state)))
-				}
+			// Zero-filled over the closed set; a state outside it is dropped.
+			counts := (*f)()
+			for _, state := range channelStateList {
+				o.ObserveInt64(chGauge, int64(counts[state]), metric.WithAttributes(attribute.String("state", state)))
 			}
 		}
 		if f := t.clients.Load(); f != nil {

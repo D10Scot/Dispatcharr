@@ -709,10 +709,9 @@ test(
   "the relay's /metrics is served on its own port and never through nginx",
   { tag: '@contract' },
   async ({ request }) => {
-    // 1. Positive control: the relay serves the catalogue in-container. The
-    // anchor is M5, which the relay observes unconditionally: M1
-    // (mino_relay_channels) has a series only per state some channel is in,
-    // so an idle relay writes no TYPE line for it at all.
+    // 1. Positive control: the relay serves the catalogue in-container. M1 is
+    // zero-filled over its closed state set, so its family is present on an
+    // idle relay; M5, observed unconditionally, is a second anchor.
     const { stdout: scrape } = await execFileAsync('docker', [
       'exec',
       CONTAINER_NAME,
@@ -721,6 +720,9 @@ test(
       'curl -fsS "http://127.0.0.1:${DISPATCHARR_RELAY_GO_PORT:-5658}/metrics"',
     ]);
     expect(scrape, 'the relay did not serve its metric catalogue in-container').toContain(
+      '# TYPE mino_relay_channels gauge'
+    );
+    expect(scrape, 'the relay did not serve M5 in-container').toContain(
       '# TYPE mino_relay_hls_sessions gauge'
     );
 

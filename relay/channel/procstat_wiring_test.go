@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
+	"github.com/D10Scot/Dispatcharr/relay/internal/relaytest"
+	"github.com/D10Scot/Dispatcharr/relay/output"
 	"github.com/D10Scot/Dispatcharr/relay/procstat"
 	"github.com/D10Scot/Dispatcharr/relay/telemetry/telemetrytest"
 )
@@ -70,4 +72,39 @@ func TestATranscodeSourceIsTrackedWhileItRuns(t *testing.T) {
 			t.Errorf("M8 for channel 4242/source fell from %v to %v across the process's end", before, after)
 		}
 	}
+}
+
+// A profiled fMP4 chain's remux, attached under the output key "fmp4:p12",
+// is tracked as kind=fmp4 with the profile id the key carries (D7), so its
+// cost is counted against the profile it reads rather than the bare format.
+func TestAProfiledFMP4RemuxIsTrackedUnderTheProfileItsKeyCarries(t *testing.T) {
+	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
+	t.Cleanup(m.StopAll)
+	const pk = 4801
+	ch, release, err := m.Attach("procstat-chain", testClient("a"), func() (Started, error) {
+		return Started{Source: blockingSource{started: &int32Counter{}}, Tuning: testTuning(), ChannelPK: pk}, nil
+	})
+	if err != nil {
+		t.Fatalf("Attach: %v", err)
+	}
+	t.Cleanup(release)
+
+	t.Setenv(relaytest.StandInEnv, "1")
+	command, argv := relaytest.StandInCommand("--fmp4-fragments", "100000", "--fmp4-interval", "0.05")
+	_, stop, err := ch.AttachOutput("fmp4:p12", OutputSpec{Remux: output.Remux{Command: command, Argv: argv, ArgvNoBSF: argv}})
+	if err != nil {
+		t.Fatalf("AttachOutput: %v", err)
+	}
+	want := procstat.Labels{ChannelID: pk, Kind: procstat.KindFMP4, ProfileID: 12}
+	tracked := func() bool {
+		for _, g := range procstat.Default.Groups() {
+			if g.Labels == want {
+				return true
+			}
+		}
+		return false
+	}
+	waitFor(t, "the chain's remux to be tracked under profile 12", 5*time.Second, tracked)
+	stop()
+	waitFor(t, "the chain's remux to be unregistered", 5*time.Second, func() bool { return !tracked() })
 }

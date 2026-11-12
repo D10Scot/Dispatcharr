@@ -419,11 +419,12 @@
 2	relay/channel/fanout_test.go
 1	relay/channel/hlsoutput.go
 2	relay/channel/hlsoutput_test.go
+2	relay/channel/labels_test.go
 3	relay/channel/linger_test.go
 2	relay/channel/manager.go
 2	relay/channel/manager_test.go
 2	relay/channel/output.go
-3	relay/channel/procstat_wiring_test.go
+5	relay/channel/procstat_wiring_test.go
 1	relay/channel/reclaim_test.go
 1	relay/channel/sessions_test.go
 1	relay/channel/source_proxy.go
@@ -464,6 +465,7 @@
 1	relay/hls/helpers_test.go
 3	relay/hls/pipeline.go
 1	relay/hls/pipeline_test.go
+1	relay/hls/procstat_wiring_test.go
 1	relay/hls/real_test.go
 2	relay/hls/rewind.go
 2	relay/hls/silence.go
@@ -517,6 +519,7 @@
 9	relay/main.go
 4	relay/output/fmp4.go
 3	relay/output/pipeline_test.go
+2	relay/output/procstat_wiring_test.go
 4	relay/output/profile.go
 2	relay/output/profile_real_test.go
 2	relay/output/profile_test.go
@@ -530,6 +533,7 @@
 2	relay/session/sweep_test.go
 2	relay/session/table.go
 2	relay/session/table_test.go
+1	relay/telemetry/channels_zero_test.go
 1	relay/telemetry/endpoint_test.go
 2	relay/telemetry/fww_cache_test.go
 2	relay/telemetry/install_test.go

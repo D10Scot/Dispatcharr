@@ -87,6 +87,10 @@ func logKeyCensus(t *testing.T, root string) []censusKey {
 				if len(call.Args) <= msg {
 					return true
 				}
+				// A message that is neither a literal nor a concatenation (a
+				// variable, a call) is not recognised, and its call's keys are
+				// not inventoried. Inventory only: SafeHandler still drops an
+				// unclassified key at run time, whatever the call's shape.
 				if _, ok := stringLit(call.Args[msg]); !ok {
 					if _, concat := call.Args[msg].(*ast.BinaryExpr); !concat {
 						return true
