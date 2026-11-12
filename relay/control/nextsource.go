@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/redact"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // The three stream-profile architectures, as StreamProfileRef.Kind spells
@@ -236,6 +237,12 @@ type NextSourceAnswer struct {
 	// preview) and when the key is absent.
 	HLSProfile *HLSProfileRef `json:"-"`
 
+	// ChannelPK is the channel's numeric id (observability O3), the identity
+	// telemetry labels a channel with in place of its UUID (D9). Nil when the
+	// answer names no channel: a stream preview, a deleted channel, and a
+	// control plane older than O3.
+	ChannelPK *int `json:"channel_pk"`
+
 	// HLSProfilePresent reports whether the answer carried hls_profile at
 	// all. An ABSENT key is a control plane older than 4a-1d and is a contract
 	// mismatch an HLS entry answers 502 for; JSON null is "no HLS profile,
@@ -381,27 +388,75 @@ func NewHTTPClient() *http.Client {
 // A 404 is mapped to an answer with a nil Source and the error string
 // "identifier not found", NOT to an error: the channel was deleted mid
 // playback, which is an answer (apps/proxy/control_plane.py:158-165).
+//
+// It owns relay.next_source (observability D11): the span starts from ctx, so
+// it is the child of relay.tune or relay.failover, and ends before this
+// returns, with the outcome the answer or the error says.
 func (c *Client) NextSource(ctx context.Context, identifier string, req NextSourceRequest) (*NextSourceAnswer, error) {
+	ctx, span := telemetry.StartNextSource(ctx, nextSourceReason(req.Reason))
+	defer span.End()
+	answer, status, err := c.nextSource(ctx, identifier, req)
+	if status != 0 {
+		span.SetStatusCode(status)
+	}
+	span.SetOutcome(nextSourceOutcome(answer, err))
+	span.SetError(err)
+	return answer, err
+}
+
+// nextSourceReason maps the wire's reason onto relay.next_source's closed
+// set. A reason the relay does not send maps to "", which the span's
+// attribute check drops.
+func nextSourceReason(wire string) string {
+	switch wire {
+	case "initial":
+		return telemetry.ReasonTune
+	case "failover":
+		return telemetry.ReasonFailover
+	case "resume":
+		return telemetry.ReasonResume
+	}
+	return ""
+}
+
+// nextSourceOutcome is relay.next_source's mino.outcome.
+func nextSourceOutcome(answer *NextSourceAnswer, err error) string {
+	var refused *Refused
+	switch {
+	case errors.As(err, &refused):
+		return telemetry.OutcomeRefused
+	case err != nil:
+		return telemetry.OutcomeUnavailable
+	case answer.Source != nil:
+		return telemetry.OutcomeSource
+	}
+	if _, blocked := answer.Blocked(); blocked {
+		return telemetry.OutcomeBlocked
+	}
+	return telemetry.OutcomeNoSource
+}
+
+func (c *Client) nextSource(ctx context.Context, identifier string, req NextSourceRequest) (*NextSourceAnswer, int, error) {
 	path := "/api/relay/channels/" + identifier + "/next-source"
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("encoding the next-source request: %w", err) // credential-logging: ok - encoding/json reports a TYPE it cannot encode, never a field's value
+		return nil, 0, fmt.Errorf("encoding the next-source request: %w", err) // credential-logging: ok - encoding/json reports a TYPE it cannot encode, never a field's value
 	}
 
 	raw, status, err := c.post(ctx, path, body)
 	if err != nil {
 		var refused *Refused
 		if errors.As(err, &refused) && status == http.StatusNotFound {
-			return &NextSourceAnswer{Alternates: []Source{}, Error: "identifier not found"}, nil
+			return &NextSourceAnswer{Alternates: []Source{}, Error: "identifier not found"}, status, nil
 		}
-		return nil, err
+		return nil, status, err
 	}
 
 	var answer NextSourceAnswer
 	if err := json.Unmarshal(raw, &answer); err != nil {
-		return nil, &Unavailable{Path: path, Reason: "2xx body did not decode as a next-source answer", Err: err}
+		return nil, status, &Unavailable{Path: path, Reason: "2xx body did not decode as a next-source answer", Err: err}
 	}
-	return &answer, nil
+	return &answer, status, nil
 }
 
 // post is the disposition table from spec § Error handling per hop, in full.
@@ -466,6 +521,10 @@ func (c *Client) attempt(
 	// constant is what keeps that true when one is added.
 	request.Header.Set(HeaderInternalRequest,
 		InternalRequestHeader(c.Secret, http.MethodPost, path, body, now().Unix()))
+	// The trace context of relay.next_source (D11). The bound token signs
+	// method, path, timestamp and body, never a header, so this changes no
+	// signature.
+	telemetry.InjectTraceparent(ctx, request.Header)
 
 	response, err := httpClient.Do(request)
 	if err != nil {

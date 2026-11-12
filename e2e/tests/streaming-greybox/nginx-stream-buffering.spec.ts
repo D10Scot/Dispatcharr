@@ -169,7 +169,8 @@ const PROXY_BOUND_TARGETS = [
 
 /**
  * Both halves, for the assertions that are directive-family-agnostic: the
- * authorize subrequest, the eight `auth_request_set` variables and the
+ * authorize subrequest, the eight `auth_request_set` variables (nine on the
+ * three proxy-bound locations) and the
  * `error_page` that restores the hop's real status.
  *
  * Two locations are absent on purpose, for different reasons, and a third
@@ -284,6 +285,14 @@ const FORWARDED_RELAY_HEADERS = [
   'X-Relay-Client-IP',
 ];
 
+/**
+ * Forwarded on the three proxy-bound locations only (observability spec D11):
+ * the authorize hop's trace context, carried to the relay so relay.tune is
+ * the hop's child. The six uWSGI-bound locations do not forward it, because
+ * nothing on the Python side reads it; both blanking includes blank it.
+ */
+const PROXY_FORWARDED_RELAY_HEADERS = ['X-Relay-Traceparent'];
+
 /** `X-Relay-Channel` -> `HTTP_X_RELAY_CHANNEL`, nginx's HTTP_-prefixed form. */
 const uwsgiParamName = (header: string) => `HTTP_${header.toUpperCase().replace(/-/g, '_')}`;
 
@@ -333,6 +342,26 @@ test(
           block.body.some((line) => pattern.test(line)),
           `location "${block.header}" captures but does not forward ${header}`
         ).toBe(true);
+      }
+
+      if (proxied) {
+        for (const header of PROXY_FORWARDED_RELAY_HEADERS) {
+          const variable = `$relay_${header.replace(/^X-Relay-/, '').toLowerCase()}`;
+          expect(
+            block.body.some((line) =>
+              new RegExp(
+                `^\\s*auth_request_set\\s+\\${variable}\\s+\\$upstream_http_${header.toLowerCase().replace(/-/g, '_')}\\s*;`
+              ).test(line)
+            ),
+            `location "${block.header}" does not capture ${header} from the subrequest`
+          ).toBe(true);
+          expect(
+            block.body.some((line) =>
+              new RegExp(`^\\s*proxy_set_header\\s+${header}\\s+\\${variable}\\s*;`).test(line)
+            ),
+            `location "${block.header}" captures but does not forward ${header}`
+          ).toBe(true);
+        }
       }
 
       // The marker: a literal "1" here would let anyone who can reach the
@@ -474,6 +503,7 @@ test(
     for (const param of [
       'HTTP_X_DISPATCHARR_AUTHORIZED',
       ...FORWARDED_RELAY_HEADERS.map(uwsgiParamName),
+      ...PROXY_FORWARDED_RELAY_HEADERS.map(uwsgiParamName),
     ]) {
       expect(
         new RegExp(`^\\s*uwsgi_param\\s+${param}\\s+""\\s*;`, 'm').test(paramsFile![1]),
@@ -492,7 +522,11 @@ test(
       proxyParamsFile,
       'nginx -T did not dump dispatcharr_api_params_proxy.conf'
     ).toBeTruthy();
-    for (const header of ['X-Dispatcharr-Authorized', ...FORWARDED_RELAY_HEADERS]) {
+    for (const header of [
+      'X-Dispatcharr-Authorized',
+      ...FORWARDED_RELAY_HEADERS,
+      ...PROXY_FORWARDED_RELAY_HEADERS,
+    ]) {
       expect(
         new RegExp(`^\\s*proxy_set_header\\s+${header}\\s+""\\s*;`, 'm').test(
           proxyParamsFile![1]
@@ -663,5 +697,46 @@ test(
         `location "${block.header}" does not set proxy_connect_timeout 60s:\n${body}`
       ).toBe(true);
     }
+  }
+);
+
+/**
+ * Observability spec D6: the relay's `/metrics` is served on its own port and
+ * never routed by nginx. Three parts, each guarding the next against a vacuous
+ * pass.
+ */
+test(
+  "the relay's /metrics is served on its own port and never through nginx",
+  { tag: '@contract' },
+  async ({ request }) => {
+    // 1. Positive control: the relay serves the catalogue in-container.
+    const { stdout: scrape } = await execFileAsync('docker', [
+      'exec',
+      CONTAINER_NAME,
+      'sh',
+      '-c',
+      'curl -fsS "http://127.0.0.1:${DISPATCHARR_RELAY_GO_PORT:-5658}/metrics"',
+    ]);
+    expect(scrape, 'the relay did not serve its metric catalogue in-container').toContain(
+      '# TYPE mino_relay_channels gauge'
+    );
+
+    // 2. Not through nginx, in any spelling a location could match.
+    for (const path of ['/metrics', '/metrics/', '/metrics?x=1']) {
+      const response = await request.get(path);
+      expect(
+        await response.text(),
+        `GET ${path} through nginx answered ${response.status()} with the relay's metrics`
+      ).not.toContain('mino_relay_');
+    }
+
+    // 3. No location that proxies to relay_go targets /metrics: the five
+    // Go-bound targets stay exactly the known set.
+    const { stdout } = await execFileAsync('docker', ['exec', CONTAINER_NAME, 'nginx', '-T']);
+    const goBound = parseLocationBlocks(stdout)
+      .filter((b) => b.body.some((line) => /^\s*proxy_pass\s+http:\/\/relay_go\s*;/.test(line)))
+      .map((b) => b.target)
+      .sort();
+    expect(goBound).toEqual([...PROXY_BOUND_TARGETS, '/proxy/relay/', ...TOKEN_BOUND_TARGETS].sort());
   }
 );

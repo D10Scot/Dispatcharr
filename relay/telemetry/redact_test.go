@@ -139,7 +139,7 @@ func TestEveryAttributeRuleRejectsItsHostileValue(t *testing.T) {
 		"bare XC path":             attribute.String(AttrRoute, "GET /user/"+sentinel+"/42"),
 		"bare XC path, no method":  attribute.String(AttrRoute, "/user/"+sentinel+"/42"),
 		"live XC path":             attribute.String(AttrRoute, "GET /live/user/"+sentinel+"/42"),
-		"route not registered":     attribute.String(AttrRoute, "GET /metrics"),
+		"route not registered":     attribute.String(AttrRoute, "GET /debug/pprof/"),
 		"status out of range":      attribute.Int(AttrStatusCode, 999),
 		"status as string":         attribute.String(AttrStatusCode, "200"),
 		"unlisted key":             attribute.String("http.url", sentinel),
@@ -422,8 +422,8 @@ func TestRoutePatternsEqualTheRegisteredMuxPatterns(t *testing.T) {
 	if !slices.Equal(found, want) {
 		t.Fatalf("registered patterns differ from telemetry.RoutePatterns:\n registered: %q\n set:        %q", found, want)
 	}
-	if len(found) != 13 {
-		t.Errorf("%d patterns, want 13", len(found))
+	if len(found) != 14 {
+		t.Errorf("%d patterns, want 14", len(found))
 	}
 }
 

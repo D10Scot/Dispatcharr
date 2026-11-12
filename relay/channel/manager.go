@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // ManagerConfig is what a Manager needs.
@@ -141,6 +142,16 @@ type Started struct {
 	// HLSProfile is the channel's HLS Output Profile from the same answer
 	// (Phase 4a-1d), refreshed by every later non-degraded answer.
 	HLSProfile HLSProfile
+
+	// ChannelPK is the channel's numeric id from the answer (observability
+	// O3), the only identity telemetry labels the channel with (D9). Zero
+	// when the answer named none: a stream preview, an older control plane.
+	ChannelPK int
+
+	// Tune is the publishing tune's span context, which every later
+	// relay.failover and relay.stream_switch links to (D11). The zero value
+	// links nothing.
+	Tune telemetry.SpanRef
 }
 
 // Attach returns the channel for id, starting it from start() if it is not
@@ -298,6 +309,8 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 		released:   make(chan struct{}),
 		onReleased: m.released,
 		id:         id,
+		pk:         started.ChannelPK,
+		tuneRef:    started.Tune,
 		ring: buffer.New(buffer.Config{
 			BudgetBytes: m.cfg.BudgetBytes,
 			ChunkBytes:  started.Tuning.ChunkBytes,
@@ -356,6 +369,12 @@ func (m *Manager) publish(id string, client *Client, started Started) *Channel {
 
 	m.mu.Lock()
 	m.channels[id] = c
+	// D9: the UUID -> numeric id map every telemetry carrier resolves a
+	// channel through, filled under the same lock as the map entry and
+	// emptied by removeLocked under it, so the two never disagree.
+	if c.pk > 0 {
+		telemetry.Current().ChannelIDs().Set(id, c.pk)
+	}
 	m.mu.Unlock()
 
 	// channel_start (live_proxy/server.py:832-842), raised where Python
@@ -426,6 +445,7 @@ func (m *Manager) take(id string) *Channel {
 // property of the code rather than of four call sites.
 func (m *Manager) removeLocked(c *Channel, site string) {
 	delete(m.channels, c.id)
+	telemetry.Current().ChannelIDs().Delete(c.id)
 	select {
 	case <-c.released:
 	default:
@@ -631,6 +651,53 @@ func (m *Manager) Snapshot() []*Channel {
 	}
 	m.mu.Unlock()
 	sort.Slice(out, func(i, j int) bool { return out[i].id < out[j].id })
+	return out
+}
+
+// ChannelStates counts the running channels by state: M1's observation.
+func (m *Manager) ChannelStates() map[string]int {
+	out := map[string]int{}
+	for _, c := range m.Snapshot() {
+		out[string(c.State())]++
+	}
+	return out
+}
+
+// ClientCounts groups every running channel's clients by channel, output
+// format and Output Profile: M2's observation. A channel with no numeric id
+// (a stream preview) is not counted: its only identity is a secret.
+func (m *Manager) ClientCounts() []telemetry.ClientCount {
+	type key struct {
+		format  string
+		profile int
+	}
+	var out []telemetry.ClientCount
+	for _, c := range m.Snapshot() {
+		if c.pk <= 0 {
+			continue
+		}
+		counts := map[key]int{}
+		for _, cl := range c.ClientSnapshot() {
+			k := key{format: cl.OutputFormat}
+			if cl.OutputProfileID != nil {
+				k.profile = *cl.OutputProfileID
+			}
+			counts[k]++
+		}
+		keys := make([]key, 0, len(counts))
+		for k := range counts {
+			keys = append(keys, k)
+		}
+		sort.Slice(keys, func(i, j int) bool {
+			if keys[i].format != keys[j].format {
+				return keys[i].format < keys[j].format
+			}
+			return keys[i].profile < keys[j].profile
+		})
+		for _, k := range keys {
+			out = append(out, telemetry.ClientCount{ChannelID: c.pk, Format: k.format, ProfileID: k.profile, N: counts[k]})
+		}
+	}
 	return out
 }
 

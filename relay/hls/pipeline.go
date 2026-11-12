@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/ffmpeg"
+	"github.com/D10Scot/Dispatcharr/relay/procstat"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
@@ -109,6 +110,11 @@ type Spawn struct {
 type Config struct {
 	// ChannelID names the channel in logs.
 	ChannelID string
+	// ChannelPK and ProfileID label the pipeline's probe and encoder process
+	// groups for M8 and M9 (observability D7): the channel's numeric id and
+	// its HLS Output Profile's id, zero for the built-in re-encode.
+	ChannelPK int
+	ProfileID int
 	// Source is the channel: its ring and its boundaries.
 	Source Source
 	// Mode is the HLS profile's mode: the built-in transcode (the zero
@@ -151,6 +157,11 @@ type Config struct {
 	// Log and Now are the logger and the clock.
 	Log *slog.Logger
 	Now func() time.Time
+}
+
+// procLabels is the pipeline's procstat label set.
+func (p *Pipeline) procLabels() procstat.Labels {
+	return procstat.Labels{ChannelID: p.cfg.ChannelPK, Kind: procstat.KindHLS, ProfileID: p.cfg.ProfileID}
 }
 
 // Pipeline is one channel's HLS output (spec § State): the current
@@ -696,6 +707,7 @@ func (p *Pipeline) probe(ctx context.Context, gen int, start uint64, bound Probe
 	if err != nil {
 		return Probe{}, feedResult{end: feedWriteFailed}, fmt.Errorf("hls: starting the probe: %w", redact.Error(err))
 	}
+	proc.Track(p.procLabels())
 	stderrDone := make(chan struct{})
 	go func() {
 		defer close(stderrDone)
@@ -896,6 +908,7 @@ func (p *Pipeline) attempt(ctx context.Context, gen, n int, start uint64, probe 
 		p.log.Error("the HLS encoder could not start", "generation", gen, "error", redact.Error(err))
 		return genResult{outcome: outcomeEarly}
 	}
+	proc.Track(p.procLabels())
 
 	seg := newSegmenter(p.store, gen, encoded, silence, p.now, p.cfg.AudioWait, onFirst)
 	seg.target, seg.copied = uint64(max(out.Target, 0)), plan.VideoCopy // #nosec G115 -- a target duration in seconds, 2 to 6

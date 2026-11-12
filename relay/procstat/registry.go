@@ -52,6 +52,11 @@ type Sample struct {
 	RSSBytes int64
 	// Live reports whether a group with these labels is still tracked.
 	Live bool
+	// RSSKnown reports whether this collection read the host: false when the
+	// snapshot failed, and then RSSBytes is not a reading and M9 has no point
+	// for the label set rather than a false zero. CPUSeconds is still the
+	// accumulator, which a failed snapshot only leaves where it was.
+	RSSKnown bool
 }
 
 // Group is a registered process group.
@@ -77,6 +82,8 @@ type Registry struct {
 	acc    map[Labels]float64
 	seen   map[identity]seenInfo // the last observation of each identity
 	obs    map[Labels]bool       // label sets that have had a member observed
+
+	onError func(error) // called, outside mu, when a snapshot fails
 }
 
 type seenInfo struct {
@@ -136,6 +143,16 @@ func (r *Registry) Track(pgid int, l Labels) (untrack func()) {
 	}
 }
 
+// SetErrorHook installs f, called with the error each time a snapshot fails.
+// It is called outside the Registry's lock, so f may log. The relay's hook
+// logs the error's type only, rate limited: a persistently unreadable /proc
+// would otherwise silence M8 and M9 with nothing saying why.
+func (r *Registry) SetErrorHook(f func(error)) {
+	r.mu.Lock()
+	r.onError = f
+	r.mu.Unlock()
+}
+
 // Groups lists the groups currently registered, ordered by group id.
 func (r *Registry) Groups() []Group {
 	r.mu.Lock()
@@ -151,10 +168,20 @@ func (r *Registry) Groups() []Group {
 // Collect reads the host once and returns one Sample per label set that has
 // ever had a member observed (a platform without /proc reports none). With nothing tracked it reads nothing.
 func (r *Registry) Collect() []Sample {
+	out, hook, failed := r.collect()
+	if failed != nil && hook != nil {
+		hook(failed)
+	}
+	return out
+}
+
+// collect is Collect under the lock. It returns the snapshot's error, if one
+// failed, and the hook to report it to, so Collect can call the hook unlocked.
+func (r *Registry) collect() ([]Sample, func(error), error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if len(r.acc) == 0 {
-		return nil
+		return nil, nil, nil
 	}
 
 	byGroup := map[int][]Labels{}
@@ -169,8 +196,10 @@ func (r *Registry) Collect() []Sample {
 	}
 
 	var present map[identity]bool // nil unless a snapshot succeeded
+	var failed error
 	if len(byGroup) > 0 {
 		procs, err := r.src.Snapshot()
+		failed = err
 		if err == nil {
 			present = map[identity]bool{}
 			ticks := r.src.TicksPerSecond()
@@ -232,7 +261,7 @@ func (r *Registry) Collect() []Sample {
 		if !r.obs[l] {
 			continue // never observed (no /proc): no point rather than a zero
 		}
-		out = append(out, Sample{Labels: l, CPUSeconds: cpu, RSSBytes: rss[l], Live: live[l]})
+		out = append(out, Sample{Labels: l, CPUSeconds: cpu, RSSBytes: rss[l], Live: live[l], RSSKnown: present != nil})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		a, b := out[i].Labels, out[j].Labels
@@ -244,5 +273,5 @@ func (r *Registry) Collect() []Sample {
 		}
 		return a.ProfileID < b.ProfileID
 	})
-	return out
+	return out, r.onError, failed
 }

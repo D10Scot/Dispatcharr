@@ -31,9 +31,9 @@ linters:
             - "!**/relay/main.go"
           deny:
             - pkg: go.opentelemetry.io
-              desc: OTel stays in relay/telemetry (observability spec D2, ADR 0011)
+              desc: OTel stays in relay/telemetry; relay/main.go is exempt only to wire Init and Shutdown (observability spec D2, ADR 0011)
             - pkg: github.com/prometheus
-              desc: the Prometheus client stays in relay/telemetry (observability spec D2, ADR 0011)
+              desc: the Prometheus client stays in relay/telemetry; relay/main.go is exempt only to wire Init and Shutdown (observability spec D2, ADR 0011)
         no-drivers:
           files:
             - $all

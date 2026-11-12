@@ -84,6 +84,7 @@ const HeaderRelayTraceparent = "X-Relay-Traceparent"
 var RoutePatterns = []string{
 	"GET /healthz",
 	"GET /readyz",
+	"GET /metrics",
 	"GET /proxy/ts/stream/{channelID}",
 	"GET /live/{username}/{password}/{channelID}",
 	"GET /{username}/{password}/{channelID}",

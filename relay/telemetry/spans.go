@@ -8,6 +8,7 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 )
@@ -183,6 +184,12 @@ func StartTune(ctx context.Context, r *http.Request, trusted bool) (context.Cont
 	return ctx, &Tune{t: t, span: span, ctx: ctx}
 }
 
+// SpanRefFrom returns the span context ctx carries, for a later link. A
+// context with no span gives the zero SpanRef, which links nothing.
+func SpanRefFrom(ctx context.Context) SpanRef {
+	return SpanRef{sc: trace.SpanContextFromContext(ctx)}
+}
+
 // Ref returns the tune's span context, for a channel to store.
 func (u *Tune) Ref() SpanRef { return SpanRef{sc: u.span.SpanContext()} }
 
@@ -286,6 +293,14 @@ type FirstWriteWriter struct {
 	set    bool
 	chanID int
 	format string
+
+	// The M3 attribute set of the last labels seen, built once rather than on
+	// every write (O2 review, nit 15): a TS viewer is written to several
+	// times a second for hours, and the labels change at most once.
+	attrsFor  sentLabels // the labels the cached set was built for
+	attrs     metric.AddOption
+	attrsOK   bool
+	attrsMade bool
 }
 
 // NewFirstWriteWriter wraps w. tune may be nil (the HLS handler counts M3
@@ -310,14 +325,29 @@ func (w *FirstWriteWriter) Write(p []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(p)
 	if n > 0 && w.armed.Load() {
 		ctx := context.Background()
-		id, format := w.labelsNow()
 		if w.tune != nil {
 			ctx = w.tune.ctx
 			w.tune.FirstByte()
 		}
-		w.t.ClientSent(ctx, id, format, n)
+		if opt, ok := w.sentAttrs(); ok {
+			w.t.clientSentWith(ctx, opt, n)
+		}
 	}
 	return n, err
+}
+
+// sentAttrs returns M3's attribute set for the current labels, rebuilding it
+// only when they changed since the last write.
+func (w *FirstWriteWriter) sentAttrs() (metric.AddOption, bool) {
+	id, format := w.labelsNow()
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	key := sentLabels{id, format}
+	if !w.attrsMade || w.attrsFor != key {
+		w.attrs, w.attrsOK = clientSentAttrs(id, format)
+		w.attrsFor, w.attrsMade = key, true
+	}
+	return w.attrs, w.attrsOK
 }
 
 func (w *FirstWriteWriter) labelsNow() (int, string) {
@@ -336,3 +366,10 @@ func (w *FirstWriteWriter) Unwrap() http.ResponseWriter { return w.ResponseWrite
 // Completions is how many times a Tune's completion path has run on this
 // Telemetry. telemetrytest exposes it; production pays one atomic add per tune.
 func (t *Telemetry) Completions() int64 { return t.completion.Load() }
+
+// sentLabels are M3's labels, the key FirstWriteWriter caches its attribute
+// set under.
+type sentLabels struct {
+	channelID int
+	format    string
+}
