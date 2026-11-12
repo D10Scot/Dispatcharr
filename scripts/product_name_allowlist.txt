@@ -151,7 +151,7 @@
 2	apps/plugins/tests/test_reload_token.py
 1	apps/proxy/api_urls.py
 3	apps/proxy/authorize.py
-11	apps/proxy/authorize_views.py
+12	apps/proxy/authorize_views.py
 3	apps/proxy/control_plane.py
 14	apps/proxy/internal_auth.py
 20	apps/proxy/internal_base_url.py
@@ -163,6 +163,7 @@
 6	apps/proxy/tests/test_admin_control_views.py
 7	apps/proxy/tests/test_authorize.py
 11	apps/proxy/tests/test_authorize_internal_view.py
+1	apps/proxy/tests/test_authorize_traceparent.py
 14	apps/proxy/tests/test_authorize_view.py
 9	apps/proxy/tests/test_boundary_error_arms.py
 2	apps/proxy/tests/test_combined_stats.py
@@ -222,7 +223,7 @@
 1	dispatcharr/__init__.py
 2	dispatcharr/admin.py
 4	dispatcharr/asgi.py
-11	dispatcharr/celery.py
+14	dispatcharr/celery.py
 1	dispatcharr/db/backends/postgresql_psycopg3/base.py
 2	dispatcharr/db/backends/postgresql_psycopg3/pool.py
 1	dispatcharr/gevent_patch.py
@@ -231,6 +232,7 @@
 1	dispatcharr/observability/metrics.py
 4	dispatcharr/observability/propagation.py
 1	dispatcharr/observability/redaction.py
+1	dispatcharr/observability/worker_metrics.py
 1	dispatcharr/persistent_lock.py
 1	dispatcharr/routing.py
 18	dispatcharr/settings.py
@@ -582,6 +584,7 @@
 4	tests/test_observability_bootstrap.py
 3	tests/test_observability_django6_sample.py
 5	tests/test_observability_logs.py
+6	tests/test_observability_metrics.py
 4	tests/test_observability_propagation.py
 3	tests/test_observability_redaction.py
 3	tests/test_observability_wsgi_cold_import.py
