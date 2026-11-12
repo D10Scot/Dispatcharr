@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach, beforeAll } from 'vitest';
+import { describe, it, expect, afterEach, beforeAll, vi } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { EventEmitter } from 'node:events';
 import net from 'node:net';
@@ -273,18 +273,33 @@ describe('request body limits', () => {
     // idle timer — reset on every chunk — must not, because nothing ever
     // stalled. This is the case a 5,000-channel scenario body on a loaded
     // CI runner looks like.
-    const req = fakeIncomingMessage();
-    const promise = readJsonObject(req, { timeoutMs: 30 });
+    //
+    // Fake timers, not real sleeps: with real ones a 20 ms gap against a
+    // 30 ms timeout overran under load (3 of 40 runs with four suites at
+    // once). The clock only moves when the test moves it, so each gap is
+    // exactly GAP_MS and the margins hold on any runner.
+    const TIMEOUT_MS = 30;
+    const GAP_MS = 25;
+    vi.useFakeTimers();
+    try {
+      const req = fakeIncomingMessage();
+      const promise = readJsonObject(req, { timeoutMs: TIMEOUT_MS });
 
-    req.emit('data', Buffer.from('{"user'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    req.emit('data', Buffer.from('name":"a'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    req.emit('data', Buffer.from('lice"}'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    req.emit('end');
+      req.emit('data', Buffer.from('{"user'));
+      vi.advanceTimersByTime(GAP_MS);
+      req.emit('data', Buffer.from('name":"a'));
+      vi.advanceTimersByTime(GAP_MS);
+      req.emit('data', Buffer.from('lice"}'));
+      vi.advanceTimersByTime(GAP_MS);
+      req.emit('end');
 
-    await expect(promise).resolves.toEqual({ username: 'alice' });
+      // Each gap is under the timeout; together they are well over it.
+      expect(GAP_MS).toBeLessThan(TIMEOUT_MS);
+      expect(3 * GAP_MS).toBeGreaterThan(2 * TIMEOUT_MS);
+      await expect(promise).resolves.toEqual({ username: 'alice' });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('rejects a body that starts, then genuinely stalls past the idle timeout', async () => {
