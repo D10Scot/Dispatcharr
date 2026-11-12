@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { ScenarioRegistry, parseScenarioRequest } from './scenario.js';
 import type { Scenario } from './scenario.js';
 import { BadRequestError } from './errors.js';
+import { handleOidc, isOidcPath } from './oidc/index.js';
 import { renderPlaylist, credentialQuery, PLAYLIST_CONTENT_TYPE } from './playlist.js';
 import { renderXmltv, XMLTV_CONTENT_TYPE } from './xmltv.js';
 import { DEFAULT_ASSET, assetPath, loadAsset } from './asset.js';
@@ -649,6 +650,21 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       live: connections.count(scenario.id),
       maxConnections: scenario.maxConnections,
       channels: connections.matching(scenario.id).map((connection) => connection.channelId),
+    });
+    return;
+  }
+
+  // The fake OpenID provider (SSO spec PR S5). Its paths share no prefix with
+  // `/scenarios` or `/s/`, so its position among the routes is immaterial; it
+  // answers every `/oidc` path itself, a 404 included.
+  if (isOidcPath(url.pathname)) {
+    await handleOidc({
+      req,
+      res,
+      url,
+      readRawBody: () => readRawBody(req),
+      readJsonObject: () => readJsonObject(req),
+      sendJson: (status, body) => sendJson(res, status, body),
     });
     return;
   }

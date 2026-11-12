@@ -115,7 +115,7 @@ it is recreated (`--down`/`--recreate`).
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `streaming-split`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `streaming-split`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `sso` has its own bootstrap, `sso-setup`; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
 | `guards` | Static analysis over this suite's own source, plus one behavioural check of `scripts/e2e_up.sh` against a stub `docker`. **No container, no browser, no fixtures** — it runs in a few seconds and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`), the `e2e-upstream` contract-version check, the Phase 2 parity matrix's format, and `e2e_up.sh`'s stack-scoping behaviour (`e2e-up-stacks.spec.ts`) |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
@@ -129,6 +129,7 @@ it is recreated (`--down`/`--recreate`).
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-restore` | Takes a backup, mutates the database, restores it. **Runs alone** and resets its container: `restore_backup` drops and rebuilds the `public` schema, replacing every row under anything else sharing the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-scheduling` | Non-zero `refresh_interval` and `cron_expression`, and the django-celery-beat rows behind them. **Runs alone** and resets its container: a non-zero interval leaves an *enabled* hourly beat task re-refreshing that account for the life of the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
+| `sso` | Sign-in through a fake OpenID provider (in `e2e-upstream`), the password-login toggle and its break-glass recovery. **Only against a scoped stack of its own** — every spec's first act is `assertScopedStack()`, which refuses the shared container. Its own bootstrap, `sso-setup`, writes `playwright/.auth/sso-tokens.json` and never touches `tokens.json`. One worker, no retries, 180s. See "The sso project" below |
 
 `frontend` depends on two rules that are not obvious from the config alone:
 
@@ -254,6 +255,78 @@ here.
 one of the population-specific `test:*` scripts in `package.json` — there is
 no single invocation that is correct for all of them, and a bare `npm test`
 in CI would silently run whichever config happened to be first.
+
+## The sso project
+
+Sign-in through an OpenID provider, end to end (SSO spec PR S5). The provider is
+a minimal fake OP served by `e2e-upstream` under `/oidc` (`e2e-upstream/README.md`,
+"Fake OpenID provider"); each test seeds a **generic** provider in Mino pointed at
+it (`allow_private_network: true`, `client_secret_post`), queues the login the OP
+will approve, and clicks that provider's button on the login page.
+
+**Only against a scoped stack of its own.** Turning password login off is
+instance-wide, and the shared container must never see it. `tests/sso/scope.ts`'s
+`assertScopedStack()` runs first in `sso-setup` and in a `beforeAll` of every
+spec, and refuses unless `DISPATCHARR_E2E_CONTAINER`, `_VOLUME`, `_NETWORK` and
+`_PORT` are all set, the container and port are not the shared defaults, and
+`E2E_BASE_URL` is set explicitly to a loopback origin on that port.
+`tests/guards/sso-structure.spec.ts` fails, naming the file, unless that call is
+the first statement of the setup test and of a `test.beforeAll` that is the first
+`test` call in every file under `tests/sso/` the two projects load, so a new spec
+cannot forget it. The app
+container also needs `MINO_OIDC_ALLOW_HTTP=1`, because the fake OP's issuer is
+plain http on the Docker network: `scripts/e2e_up.sh` passes it only when
+`E2E_OIDC_ALLOW_HTTP=1` is exported, so no other stack gets it. A container
+created without it keeps its environment; `--reset` to pick it up.
+
+```bash
+export DISPATCHARR_E2E_CONTAINER=mino-e2e-sso \
+       DISPATCHARR_E2E_VOLUME=mino-e2e-sso-data \
+       DISPATCHARR_E2E_NETWORK=mino-e2e-sso-net \
+       DISPATCHARR_E2E_PORT=39291 \
+       E2E_BASE_URL=http://localhost:39291 \
+       E2E_OIDC_ALLOW_HTTP=1
+./scripts/e2e_up.sh
+cd e2e && npm run test:sso
+```
+
+A worktree that changes `e2e-upstream/` adds a private provider as in "Running a
+second stack" above.
+
+**Tokens.** `sso-setup` (a dependency of `sso`) creates the scoped stack's admin
+with `ensureSuperuser`, refuses to go on if password login is off (a previous run
+died mid-test: `--reset` the stack), and writes the admin pair to
+`playwright/.auth/sso-tokens.json`, reusing a stored refresh token when it still
+works. It also sets `public_base_url` to the stack's origin, which provider
+redirect URIs are built from. `tests/sso/fixtures.ts` re-points `api` at that
+pair; nothing in the project reads `tokens.json` or `principals.json`.
+
+**Password-request budget: at most 3 a run.** One in `sso-setup` on a cold run
+(none on a warm one), and the break-glass spec's two probes. The password-off
+probe is a raw, never-retried request (`tests/guards/sso-structure.spec.ts` holds
+its shape, and both projects' `retries: 0`); the recovered login waits out one
+throttle window at most. Two runs inside a minute can therefore exceed the
+3/minute budget; the probe fails naming it rather than retrying.
+
+**SSO request budget: 8 of 20 a run.** Mino's `oidc` throttle allows 20 requests
+a minute per client IP across `start`, `link/start`, `callback` and `exchange`
+(`OIDCRateThrottle`, the `oidc` entry in the settings' throttle rates). A sign-in that succeeds spends 3
+(start, callback, exchange); one Mino refuses on the callback spends 2. The three
+specs spend 8: `sign-in` 3, `unmapped` 2, `break-glass` 3. That ceiling, not the
+password budget, is what a new browser sign-in spec runs into: past 20 in a
+minute, `start` answers 429 with raw JSON, and `signInThroughSso` fails naming
+the throttle. A spec that would take the run past 20 has to wait out the window
+itself or run on a stack of its own.
+
+**Break-glass.** `break-glass.spec.ts` is the only `sso` spec that takes the
+`instance` fixture (allowlisted in `tests/guards/allowlist.ts`): it runs
+`password_login --enable` and `--status` inside its own container through
+`instance.manage()`, and never restarts or replaces it. It leaves password login
+on.
+
+**Codecs.** The happy path plays a channel over HLS in the floating player, which
+needs H.264 and AAC through MSE: like `tests/frontend/player-hls.spec.ts`, it runs
+in CI's linux/amd64 Chromium and on macOS, not in linux/arm64 Chromium.
 
 ## Running against an existing instance
 
@@ -826,8 +899,10 @@ a side effect of the goal or phase that happened to add the third.
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
-`streaming-split`, `lifecycle`, `frontend` and `dvr` as a matrix, each against
-its own fresh container, each gated on `npm run typecheck` before tests run.
+`streaming-split`, `lifecycle`, `frontend`, `dvr` and `sso` as a matrix, each
+against its own fresh container, each gated on `npm run typecheck` before tests
+run. The `sso` job alone exports a scoped stack (`mino-e2e-sso`, port
+9291) and `E2E_OIDC_ALLOW_HTTP=1` before booting it; see "The sso project".
 
 **That project list is no longer hardcoded in the `test` job** — it is built by
 the `changes` job and consumed as `fromJSON(needs.changes.outputs.projects)`,
