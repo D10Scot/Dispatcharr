@@ -413,6 +413,13 @@ cd e2e && npm run test:sso-faults
 Both projects can run at once, each against its own stack; with the shared
 provider, each stack's network is attached to it.
 
+**Pacing local re-runs.** The `oidc` throttle counts per stack, per client IP,
+over a sliding minute, so a second run of the same project against the same
+stack spends into the first run's window. Wait at least a minute (65 s leaves
+margin) between two `sso-faults` runs on one stack: 19 + 19 is over 20, and the
+second run's last cases answer 429. `sso` fits two runs in a minute (8 + 8) but
+not three. CI is unaffected: each row boots a fresh stack and runs once.
+
 ## Running against an existing instance
 
 ```bash

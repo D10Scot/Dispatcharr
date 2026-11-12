@@ -286,7 +286,7 @@ consumer yet. Their planned consumers are Phase 4a's HLS work
 themselves with `scripts/make-asset.sh <out> <name>`, and the `streaming` and
 `frontend` project specs of 4a-1b, 4a-1c, 4a-1d and 4a-2.
 
-The fake OpenID provider's (1.4.0) only consumers are the `sso` and
+The fake OpenID provider's (1.4.0; its fault list revised in 1.5.0) only consumers are the `sso` and
 `sso-faults` Playwright projects, `e2e/tests/sso/`, which register one client
 per provider they create and queue one login per sign-in; `sso-faults`
 (`e2e/tests/sso/faults/`) queues one fault per case.
