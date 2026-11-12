@@ -1,6 +1,6 @@
 # Central log scrubber for provider-supplied text
 
-- **Status:** draft for internal review, round 3 (§ 14 lists what changed after rounds 1 and 2).
+- **Status:** draft for internal review, round 4 (§ 14 lists what changed after rounds 1–3).
 - **Seed SHA:** `1302b665` (`origin/main`, after #642). Every `file:line` below was read at that SHA; line numbers drift.
 - **Authority:** the owner's ruling **R15** (2026-11-12): handle provider-supplied text in log lines with a **central log scrubber**, not by editing each call site to log IDs only. CLAUDE.md (§ Architecture, § Known defects and traps → Security, § Test hooks), the observability spec `docs/superpowers/specs/2026-10-31-observability-design.md` (D8, D9, ruling R-Q17), and the two merged leak fixes it follows: #636 (`0c142c15`, M3U profile search/replace patterns) and #642 (`1302b665`, URLs, record dumps, headers and exception text on the M3U refresh path).
 - **Execution:** implement this spec PR by PR with subagents, per CLAUDE.md § Delegation for phase work (`implement-review-escalate`, `pr-merge-gate`). Security-adjacent: reviews run on `fable` from round one.
@@ -10,7 +10,7 @@
 
 1. One function, `scrub_text`, masks credential carriers in free text with a deliberately blunt rule (§ 4.3). It works per whitespace-delimited token. It masks URL userinfo in place. Once it sees a credential position, it masks from there **to the end of the token**: the value after a `username`/`password`/`token`/`api_key` assignment, the segments after a `live|movie|series|timeshift/` prefix, or the path of a `/<user>/<pass>/<digit…>` root route. It may over-mask. It must never leave a carrier that `redact_url` would mask, and it restores nothing it masked.
 2. It runs **at record creation**, from a chained `logging.setLogRecordFactory` installed by `dispatcharr/__init__.py` before anything else in the package. Every Python process here (uWSGI API and relay, Celery workers and beat, Daphne, `manage.py`) imports that package first, and a record factory runs whatever handler later emits the record. It runs at least once per record. A second pass, through a chain a plugin built, changes nothing.
-3. It rewrites `record.msg`/`record.args` only when the rendered message changed. An untouched record keeps its template and arguments, so the text format stays byte-identical for every line the rule does not match.
+3. It rewrites `record.msg`/`record.args` only when the rendered message changed. An untouched record keeps its template and arguments, so the text format stays byte-identical for every line that fits within the message cap (§ 4.4) and that the rule does not match.
 4. It also scrubs the record's text caches: a pre-existing `exc_text`, a traceback it renders itself from `exc_info`, and `stack_info`. This matters because a `requests` exception message carries the full request URL with its query credentials (`apps/epg/tasks.py:853`).
 5. Every scan is linear. The scan reads at most 16,384 characters of a message and 65,536 of a traceback, whose tail is kept, and the **output** never exceeds those lengths. Text past the limit is withheld, never emitted unexamined. What is bounded is the scan and the output. Rendering the full message and traceback is already done by every formatter today, and is not bounded by this spec.
 6. If scrubbing fails, the record is still emitted. Every text field (message, `exc_text`, `stack_info`) is set to a fixed placeholder naming only the exception type. The scrubber adds no new way for a logging call to raise. A message whose `%` formatting fails is withheld the same way, which also closes `logging`'s own "--- Logging error ---" dump of the raw arguments to stderr.
@@ -182,7 +182,7 @@ Rendering happens inside the logging call, before handlers run, so the text a ha
 
    No position is masked when the token ends at it, for example `password=` at the end of a token: there is no value there to leak.
 3. **Union.** A userinfo span that reaches the to-the-end mask merges into it.
-4. **Emit.** If nothing was masked, the token is unchanged. If no token changed, the original string object is returned.
+4. **Emit.** If nothing was masked, the token is unchanged. If no token changed and the text was within its cap, the original string object is returned.
 
 This is the whole rule. It masks every `redact_url` carrier in any token, including wrapped tokens and tokens with no scheme: userinfo, any of the four keys in a query, a fragment or a bare assignment, the Xtream prefix and the root route. That was checked by a differential fuzz against `redact_url` as the oracle (§ 12): 2,000,000 tokens, 0 cases where `redact_url` removed the sentinel and the scrubber did not.
 
@@ -193,7 +193,7 @@ This is the whole rule. It masks every `redact_url` carrier in any token, includ
 
 **The mask** is `***`, the same as `redact_url`'s (`dispatcharr/utils.py:59`), not observability's `[redacted]` (`dispatcharr/observability/redaction.py:34`). The text sink already prints `***` wherever a call site used `redact_url`, and one mask per sink keeps a reader's grep working.
 
-**Linear.** Each step is linear in the token. Authorities contain no `/`, so they are disjoint and each `//` search resumes past the previous authority. The key names are delimited by the separators they end at, so they are disjoint, and `unquote` runs once per name. The prefix rule is one regex search with a fixed-width lookbehind. The root check reads at most three segments from each path start. Starts inside an already-examined run of slashes are skipped, because they read the same segments, so each segment is read by at most three starts. § 12 measures the adversarial shapes; T6 bounds them.
+**Linear.** Each step is linear in the token. Authorities contain no `/`, so they are disjoint and each `//` search resumes past the previous authority. The key names are delimited by the separators they end at, so they are disjoint, and `unquote` runs once per name. The prefix rule is one regex search with a fixed-width lookbehind. The root check reads at most three segments from each path start. Path starts are produced in ascending order without sorting. The authority starts are ascending by construction, because each `//` search resumes past the previous authority. They are merged with the boundary starts during one left-to-right pass over the token, and a position that is both is visited once. Starts inside an already-examined run of slashes are skipped, because they read the same segments, so each segment is read by at most three starts. § 12 measures the adversarial shapes; T6 bounds them.
 
 **Over-masking accepted.** The rule hurts these benign shapes, listed so the cost is visible, and T5 pins each one:
 
@@ -214,10 +214,11 @@ This is the whole rule. It masks every `redact_url` carrier in any token, includ
 
 `MESSAGE_CAP = 16,384`, `TAIL_CAP = 65,536` and `RESERVE = 64`. One rule, applied before and after the scan:
 
-> Text longer than its cap is cut at whitespace to `cap − 64` characters, and a marker reporting the original length is appended. This happens to the **input** before scanning, so the scan never reads more than the cap, and again to the **output** after scanning, so the output never exceeds the cap.
+> Text longer than its cap is cut at whitespace (the same Unicode-aware `\s` that tokenising uses, so NBSP, U+2003 and U+2028 count) to `cap − 64` characters, and a marker reporting the original length is appended. This happens to the **input** before scanning, so the scan never reads more than the cap, and again to the **output** after scanning, so the output never exceeds the cap.
 
 - **The message cut.** The message keeps its **head**: it is cut at the last whitespace at or before `16,384 − 64`, and ` [log scrubber: truncated from N characters]` is appended. N is the length of the original rendered message.
 - **The traceback and stack cut.** These keep their **tail**, because the last line is the exception message, which is where a URL is and what an operator needs. The cut is at the first whitespace at or after `len − (65,536 − 64)`, and `[log scrubber: truncated from N characters]` is prepended.
+- **One whitespace predicate.** Cuts and tokens use the same definition, `re`'s Unicode `\s`, the complement of the `\S+` that tokenises. A token boundary is therefore always a possible cut. The head cut takes the last `\s` match at or before the limit, scanning at most `cap − 63` characters. The tail cut takes the first match at or after its start, scanning at most `cap − 64`.
 - **No whitespace.** If no whitespace falls in the window, the whole text is withheld and only the marker remains.
 - **Why the cut is at whitespace.** A cut never falls inside a token. A cut inside a token could separate a URL from its `@` and leak the first half of it. The scan is per token, so every token kept is a token that was scrubbed in full.
 - **Why the output cut is needed.** Masking can lengthen text, because a one-character value becomes `***`. Round 2's `"username=x " * 1489` is 16,379 characters in and would be 19,357 characters out. The output cut returns it to 16,362.
@@ -303,7 +304,7 @@ Four properties, each stated on its whole domain, and nothing else is claimed:
 | # | Property | T-test |
 |---|---|---|
 | (a) | **No listed carrier survives.** In any token, a sentinel that `redact_url` would remove is absent from `scrub_text`'s output. `redact_url` is applied to the token and to the token with leading `"'(<[{` and trailing `"')>]},;.` removed, with the root route counted only when the token starts with `/`. | T4 |
-| (b) | **Text the rule does not match is returned as the same object.** This is the case when no token contains a userinfo `@` after `//` or one of the three positions. | T5 |
+| (b) | **Text within its cap that the rule does not match is returned as the same object.** That is, input of at most 16,384 characters for `scrub_text` (65,536 for `scrub_tail`) in which no token contains a userinfo `@` after `//` or one of the three positions. Longer input is always cut (§ 4.4), so it is never the same object, whatever it contains. | T5 |
 | (c) | **Bounded output.** `len(scrub_text(x)) ≤ 16,384` and `len(scrub_tail(x)) ≤ 65,536`, for every `x`. | T6 |
 | (d) | **Scrubbing again changes nothing:** `scrub_text(scrub_text(x)) == scrub_text(x)`, and the same for `scrub_tail`. | T5 |
 
@@ -367,7 +368,7 @@ logger.info(...) ─► makeRecord ─► [log scrubber: msg/args, exc_text, sta
                 ─► BatchLogRecordProcessor ─► RedactingLogExporter: redact_text(body), field allowlist (D9)
 ```
 
-The scrubber runs once, upstream of all three sinks. `redact_text` still runs on the JSON and OTLP bodies. The two layers do different jobs: the scrubber removes credential carriers in every sink, and `redact_text` applies D9's broader best-effort classes in the new sinks. Applied to scrubbed text, `redact_text` can only remove more. Structured fields are untouched: the scrubber changes no attribute other than `msg`, `args`, `exc_text` and `stack_info`, and the bridge already discards `exc_text` and `stack_info` (`dispatcharr/observability/logs.py:132-134`).
+The scrubber runs upstream of all three sinks, at least once per record (§ 4.6). `redact_text` still runs on the JSON and OTLP bodies. The two layers do different jobs: the scrubber removes credential carriers in every sink, and `redact_text` applies D9's broader best-effort classes in the new sinks. Applied to scrubbed text, `redact_text` can only remove more. Structured fields are untouched: the scrubber changes no attribute other than `msg`, `args`, `exc_text` and `stack_info`, and the bridge already discards `exc_text` and `stack_info` (`dispatcharr/observability/logs.py:132-134`).
 
 ### 6.3 `_loggable_name` stays (D8)
 
@@ -429,14 +430,14 @@ Every break-check follows the same procedure: apply the named wrong edit, run th
 | # | Test | What it proves | Named wrong edit | Must redden with |
 |---|---|---|---|---|
 | T1 | `tests/test_log_scrub_install.py`, a cold child via `tests/otel_rig.py`'s `child_env`/`run_child` (`:200`, `:217`) running only `import dispatcharr` | **Before any Django setup or plugin discovery can run**, `logging.getLogRecordFactory()` carries `__mino_log_scrubber__`, and a record logged through a freshly added bare `StreamHandler` on a fresh logger comes out with `http://user:pass@example.invalid/` masked | delete the `_install_log_scrub()` line from `dispatcharr/__init__.py` | "scrubber not installed by importing the dispatcharr package" |
-| T2 | same file, in-process | A handler added after setup, with no configuration, receives scrubbed text. So does a record propagated to the root logger, and a record at TRACE (level 5) | move the scrubbing into a `logging.Filter` attached to `LOGGING`'s `console` handler and drop the factory | the fresh-handler assertion, naming the unmasked sentinel |
-| T3 | same file, in-process with a temporary empty plugins directory | (1) `ensure_installed()` wraps a foreign factory, logs exactly one WARNING, and the foreign factory still runs; a second call is silent and adds no layer. (2) **Cooperative chain**: a foreign `G` that captured and calls the current scrubber `F1` replaces it; `ensure_installed()` builds `F2 → G → F1`; a carrier logged through it comes out exactly as through `F1` alone, `G` runs once, and the scrubber runs twice with no recursion. (3) **Repeated replacement**: three rounds of foreign replacement and re-installation build a finite chain, and logging through it terminates and gives the single-wrapper output. (4) Every wrapper's `__mino_log_scrubber_previous__` is the factory current at its creation, and re-assigning the module's state cannot change it. (5) `discover_plugins` restores the wrapper on each of its three exits: the cached return (`use_cache=True` after a completed discovery), the normal return, and an exception raised from a patched `_discover_plugins_impl` | (a) put `ensure_installed()` after the existing `try/finally` instead of in an outer `finally`; (b) make the predecessor a module global that `install()` reassigns | (a) the cached-exit case, "foreign factory not wrapped after cached discovery"; (b) case 2 failing with `RecursionError` |
-| T4 | `tests/test_log_scrub.py`, property tests | Property § 5 (a), **differential against `redact_url` as the oracle**. Tokens are built from 1 to 28 pieces drawn from a trigger-dense list: `/`, `//`, `://`, `?`, `#`, `&`, `=`, `@`, `:`, `%`, `%77`, quotes, brackets, `,`, `;`, the four keys in mixed case and percent-encoded spellings, the four prefixes, scheme words, a host, digits, `3.ts`, a non-ASCII letter, a non-ASCII digit, and a lower-case sentinel. For each token: if the sentinel is absent from the oracle's output, it is absent from `scrub_text`'s output. The oracle is `redact_url` applied to the token, and to the token with its wrappers removed, with the root route counted only when that text starts with `/`. Fixed cases, each with the sentinel: `username=<s>)))`, `password=)))`, `https://outer.invalid/?username=https://<s>.invalid/x`, the same in a fragment (`#token=https://<s>.invalid/`), a bare assignment (`password=https://<s>.invalid/`), `x=token=<s>`, `pass%77ord=<s>`, `//u:<s>@h/x`, `http://h//u/<s>/1.ts` | (a) restore a trailing wrapper after a mask; (b) split the token at each `://` and mask each piece separately; (c) drop the percent-decoded name check | (a) `username=<s>)))`; (b) the nested-URL-in-`username` case; (c) `pass%77ord=<s>` |
-| T5 | same file | (1) Property § 5 (d): `scrub_text(scrub_text(x)) == scrub_text(x)` and the same for `scrub_tail`, over T4's token strategy joined by whitespace and over lengths near both caps. (2) Property § 5 (b): fixed benign inputs are returned as the **same object**: `A&E / HD`, `24/7 News`, `2026/11/12`, `https://docs.example.invalid/guide`, `http://127.0.0.1:5658`, `http://example.invalid/channels/5`, `/api/channels/streams/`. An unchanged record keeps its original `msg` object and `args`. (3) Every over-mask in § 4.3's table, pinned to its exact output, including `C:/live/cache/config.json` → `C:/live/***` | make the root rule accept a `/` preceded by a digit as a path start | the `2026/11/12` same-object assertion |
-| T6 | same file | (1) Property § 5 (c): `len(scrub_text(x)) ≤ 16,384` and `len(scrub_tail(x)) ≤ 65,536`, for dense short-value inputs below, at and above each cap: `"username=x " * k` for `k` from 1,480 to 1,500 (round 2's 16,379-character case among them), `"password= " * k`, `"//a@" * k` and `"/live/x " * k`. (2) Each of these, exactly 16,384 characters long, goes through `scrub_text` in under 100 ms (measured at most 10.6 ms, § 12): `"/" * n`, `"//" * n`, `"a/" * n`, `"a://" * n`, `"a=&" * n`, `"password=) " * n`, `"/a/b/1#username=x " * n`, `"//a@" * n`, `"=/" * n`, `"(/a" * n`, `"%=" * n`, `"(/a/b/" * n`. The same shapes at 65,536 characters go through `scrub_tail` in under 400 ms (measured at most 41.6 ms). (3) `"word " * 300000` scrubs to at most 16,384 characters ending in the marker. (4) A carrier straddling the cut is absent from the output, not half-present | (a) remove the output cut, keeping the input cut; (b) remove the slash-run de-duplication in the root check | (a) `"username=x " * 1489`'s output length, 19,357; (b) the `"/" * n` timing (measured at about 900 ms without it) |
-| T7 | same file | Failure, one case per field, each run with a text handler and with `logging.raiseExceptions` left `True`. (1) `scrub_text` patched to raise: no exception reaches the caller; the record carries the "scrubber failed" placeholder; the sentinel is absent. (2) `logger.info("%d", "<sentinel>")`: the "formatting failed" placeholder, and nothing on stderr contains the sentinel. (3) A previous factory that pre-sets `exc_text` to text containing `username=<sentinel>`: the output shows `username=***`. (4) `logger.exception` whose message carries `http://example.invalid/xmltv.php?username=<sentinel>`: the traceback shows `username=***`. (5) `scrub_tail` patched to raise, with a cached `exc_text` and a `stack_info` both holding the sentinel: both fields are placeholders and the sentinel is absent. (6) The outer fallback: `_scrub_record`'s message step patched to raise a non-`Exception`-handled error after `exc_text` is set: all three fields hold placeholders. (7) A traceback over 65,536 characters whose last line is `ValueError: tail-marker` keeps that line | (a) on a scrubber exception, fall back to the unscrubbed `getMessage()`; (b) skip a pre-set `exc_text`; (c) make the outer fallback replace only `msg` | (a) the sentinel in case 1's output; (b) case 3; (c) case 6 |
+| T2 | same file, in-process | A handler added after setup, with no configuration, receives scrubbed text. So does a record propagated to the root logger, and a record at TRACE (level 5) | make `_scrub_record` a no-op, keeping the factory and its marker, and move the scrubbing into a `logging.Filter` on `LOGGING`'s `console` handler | the fresh-handler assertion, naming the unmasked sentinel (the opening marker assertion still passes) |
+| T3 | same file, in-process with a temporary empty plugins directory | (1) `ensure_installed()` wraps a foreign factory, logs exactly one WARNING, and the foreign factory still runs; a second call is silent and adds no layer. (2) **Cooperative chain**: a foreign `G` that captured and calls the current scrubber `F1` replaces it; `ensure_installed()` builds `F2 → G → F1`; a carrier logged through it comes out exactly as through `F1` alone, `G` runs once, and the scrubber runs twice with no recursion. (3) **Repeated replacement**: three rounds of foreign replacement and re-installation build a finite chain, and logging through it terminates and gives the single-wrapper output. (4) Every wrapper's `__mino_log_scrubber_previous__` is the factory current at its creation, and re-assigning the module's state cannot change it. (5) `discover_plugins` restores the wrapper on each of its three exits: the cached return (`use_cache=True` after a completed discovery), the normal return, and an exception raised from a patched `_discover_plugins_impl`. Every case records the exact factory object at entry and restores it in `addCleanup`, so a chain built here never leaks into later tests | (a) put `ensure_installed()` after the existing `try/finally` instead of in an outer `finally`; (b) make the predecessor a module global that `install()` reassigns | (a) the cached-exit case, "foreign factory not wrapped after cached discovery"; (b) case 2 failing with `RecursionError` |
+| T4 | `tests/test_log_scrub.py`, property tests | Property § 5 (a), **differential against `redact_url` as the oracle**. Tokens are built from 1 to 28 pieces drawn from a trigger-dense list: `/`, `//`, `://`, `?`, `#`, `&`, `=`, `@`, `:`, `%`, `%77`, quotes, brackets, `,`, `;`, the four keys in mixed case and percent-encoded spellings, the four prefixes, scheme words, a host, digits, `3.ts`, a non-ASCII letter, a non-ASCII digit, and a lower-case sentinel. For each token: if the sentinel is absent from the oracle's output, it is absent from `scrub_text`'s output. The oracle is `redact_url` applied to the token, and to the token with its wrappers removed, with the root route counted only when that text starts with `/`. **A parse failure is not a removal.** `redact_url` returns the bare mask `***` when parsing raises (`dispatcharr/utils.py:205-220`, for example on an unmatched IPv6 bracket). An oracle output equal to `***` for an input that is not itself `***` is treated as "no carrier removed", and that oracle application is skipped. This prevents a false leak; it is not a requirement to mask malformed URLs. Fixed case: `http://[<s>` is not reported as a leak, and `scrub_text` returns it unchanged. Fixed cases with the sentinel. These assert **exact output**, not only absence: `username=<s>)))` → `username=***` and `username=***)))` → `username=***`, so a restored wrapper fails even when the sentinel is gone; `password=)))` → `password=***`. These assert absence: `https://outer.invalid/?username=https://<s>.invalid/x`, the same in a fragment (`#token=https://<s>.invalid/`), a bare assignment (`password=https://<s>.invalid/`), `x=token=<s>`, `pass%77ord=<s>`, `//u:<s>@h/x`, `http://h//u/<s>/1.ts` | (a) restore a trailing wrapper after a mask; (b) split the token at each `://` and mask each piece separately; (c) drop the percent-decoded name check | (a) the exact-output assertion: `username=***)))` ≠ `username=***`; (b) the nested-URL-in-`username` case, with the sentinel present; (c) `pass%77ord=<s>`, with the sentinel present |
+| T5 | same file | (1) Property § 5 (d): `scrub_text(scrub_text(x)) == scrub_text(x)` and the same for `scrub_tail`, over T4's token strategy joined by whitespace and over lengths near both caps. (2) Property § 5 (b): fixed benign inputs are returned as the **same object**: `A&E / HD`, `24/7 News`, `2026/11/12`, `https://docs.example.invalid/guide`, `http://127.0.0.1:5658`, `http://example.invalid/channels/5`, `/api/channels/streams/`, `page 1/2/3/4`. An unchanged record keeps its original `msg` object and `args`. (3) Every over-mask in § 4.3's table, pinned to its exact output, including `C:/live/cache/config.json` → `C:/live/***` | make the root rule accept a `/` preceded by a digit as a path start | the `page 1/2/3/4` same-object assertion: the mutated rule finds `/2/3/4` and prints `page 1/***`. `2026/11/12` cannot catch this edit: from either slash there are fewer than three segments |
+| T6 | same file | (1) Property § 5 (c): `len(scrub_text(x)) ≤ 16,384` and `len(scrub_tail(x)) ≤ 65,536`, for dense short-value inputs below, at and above each cap: `"username=x " * k` for `k` from 1,480 to 1,500 (round 2's 16,379-character case among them), `"password= " * k`, `"//a@" * k` and `"/live/x " * k`. (2) Each of these, exactly 16,384 characters long, goes through `scrub_text` in under 100 ms (measured at most 10.6 ms, § 12): `"/" * n`, `"//" * n`, `"a/" * n`, `"a://" * n`, `"a=&" * n`, `"password=) " * n`, `"/a/b/1#username=x " * n`, `"//a@" * n`, `"=/" * n`, `"(/a" * n`, `"%=" * n`, `"(/a/b/" * n`. The same shapes at 65,536 characters go through `scrub_tail` in under 400 ms (measured at most 41.6 ms). (3) `"word " * 300000` scrubs to at most 16,384 characters ending in the marker. The same holds with the space replaced by NBSP (U+00A0), by U+2003 and by U+2028, and with tab and newline. Each keeps a non-empty head of more than 16,000 characters through `scrub_text`. For `scrub_tail`, `("word" + sep) * 16000 + "ValueError: tail-marker"` keeps its last line. (4) A carrier straddling the cut is absent from the output, not half-present | (a) remove the output cut, keeping the input cut; (b) remove the slash-run de-duplication in the root check; (c) cut at ASCII whitespace only | (a) `"username=x " * 1489`'s output length, 19,357; (b) the `"/" * n` timing (measured at about 900 ms without it); (c) the NBSP case's head length, 0 |
+| T7 | same file | Failure, one case per field, each run with a text handler and with `logging.raiseExceptions` left `True`. (1) `scrub_text` patched to raise: no exception reaches the caller; the record carries the "scrubber failed" placeholder; the sentinel is absent. (2) `logger.info("%d", "<sentinel>")`: the "formatting failed" placeholder, and nothing on stderr contains the sentinel. (3) A previous factory that pre-sets `exc_text` to text containing `username=<sentinel>`: the output shows `username=***`. (4) `logger.exception` whose message carries `http://example.invalid/xmltv.php?username=<sentinel>`: the traceback shows `username=***`. (5) `scrub_tail` patched to raise, with a cached `exc_text` and a `stack_info` both holding the sentinel: both fields are placeholders and the sentinel is absent. (6) The outer fallback. `_scrub_record` runs three step helpers, each with its own per-field handler, inside one outer `try`. The test patches the message-step helper itself to raise `RuntimeError`, so no per-field handler sees it and the outer handler does. The previous factory pre-sets `exc_text` and `stack_info` to text holding the sentinel. All three fields hold placeholders, and the sentinel is absent. (7) A traceback over 65,536 characters whose last line is `ValueError: tail-marker` keeps that line | (a) on a scrubber exception, fall back to the unscrubbed `getMessage()`; (b) skip a pre-set `exc_text`; (c) make the outer fallback replace only `msg` | (a) the sentinel in case 1's output; (b) case 3; (c) case 6 |
 | T8 | `tests/test_observability_redaction.py` (LS-2; tests added, none edited) | (1) **Bounded differential.** Every string handed to an old expression is **at most 64 characters**: a `@given` strategy concatenates 1 to 16 fragments and drops any result longer than 64. The fragments are quote characters, `=`, `:`, `/`, `(`, `"<>,;)]`, whitespace, keywords in mixed case (`token`, `AUTH`, `PassWord`, `api-key`, `ſecret`), `://`, scheme words, `1http`, non-ASCII letters and a superscript digit. On each string, `_scrub_urls`, `_scrub_key_values` and `_scrub_paths` equal the old `re.sub`, and `redact_text` equals the old composition. The old expressions live only in the test module, as the oracle. (2) Fixed examples, each also checked against the oracle: `1https://example.invalid/x`, `x=token=pass`, `token="one two";x=token=three`, `token='auth=x'auth=y`, `.-AUTH.key: "v"`, `ſecret=x`, `éhttps://x`, `a/b(/c)`, `/é`, `/éa`, and one 64-character string per scanner. (3) **Timing, scanner-only.** The long inputs `"a" * 32000`, `"a." * 16000`, `"auth" * 8000`, `'token="' * 4500` and `"/(" * 16000` go through the new `redact_text` in under 50 ms each; the oracle never sees them. A bounded differential complements the structural argument of § 6.2; it does not prove equivalence | (a) restore `_PATH_RE.sub`; (b) replace `_scrub_urls` with the round-1 lookbehind expression | (a) the `"/(" * 16000` timing; (b) the `1https://…` fixed example |
-| T9 | `tests/test_log_scrub_sinks.py`, in-process | The JSON sink, through `JsonFormatter`, and the OTLP sink, through `OtelBridgeHandler` with `logs.install_inner_handler` given an OTel `LoggingHandler` over a `LoggerProvider` with a `SimpleLogRecordProcessor(RedactingLogExporter(InMemoryLogExporter()))`: a body `get.php?username=<sentinel>&x=1` reaches neither. `redact_text` does **not** remove that shape: it has no leading `/`, and `username` is not among `_KEY_VALUE_RE`'s keywords. The export is asserted non-empty and to hold the record first, and the structured fields match the observability tests' expectation. The test restores the factory and the inner handler in `addCleanup` | swap the active factory for the one the scrubber wrapped, for the duration of the test, then log | the sentinel in the exported body |
+| T9 | `tests/test_log_scrub_sinks.py`, in-process | The JSON sink, through `JsonFormatter`, and the OTLP sink, through `OtelBridgeHandler` with `logs.install_inner_handler` given an OTel `LoggingHandler` over a `LoggerProvider` with a `SimpleLogRecordProcessor(RedactingLogExporter(InMemoryLogExporter()))`: a body `get.php?username=<sentinel>&x=1` reaches neither. `redact_text` does **not** remove that shape: it has no leading `/`, and `username` is not among `_KEY_VALUE_RE`'s keywords. The export is asserted non-empty and to hold the record first, and the structured fields match the observability tests' expectation. The test restores the factory and the inner handler in `addCleanup` | make `_scrub_record` a no-op, keeping the factory and its marker | the sentinel in the exported body (the opening marker assertion still passes) |
 | T10 | `tests/test_url_redaction_leaf.py` (LS-3) | (1) `dispatcharr/url_redaction.py` and `dispatcharr/log_scrub.py` import only the standard library and each other (AST walk). (2) `dispatcharr.utils.REDACTED`, `SENSITIVE_QUERY_KEYS` and `XTREAM_PATH_PREFIXES` **are** the objects in `dispatcharr.url_redaction`. (3) Within `dispatcharr/log_scrub.py`, no function reachable from the factory closure or `_scrub_record` (computed over the module's AST call graph) contains a logging call. (4) The only logging call in the module is the single constant-message WARNING in `ensure_installed` | (a) add `from django.http import JsonResponse` to `dispatcharr/url_redaction.py`; (b) add a `logger.debug(...)` to `scrub_text` | (a) "non-stdlib import: django.http"; (b) "logging call reachable from the factory: scrub_text" |
 | T11 | `tests/test_celery_suppress_filter.py` | Built through `setup_celery_logging()` with the level not TRACE. (1) An ERROR record on `celery.app.trace` whose template is `"Task %s raised: %s"` and whose argument contains `received` and `http://user:pass@example.invalid/` is emitted, with the credential masked. (2) An INFO record with the template `"Task %s succeeded in %ss: %s"` whose return value carries a carrier is still suppressed. (3) An INFO `"Task %s received"` is still suppressed | remove the level guard | case 1, "error record suppressed" |
 | T12 | `tests/test_log_scrub_install.py` | Static: each launcher imports the package before application code. `docker/supervisord.d/celery-*.conf` start `celery -A dispatcharr`; `docker/supervisord.d/daphne.conf` names `dispatcharr.asgi`; every `docker/uwsgi*.ini` has `import = dispatcharr.gevent_patch` or a `module`/`wsgi-file` under `dispatcharr` | change a Celery conf to `-A apps` | "launcher does not import the dispatcharr package: celery-default.conf" |
@@ -451,7 +452,7 @@ LS-3 therefore adds `tests/log_scrub_rig.py` with one context manager, `unscrubb
 
 1. **Entry checks.**
    - The current factory must carry `__mino_log_scrubber__`, or it raises `AssertionError("scrubber not installed at entry")`.
-   - Its `__mino_log_scrubber_previous__` must not, so only one scrubber layer is ever removed; otherwise `AssertionError("nested scrubber chain")`.
+   - Its `__mino_log_scrubber_previous__` must **be** `logging.LogRecord`, the stdlib's bare factory. A missing marker on the immediate predecessor is not proof that nothing below it scrubs: in `F2 → G → F1`, `G` carries no marker but still calls `F1`. So the rig fails closed on anything else, raising `AssertionError("predecessor is not the bare logging.LogRecord")`. Nothing in the tree installs another factory, so in the test process the predecessor is `LogRecord` (§ 4.1).
    - The rig must not already be active; otherwise `RuntimeError("unscrubbed_logging is not re-entrant")`. **Nesting is refused, not supported.**
 2. **During.** It records the exact factory object it found, sets the factory to that object's predecessor, and marks itself active.
 3. **Exit, in `finally`.** It sets the factory back to the **exact object recorded at entry** and clears the active flag. This happens on every exit, an assertion failure inside the block included.
@@ -467,7 +468,8 @@ LS-3 therefore adds `tests/log_scrub_rig.py` with one context manager, `unscrubb
 The rig has its own tests in `tests/test_log_scrub_install.py`:
 - the exact entry factory is restored after an exception raised inside the block;
 - a nested entry raises and leaves the outer context's state intact;
-- entering with no scrubber installed raises.
+- entering with no scrubber installed raises;
+- **cooperative-chain rejection**: with `F2 → G → F1` installed as in T3 case 2, entering raises the predecessor assertion and leaves the factory as `F2`.
 
 **Which tests.** Every test that captures log records (`assertLogs`, a handler added to a logger, a patched logger) and asserts that a credential-shaped string is absent. At the seed, the files that capture records and assert absence are:
 
@@ -500,6 +502,7 @@ Round 3 no longer calls `redact_url` from the scrubber (§ 6.1), so nothing need
 - **Files:**
   - `dispatcharr/observability/redaction.py`: `_scrub_urls`, `_scrub_key_values` and `_scrub_paths` from Appendix A replace the `_URL_RE`, `_KEY_VALUE_RE` and `_PATH_RE` substitutions in `redact_text`. The three old expressions are deleted from the module and live on only as the test oracle.
   - `tests/test_observability_redaction.py`: T8 added; no existing test edited.
+  - `scripts/product_name_allowlist.txt`, regenerated as in every PR (§ 10's preamble).
 - **Independent of LS-3**; it may land first. Its PR files the issue for the defect and references it (Q3).
 - **Gates:** the credential-logging checker is unaffected.
 
@@ -511,7 +514,7 @@ Round 3 no longer calls `redact_url` from the scrubber (§ 6.1), so nothing need
   - `dispatcharr/__init__.py`: install first, through the relative import.
   - `apps/plugins/loader.py`: an outer `try/finally` around `discover_plugins`' whole body, calling `ensure_installed()` (imported inside the function).
   - `dispatcharr/celery.py`: the level guard in `SuppressFilter`.
-  - New tests: `tests/test_log_scrub.py`, `tests/test_log_scrub_install.py`, `tests/test_log_scrub_sinks.py`, `tests/test_celery_suppress_filter.py` and `tests/log_scrub_rig.py` (T1–T7, T9–T12, and the rig's own tests).
+  - New tests: `tests/test_log_scrub.py`, `tests/test_log_scrub_install.py`, `tests/test_log_scrub_sinks.py`, `tests/test_celery_suppress_filter.py`, `tests/test_url_redaction_leaf.py` and `tests/log_scrub_rig.py` (T1–T7, T9–T12, and the rig's own tests).
   - Existing tests: the stronger-policy tests moved to capture inside `unscrubbed_logging()` (§ 9.2), listed in the PR body.
   - `scripts/product_name_allowlist.txt`.
   - `docs/observability.md`: one short section saying what the scrubber masks in every sink, what it leaves, the limits, and that it is best effort, not a proof.
@@ -589,6 +592,11 @@ Each doubling of the input length roughly quadruples the time. On their own adve
   | `"%="` | 10.6 ms | 41.6 ms |
 
   Before slash-run de-duplication, `"/" * 16384` took 905 ms: the quadratic T6's break-check (b) names.
+- **Round-3 revision (Appendix B as printed).** Path starts are merged instead of sorted, and the cuts use the Unicode `\s` predicate. Against the round-3 commit's version, on 300,000 random tokens, every token's output was identical. The 2,000,000-token oracle fuzz was re-run: 0 leaks, 0 non-idempotent. Scan timings at 65,536 characters stayed linear and of the same order as the table above; `"%="` was still the worst, at 42.5 ms against 41.6 ms.
+  - `("word" + sep) * 4000` for NBSP, U+2003 and U+2028 now keeps a 16,319-character head, plus the marker, where the round-3 commit's ASCII-only cut kept nothing (48 characters, the marker alone). Tab and newline are unchanged.
+  - `scrub_tail` keeps `ValueError: tail-marker` with every one of those separators.
+  - `page 1/2/3/4` is unchanged, and returned as the same object. With the T5 mutation (a `/` after a digit is a path start), it prints `page 1/***`, and `2026/11/12` prints unchanged either way.
+  - `http://[canary` is unchanged by the scrubber, and `redact_url` returns `***` for it: the parse-failure case T4's oracle now skips.
 - `"word " * 300000` scrubbed to 16,369 characters ending in ` [log scrubber: truncated from 1500000 characters]`, and a second pass left it unchanged.
 - Fixed examples:
 
@@ -808,20 +816,28 @@ def _authority_spans(tok):
     return spans, path_starts
 
 
-def _root_tail(tok, extra_starts):
-    starts = set(extra_starts)
-    for i, c in enumerate(tok):
-        if c == "/" and (i == 0 or tok[i - 1] not in _PATHISH) and tok[i + 1 : i + 2] != "/":
-            starts.add(i)
+def _root_tail(tok, authority_starts):
+    """authority_starts is ascending (one per '//', in order); boundary starts are found
+    ascending by the scan below. The two are merged, deduplicated, without sorting."""
+    n = len(tok)
+    auth = iter(authority_starts)
+    next_auth = next(auth, n)
     examined = 0  # starts inside an already examined run of slashes give the same answer
-    for p in sorted(starts):
-        if p < examined:
-            continue
-        if _root_ok(tok, p):
-            return p + 1
-        examined = p
-        while examined < len(tok) and tok[examined] == "/":
-            examined += 1
+    i = 0
+    while i < n:
+        boundary = (
+            tok[i] == "/" and (i == 0 or tok[i - 1] not in _PATHISH) and tok[i + 1 : i + 2] != "/"
+        )
+        if i == next_auth or boundary:
+            if i == next_auth:
+                next_auth = next(auth, n)
+            if i >= examined:
+                if _root_ok(tok, i):
+                    return i + 1
+                examined = i
+                while examined < n and tok[examined] == "/":
+                    examined += 1
+        i += 1
     return -1
 
 
@@ -870,12 +886,14 @@ def _scan(text):
     return "".join(out)
 
 
-_WS = " \t\n\r\f\v"
+_SPACE_RE = re.compile(r"\s")  # the same predicate as _TOKEN_RE's \S
 
 
 def _cut_head(text, n_original):
     limit = CAP - RESERVE
-    cut = max(text.rfind(ws, 0, limit + 1) for ws in _WS)
+    cut = -1
+    for m in _SPACE_RE.finditer(text, 0, limit + 1):
+        cut = m.start()
     kept = text[:cut] if cut > 0 else ""
     return kept + f" [log scrubber: truncated from {n_original} characters]"
 
@@ -890,9 +908,8 @@ def scrub_text(text):
 
 
 def _cut_tail(text, n_original):
-    start = len(text) - (TAIL_CAP - RESERVE)
-    cut = min((i for i in (text.find(ws, start) for ws in _WS) if i != -1), default=-1)
-    kept = text[cut:] if cut != -1 else ""
+    m = _SPACE_RE.search(text, len(text) - (TAIL_CAP - RESERVE))
+    kept = text[m.start():] if m else ""
     return f"[log scrubber: truncated from {n_original} characters]" + kept
 
 
@@ -948,4 +965,30 @@ Round 2 resolved round-1 items 1, 2, 5, 6, 7, 8 and 9, and hand-walked Appendix 
   - a root-route path collapses to `/***`.
 - **LS-1 is withdrawn** (§ 10). Three constants move in LS-3, and `redact_url` does not change.
 - **A new prototype was fuzzed** (§ 12): 2,000,000 tokens against `redact_url` as the oracle, with 0 leaks and 0 non-idempotent outputs. One root-route defect, a path that begins with `//`, was found by that fuzz and fixed before this commit.
+
+### Round 3 → round 4 (review pinned at `61ef7dc1`)
+
+Round 3 found no listed carrier escaping and held idempotence. It accepted the over-mask trade. The masking rule's substance, the installation design, D10, the LS-2 scanners and the failure contract are unchanged. Each finding below is a narrow edit. All eight were confirmed against the round-3 commit before editing. Findings 1, 2, 4 and 6 were also reproduced on the prototype (§ 12, "Round-3 revision").
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | T4's oracle reads `redact_url`'s parse-failure `***` as removal (`http://[canary`) | should-fix | **Fixed.** An oracle output of exactly `***` for an input that is not `***` counts as "no carrier removed", and that application is skipped. Fixed case `http://[<s>` added. The prototype fuzz already skipped it this way; the spec now says so. |
+| 2 | T4(a) and T5's break-checks cannot fail as written | should-fix | **Fixed.** T4's punctuation cases now assert exact output (`username=<s>)))` → `username=***`, and `username=***)))` → `username=***`). T5 adds `page 1/2/3/4` and names it as the assertion its mutation reddens. Both were hand-walked: the restored wrapper gives `username=***)))`, and the mutated boundary gives `page 1/***`. |
+| 3 | The same-object guarantee contradicts mandatory truncation | should-fix | **Fixed.** Property (b) is restricted to input within its cap, in § 1 item 3, § 4.3 step 4, § 5 and T5. The cap is unchanged. |
+| 4 | The cut helpers' whitespace differs from tokenising's `\S+` | should-fix | **Fixed.** Both cuts use `re`'s Unicode `\s`, with bounded searches (§ 4.4, Appendix B). T6 pins NBSP, U+2003 and U+2028 next to tab and newline at both caps, with a new break-check (c). |
+| 5 | The D11 rig accepts `F2 → G → F1`, where `G` still scrubs | should-fix | **Fixed.** The rig fails closed unless the predecessor is exactly `logging.LogRecord`. A cooperative-chain rejection test is added. T3 records and restores its exact entry factory. |
+| 6 | `sorted(starts)` over a set is outside the linearity argument | should-fix | **Fixed.** Appendix B merges the ascending authority starts into its single left-to-right boundary scan, and a position that is both is visited once. There is no set and no sort. § 4.3's linearity paragraph says so. The output is identical to the round-3 commit's on 300,000 tokens. |
+| 7 | File lists omit T10's file and LS-2's allowlist regeneration | nit | **Fixed.** Both added. |
+| 8 | "The scrubber runs once" in § 6.2 | nit | **Fixed.** It now reads "upstream of all three sinks, at least once per record". |
+
+**The sweep the brief asked for.** I grepped for pass-through, "exactly once" and "runs once", LS-1, `root_route`, T13, `sorted`, `16,320`, the `withheld` marker wording, and every `§`, T-number and Appendix reference. The remaining matches are the intended ones: § 5's withdrawal note, § 4.6's "exactly once is withdrawn" heading, § 6.1's history, § 10's "LS-1: withdrawn", and this changelog. Every `§` reference names a section that exists.
+
+I hand-walked every named wrong edit to the assertion it must redden. Four were wrong and are fixed:
+
+- **T2.** "Move the scrubbing into a filter and drop the factory" would trip T2's new opening marker assertion, not the fresh-handler assertion it names. The edit is now "make `_scrub_record` a no-op, keep the factory and its marker, and scrub in a `console` filter". That reaches the fresh-handler assertion.
+- **T9.** "Swap the active factory" would likewise trip the opening marker assertion. The edit is now "make `_scrub_record` a no-op", which reaches the exported-body assertion.
+- **T7 case 6.** "Raise a non-`Exception`-handled error" was not executable as written. The case now patches the message-step helper to raise `RuntimeError` outside the per-field handlers, with `exc_text` and `stack_info` pre-set to hold the sentinel. Break-check (c), "the outer fallback replaces only `msg`", then leaves the sentinel in `exc_text`.
+- **T4 (b) and (c).** The expected failure now names the sentinel being present, not a generic falsifying example.
+
+The other break-checks walk to their stated failures as written: T1, T3 (a) and (b), T6 (a), (b) and (c), T7 (a) and (b), T8 (a) and (b), T10 (a) and (b), T11, T12, and § 9.2's `apps/m3u/tasks.py:1592` check.
 
