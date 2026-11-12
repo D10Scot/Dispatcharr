@@ -289,7 +289,8 @@ variables=(
 # Optional variables, only propagate when set to avoid noisy warnings
 for _opt_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL_CERT POSTGRES_SSL_KEY \
                 REDIS_SSL REDIS_SSL_VERIFY REDIS_SSL_CA_CERT REDIS_SSL_CERT REDIS_SSL_KEY \
-                DISPATCHARR_SETUP_ALLOWED_IP DISPATCHARR_TRUSTED_PROXIES MINO_OIDC_ALLOW_HTTP; do
+                DISPATCHARR_SETUP_ALLOWED_IP DISPATCHARR_TRUSTED_PROXIES MINO_OIDC_ALLOW_HTTP \
+                MINO_PASSWORD_LOGIN_FORCE; do
     if [ -n "${!_opt_var+x}" ]; then
         variables+=("$_opt_var")
     fi

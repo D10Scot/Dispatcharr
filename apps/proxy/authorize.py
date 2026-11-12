@@ -354,13 +354,27 @@ def _session_user(http_request):
     ever gets a turn, so `_drf_user`'s own restore-on-miss does not reach it.
     `django.contrib.auth.get_user` re-resolves straight from the session,
     independent of whatever `request.user` currently holds.
+
+    SSO spec 5.4a (D19): every Django session comes from the admin site's
+    password login, so while password login is off (and the break-glass
+    override is not on) a session no longer authorizes a stream. The check
+    sits after `get_user`, so a request with no session, or a session with
+    no logged-in user, runs no extra query; the toggle is read fresh from
+    Postgres, never through the group cache.
     """
     if not hasattr(http_request, "session"):
         return None
     from django.contrib.auth import get_user
 
     user = get_user(http_request)
-    return user if getattr(user, "is_authenticated", False) else None
+    if not getattr(user, "is_authenticated", False):
+        return None
+    if not settings.PASSWORD_LOGIN_FORCE:
+        from core.models import CoreSettings
+
+        if not CoreSettings.get_auth_settings().get("password_login_enabled", True):
+            return None
+    return user
 
 
 def _catchup_session_user(identifier, session_id):

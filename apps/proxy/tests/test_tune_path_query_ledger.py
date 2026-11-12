@@ -295,12 +295,16 @@ BOUNDARY_MODULES = {
         "model_imports": {
             ("", "apps.accounts.models", "User"),
             ("_resolve_channel", "apps.channels.models", "Channel"),
+            ("_session_user", "core.models", "CoreSettings"),
             ("resolve_output_format", "core.models", "CoreSettings"),
             ("resolve_output_profile", "core.models", "OutputProfile"),
         },
         "objects": 6,
         "get_object_or_404": 0,
-        "model_class_calls": {"CoreSettings.get_default_output_format": 1},
+        "model_class_calls": {
+            "CoreSettings.get_default_output_format": 1,
+            "CoreSettings.get_auth_settings": 1,
+        },
     },
     "apps/proxy/authorize_views.py": {
         "model_imports": {("", "apps.accounts.models", "User")},

@@ -36,3 +36,15 @@ class EntrypointEnvPropagationTests(unittest.TestCase):
                 f"{name} is missing from the entrypoint's optional-variable loop, so "
                 "manage.py run through `su -` would not see it",
             )
+
+    def test_auth_switches_reach_login_shells(self):
+        # PR S4: the break-glass switch. Without it in the loop, `password_login --status`
+        # run through `su -` reports the override off while the web tier has it on.
+        names = optional_variable_loop(ENTRYPOINT.read_text())
+        for name in ("MINO_OIDC_ALLOW_HTTP", "MINO_PASSWORD_LOGIN_FORCE"):
+            self.assertIn(
+                name,
+                names,
+                f"{name} is missing from the entrypoint's optional-variable loop, so "
+                "manage.py run through `su -` would not see it",
+            )

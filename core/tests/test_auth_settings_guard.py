@@ -5,7 +5,7 @@ serializer validates) and Django admin's ``CoreSettingsAdmin`` (view-only for th
 """
 
 from django.contrib.auth import get_user_model
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from rest_framework.test import APIClient
 
 from core.models import AUTH_SETTINGS_KEY, CoreSettings
@@ -285,3 +285,52 @@ class AuthSettingsPaddedKeyTests(TestCase):
                 serializer.is_valid()
         ok = CoreSettingsSerializer(data={"key": "other_group2", "name": "x", "value": {}})
         self.assertTrue(ok.is_valid(), ok.errors)
+
+
+class AdminSitePasswordOffTests(TestCase):
+    """T12a, S4 half: the admin site is password-and-session only, so while password login
+    is off a session made BEFORE the switch stops working there, and its login refuses."""
+
+    def setUp(self):
+        User = get_user_model()
+        self.superuser = User.objects.create_superuser(
+            username="root", password="placeholder-pw", email="root@example.com"
+        )
+        self.row = _seed()
+        self.client = Client()
+        self.client.force_login(self.superuser)  # established while password login is on
+        self.assertEqual(self.client.get("/admin/core/coresettings/").status_code, 200)
+
+    def _switch_off(self):
+        CoreSettings.objects.filter(pk=self.row.pk).update(
+            value={**ORIGINAL, "password_login_enabled": False}
+        )
+
+    def test_existing_session_loses_the_admin_site_when_off(self):
+        self._switch_off()
+        response = self.client.get("/admin/core/coresettings/")
+        self.assertIn(
+            response.status_code,
+            (302, 403),
+            "a session made before the switch still reached the admin site",
+        )
+        if response.status_code == 302:
+            self.assertIn("/admin/login/", response["Location"])
+
+    def test_admin_login_post_refused_when_off(self):
+        self._switch_off()
+        response = Client().post(
+            "/admin/login/", {"username": "root", "password": "placeholder-pw"}
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_admin_login_post_still_works_when_on(self):
+        response = Client().post(
+            "/admin/login/", {"username": "root", "password": "placeholder-pw", "next": "/admin/"}
+        )
+        self.assertEqual(response.status_code, 302)
+
+    @override_settings(PASSWORD_LOGIN_FORCE=True)
+    def test_break_glass_restores_the_admin_site(self):
+        self._switch_off()
+        self.assertEqual(self.client.get("/admin/core/coresettings/").status_code, 200)

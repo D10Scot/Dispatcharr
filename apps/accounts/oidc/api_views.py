@@ -25,7 +25,9 @@ from apps.accounts.permissions import Authenticated, IsAdmin, IsStandardUser
 from apps.accounts.throttling import OIDCRateThrottle
 from core.models import CoreSettings
 
-from . import audit, auth_settings, certificates, discovery, expiry, flow, redirect
+from apps.accounts import password_login
+
+from . import audit, auth_settings, certificates, discovery, expiry, flow, guard, redirect
 from . import secrets as oidc_secrets
 from .errors import CodedError
 from .serializers import (
@@ -36,6 +38,7 @@ from .serializers import (
     ExchangeRequestSerializer,
     ExchangeResponseSerializer,
     LinkStartRequestSerializer,
+    LockoutGuardErrorSerializer,
     LinkStartResponseSerializer,
     PublicAuthConfigSerializer,
     OIDCIdentityDetailSerializer,
@@ -64,12 +67,33 @@ class OIDCProviderAdminViewSet(viewsets.ModelViewSet):
     # Spec 3.1 lists GET, POST, PATCH and DELETE; there is no PUT.
     http_method_names = ["get", "post", "patch", "delete", "head", "options"]
 
+    @extend_schema(
+        responses={204: None, 409: LockoutGuardErrorSerializer},
+        description=(
+            "Delete a provider. While password login is off, the last enabled provider "
+            "cannot be deleted (409 lockout_guard, reason last_enabled_provider)."
+        ),
+    )
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()
         slug = instance.slug
         try:
             with transaction.atomic():
-                instance.delete()
+                # The floor (spec 5.5): lock auth_settings, reload it and the provider, decide.
+                row = auth_settings.lock_row()
+                values = auth_settings.row_values(row)
+                current = OIDCProvider.objects.filter(pk=instance.pk).first()
+                if current is None:
+                    raise CodedError("not_found", status_code=status.HTTP_404_NOT_FOUND)
+                if current.enabled:
+                    reasons = guard.evaluate(
+                        password_login_enabled=values["password_login_enabled"],
+                        provider_leaving=current.pk,
+                    )
+                    if reasons:
+                        raise guard.LockoutRefused(reasons)
+                slug = current.slug
+                current.delete()
                 audit.record_config_change(
                     audit.ACTION_PROVIDER_DELETED,
                     user=_actor(request),
@@ -272,7 +296,7 @@ class OIDCIdentityAdminViewSet(
 
 
 class OIDCSettingsView(APIView):
-    """``auth_settings``: ``public_base_url`` and the (not yet switchable) password toggle."""
+    """``auth_settings``: ``public_base_url`` and the password-login toggle (spec 5.1, 5.5)."""
 
     def get_permissions(self):
         if self.request.method == "GET":
@@ -292,16 +316,26 @@ class OIDCSettingsView(APIView):
     def get(self, request):
         return Response(self._payload(request, CoreSettings.get_auth_settings()))
 
-    @extend_schema(request=AuthSettingsWriteSerializer, responses={200: AuthSettingsReadSerializer})
+    @extend_schema(
+        request=AuthSettingsWriteSerializer,
+        responses={
+            200: AuthSettingsReadSerializer,
+            400: CodedErrorSerializer,
+            409: LockoutGuardErrorSerializer,
+        },
+        description=(
+            "Update public_base_url and the password-login toggle. Switching password login "
+            "off is accepted only from an SSO session on a provider enabled now that mapped "
+            "the caller to Admin at sign-in (409 lockout_guard otherwise)."
+        ),
+    )
     def patch(self, request):
         body = AuthSettingsWriteSerializer(data=request.data, partial=True)
         body.is_valid(raise_exception=True)
         data = body.validated_data
-        if data.get("password_login_enabled") is False:
-            # The guard (5.5), its enforcement (5.3) and break-glass (5.6) land together in
-            # PR S4. Until then no state can record "passwords off" while passwords work.
-            raise CodedError("password_toggle_unavailable", status_code=status.HTTP_409_CONFLICT)
 
+        # The lockout guard (spec 5.5): lock the row, reload it, decide, write. Nothing read
+        # before the lock decides.
         with transaction.atomic():
             row = auth_settings.lock_row()
             values = auth_settings.row_values(row)
@@ -314,6 +348,14 @@ class OIDCSettingsView(APIView):
                 changed.append("public_base_url")
             enabled = data.get("password_login_enabled")
             if enabled is not None and enabled != values["password_login_enabled"]:
+                if enabled is False:
+                    reasons = guard.evaluate(
+                        password_login_enabled=values["password_login_enabled"],
+                        claims=guard.token_claims(request),
+                        switching_off=True,
+                    )
+                    if reasons:
+                        raise guard.LockoutRefused(reasons)
                 values["password_login_enabled"] = enabled
                 changed.append("password_login_enabled")
             if changed:
@@ -403,11 +445,12 @@ class OIDCPublicProvidersView(APIView):
         providers = list(
             OIDCProvider.objects.filter(enabled=True).order_by("id").values("slug", "display_name")
         )
+        # What the login page acts on: password login as it is NOW, the break-glass override
+        # included, and whether the override is what turned it on (spec 5.6).
         payload = {
             "providers": providers,
-            "password_login_enabled": bool(
-                CoreSettings.get_auth_settings().get("password_login_enabled", True)
-            ),
+            "password_login_enabled": password_login.allowed(),
+            "password_login_forced": password_login.forced(),
         }
         return Response(PublicAuthConfigSerializer(payload).data)
 

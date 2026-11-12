@@ -17,7 +17,7 @@ from rest_framework import serializers
 from apps.accounts.models import OIDCIdentity, OIDCProvider
 from core.models import CoreSettings
 
-from . import audit, auth_settings, certificates, expiry, redirect
+from . import audit, auth_settings, certificates, expiry, guard, redirect
 from . import secrets as oidc_secrets
 from .errors import CodedError
 
@@ -296,17 +296,33 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
             # A new secret never inherits the old one's expiry date.
             data.setdefault("client_secret_expires_at", None)
         changes = {k: v for k, v in data.items() if getattr(instance, k) != v}
+        # Spec 5.5: a write that sets enabled to false takes the auth_settings lock, as does a
+        # slug or kind change (spec 3.6). Any other edit, enabling included, takes none.
+        needs_lock = data.get("enabled") is False or bool({"slug", "kind"} & set(changes))
 
         with transaction.atomic():
-            if {"slug", "kind"} & set(changes):
+            if needs_lock:
                 row = auth_settings.lock_row()
-                base = auth_settings.row_values(row)["public_base_url"]
-                # Reload under the lock: the instance was loaded before it.
-                current = OIDCProvider.objects.get(pk=instance.pk)
-                redirect.ensure_entra_redirect_fits(
-                    base,
-                    [(changes.get("slug", current.slug), changes.get("kind", current.kind))],
-                )
+                values = auth_settings.row_values(row)
+                # Reload under the lock: the instance was loaded before it, and nothing read
+                # before the lock decides. The columns to write are re-derived from the row
+                # as it is now.
+                current = OIDCProvider.objects.filter(pk=instance.pk).first()
+                if current is None:
+                    raise CodedError("not_found", status_code=404)
+                changes = {k: v for k, v in data.items() if getattr(current, k) != v}
+                if current.enabled and changes.get("enabled") is False:
+                    reasons = guard.evaluate(
+                        password_login_enabled=values["password_login_enabled"],
+                        provider_leaving=current.pk,
+                    )
+                    if reasons:
+                        raise guard.LockoutRefused(reasons)
+                if {"slug", "kind"} & set(changes):
+                    redirect.ensure_entra_redirect_fits(
+                        values["public_base_url"],
+                        [(changes.get("slug", current.slug), changes.get("kind", current.kind))],
+                    )
             OIDCProvider.update_columns(instance.pk, changes)
             if changes:
                 audit.record_config_change(
@@ -393,7 +409,10 @@ class PublicAuthConfigSerializer(serializers.Serializer):
     """``GET providers/``: never an issuer, client id or secret."""
 
     providers = PublicProviderSerializer(many=True)
+    # Password login as it is NOW: the break-glass override, else the stored toggle.
     password_login_enabled = serializers.BooleanField()
+    # MINO_PASSWORD_LOGIN_FORCE is on (spec 5.6): the login page shows a banner.
+    password_login_forced = serializers.BooleanField()
 
 
 class LinkStartRequestSerializer(serializers.Serializer):
@@ -417,3 +436,19 @@ class ExchangeResponseSerializer(serializers.Serializer):
 
 class CodedErrorSerializer(serializers.Serializer):
     code = serializers.CharField()
+
+
+class LockoutGuardErrorSerializer(serializers.Serializer):
+    """409 from the lockout guard (spec 5.5)."""
+
+    code = serializers.ChoiceField(choices=["lockout_guard"])
+    reasons = serializers.ListField(
+        child=serializers.ChoiceField(
+            choices=[
+                "not_sso_session",
+                "provider_not_enabled",
+                "not_admin_at_sign_in",
+                "last_enabled_provider",
+            ]
+        )
+    )
