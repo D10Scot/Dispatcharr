@@ -1,0 +1,61 @@
+# Example OpenTelemetry Collector configuration for Mino (docs/observability.md).
+# Image: otel/opentelemetry-collector-contrib:0.165.0
+#   @sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+# (contrib distribution: the prometheus receiver is not in the core one).
+#
+# Mino processes push OTLP/HTTP to :4318. The relay also serves /metrics.
+# Enable ONE metrics path for the relay, never both into one backend, or every
+# relay series is doubled (docs/observability.md section 4):
+#   - push: leave the "metrics" pipeline below enabled (default here), or
+#   - scrape: comment "metrics" out, uncomment "metrics/scrape" and the
+#     prometheus receiver, and set OTEL_METRICS_EXPORTER=none on the relay.
+# The Python processes (M10 to M14) only push, so with scrape-only you still
+# need the OTLP metrics pipeline for them; in that case filter the relay out of
+# one of the two paths in your backend.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+  # prometheus:
+  #   config:
+  #     scrape_configs:
+  #       - job_name: mino-relay
+  #         scrape_interval: 15s
+  #         static_configs:
+  #           - targets: ["mino:5658"]   # the relay's port; never the nginx port
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: basic
+  # Replace debug with your own backend. Keep credentials out of this file:
+  # use the collector's ${env:NAME} expansion and a secret.
+  # otlphttp/backend:
+  #   endpoint: https://otlp.example.invalid
+  #   headers:
+  #     authorization: "Bearer ${env:BACKEND_TOKEN}"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    # metrics/scrape:
+    #   receivers: [prometheus]
+    #   processors: [memory_limiter, batch]
+    #   exporters: [debug]
