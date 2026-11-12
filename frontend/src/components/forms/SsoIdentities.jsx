@@ -54,6 +54,8 @@ const SsoIdentities = ({ userId, isAdmin, isSelf }) => {
       const { authorize_url: url } = await API.startSsoLink(slug, '/users');
       if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
         window.location.assign(url);
+      } else {
+        setMessage('Linking could not be started. Try again shortly.');
       }
     } catch (error) {
       setMessage(

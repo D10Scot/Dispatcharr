@@ -96,4 +96,29 @@ describe('SsoIdentities', () => {
     expect(assign).not.toHaveBeenCalled();
     vi.unstubAllGlobals();
   });
+
+  it('says so when the authorize_url is refused', async () => {
+    API.startSsoLink.mockResolvedValue({
+      authorize_url: 'javascript:alert(1)',
+    });
+    const assign = vi.fn();
+    const real = window.location;
+    vi.stubGlobal('location', {
+      assign,
+      get href() {
+        return real.href;
+      },
+    });
+    wrap({ userId: 3, isAdmin: false, isSelf: true });
+
+    await userEvent.click(await screen.findByTestId('sso-link-entra'));
+    await userEvent.click(screen.getByTestId('sso-link-confirm'));
+
+    expect(
+      await screen.findByText(/linking could not be started/i),
+      'a refused authorize_url must not fail silently'
+    ).toBeInTheDocument();
+    expect(assign).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
 });

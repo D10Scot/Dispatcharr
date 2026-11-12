@@ -51,7 +51,7 @@ describe('SSO handoff', () => {
   it('completeSsoHandoff strips the fragment before the exchange request', async () => {
     landOn('#code=the-code');
     let hashAtRequest = null;
-    fetchMock.mockImplementation((url, options) => {
+    fetchMock.mockImplementation((url) => {
       if (String(url).includes('/oidc/exchange/')) {
         hashAtRequest = window.location.hash;
       }

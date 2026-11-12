@@ -219,9 +219,11 @@ const useAuthStore = create((set, get) => ({
   },
 
   // Redeem the single-use handoff code the callback left in the URL fragment
-  // (spec 4, 5.7). Order matters: the fragment is read and REMOVED from the
-  // address bar before any network call, so it can never reach history, a
-  // Referer or a retry. The code is held in a local only: not logged, not stored.
+  // (spec 4, 5.7). The fragment is read and REMOVED from the address bar before
+  // the exchange request this function makes, so the code does not stay in
+  // history or reach a retry. (Requests App starts earlier, such as the
+  // superuser check, cannot carry it: a fragment is never sent in a request or
+  // a Referer.) The code is held in a local only: not logged, not stored.
   completeSsoHandoff: async () => {
     const params = new URLSearchParams(window.location.hash.replace(/^#/, ''));
     const code = params.get('code');
