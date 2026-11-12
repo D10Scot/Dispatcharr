@@ -153,6 +153,10 @@ docker exec <container> su - dispatch -c 'cd /app && python manage.py shell -c "
 
 It prints `1` when the user existed and `0` when it did not.
 
+Deactivation also stops the user's API key and Xtream (XC) credentials: Xtream logins,
+playlists and every new stream request made with them are refused exactly as a wrong password
+is. A stream already playing is not stopped; it continues until the player disconnects.
+
 ## Sign-in errors that point here
 
 The login page shows a fixed message for each `sso_error` code. Two of them mean an operator

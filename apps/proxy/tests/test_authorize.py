@@ -317,6 +317,52 @@ class XcCredentialRowTests(AuthorizeBase):
             )
         self.assertEqual(acl.call_args.args[1], "STREAMS")
 
+    def test_a_deactivated_users_right_password_is_refused_like_a_wrong_one(self):
+        """An inactive user's Xtream credentials authorize no XC surface.
+
+        The refusal must be the wrong-password refusal itself -- same
+        status, same detail -- so the answer says nothing about whether a
+        deactivated account's password was right.
+        """
+        inactive = User.objects.create_user(
+            username="pr5-xc-inactive", password="x", user_level=1,
+            custom_properties={"xc_password": "fake-xc-pass-1"},
+        )
+        inactive.is_active = False
+        inactive.save(update_fields=["is_active"])
+        for surface in (SURFACE_LIVE_XC, SURFACE_CATCHUP_XC, SURFACE_VOD_XC):
+            with self.subTest(surface=surface):
+                with self.assertRaises(AuthorizeDenied) as wrong:
+                    self._allow(
+                        surface, identifier=str(self.channel.id),
+                        username="pr5-xc-inactive", password="not-the-password",
+                    )
+                with self.assertRaises(AuthorizeDenied) as refused:
+                    self._allow(
+                        surface, identifier=str(self.channel.id),
+                        username="pr5-xc-inactive", password="fake-xc-pass-1",
+                    )
+                with self.assertRaises(AuthorizeDenied) as ghost:
+                    self._allow(
+                        surface, identifier=str(self.channel.id),
+                        username="no-such-xc-user", password="fake-xc-pass-1",
+                    )
+                self.assertEqual(refused.exception.status, 401)
+                for other in (wrong, ghost):
+                    self.assertEqual(refused.exception.status, other.exception.status)
+                    self.assertEqual(refused.exception.detail, other.exception.detail)
+
+        # Reactivating the user restores access with the same password.
+        inactive.is_active = True
+        inactive.save(update_fields=["is_active"])
+        for surface in (SURFACE_LIVE_XC, SURFACE_CATCHUP_XC, SURFACE_VOD_XC):
+            with self.subTest(surface=surface, reactivated=True):
+                result = self._allow(
+                    surface, identifier=str(self.channel.id),
+                    username="pr5-xc-inactive", password="fake-xc-pass-1",
+                )
+                self.assertEqual(result.user_id, str(inactive.id))
+
 
 class SurfaceScopeTests(AuthorizeBase):
     def test_vod_surfaces_run_no_channel_check_and_no_limit(self):
@@ -428,6 +474,37 @@ class AuthHelpersDbTests(TestCase):
             mock_compare.return_value = False
             self.assertIsNone(authorize.resolve_xc_user("ts-test-noxc", "x"))
         mock_compare.assert_called_once()
+
+    def test_a_deactivated_user_with_the_right_password_is_rejected(self):
+        inactive = User.objects.create(
+            username="ts-test-inactive", user_level=0, is_active=False,
+            custom_properties={"xc_password": "fake-xc-pass-2"},
+        )
+        self.assertIsNone(authorize.resolve_xc_user("ts-test-inactive", "fake-xc-pass-2"))
+        inactive.is_active = True
+        inactive.save(update_fields=["is_active"])
+        resolved = authorize.resolve_xc_user("ts-test-inactive", "fake-xc-pass-2")
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.id, inactive.id)
+
+    def test_a_deactivated_user_still_runs_the_real_compare(self):
+        """The is_active refusal comes after the compare, never before it.
+
+        An inactive user with the right password must cost what a wrong
+        password costs: compare_digest runs once, against the user's own
+        stored password (not the dummy), before is_active is looked at. A
+        refusal moved ahead of the compare would skip the call entirely.
+        """
+        User.objects.create(
+            username="ts-test-inactive-timing", user_level=0, is_active=False,
+            custom_properties={"xc_password": "fake-xc-pass-3"},
+        )
+        with patch("hmac.compare_digest") as mock_compare:
+            mock_compare.return_value = True
+            self.assertIsNone(
+                authorize.resolve_xc_user("ts-test-inactive-timing", "fake-xc-pass-3")
+            )
+        mock_compare.assert_called_once_with(b"fake-xc-pass-3", b"fake-xc-pass-3")
 
     def test_user_level_gate(self):
         # Level-0 viewer with no profiles: allowed on level-0, denied on level-10.
