@@ -4,14 +4,12 @@
 # (contrib distribution: the prometheus receiver is not in the core one).
 #
 # Mino processes push OTLP/HTTP to :4318. The relay also serves /metrics.
-# Enable ONE metrics path for the relay, never both into one backend, or every
-# relay series is doubled (docs/observability.md section 4):
-#   - push: leave the "metrics" pipeline below enabled (default here), or
-#   - scrape: comment "metrics" out, uncomment "metrics/scrape" and the
-#     prometheus receiver, and set OTEL_METRICS_EXPORTER=none on the relay.
-# The Python processes (M10 to M14) only push, so with scrape-only you still
-# need the OTLP metrics pipeline for them; in that case filter the relay out of
-# one of the two paths in your backend.
+# Never ingest the relay's metrics by BOTH paths into one backend, or every
+# relay series is doubled (docs/observability.md section 4). Default here: push.
+# To scrape the relay instead, set OTEL_METRICS_EXPORTER=none on the relay
+# service only (it still pushes traces and logs), uncomment the prometheus
+# receiver and the "metrics/scrape" pipeline below, and keep the "metrics"
+# pipeline for the Python processes' metrics.
 receivers:
   otlp:
     protocols:

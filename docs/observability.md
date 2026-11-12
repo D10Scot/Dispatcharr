@@ -27,7 +27,7 @@ random UUID per process start.
 | `celery-dvr` (thread pool) | `mino-worker` | `celery-dvr` | M11, traces, logs |
 | `celery-beat` | `mino-worker` | `celery-beat` | M11 (none run in beat), M12 to M14, traces, logs |
 
-`service.version` is the application version when it can be read. Any `OTEL_RESOURCE_ATTRIBUTES`
+`service.version` is the application version on the Python processes. On `mino-relay` it comes from Go build info and is normally absent in a Docker build. Any `OTEL_RESOURCE_ATTRIBUTES`
 you set are added (section 2).
 
 Python processes use five instrumentations: Django, Celery, psycopg, Redis and `requests`. The
@@ -50,7 +50,7 @@ OTLP is enabled in a process if and only if `OTEL_EXPORTER_OTLP_ENDPOINT` is set
 |---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Enables OTLP. Base URL for all three signals; `/v1/traces`, `/v1/metrics` and `/v1/logs` are appended. |
 | `OTEL_EXPORTER_OTLP_{TRACES,METRICS,LOGS}_ENDPOINT` | Per-signal overrides. They do not enable OTLP on their own. |
-| `OTEL_{TRACES,METRICS,LOGS}_EXPORTER` | `none` switches that one signal off. Any other value is ignored (always OTLP). |
+| `OTEL_{TRACES,METRICS,LOGS}_EXPORTER` | `none` switches that one signal off. Any other value is ignored (always OTLP). Write it exactly as `none`: the relay matches that string exactly, while the Python processes trim it and ignore case, so `None` or ` none` switches a signal off in Python but not in the relay. |
 | `OTEL_EXPORTER_OTLP_PROTOCOL` (and per-signal) | Only `http/protobuf` is supported. Any other value leaves OTLP **off** in that process and logs one WARNING naming the variable. |
 | `OTEL_EXPORTER_OTLP_HEADERS` (and per-signal) | Honoured. **A credential.** Never logged. |
 | `OTEL_EXPORTER_OTLP_TIMEOUT`, `..._CERTIFICATE`, `..._CLIENT_KEY`, `..._CLIENT_CERTIFICATE`, `..._COMPRESSION` | Honoured. |
@@ -108,6 +108,10 @@ uses, or add the variables to each list instead.)
 
 ```yaml
 env:
+  - name: POD_NAME
+    valueFrom: { fieldRef: { fieldPath: metadata.name } }
+  - name: POD_NAMESPACE
+    valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
   - name: OTEL_EXPORTER_OTLP_ENDPOINT
     value: http://otel-collector.observability.svc:4318
   - name: MINO_LOG_FORMAT
@@ -119,22 +123,20 @@ env:
       secretKeyRef:
         name: otlp-credentials
         key: headers
-  - name: POD_NAME
-    valueFrom: { fieldRef: { fieldPath: metadata.name } }
-  - name: POD_NAMESPACE
-    valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
 ```
 
-Kubernetes expands `$(NAME)` only for variables defined **earlier** in the list, so put `POD_NAME`
-and `POD_NAMESPACE` before `OTEL_RESOURCE_ATTRIBUTES` in a real manifest.
+Kubernetes expands `$(NAME)` only for variables defined **earlier** in the list, which is why
+`POD_NAME` and `POD_NAMESPACE` come first.
 
 ### uWSGI must be lazy
 
 Python telemetry starts in each uWSGI worker after the fork. Every `docker/uwsgi*.ini` sets
-`lazy-apps = true`, and a test fails if one does not. If you supply your own uWSGI configuration,
-keep it. With `lazy-apps` off, OpenTelemetry is initialised in the master before the fork; a worker
-cannot replace the SDK's set-once global providers, so it logs one WARNING ("initialised before
-this process forked") and builds nothing of its own.
+`lazy-apps = true`, and a test fails if one does not (`tests/test_uwsgi_inis_are_lazy.py`). If you
+supply your own uWSGI configuration, keep it. With `lazy-apps` off, uWSGI's master imports
+`dispatcharr/wsgi.py` and the workers inherit the loaded application without importing it again, so
+no worker exports anything. The master initialises nothing and logs one WARNING:
+`telemetry not initialised in the uWSGI master: lazy-apps must be true`
+(`tests/test_wsgi_uwsgi_master.py` pins this).
 
 ## 3. The metric catalogue
 
@@ -192,8 +194,11 @@ in section 3.
 **Push or scrape, not both into one backend.** With OTLP on, the relay pushes the same instruments
 it serves. Ingesting both doubles every series. The example Collector config receives OTLP and
 also contains a scrape job; it enables one metrics path and leaves the other commented out.
-Use scrape alone (leave `OTEL_METRICS_EXPORTER=none` on the relay) if you want metrics without OTLP
-metrics, and OTLP for everything else.
+To scrape the relay and still push everything else, set `OTEL_METRICS_EXPORTER=none` on the relay
+and enable both Collector pipelines: the relay's metrics then arrive by scrape only, and its traces
+and logs still push. In the all-in-one image one container holds every program and the variable
+reaches all of them, so it also turns off the Python metrics M10 to M14 there; with the modular
+compose files set it on the `relay` service only.
 
 ## 5. Network exposure
 
@@ -202,9 +207,11 @@ byte totals. It carries no UUID and no URL. It does tell a reader which channels
 and how heavily, so keep it off networks that should not know that.
 
 In the all-in-one image the relay's port is not published; only the container's own network sees
-it. In Kubernetes, admit ingress to the relay's port only from the pods that need it: nginx (the
-live byte path), the Django pods (the `/proxy/relay/` control routes) and the collector or
-Prometheus.
+it. In Kubernetes, admit ingress to the relay pod only from the pods that need it. The relay role
+runs two listeners: `relay-uwsgi` on 5657 (VOD, catch-up and recordings, reached by nginx) and
+`relay-go` on 5658 (live, HLS, `/proxy/relay/` and `/metrics`). nginx needs both. The collector or
+Prometheus needs 5658 only. Django's control calls to `/proxy/relay/` go through nginx by default,
+not straight to the relay, so no Django pod needs a rule.
 
 ```yaml
 apiVersion: networking.k8s.io/v1
@@ -218,15 +225,18 @@ spec:
   ingress:
     - from:
         - podSelector: { matchLabels: { app.kubernetes.io/name: mino-web } }      # nginx
-        - podSelector: { matchLabels: { app.kubernetes.io/name: mino-worker } }   # Django control calls
+      ports:
+        - { protocol: TCP, port: 5657 }
+        - { protocol: TCP, port: 5658 }
+    - from:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: observability } }
           podSelector: { matchLabels: { app.kubernetes.io/name: otel-collector } }
       ports:
         - { protocol: TCP, port: 5658 }
 ```
 
-Adjust the labels to your own. If the Django API pods are separate from the nginx pods, add them to
-the list.
+Adjust the labels to your own. A Django pod needs a rule on 5658 only if
+`DISPATCHARR_RELAY_BASE_URL` points it straight at the relay instead of at nginx.
 
 ## 6. Traces
 

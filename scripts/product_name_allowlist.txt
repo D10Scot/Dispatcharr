@@ -280,7 +280,7 @@
 32	docs/agents/issue-tracker.md
 1	docs/agents/metrics.md
 2	docs/agents/triage-labels.md
-1	docs/observability.md
+3	docs/observability.md
 9	docs/relay-parity-matrix.md
 10	docs/supply-chain.md
 3	e2e-upstream/CONTRACT.md
