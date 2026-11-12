@@ -292,9 +292,9 @@ jobs:
         if: matrix.project == 'sso'
         run: |
           {
-            echo "DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-sso"
-            echo "DISPATCHARR_E2E_VOLUME=dispatcharr-e2e-sso-data"
-            echo "DISPATCHARR_E2E_NETWORK=dispatcharr-e2e-sso-net"
+            echo "DISPATCHARR_E2E_CONTAINER=mino-e2e-sso"
+            echo "DISPATCHARR_E2E_VOLUME=mino-e2e-sso-data"
+            echo "DISPATCHARR_E2E_NETWORK=mino-e2e-sso-net"
             echo "DISPATCHARR_E2E_PORT=9291"
             echo "E2E_OIDC_ALLOW_HTTP=1"
           } >> "$GITHUB_ENV"

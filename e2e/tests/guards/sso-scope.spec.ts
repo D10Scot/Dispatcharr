@@ -14,9 +14,9 @@ import { assertScopedStack } from '../sso/scope';
 
 function scoped(): NodeJS.ProcessEnv {
   return {
-    DISPATCHARR_E2E_CONTAINER: 'dispatcharr-e2e-sso-guard',
-    DISPATCHARR_E2E_VOLUME: 'dispatcharr-e2e-sso-guard-data',
-    DISPATCHARR_E2E_NETWORK: 'dispatcharr-e2e-sso-guard-net',
+    DISPATCHARR_E2E_CONTAINER: 'mino-e2e-sso-guard',
+    DISPATCHARR_E2E_VOLUME: 'mino-e2e-sso-guard-data',
+    DISPATCHARR_E2E_NETWORK: 'mino-e2e-sso-guard-net',
     DISPATCHARR_E2E_PORT: '39291',
     E2E_BASE_URL: 'http://localhost:39291',
   };

@@ -276,9 +276,9 @@ plain http on the Docker network: `scripts/e2e_up.sh` passes it only when
 created without it keeps its environment; `--reset` to pick it up.
 
 ```bash
-export DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-sso \
-       DISPATCHARR_E2E_VOLUME=dispatcharr-e2e-sso-data \
-       DISPATCHARR_E2E_NETWORK=dispatcharr-e2e-sso-net \
+export DISPATCHARR_E2E_CONTAINER=mino-e2e-sso \
+       DISPATCHARR_E2E_VOLUME=mino-e2e-sso-data \
+       DISPATCHARR_E2E_NETWORK=mino-e2e-sso-net \
        DISPATCHARR_E2E_PORT=39291 \
        E2E_BASE_URL=http://localhost:39291 \
        E2E_OIDC_ALLOW_HTTP=1
@@ -886,7 +886,7 @@ a side effect of the goal or phase that happened to add the third.
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
 `streaming-split`, `lifecycle`, `frontend`, `dvr` and `sso` as a matrix, each
 against its own fresh container, each gated on `npm run typecheck` before tests
-run. The `sso` job alone exports a scoped stack (`dispatcharr-e2e-sso`, port
+run. The `sso` job alone exports a scoped stack (`mino-e2e-sso`, port
 9291) and `E2E_OIDC_ALLOW_HTTP=1` before booting it; see "The sso project".
 
 **That project list is no longer hardcoded in the `test` job** — it is built by
