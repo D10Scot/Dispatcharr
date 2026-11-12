@@ -464,7 +464,7 @@ export default defineConfig({
     {
       // Each ID-token fault the fake OP can inject, refused through the browser.
       // Separate from `sso` only because of Mino's `oidc` throttle (20 a minute per
-      // client IP): this project spends 17 a run and `sso` 8, so the two cannot share
+      // client IP): this project spends 19 a run and `sso` 8, so the two cannot share
       // one stack's window. Its own scoped stack, like `sso` (`assertScopedStack()`),
       // and no password request beyond its setup. `retries: 0`: a retry spends the
       // budget again.

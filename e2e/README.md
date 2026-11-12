@@ -130,7 +130,7 @@ it is recreated (`--down`/`--recreate`).
 | `lifecycle-restore` | Takes a backup, mutates the database, restores it. **Runs alone** and resets its container: `restore_backup` drops and rebuilds the `public` schema, replacing every row under anything else sharing the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-scheduling` | Non-zero `refresh_interval` and `cron_expression`, and the django-celery-beat rows behind them. **Runs alone** and resets its container: a non-zero interval leaves an *enabled* hourly beat task re-refreshing that account for the life of the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `sso` | Sign-in through a fake OpenID provider (in `e2e-upstream`), the password-login toggle and its break-glass recovery. **Only against a scoped stack of its own** — every spec's first act is `assertScopedStack()`, which refuses the shared container. Its own bootstrap, `sso-setup`, writes `playwright/.auth/sso-tokens.json` and never touches `tokens.json`. Ignores `tests/sso/faults/`. One worker, no retries, 180s. See "The sso project" below |
-| `sso-faults` | Each ID-token fault the fake OP can inject, refused through the browser, plus an honest control. Its own project, and its own scoped stack, only because its 17 `oidc` requests do not fit beside `sso`'s 8 in one throttle window. Same scope rule as `sso`; its bootstrap, `sso-faults-setup`, runs `sso.setup.ts` against its stack and writes `sso-faults-tokens.json`. One worker, no retries, 120s. See "The sso-faults project" below |
+| `sso-faults` | Each ID-token fault the fake OP can inject, refused through the browser, plus an honest control. Its own project, and its own scoped stack, only because its 19 `oidc` requests do not fit beside `sso`'s 8 in one throttle window. Same scope rule as `sso`; its bootstrap, `sso-faults-setup`, runs `sso.setup.ts` against its stack and writes `sso-faults-tokens.json`. One worker, no retries, 120s. See "The sso-faults project" below |
 
 `frontend` depends on two rules that are not obvious from the config alone:
 
@@ -330,11 +330,16 @@ every browser request to a throttled route is written to a per-project ledger in
 `playwright/.auth/` (keyed by the Playwright runner's pid, so it covers exactly one
 invocation and survives a worker restart), and a test fails, listing every request,
 once the run has spent more than its project declares. The `guards` project's
-`tests/guards/sso-budget.spec.ts` holds the rest: each budget leaves 3 of Mino's rate
-(read from the `oidc` rate in the product's settings module) unspent, this README and every spec header
-state the same number, every spec under `tests/sso/` takes `test` from that
-fixtures file, and no throttled route appears as a string under `tests/sso/`, so
-nothing reaches one except through the counted browser. A spec that would take a
+`tests/guards/sso-budget.spec.ts` holds the rest: each budget leaves its project's
+headroom of Mino's rate (read from the `oidc` rate in the product's settings module)
+unspent, 3 for `sso` and 1 for `sso-faults`; this README and every spec header
+state the same number; every spec under `tests/sso/` takes `test` from that
+fixtures file; nothing under `tests/sso/` makes a browser context or page except
+through the counted `context` fixture (no `browser.newContext()`, no `newPage()`
+on anything else, no `browser` fixture); and no throttled route appears under
+`tests/sso/` as a string, a template literal or a `+` chain, so nothing reaches
+one except through the counted browser. What it cannot see is a route built through
+a call (`.concat`, `join`, a helper) or in a module outside `tests/sso/`. A spec that would take a
 project past its budget raises the number in all three places, within the
 headroom, or goes to a project and stack of its own, as `sso-faults` did.
 
@@ -352,17 +357,38 @@ in CI's linux/amd64 Chromium and on macOS, not in linux/arm64 Chromium.
 
 The fake OP's ID-token faults, each refused through the browser
 (`tests/sso/faults/id-token-faults.spec.ts`). One case per fault, on a provider
-whose claims map to Admin, so a skipped check would provision one: the six ID-token
-faults (wrong `iss`, wrong `aud`, bad nonce, expired, `alg=none`, unknown `kid`)
-must land on `/login?sso_error=id_token_invalid` after a token exchange the OP
-accepted, and `missing-iss-param` (against the OP's `/oidc/rfc9207` issuer, which
-advertises RFC 9207's `iss` and then omits it) on `sso_error=issuer_mismatch`
-before any token request. None may create a user. A control case signs in through
-the RFC 9207 issuer honestly, so that refusal is the fault's, not the issuer's.
+whose claims map to Admin: the seven ID-token faults (wrong `iss`, wrong `aud`,
+bad nonce, expired, `alg=none`, unknown `kid`, bad signature) must land on
+`/login?sso_error=id_token_invalid` after a token exchange the OP accepted, and
+`missing-iss-param` (against the OP's `/oidc/rfc9207` issuer, which advertises
+RFC 9207's `iss` and then omits it) on `sso_error=issuer_mismatch` before any
+token request. None may store a token pair or create a user. A control case signs
+in through the RFC 9207 issuer honestly, so that refusal is the fault's, not the
+issuer's.
 
-**Why a project of its own.** **The `sso-faults` project's SSO request budget: 17 of 20 a run.**
-Each fault case spends 2 (start, callback) and the control 3, which cannot share a
-minute with `sso`'s 8 on one client IP. Pacing sleeps were rejected; instead the
+Each fault changes one property of an otherwise honest token, so a product that
+skipped the check it aims at would provision the Admin and the case would redden.
+The checks this pins: the signature (`bad-signature`: the published `kid`, RS256,
+honest claims, another key's signature), the refusal of an unsigned token
+(`alg-none` carries the published `kid`, so key lookup succeeds and the token
+reaches decoding), `aud`, `iss`, the nonce, expiry, RFC 9207's `iss` parameter
+and key lookup (`unknown-kid`). Fix round 1 of this project proved the first two
+by building the product with a check removed: with signature verification off,
+`bad-signature` and `alg-none` (and `wrong-aud` and `expired`, which PyJWT then
+stops checking too) each signed in and provisioned the Admin. It also showed what
+`alg-none` does not pin: a build taking the algorithm from the token header still
+refused it, because PyJWT refuses `none` with a key whatever algorithm list it is
+given. Algorithm pinning is unit-only, in `apps/accounts/tests/test_oidc_flow.py`
+(`test_alg_none_refused`, `test_hs256_signed_with_client_secret_refused`), as are
+`azp` and multiple audiences, required claims and the subject's shape, the Entra
+tenant and issuer, the JWK's own shape (`oct`, wrong family, a disagreeing `alg`,
+private members) and the refetch on an unknown `kid`.
+
+**Why a project of its own.** **The `sso-faults` project's SSO request budget: 19 of 20 a run.**
+Each of the eight fault cases spends 2 (start, callback) and the control 3, which
+cannot share a minute with `sso`'s 8 on one client IP. The headroom is 1, not
+`sso`'s 3: the cases and the control are what the project pins, so none was
+dropped to buy it back. One more case does not fit; it would need a second stack. Pacing sleeps were rejected; instead the
 project has its own scoped stack, and so its own throttle window, locally and in
 CI (its own matrix row, `mino-e2e-sso-faults` on port 9292).
 

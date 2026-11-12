@@ -26,19 +26,26 @@ import path from 'node:path';
 /** Requests a minute the `oidc` throttle allows per client IP (the product's settings module). */
 export const OIDC_THROTTLE_PER_MINUTE = 20;
 
-/**
- * Left unspent by every project, so one stray request (a person's curl at the stack, a
- * browser re-request) does not throttle a green run.
- */
-export const OIDC_HEADROOM = 3;
-
 /** What each SSO spec project spends in one full run. Stated again in the README and spec headers. */
 export const OIDC_BUDGET = {
   sso: 8,
-  'sso-faults': 17,
+  'sso-faults': 19,
 } as const;
 
 export type SsoSpecProject = keyof typeof OIDC_BUDGET;
+
+/**
+ * Left unspent by each project, so a stray request (a person's curl at the stack, a
+ * browser re-request) does not throttle a green run. `sso` keeps 3. `sso-faults` keeps 1:
+ * one case per fault plus the honest control is 8 × 2 + 3 = 19, and no case or the
+ * control can go without losing what it pins (fix round 1 of the faults follow-up). A
+ * twentieth request is still inside the rate; a twenty-first answers 429, which
+ * `signInThroughSso` names.
+ */
+export const OIDC_HEADROOM: Record<SsoSpecProject, number> = {
+  sso: 3,
+  'sso-faults': 1,
+};
 
 /** Whether a path on the Mino origin is one the `oidc` throttle counts. */
 export function isThrottledOidcPath(pathname: string): boolean {

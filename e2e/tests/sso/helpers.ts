@@ -73,6 +73,7 @@ export type OidcFault =
   | 'expired'
   | 'alg-none'
   | 'unknown-kid'
+  | 'bad-signature'
   | 'missing-iss-param';
 
 /** The fake OP's control API, on the host-published origin. */

@@ -7,15 +7,27 @@
  * spent more than its project declares. This file holds what makes that sound:
  *
  * - the declared budgets stay inside Mino's own rate (read from the product's settings module, `SETTINGS_MODULE`)
- *   less `OIDC_HEADROOM`, and the README and every spec header state the same numbers;
+ *   less each project's `OIDC_HEADROOM` (pinned: `sso` 3, `sso-faults` 1), and the README and every spec header state the same numbers;
  * - every spec under `tests/sso/` takes `test` from `tests/sso/fixtures.ts`, so its
  *   browser is counted, and that file wires the ledger into `context`;
  * - no throttled route is written as a string under `tests/sso/`, so no request reaches
- *   one except through the browser the ledger watches;
+ *   one except through the browser the ledger watches. A template literal or a `+` chain
+ *   is folded first, each non-literal part standing in for one path segment, so
+ *   `'/api/accounts/oidc/' + slug + '/start/'` is seen;
+ * - no browser or page is made under `tests/sso/` except through the counted `context`
+ *   fixture: no `newContext`, `launchPersistentContext`, `launch`, `connect` or
+ *   `connectOverCDP` call, no `newPage` on anything but `context`, and no `browser`,
+ *   `browserType` or `playwright` fixture taken. A second context's requests would not
+ *   reach the ledger;
+ * - every TypeScript or JavaScript file under `tests/sso/` is read, so a `.js` or `.mjs`
+ *   module beside the specs is not skipped;
  * - the path classifier counts exactly the four throttled routes.
  *
  * What it cannot see: a route assembled from fragments that are not themselves a route
- * (`'sta' + 'rt/'`), and a request made through a module outside `tests/sso/`.
+ * (`'sta' + 'rt/'`) or through a call (`.concat`, `[...].join`, a helper's return value);
+ * a request made through a module outside `tests/sso/`; and the APIRequestContext
+ * fixtures (`request`, `page.request`), which the ledger does not count either, so they
+ * are held only by the route-string check.
  *
  * `@characterization`: the harness's own accounting, which no client observes
  * (`docs/adr/0002`).
@@ -23,7 +35,7 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import * as ts from 'typescript';
-import { E2E_ROOT, REPO_ROOT, listTsFiles, readSpec } from './ast';
+import { E2E_ROOT, REPO_ROOT, listSourceFiles, listTsFiles, readSpec } from './ast';
 import { readFile } from 'node:fs/promises';
 import {
   OIDC_BUDGET,
@@ -50,6 +62,57 @@ function projectOf(rel: string): keyof typeof OIDC_BUDGET {
   return rel.startsWith(`${SSO_DIR}/faults/`) ? 'sso-faults' : 'sso';
 }
 
+/**
+ * The static text of a string-shaped expression: a literal, a template literal or a `+`
+ * chain, each non-literal part standing in as one path segment (`x`). Undefined for
+ * anything else, and for a `+` operand (its chain is read from the top).
+ */
+function foldedText(node: ts.Node): string | undefined {
+  const isPlus = (n: ts.Node): n is ts.BinaryExpression =>
+    ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.PlusToken;
+  let parent = node.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) parent = parent.parent;
+  if (parent && isPlus(parent)) return undefined;
+  const fold = (n: ts.Expression): string => {
+    if (ts.isParenthesizedExpression(n)) return fold(n.expression);
+    if (ts.isStringLiteralLike(n)) return n.text;
+    if (ts.isTemplateExpression(n)) return n.head.text + n.templateSpans.map((sp) => `x${sp.literal.text}`).join('');
+    if (isPlus(n)) return fold(n.left) + fold(n.right);
+    return 'x';
+  };
+  if (ts.isStringLiteralLike(node) || ts.isTemplateExpression(node) || isPlus(node)) return fold(node as ts.Expression);
+  return undefined;
+}
+
+/** Fixtures that hand a spec a browser outside the counted `context`. */
+const UNCOUNTED_FIXTURES = new Set(['browser', 'browserType', 'playwright']);
+/** Calls that make a browser context or page the ledger does not watch. */
+const UNCOUNTED_CALLS = new Set(['newContext', 'launchPersistentContext', 'launch', 'connect', 'connectOverCDP']);
+
+/** A browser context or page made outside the counted `context` fixture, anywhere in the file. */
+function uncountedBrowserProblems(sf: ts.SourceFile): string[] {
+  const problems: string[] = [];
+  (function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node) && ts.isPropertyAccessExpression(node.expression)) {
+      const name = node.expression.name.text;
+      const receiver = node.expression.expression;
+      if (UNCOUNTED_CALLS.has(name)) {
+        problems.push(`calls ${name}() (line ${lineOf(sf, node)}): its requests would not reach the oidc ledger`);
+      } else if (name === 'newPage' && !(ts.isIdentifier(receiver) && receiver.text === 'context')) {
+        problems.push(`calls newPage() on something other than the context fixture (line ${lineOf(sf, node)}): its requests would not reach the oidc ledger`);
+      }
+    }
+    if (ts.isBindingElement(node)) {
+      const key = node.propertyName ?? node.name;
+      if ((ts.isIdentifier(key) || ts.isStringLiteral(key)) && UNCOUNTED_FIXTURES.has(key.text)) {
+        problems.push(`takes the ${key.text} fixture (line ${lineOf(sf, node)}), which makes contexts the oidc ledger does not watch`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  })(sf);
+  return problems;
+}
+
 async function specFiles(): Promise<string[]> {
   return (await listTsFiles(path.join(E2E_ROOT, SSO_DIR), SSO_DIR)).filter((rel) => rel.endsWith('.spec.ts'));
 }
@@ -60,11 +123,13 @@ test.describe('the SSO oidc budget', () => {
     const rate = /["']oidc["']\s*:\s*["'](\d+)\/minute["']/.exec(settings);
     expect(rate?.[1], `${SETTINGS_MODULE} names the oidc rate per minute`).toBe(String(OIDC_THROTTLE_PER_MINUTE));
     expect(Object.keys(OIDC_BUDGET).sort()).toEqual(['sso', 'sso-faults']);
+    expect(OIDC_HEADROOM, 'the headroom pinned per project (tests/sso/budget.ts)').toEqual({ sso: 3, 'sso-faults': 1 });
     for (const [project, budget] of Object.entries(OIDC_BUDGET)) {
+      const headroom = OIDC_HEADROOM[project as keyof typeof OIDC_BUDGET];
       expect(
         budget,
-        `${project}'s budget must leave ${OIDC_HEADROOM} of the ${OIDC_THROTTLE_PER_MINUTE} a minute unspent`
-      ).toBeLessThanOrEqual(OIDC_THROTTLE_PER_MINUTE - OIDC_HEADROOM);
+        `${project}'s budget must leave ${headroom} of the ${OIDC_THROTTLE_PER_MINUTE} a minute unspent`
+      ).toBeLessThanOrEqual(OIDC_THROTTLE_PER_MINUTE - headroom);
     }
   });
 
@@ -84,7 +149,9 @@ test.describe('the SSO oidc budget', () => {
 
   test('counts every throttled request: browser only, through the counting fixture', { tag: '@characterization' }, async () => {
     const problems: string[] = [];
-    for (const rel of await listTsFiles(path.join(E2E_ROOT, SSO_DIR), SSO_DIR)) {
+    const files = await listSourceFiles(path.join(E2E_ROOT, SSO_DIR), SSO_DIR);
+    expect(files, 'the scan found the SSO files').toEqual(expect.arrayContaining(['tests/sso/fixtures.ts', 'tests/sso/faults/id-token-faults.spec.ts']));
+    for (const rel of files) {
       const sf = parse(rel, await readSpec(rel));
 
       if (rel.endsWith('.spec.ts')) {
@@ -101,21 +168,18 @@ test.describe('the SSO oidc budget', () => {
       }
 
       (function visit(node: ts.Node): void {
-        let text: string | undefined;
-        if (ts.isStringLiteralLike(node)) text = node.text;
-        else if (ts.isTemplateExpression(node)) {
-          text = node.head.text + node.templateSpans.map((s) => `x${s.literal.text}`).join('');
-        }
+        const text = foldedText(node);
         if (text !== undefined) {
           const at = text.indexOf('/api/accounts/oidc/');
           const route = at >= 0 ? text.slice(at).split(/[?#]/)[0] : undefined;
           if (route && isThrottledOidcPath(route)) {
             problems.push(`${rel}: names the throttled route ${route} (line ${lineOf(sf, node)}), outside the browser the ledger counts`);
           }
-          if (ts.isTemplateExpression(node)) return;
+          // Still descend: a part folded as `x` (a call, say) can hold a literal of its own.
         }
         ts.forEachChild(node, visit);
       })(sf);
+      for (const p of uncountedBrowserProblems(sf)) problems.push(`${rel}: ${p}`);
     }
 
     const fixtures = await readSpec(`${SSO_DIR}/fixtures.ts`);

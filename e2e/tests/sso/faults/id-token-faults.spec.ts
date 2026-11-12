@@ -3,22 +3,37 @@
  *
  * One case per fault in the fake OP's fault list. The OP authenticates the person and
  * then lies in exactly one way; Mino must refuse on the callback, land the browser on the
- * login page with a fixed `sso_error` code, and create no user, although the claims carry
- * a role that maps to Admin, so a skipped check would provision one.
+ * login page with a fixed `sso_error` code, store no token pair and create no user,
+ * although the claims carry a role that maps to Admin.
  *
- * - The six ID-token faults are refused at Mino's ID-token validation
- *   (`apps/accounts/oidc/flow.py`, step 7) as `id_token_invalid`, after a token exchange
- *   the OP accepted.
+ * - The seven ID-token faults are refused at Mino's ID-token validation
+ *   (`apps/accounts/oidc/flow.py`, step 7; `apps/accounts/oidc/validate.py`) as
+ *   `id_token_invalid`, after a token exchange the OP accepted.
  * - `missing-iss-param` is refused before the token request (step 5, RFC 9207) as
  *   `issuer_mismatch`, on a provider seeded against the OP's `/oidc/rfc9207` issuer, which
  *   advertises the parameter and then omits it. The honest control beside it signs in
  *   through the same issuer, so the refusal is the fault's and not the issuer's.
  *
+ * What a case reddens on if its check were skipped: each fault changes one property of an
+ * otherwise honest token, so a product that skipped the check that fault aims at would
+ * provision the Admin. The checks pinned here, one fault each: the signature
+ * (`bad-signature`: published `kid`, RS256, honest claims, another key's signature), the
+ * refusal of an unsigned token (`alg-none`: published `kid`, so key lookup succeeds and
+ * the token reaches decoding), `aud`, `iss`, the nonce, expiry, RFC 9207's `iss`
+ * parameter and key lookup (`unknown-kid`). `alg-none` does not pin algorithm pinning
+ * itself: PyJWT refuses `none` with a key whatever algorithm list it is given, so a build
+ * that took the algorithm from the token header still passed it (fix round 1, observed).
+ * Unit-only (`apps/accounts/tests/test_oidc_flow.py`): algorithm pinning
+ * (`test_alg_none_refused`, `test_hs256_signed_with_client_secret_refused`), `azp` and
+ * multiple audiences, required claims and the subject's shape, the Entra tenant and
+ * issuer, the JWK's own shape (`oct`, wrong family, a disagreeing `alg`, private members)
+ * and the refetch on an unknown `kid`.
+ *
  * Its own project on its own scoped stack, because its requests do not fit beside the
  * `sso` project's in one throttle window.
  * SSO request budget: 2 per fault case (start and callback; Mino refuses on the callback,
  * so there is no exchange) and 3 for the control (start, callback and exchange).
- * The project spends 17 a run; see e2e/README.md, "The sso-faults project".
+ * The project spends 19 a run; see e2e/README.md, "The sso-faults project".
  *
  * Spends no password request: everything goes through the admin pair `sso.setup.ts`
  * wrote and the browser's SSO flow. Order-independent: each case seeds and retires its
@@ -54,6 +69,7 @@ const ID_TOKEN_FAULTS: readonly OidcFault[] = [
   'expired',
   'alg-none',
   'unknown-kid',
+  'bad-signature',
 ];
 
 const CASES: { fault: OidcFault; issuerPath: OpIssuerPath; ssoError: string; opLog: string[] }[] = [
@@ -93,6 +109,12 @@ for (const { fault, issuerPath, ssoError, opLog } of CASES) {
 
       await expect(page).toHaveURL(new RegExp(`/login\\?sso_error=${ssoError}$`), { timeout: 30_000 });
       await expect(page.getByTestId(SSO_TESTIDS.error)).toBeVisible();
+
+      // No session: the SPA stored no token pair, and the browser carries nothing the API
+      // accepts (a GET outside the oidc throttle).
+      const stored = await page.evaluate(() => [localStorage.getItem('accessToken'), localStorage.getItem('refreshToken')]);
+      expect(stored, 'no token pair was stored').toEqual([null, null]);
+      expect((await page.request.get('/api/accounts/users/')).status(), 'the browser is not signed in').toBe(401);
 
       const users = listRows<UserRow>(await api.json<unknown>(await api.get('/api/accounts/users/'), 'list users'));
       expect(users.map((u) => u.username), 'no user was provisioned').not.toContain(username);
