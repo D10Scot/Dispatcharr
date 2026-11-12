@@ -48,7 +48,7 @@ test('player_api.php returns a user_info / server_info envelope for valid creden
     // query string of the very request being answered, so the response
     // discloses nothing the requester didn't already send.
     username: user.username,
-    message: 'Dispatcharr XC API',
+    message: 'Mino XC API',
     auth: 1,
     status: 'Active',
     // max_connections is a string in the envelope, not a number.

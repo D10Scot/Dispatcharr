@@ -164,6 +164,49 @@ BROKEN_SYNTAX = '''
 def go(:
 '''
 
+# Observability spec D9: telemetry calls are sinks too.
+SPAN_LEAK = '''
+from opentelemetry import trace
+
+span = trace.get_current_span()
+
+
+def go(stream_url):
+    span.set_attribute("url", stream_url)
+'''
+
+SPAN_REDACTED = '''
+from opentelemetry import trace
+
+from dispatcharr.observability.redaction import redact_text
+
+span = trace.get_current_span()
+
+
+def go(stream_url):
+    span.set_attribute("url", redact_text(stream_url))
+'''
+
+SPAN_CLEAN = '''
+from opentelemetry import trace
+
+span = trace.get_current_span()
+
+
+def go(channel_pk):
+    span.set_attribute("mino.channel_id", channel_pk)
+'''
+
+INSTRUMENT_LEAK = '''
+def go(self, stream_url, seconds):
+    self._task_histogram.record(seconds, {"url": stream_url})
+'''
+
+NOT_A_TELEMETRY_RECEIVER = '''
+def go(cache, stream_url):
+    cache.set("k", stream_url)
+'''
+
 
 class CredentialLoggingGuardTests(SimpleTestCase):
     def setUp(self):
@@ -281,6 +324,39 @@ class CredentialLoggingGuardTests(SimpleTestCase):
         result = self.run_guard(path)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn(f"{path}:7:", result.stdout)
+
+    def test_a_span_attribute_naming_a_url_is_reported(self):
+        path = self.write("span_leak.py", SPAN_LEAK)
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertEqual(len(result.stdout.splitlines()), 1, result.stdout)
+        self.assertIn(f"{path}:7:", result.stdout)
+        self.assertIn("set_attribute", result.stdout)
+
+    def test_a_span_attribute_through_redact_text_is_clean(self):
+        path = self.write("span_ok.py", SPAN_REDACTED)
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_a_span_attribute_naming_nothing_credential_like_is_clean(self):
+        path = self.write("span_clean.py", SPAN_CLEAN)
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
+
+    def test_an_instrument_record_naming_a_url_is_reported(self):
+        path = self.write("instrument_leak.py", INSTRUMENT_LEAK)
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn(f"{path}:2:", result.stdout)
+
+    def test_a_set_call_on_a_non_telemetry_receiver_is_not_a_telemetry_call(self):
+        # `set` is a telemetry method name, but `cache` is not a telemetry receiver.
+        path = self.write("cache_set.py", NOT_A_TELEMETRY_RECEIVER)
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout, "")
 
     def test_several_files_report_together_and_fail_once(self):
         leak = self.write("leak.py", ONE_LINE_LEAK)

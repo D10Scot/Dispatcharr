@@ -459,7 +459,7 @@ def build_timeshift_redirect_url(
     """Build one provider timeshift URL mirroring the client's XC layout.
 
     Redirect mode does not cascade formats or probe; the player already chose
-    PATH vs QUERY when it hit Dispatcharr.
+    PATH vs QUERY when it hit Mino.
     """
     if layout == "query":
         return build_timeshift_url_format_a(

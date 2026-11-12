@@ -483,7 +483,7 @@ check_external_postgres_version() {
         echo "  External Database: PostgreSQL $EXTERNAL_VERSION"
         echo "  Required Version:  PostgreSQL $MIN_REQUIRED_VERSION or higher"
         echo ""
-        echo "  Your external PostgreSQL database is too old for Dispatcharr."
+        echo "  Your external PostgreSQL database is too old for Mino."
         echo "  Please upgrade to PostgreSQL $MIN_REQUIRED_VERSION or higher."
         echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         echo ""
@@ -500,7 +500,7 @@ check_external_postgres_version() {
         echo "   External Database: PostgreSQL $EXTERNAL_VERSION"
         echo "   Target Version:    PostgreSQL $MIN_REQUIRED_VERSION"
         echo "   ℹ️  Your database is newer than the target version."
-        echo "   PostgreSQL version should be compatible with Dispatcharr."
+        echo "   PostgreSQL version should be compatible with Mino."
     fi
 
     return 0

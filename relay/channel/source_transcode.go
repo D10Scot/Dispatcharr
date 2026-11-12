@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/ffmpeg"
+	"github.com/D10Scot/Dispatcharr/relay/procstat"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
@@ -184,6 +185,13 @@ func (s *TranscodeSource) Run(parent context.Context, sink io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("channel: starting the transcode process: %w", redact.Error(err))
 	}
+	// M8/M9 (observability D7): the source's process group, labelled with
+	// the channel's numeric id. proc.Wait below unregisters it.
+	pk := 0
+	if s.channel != nil {
+		pk = s.channel.pk
+	}
+	proc.Track(procstat.Labels{ChannelID: pk, Kind: procstat.KindSource})
 
 	var tuning Tuning
 	if s.channel != nil {

@@ -1,7 +1,7 @@
 #!/bin/bash
 #
 # Integration test suite for TLS/mTLS in modular mode.
-# Validates that Dispatcharr connects correctly to external PostgreSQL and
+# Validates that Mino connects correctly to external PostgreSQL and
 # Redis services using various TLS configurations.
 #
 # Prerequisites:
@@ -1000,7 +1000,7 @@ test_modular_full_tls_celery() {
 # Main
 ###############################################################################
 echo -e "${BOLD}╔═══════════════════════════════════════════════════════════╗${NC}"
-echo -e "${BOLD}║   Dispatcharr — TLS Integration Tests                    ║${NC}"
+echo -e "${BOLD}║   Mino — TLS Integration Tests                           ║${NC}"
 echo -e "${BOLD}╚═══════════════════════════════════════════════════════════╝${NC}"
 
 # Build image

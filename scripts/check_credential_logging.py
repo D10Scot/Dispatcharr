@@ -64,7 +64,7 @@ makes this hatch safe to have.
 KNOWN GAPS IN THE PATTERN. It is inherited verbatim from the advisory grep this
 check replaced, and widening it is a deliberate change, not a drive-by — a
 wider pattern would flag pre-existing calls across the whole tree and redden
-unrelated pull requests. Three gaps are known and were found by reading:
+unrelated pull requests. Five gaps are known and were found by reading:
 
   * `\bpassword\b` requires a word boundary, and `_` is a word character, so it
     misses `base_password`, `xc_password` and `transformed_password`. A call
@@ -75,9 +75,34 @@ unrelated pull requests. Three gaps are known and were found by reading:
   * `_url\b` does not match `_uri`, so `request.build_absolute_uri()` — which
     returns the full request URL, credentials in the path and all — is not
     reported.
+  * A bare `url` argument and a `*_pattern` argument are not matched
+    (`_url\b` needs the underscore), so `logger.debug("%s", url)` or
+    `logger.debug("%s", search_pattern)` passes. An M3U filter's DEBUG line
+    logged a raw stream URL this way. Measured at 0c142c15: widening the
+    pattern for both adds 22 findings over 8 files, mostly harmless
+    (logo.url, filter regexes, EPG title patterns) and some real
+    (core/image_proxy.py, apps/epg/sd_utils.py, apps/plugins/api_views.py),
+    so it was not landed with that fix.
+  * `trace` is not in LOG_LEVELS, so `logger.trace(...)` calls are not
+    examined at all.
 
 Closing them means working off the resulting backlog in one pass. Until then,
-read a diff for these three shapes yourself; the check will not do it for you.
+read a diff for these shapes yourself; the check will not do it for you.
+
+TELEMETRY CALLS (observability spec D9). The same one-argument-at-a-time rule
+applies to a span, tracer, metric-instrument or meter call, because a span
+attribute, an event or an instrument's attributes is an exporter sink just as
+a log line is:
+
+    span.set_attribute("url", stream_url)                  # reported
+    span.set_attribute("url", redact_text(stream_url))     # clear
+
+A call is a telemetry call when its method is one of TELEMETRY_METHODS and its
+receiver's name ends in `span`, `tracer`, `counter`, `histogram`, `gauge` or
+`meter` (any case: `current_span`, `self._task_histogram`). This is a lint at
+the call site and nothing more. The exporter boundary
+(dispatcharr/observability/redaction.py) does not depend on it, and it keeps the
+blindness to `str(exception)` described below.
 
 KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
 
@@ -119,7 +144,29 @@ CREDENTIAL_RE = re.compile(
     r"|code_verifier|\bnonce\b"
 )
 
-REDACT_FUNCTIONS = frozenset({"redact_url", "redact_headers"})
+# redact_text and redact_exception are dispatcharr/observability/redaction.py's:
+# the first scrubs a free-text body (best effort), the second reduces an
+# exception to its qualified type name.
+REDACT_FUNCTIONS = frozenset(
+    {"redact_url", "redact_headers", "redact_text", "redact_exception"}
+)
+
+TELEMETRY_METHODS = frozenset(
+    {
+        "set_attribute",
+        "set_attributes",
+        "add_event",
+        "record_exception",
+        "start_as_current_span",
+        "start_span",
+        "set_status",
+        "add",
+        "record",
+        "set",
+    }
+)
+
+TELEMETRY_RECEIVER_SUFFIXES = ("span", "tracer", "counter", "histogram", "gauge", "meter")
 
 IGNORE_MARKER = "credential-logging: ignore"
 
@@ -156,8 +203,17 @@ def _is_logging_call(node):
     return owner is not None and owner.endswith("logger")
 
 
+def _is_telemetry_call(node):
+    if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute):
+        return False
+    if node.func.attr not in TELEMETRY_METHODS:
+        return False
+    owner = _logger_owner(node.func)
+    return owner is not None and owner.lower().endswith(TELEMETRY_RECEIVER_SUFFIXES)
+
+
 def _is_redact_call(node):
-    """Whether `node` is a call to redact_url() / redact_headers()."""
+    """Whether `node` is a call to one of REDACT_FUNCTIONS (redact_url, redact_headers, redact_text, redact_exception)."""
     if not isinstance(node, ast.Call):
         return False
     func = node.func
@@ -251,7 +307,7 @@ def check_file(path, out=sys.stdout, err=sys.stderr):
     findings = []
 
     for node in ast.walk(tree):
-        if not _is_logging_call(node):
+        if not (_is_logging_call(node) or _is_telemetry_call(node)):
             continue
 
         if not any(_unredacted_arguments(node)):

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -23,12 +24,18 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/drain"
 	"github.com/D10Scot/Dispatcharr/relay/hls"
 	"github.com/D10Scot/Dispatcharr/relay/httpapi"
+	"github.com/D10Scot/Dispatcharr/relay/redact"
 	"github.com/D10Scot/Dispatcharr/relay/session"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 func main() {
 	log.SetFlags(log.LstdFlags | log.LUTC)
 	log.SetPrefix("relay-go: ")
+	// Observability D8: with MINO_LOG_FORMAT=json every line from here on,
+	// config.Load's failure included, is cleaned JSON. With text (the
+	// default) this changes nothing.
+	telemetry.InstallEarlyLogger(nil, os.Stderr)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -48,6 +55,24 @@ func main() {
 	// secret that is not an ERROR, so this particular line is still held by
 	// hand: credlint checks error-typed arguments, and cfg.Secret is a string.
 	log.Printf("starting on port %d (dev routes: %t)", cfg.Port, cfg.DevRoutes)
+
+	// Observability (D12): /metrics always; OTLP export only when
+	// OTEL_EXPORTER_OTLP_ENDPOINT is set. A failed Init is not fatal: the
+	// relay serves without telemetry rather than refuse every viewer over a
+	// collector setting, and Current() is then the inert Telemetry.
+	telCfg := telemetry.LoadConfig(nil, nil)
+	tel, err := telemetry.Init(context.Background(), telCfg)
+	if err != nil {
+		log.Printf("telemetry disabled: %v", err) // credential-logging: ok - Init wraps every exporter error in redact.Error, and the OTLP variables were validated by name in LoadConfig
+		tel = telemetry.Current()
+	}
+	// Before anything captures slog.Default(): the control client, the
+	// emitter, the session table and the manager each keep the logger they
+	// were given.
+	tel.InstallLogger(os.Stderr)
+	if telCfg.OTLP && err == nil {
+		slog.Info("OpenTelemetry export enabled for " + telemetry.ServiceName + " (" + telemetry.Program + ") to " + telemetry.EndpointForLog(nil))
+	}
 
 	// THE SAME manager, not a second one. Two would give the list endpoint
 	// an empty map while the tune path filled another, and every assertion
@@ -73,6 +98,14 @@ func main() {
 		Sessions: sessions,
 		Silence:  sessions,
 	})
+	tel.ObserveChannels(channels.ChannelStates)
+	tel.ObserveClients(channels.ClientCounts)
+	tel.ObserveHLSSessions(sessions.Len)
+	tel.ObserveRewind(rewind.Bytes, func() (int64, bool) {
+		c := rewind.Cap()
+		return c, c != math.MaxInt64
+	})
+
 	// ONE Lifecycle, shared by the tune path, /readyz and the drain. Two
 	// would let the probe say "ready" while the handler refused every tune.
 	lifecycle := &httpapi.Lifecycle{}
@@ -80,6 +113,7 @@ func main() {
 		Addr: net.JoinHostPort("0.0.0.0", strconv.Itoa(cfg.Port)),
 		Handler: httpapi.New(httpapi.Config{
 			DevRoutes: cfg.DevRoutes,
+			Metrics:   tel.Metrics(),
 			Stream: httpapi.StreamDeps{
 				Secret:    cfg.Secret,
 				Channels:  channels,
@@ -146,4 +180,11 @@ func main() {
 	// particular, which runs AFTER Shutdown returns. Exiting here would drop
 	// every channel_stop of the shutdown.
 	<-drained
+	// Then flush the telemetry, bounded: the drain's fifteen seconds plus
+	// these two stay inside relay-go.conf's stopwaitsecs=20.
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := tel.Shutdown(ctx); err != nil {
+		log.Printf("telemetry shutdown: %v", redact.Error(err))
+	}
 }

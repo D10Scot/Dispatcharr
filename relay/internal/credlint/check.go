@@ -35,11 +35,13 @@
 // string rule above.
 //
 // TYPE-CHECKED WITH THE STANDARD LIBRARY ONLY: go/parser, go/types and the
-// gc export-data importer, which on this toolchain resolves standard
-// packages in about a hundred milliseconds. Module-local packages are
-// checked from source in dependency order (go list -deps), so
-// github.com/.../relay/redact resolves to the real package and the
-// allowlist below is a full name, not a guess.
+// gc export-data importer. Module-local packages are checked from source in
+// dependency order (go list -deps), so github.com/.../relay/redact resolves
+// to the real package and the allowlist below is a full name, not a guess.
+// Everything else, the standard library and (since ADR 0011) any module-cache
+// package, resolves through export data that `go list -deps -export` located
+// (ListExports): the gc importer with a nil lookup finds only the standard
+// library, and the relay may now import the OpenTelemetry modules.
 package main
 
 import (
@@ -51,6 +53,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -81,8 +84,12 @@ var Sinks = map[string]bool{
 	"log.Panicf": true, "log.Panic": true, "log.Panicln": true,
 	"log/slog.Error": true, "log/slog.Warn": true, "log/slog.Info": true, "log/slog.Debug": true, "log/slog.Log": true,
 	"log/slog.ErrorContext": true, "log/slog.WarnContext": true, "log/slog.InfoContext": true, "log/slog.DebugContext": true,
-	"log/slog.Any":             true,
-	"(*log/slog.Logger).Error": true, "(*log/slog.Logger).Warn": true, "(*log/slog.Logger).Info": true,
+	"log/slog.Any": true,
+	// ADR 0011: the two OpenTelemetry calls that take an error. A span
+	// records the error's text and the global handler logs it.
+	"(go.opentelemetry.io/otel/trace.Span).RecordError": true,
+	"go.opentelemetry.io/otel.Handle":                   true,
+	"(*log/slog.Logger).Error":                          true, "(*log/slog.Logger).Warn": true, "(*log/slog.Logger).Info": true,
 	"(*log/slog.Logger).Debug": true, "(*log/slog.Logger).Log": true, "(*log/slog.Logger).With": true,
 	"(*log/slog.Logger).ErrorContext": true, "(*log/slog.Logger).WarnContext": true,
 	"(*log/slog.Logger).InfoContext": true, "(*log/slog.Logger).DebugContext": true,
@@ -162,11 +169,42 @@ type Checker struct {
 	Findings []Finding
 }
 
-// NewChecker builds a checker whose standard-library imports come from the
-// gc importer.
-func NewChecker() *Checker {
+// ListExports maps import path to the export-data file `go list -export`
+// built or found for every package the patterns depend on, the standard
+// library and module-cache packages alike.
+func ListExports(moduleDir string, patterns ...string) (map[string]string, error) {
+	args := append([]string{"-deps", "-export", "-f", "{{.ImportPath}}\t{{.Export}}"}, patterns...)
+	out, err := goList(moduleDir, args...)
+	if err != nil {
+		return nil, err
+	}
+	exports := map[string]string{}
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		path, file, ok := strings.Cut(line, "\t")
+		if ok && file != "" {
+			exports[path] = file
+		}
+	}
+	return exports, nil
+}
+
+// NewChecker builds a checker whose imports outside the module come from the
+// gc importer. With exports (ListExports) it reads exactly those files, so a
+// module-cache package resolves; with nil it falls back to the gc importer's
+// default lookup, which finds the standard library only.
+func NewChecker(exports map[string]string) *Checker {
 	fset := token.NewFileSet()
-	return &Checker{fset: fset, std: importer.ForCompiler(fset, "gc", nil), checked: map[string]*types.Package{}}
+	var lookup importer.Lookup
+	if exports != nil {
+		lookup = func(path string) (io.ReadCloser, error) {
+			file, ok := exports[path]
+			if !ok {
+				return nil, fmt.Errorf("no export data for %s", path)
+			}
+			return os.Open(file) // #nosec G304,G703 -- a path `go list -export` reported
+		}
+	}
+	return &Checker{fset: fset, std: importer.ForCompiler(fset, "gc", lookup), checked: map[string]*types.Package{}}
 }
 
 // Import satisfies types.Importer: a module package already checked is
