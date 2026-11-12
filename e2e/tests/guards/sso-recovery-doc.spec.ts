@@ -13,18 +13,21 @@
  * quoted commands (`changepassword`, the deactivation one-liner) cannot run
  * through `instance.manage()`; for them the shape is the whole check.
  *
- * Every fence on the page is `bash` (commands) or `text` (output and the form
- * template); any other fence, a bare one included, fails, so a command cannot
- * hide in an `sh` block. A line starting `docker exec` in any fence, and an
- * inline code span starting `docker exec `, must be the login-shell form.
+ * Every fence on the page, backtick or tilde, is `bash` (commands) or `text`
+ * (output and the form template); any other fence, a bare one included, fails,
+ * so a command cannot hide in an `sh` or `~~~` block. A fenced line containing
+ * `docker exec`, and an inline code span containing `docker exec `, must be the
+ * login-shell form; no fenced line may start with a `$ ` prompt; and prose
+ * outside code spans may not mention `docker exec` or `manage.py` at all.
  *
  * No container and no browser: this reads a file.
  *
  * Verified by mutation: rewriting the page's first command as
  * `docker exec <container> python manage.py password_login --enable` failed,
  * quoting the line (`not run through the login shell (su - dispatch -c '…')`);
- * so did moving a bare command into a fenced `sh` block, and into an inline
- * code span.
+ * so did moving a bare command into a fenced `sh` block, into an inline code
+ * span, into a `~~~bash` fence, into plain prose, and into a `text` fence
+ * behind a `$ ` prompt.
  */
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -58,7 +61,9 @@ interface Fenced {
 }
 
 /** The page split into fenced lines (with their fence's language), the
- * languages of every opening fence, and the prose outside the fences. */
+ * languages of every opening fence, and the prose outside the fences. A fence
+ * opens with three or more backticks or tildes and closes with a run of the same
+ * character at least as long (CommonMark), so a `~~~` fence is a fence too. */
 function parse(markdown: string): {
   fenced: Fenced[];
   languages: string[];
@@ -68,16 +73,24 @@ function parse(markdown: string): {
   const languages: string[] = [];
   const prose: string[] = [];
   let language: string | null = null;
+  let opener = "";
   for (const raw of markdown.split("\n")) {
-    const fence = raw.trim().match(/^```(.*)$/);
+    const fence = raw.trim().match(/^(`{3,}|~{3,})(.*)$/);
     if (fence) {
       if (language === null) {
-        language = fence[1].trim();
+        opener = fence[1];
+        language = fence[2].trim();
         languages.push(language);
-      } else {
-        language = null;
+        continue;
       }
-      continue;
+      if (
+        fence[1][0] === opener[0] &&
+        fence[1].length >= opener.length &&
+        fence[2].trim() === ""
+      ) {
+        language = null;
+        continue;
+      }
     }
     if (language === null) prose.push(raw);
     else fenced.push({ language, line: raw.trim() });
@@ -90,6 +103,11 @@ function inlineSpans(prose: string[]): string[] {
   return prose.flatMap((line) =>
     [...line.matchAll(/`([^`]+)`/g)].map((m) => m[1].trim()),
   );
+}
+
+/** Prose with its inline code spans removed: what a reader sees as plain text. */
+function plainProse(prose: string[]): string[] {
+  return prose.map((line) => line.replace(/`[^`]+`/g, ""));
 }
 
 function bashLines(markdown: string): string[] {
@@ -153,7 +171,11 @@ test(
       ).toContain(language);
     }
     for (const { language, line } of fenced) {
-      if (!line.startsWith(DOCKER_EXEC)) continue;
+      expect(
+        line.startsWith("$ "),
+        `a shell prompt in a ${language} fence (commands go in bash fences, with no prompt): ${line}`,
+      ).toBe(false);
+      if (!line.includes(DOCKER_EXEC)) continue;
       const ok =
         LOGIN_SHELL.test(line) ||
         (language === "text" && LOGIN_SHELL_TEMPLATE.test(line));
@@ -163,11 +185,19 @@ test(
       ).toBe(true);
     }
     for (const span of inlineSpans(prose)) {
-      if (!span.startsWith(`${DOCKER_EXEC} `)) continue;
+      if (!span.includes(`${DOCKER_EXEC} `)) continue;
       expect(
         LOGIN_SHELL.test(span),
         `not run through the login shell (su - ${APP_USER} -c '…'), in an inline code span: ${span}`,
       ).toBe(true);
+    }
+    for (const line of plainProse(prose)) {
+      for (const word of [DOCKER_EXEC, "manage.py"]) {
+        expect(
+          line.includes(word),
+          `"${word}" in prose outside a code span or fence: ${line}`,
+        ).toBe(false);
+      }
     }
   },
 );
