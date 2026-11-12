@@ -6,7 +6,7 @@
  * throttled route goes into the project's ledger, and a test fails once the run has
  * spent more than its project declares. This file holds what makes that sound:
  *
- * - the declared budgets stay inside Mino's own rate (read from `dispatcharr/settings.py`)
+ * - the declared budgets stay inside Mino's own rate (read from the product's settings module, `SETTINGS_MODULE`)
  *   less `OIDC_HEADROOM`, and the README and every spec header state the same numbers;
  * - every spec under `tests/sso/` takes `test` from `tests/sso/fixtures.ts`, so its
  *   browser is counted, and that file wires the ledger into `context`;
@@ -33,6 +33,8 @@ import {
 } from '../sso/budget';
 
 const SSO_DIR = 'tests/sso';
+/** The product's settings module: a live path, which keeps the old product name until the rename reaches it. */
+const SETTINGS_MODULE = 'dispatcharr/settings.py';
 const FIXTURES_MODULE = path.join(E2E_ROOT, SSO_DIR, 'fixtures');
 
 function parse(rel: string, src: string): ts.SourceFile {
@@ -54,9 +56,9 @@ async function specFiles(): Promise<string[]> {
 
 test.describe('the SSO oidc budget', () => {
   test('stays inside Mino’s own rate, less the headroom', { tag: '@characterization' }, async () => {
-    const settings = await readFile(path.join(REPO_ROOT, 'dispatcharr/settings.py'), 'utf8');
+    const settings = await readFile(path.join(REPO_ROOT, SETTINGS_MODULE), 'utf8');
     const rate = /["']oidc["']\s*:\s*["'](\d+)\/minute["']/.exec(settings);
-    expect(rate?.[1], 'dispatcharr/settings.py names the oidc rate per minute').toBe(String(OIDC_THROTTLE_PER_MINUTE));
+    expect(rate?.[1], `${SETTINGS_MODULE} names the oidc rate per minute`).toBe(String(OIDC_THROTTLE_PER_MINUTE));
     expect(Object.keys(OIDC_BUDGET).sort()).toEqual(['sso', 'sso-faults']);
     for (const [project, budget] of Object.entries(OIDC_BUDGET)) {
       expect(

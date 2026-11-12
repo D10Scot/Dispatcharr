@@ -342,6 +342,7 @@
 3	e2e/tests/frontend/plugins.spec.ts
 2	e2e/tests/frontend/settings.spec.ts
 73	e2e/tests/guards/e2e-up-stacks.spec.ts
+1	e2e/tests/guards/sso-budget.spec.ts
 15	e2e/tests/guards/sso-scope.spec.ts
 3	e2e/tests/lifecycle/durable-state.ts
 8	e2e/tests/lifecycle/upgrade-migrations.spec.ts

@@ -2,7 +2,7 @@
  * The `oidc` throttle budget of each SSO project, declared and counted.
  *
  * Mino's `oidc` throttle (`OIDCRateThrottle`, the `oidc` rate in
- * `dispatcharr/settings.py`) allows 20 requests a minute per client IP across `start`,
+ * the product's settings module) allows 20 requests a minute per client IP across `start`,
  * `link/start`, `callback` and `exchange`. Every SSO project shares one stack's client
  * IP, so a project's whole run has to fit inside one window. `OIDC_BUDGET` is what each
  * project declares it spends; `e2e/README.md` and each spec header state the same number,
@@ -23,7 +23,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-/** Requests a minute the `oidc` throttle allows per client IP (`dispatcharr/settings.py`). */
+/** Requests a minute the `oidc` throttle allows per client IP (the product's settings module). */
 export const OIDC_THROTTLE_PER_MINUTE = 20;
 
 /**
