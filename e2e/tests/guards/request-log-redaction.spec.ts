@@ -9,7 +9,7 @@
  * log prints `$request`, uWSGI's `%(uri)` prints REQUEST_URI, and nginx's error
  * log ends every request-context message with the raw request line.
  *
- * `docker/dispatcharr_log_redaction.conf` builds `$redacted_request_uri` from a
+ * `docker/request_log_redaction.conf` builds `$log_redacted_request_uri` from a
  * chain of `map` blocks. This spec EXECUTES those maps (parsed from the file
  * the image ships, so the test and production cannot drift) against
  * `request-log-redaction.cases.json`, and pins every place a log could bypass
@@ -23,8 +23,8 @@
  * nginx 1.28.3 and uWSGI 2.0.31 from the base image and recorded the result.
  *
  * `@characterization`: pins the nginx and uWSGI configuration as shipped
- * (docker/nginx.conf, docker/dispatcharr_log_redaction.conf,
- * docker/dispatcharr_api_params.conf, docker/uwsgi*.ini). A reimplementation
+ * (docker/nginx.conf, docker/request_log_redaction.conf, the uwsgi params
+ * include beside it, docker/uwsgi*.ini). A reimplementation
  * may log differently, but must keep credentials out of whatever it logs.
  */
 import { test, expect } from '@playwright/test';
@@ -33,10 +33,30 @@ import path from 'node:path';
 import { REPO_ROOT } from './ast';
 
 const DOCKER = path.join(REPO_ROOT, 'docker');
-const SNIPPET = 'dispatcharr_log_redaction.conf';
-const URI_VAR = 'redacted_request_uri';
+const SNIPPET = 'request_log_redaction.conf';
+const URI_VAR = 'log_redacted_request_uri';
 const UWSGI_VAR = 'REDACTED_REQUEST_URI';
-const FORMAT = 'dispatcharr_redacted';
+const FORMAT = 'redacted';
+
+/**
+ * The only variables the access log format may print. An allowlist, not a
+ * denylist: a request header ($http_authorization, $http_cookie), a response
+ * header ($sent_http_location carries a Redirect profile's provider URL) or an
+ * upstream header added later fails here without anyone having to name it.
+ */
+const FORMAT_VARS = [
+  'body_bytes_sent',
+  URI_VAR,
+  'http_user_agent',
+  'remote_addr',
+  'request_method',
+  'request_time',
+  'server_protocol',
+  'status',
+  'time_local',
+  'upstream_addr',
+  'upstream_status',
+].sort();
 
 interface Case {
   name: string;
@@ -51,6 +71,31 @@ const CASES: Case[] = JSON.parse(
 function read(rel: string): string {
   return readFileSync(path.join(REPO_ROOT, rel), 'utf8');
 }
+
+/** The uwsgi params include beside nginx.conf, the one that blanks the relay headers. */
+const API_PARAMS = (() => {
+  const found = readdirSync(DOCKER).filter((f) => /_api_params\.conf$/.test(f));
+  if (found.length !== 1) throw new Error(`docker/: expected one *_api_params.conf, found ${found.join(', ')}`);
+  return `docker/${found[0]}`;
+})();
+
+/** The project package's utils module, the one that defines redact_url's key list. */
+const UTILS = (() => {
+  const found = readdirSync(REPO_ROOT, { withFileTypes: true })
+    .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
+    .map((d) => `${d.name}/utils.py`)
+    .filter((rel) => {
+      try {
+        return /^SENSITIVE_QUERY_KEYS\s*=/m.test(read(rel));
+      } catch {
+        return false;
+      }
+    });
+  if (found.length !== 1) {
+    throw new Error(`expected one top-level */utils.py defining SENSITIVE_QUERY_KEYS, found ${found.length}`);
+  }
+  return found[0];
+})();
 
 /** Drops `#` comments; none of the files read here has a `#` inside a string. */
 function stripComments(text: string): string {
@@ -80,13 +125,49 @@ interface NginxMap {
   fallback: string;
 }
 
+/**
+ * Each `map` block's body, found by walking to the brace that closes it with
+ * quoted strings skipped, so a `{n}` quantifier inside a quoted regex cannot
+ * end the block early and silently drop the entries after it. An unquoted
+ * brace inside a body is refused rather than guessed at.
+ */
+function mapBlocks(conf: string): [string, string, string][] {
+  const out: [string, string, string][] = [];
+  const headRe = /^\s*map\s+("(?:[^"\\]|\\.)*"|\S+)\s+\$(\w+)\s*\{/gm;
+  for (const head of conf.matchAll(headRe)) {
+    let i = (head.index ?? 0) + head[0].length;
+    let body = '';
+    let quoted = false;
+    for (; i < conf.length; i++) {
+      const ch = conf[i];
+      if (quoted) {
+        if (ch === '\\') {
+          body += ch + conf[i + 1];
+          i++;
+          continue;
+        }
+        if (ch === '"') quoted = false;
+      } else if (ch === '"') {
+        quoted = true;
+      } else if (ch === '{') {
+        throw new Error(`map $${head[2]}: an unquoted "{" in its body`);
+      } else if (ch === '}') {
+        break;
+      }
+      body += ch;
+    }
+    if (i >= conf.length) throw new Error(`map $${head[2]}: no closing brace`);
+    out.push([head[1], head[2], body]);
+  }
+  return out;
+}
+
 function parseMaps(conf: string): NginxMap[] {
   const maps: NginxMap[] = [];
-  const blockRe = /^\s*map\s+(\S+)\s+\$(\w+)\s*\{([^}]*)\}/gm;
-  for (const block of stripComments(conf).matchAll(blockRe)) {
-    const [, source, target, body] = block;
+  for (const [source, target, body] of mapBlocks(stripComments(conf))) {
     const entries: MapEntry[] = [];
     let fallback = '';
+    // No entry here has a ";" inside quotes; one would split into a token count other than 2 and throw.
     for (const stmt of body.split(';')) {
       const tokens = [...stmt.matchAll(/"(?:[^"\\]|\\.)*"|\S+/g)].map((m) => unquote(m[0]));
       if (tokens.length === 0) continue;
@@ -109,6 +190,13 @@ function interpolate(template: string, vars: (name: string) => string, captures:
 /**
  * Evaluates the maps for one request the way nginx does: lazily, exact keys
  * before regexes, regexes in file order, `~*` case-insensitive, else default.
+ *
+ * Where JavaScript and PCRE differ, these patterns stay clear of it: no
+ * `\Z`/`\z`, no possessive or atomic groups, no inline `(?i)`, and `$` only
+ * ever meets input without a newline (a request URI cannot hold one).
+ * JavaScript's `i` flag folds a few non-ASCII letters (`ſ` matches `s`) that
+ * PCRE without UTF mode does not; no case depends on it, and the real-nginx
+ * run recorded in the PR is what covers that difference.
  */
 function evaluate(maps: NginxMap[], requestUri: string): (name: string) => string {
   const byTarget = new Map(maps.map((m) => [m.target, m]));
@@ -139,15 +227,11 @@ function evaluate(maps: NginxMap[], requestUri: string): (name: string) => strin
 }
 
 const SENSITIVE_PYTHON = (() => {
-  const src = read('dispatcharr/utils.py');
-  const body = /SENSITIVE_QUERY_KEYS\s*=\s*frozenset\(\s*\{([\s\S]*?)\}\s*\)/.exec(src);
-  if (!body) throw new Error('dispatcharr/utils.py: SENSITIVE_QUERY_KEYS not found');
+  const body = /SENSITIVE_QUERY_KEYS\s*=\s*frozenset\(\s*\{([\s\S]*?)\}\s*\)/.exec(read(UTILS));
+  if (!body) throw new Error(`${UTILS}: SENSITIVE_QUERY_KEYS not found`);
   return [...stripComments(body[1]).matchAll(/"([^"]+)"/g)].map((m) => m[1]).sort();
 })();
 
-/** Variables that hold the raw URI, query or a client-supplied URL, unredacted. */
-const RAW_NGINX_VARS =
-  /\$(?:request|request_uri|uri|document_uri|args|query_string|is_args|http_referer|remote_user|arg_\w+|request_body)(?![A-Za-z0-9_])/;
 
 test.describe('request-log credential redaction', () => {
   test('the redaction maps mask every credential-bearing request URI in the case table', { tag: '@characterization' }, () => {
@@ -159,15 +243,43 @@ test.describe('request-log credential redaction', () => {
     for (const c of CASES) {
       const got = evaluate(maps, c.requestUri)(URI_VAR);
       if (got !== c.logged) wrong.push(`${c.name}: ${c.requestUri}\n    logged ${got}\n    wanted ${c.logged}`);
-      if (/sentinel/.test(got) && !/^\/(hls|proxy)\//.test(c.requestUri)) {
+      if (/sentinel/.test(got)) {
         wrong.push(`${c.name}: a sentinel credential reached the log line: ${got}`);
       }
     }
     expect(wrong, `$${URI_VAR} for these request URIs`).toEqual([]);
   });
 
+  test('no redaction pattern backtracks super-linearly on a hostile URI', { tag: '@characterization' }, () => {
+    // These patterns run in nginx's event loop on unauthenticated input. A
+    // quadratic one (the first draft's `[^=&]*%[^=&]*=`) takes about 450 ms on
+    // 32,000 repeated characters in V8 where a linear one takes well under
+    // 1 ms; the budget sits far from both. V8 and PCRE backtrack alike for
+    // these shapes, so the PR's real-nginx timing is the confirmation.
+    const n = 32_000;
+    const hostile: string[] = [];
+    for (const c of ['%', '&', '/', '=', '.', 'a', '1', '*', '?']) {
+      const run = c.repeat(n);
+      hostile.push(run, `${run}&a=`, `${run}password`, `/x?${run}`, `/live/${run}a`, `/hls/${run}`, `${run}/1`);
+    }
+    const slow: string[] = [];
+    for (const m of parseMaps(read(`docker/${SNIPPET}`))) {
+      for (const e of m.entries.filter((x) => x.key.startsWith('~'))) {
+        const insensitive = e.key.startsWith('~*');
+        const re = new RegExp(e.key.slice(insensitive ? 2 : 1), insensitive ? 'i' : '');
+        for (const h of hostile) {
+          const t = performance.now();
+          re.exec(h);
+          const ms = performance.now() - t;
+          if (ms > 100) slow.push(`$${m.target} ${e.key.slice(0, 60)}… on ${JSON.stringify(h.slice(0, 12))}×: ${ms.toFixed(0)} ms`);
+        }
+      }
+    }
+    expect(slow, 'patterns slower than 100 ms on a 32,000-character hostile input').toEqual([]);
+  });
+
   test('the query maps mask exactly the parameters redact_url masks', { tag: '@characterization' }, () => {
-    const maps = parseMaps(read(`docker/${SNIPPET}`)).filter((m) => m.target.startsWith('dispatcharr_log_query'));
+    const maps = parseMaps(read(`docker/${SNIPPET}`)).filter((m) => m.target.startsWith('log_query'));
     expect(maps.length, 'four masking maps and one guard').toBe(5);
     for (const m of maps) {
       const lists = m.entries
@@ -175,7 +287,7 @@ test.describe('request-log credential redaction', () => {
         .filter((l): l is string => l !== undefined);
       expect(lists.length, `$${m.target} names the sensitive parameters`).toBeGreaterThan(0);
       for (const l of lists) {
-        expect(l.split('|').sort(), `$${m.target}'s list against dispatcharr/utils.py SENSITIVE_QUERY_KEYS`).toEqual(
+        expect(l.split('|').sort(), `$${m.target}'s list against ${UTILS} SENSITIVE_QUERY_KEYS`).toEqual(
           SENSITIVE_PYTHON
         );
       }
@@ -197,9 +309,11 @@ test.describe('request-log credential redaction', () => {
     expect(formats.map((f) => f[1]), 'the snippet declares one log format').toEqual([FORMAT]);
     const format = formats[0][2];
     expect(format, `the access log prints $${URI_VAR}`).toContain(`$${URI_VAR}`);
-    expect(format, 'the access log format names no unredacted URI, query, referer or Basic-auth variable').not.toMatch(
-      RAW_NGINX_VARS
-    );
+    const used = [...new Set([...format.matchAll(/\$\{?([A-Za-z_][A-Za-z0-9_]*)/g)].map((m) => m[1]))];
+    expect(
+      used.filter((v) => !FORMAT_VARS.includes(v)),
+      'variables the access log format prints that are not on its allowlist'
+    ).toEqual([]);
     expect(conf, 'nginx.conf declares no log_format of its own').not.toMatch(/^\s*log_format\b/m);
 
     const accessLogs = [...conf.matchAll(/^\s*access_log\s+([^;]*);/gm)].map((m) => m[1].trim());
@@ -219,7 +333,7 @@ test.describe('request-log credential redaction', () => {
 
   test('every uwsgi_pass location hands uWSGI the redacted URI', { tag: '@characterization' }, () => {
     const param = new RegExp(`^\\s*uwsgi_param\\s+${UWSGI_VAR}\\s+\\$${URI_VAR}\\s*;`);
-    for (const file of ['docker/nginx.conf', 'docker/dispatcharr_api_params.conf']) {
+    for (const file of ['docker/nginx.conf', API_PARAMS]) {
       const lines = stripComments(read(file)).split('\n');
       const missing: number[] = [];
       let includes = 0;
