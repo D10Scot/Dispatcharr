@@ -663,6 +663,28 @@ class GeneratedNameLoggingTests(TestCase):
         self.assertTrue(any("URL too long" in r.getMessage() for r in logs.records))
         self.assertTrue(any("name too long" in r.getMessage() for r in logs.records))
 
+    def failures(self, records):
+        logs, _ = self.run_batch(records)
+        for rec in logs.records:
+            self.assertIsNone(rec.exc_info, "no traceback may be attached")
+        return [r.getMessage() for r in logs.records if "Failed to process stream" in r.getMessage()]
+
+    def test_first_record_that_cannot_be_unpacked_logs_a_placeholder(self):
+        # No "name": the unpack raises before any per-iteration value exists.
+        for bad in ({"url": URL, "attributes": {}}, {"name": "x"}, 5, None):
+            with self.subTest(bad=repr(bad)):
+                lines = self.failures([bad])
+                self.assertEqual(len(lines), 1, lines)
+                self.assertTrue(lines[0].startswith("Failed to process stream <unnamed>: "), lines[0])
+                self.assertRegex(lines[0], r"<unnamed>: (KeyError|TypeError)")
+
+    def test_failure_does_not_log_the_previous_streams_name(self):
+        good = {"name": "acct Distinctive Previous", "url": URL, "attributes": {"group-title": "Live"}}
+        lines = self.failures([good, {"url": URL, "attributes": {}}])
+        self.assertEqual(len(lines), 1, lines)
+        self.assertNotIn("Distinctive", lines[0])
+        self.assertTrue(lines[0].startswith("Failed to process stream <unnamed>: KeyError"), lines[0])
+
     def test_failure_error_withholds_the_generated_name(self):
         # a URL-shaped str name that makes processing fail (no attributes key)
         records = [{"name": "acct - http://prov.example.com/x/nametoken", "url": URL}]

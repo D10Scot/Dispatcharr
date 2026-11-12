@@ -1475,6 +1475,10 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
             [filter_obj.regex_pattern for _, filter_obj in compiled_filters],
         )
     for stream_info in batch:
+        # Bound before the try so the failure handler never sees an unbound
+        # value (first record) or the previous stream's (a later record)
+        # when the unpack below is what raises.
+        log_name = "<unnamed>"
         try:
             name, url = stream_info["name"], stream_info["url"]
             # Classified from the complete name, lazily and once; every sink
