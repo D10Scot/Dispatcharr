@@ -20,7 +20,10 @@ path shapes and sensitive query keys, wherever they appear) and by value (the
 username, password and sensitive query values the attached request itself
 names, in their decoded, percent-encoded and unicode-escaped spellings, at
 least ``MIN_SCRUBBED_VALUE_LENGTH`` characters long), so a credential in a
-form or position the patterns miss is still removed. The original record is never mutated (a filter
+form or position the patterns miss is still removed. The pattern pass reads
+text as it is and never writes decoded text: a path it cannot read plainly
+(one holding ``%`` or a backslash) is logged as ``/***``, and every step only
+adds masks (``_mask_slash``). The original record is never mutated (a filter
 returning a record replaces it for that handler only, Python 3.12+). Records
 outside the trees pass through as themselves, and no record is suppressed: an
 operator still sees that a 401 happened and on which route
@@ -54,7 +57,7 @@ This module is imported while settings load, so it imports nothing from
 import copy
 import logging
 import re
-from urllib.parse import quote, unquote, urlsplit
+from urllib.parse import quote, unquote
 
 # Loggers whose records are redacted, matched as the name itself or a dotted
 # descendant. ``django.channels.server`` is the request line of the
@@ -90,12 +93,18 @@ _KEY_PREFIX_RE = re.compile(
     r"""(?=/|[A-Za-z][A-Za-z0-9+.-]*://)"""
 )
 _QUERY_OR_FRAGMENT_RE = re.compile(r"[?#]")
-# A URL scheme and the end of an authority, as urlsplit reads them.
+# A URL scheme, and where an authority ends.
 _SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 _AUTHORITY_END_RE = re.compile(r"[/?#]")
-# What a decoded path must not reintroduce: a query, a fragment or a token end.
-_REENCODE_RE = re.compile(r"[?#\s]")
+_PATH_START_RE = re.compile(r"[/\\?#]")
+# A path holding either of these is not read at all (see _mask_slash).
+_OPAQUE_PATH_RE = re.compile(r"[%\\]")
 _SPACE_RE = re.compile(r"\s")
+# A credential holding one of these can be cut in two by the pattern pass
+# (a segment boundary, a query or fragment start, a pair separator, the end
+# of userinfo, or a token boundary), so it is scrubbed by value before the
+# pattern pass as well as after it.
+_CUTTABLE_VALUE_RE = re.compile(r"[/?#&=@\s]")
 
 # A credential shorter than this is not scrubbed by value: replacing every
 # occurrence of a one- to three-character string would shred unrelated text
@@ -120,81 +129,6 @@ def _redact_url(value):
     return _utils().redact_url(value)
 
 
-def _mask_path(path):
-    """Mask the credential segments of a string that is wholly a path.
-
-    Segments are masked directly, never through ``urlsplit``: a path that
-    starts ``//`` would be read as a host and its first segment lost, and a
-    decoded ``?`` or ``#`` inside a credential would end the path early. A
-    path with percent-escapes is also tried decoded, because the server
-    decodes ``/%6dovie/...`` and ``/movie%2Fu%2Fp%2F1`` before routing; the
-    decoded form is returned only when it is the one that carried a match.
-    """
-    redact_path = _utils()._redact_path
-    masked = redact_path(path)
-    if masked != path:
-        return masked
-    if "%" in path:
-        decoded = "/".join(unquote(part) for part in path.split("/"))
-        masked = redact_path(decoded)
-        if masked != decoded:
-            # A decoded "?", "#" or space is put back encoded, so the result
-            # can never start a query or fragment, or end a token, that the
-            # raw text did not.
-            return _REENCODE_RE.sub(lambda m: quote(m.group(0)), masked)
-    return path
-
-
-def _slash_readings(head):
-    """The raw readings of ``head`` (starts ``/``), kept segment by segment.
-
-    Returns ``(lead, segments, merged)``: ``lead`` is ``//***@`` when the text
-    after a leading ``//`` carries userinfo before its next ``/`` (masked up to
-    the last ``@``, as ``redact_url`` masks it) and ``""`` otherwise;
-    ``segments`` is the rest split at ``/``; ``merged`` is those segments
-    with every mask either reading applies:
-
-    * the whole as a path, as the server routes it (``//timeshift/<user>/...``);
-    * after a leading ``//``, the text after the host as a path, as
-      ``redact_url`` reads it (``//h/<user>/<pass>/1``); only for text with
-      no whitespace, since ``redact_url`` is only ever asked about a token.
-    """
-    utils = _utils()
-    mask = utils.REDACTED
-    lead = ""
-    has_host = head.startswith("//") and not head.startswith("///")
-    if has_host:
-        stop = head.find("/", 2)
-        authority = head[2:] if stop < 0 else head[2:stop]
-        if "@" in authority:
-            lead = "//" + mask + "@"
-            head = "//" + authority.rpartition("@")[2] + ("" if stop < 0 else head[stop:])
-    segments = head.split("/")
-    readings = [utils._redact_path(head).split("/")]
-    if has_host and len(segments) > 3 and not _SPACE_RE.search(head):
-        after_host = utils._redact_path("/" + "/".join(segments[3:])).split("/")
-        readings.append(segments[:3] + after_host[1:])
-    merged = [mask if any(r[i] == mask for r in readings) else seg for i, seg in enumerate(segments)]
-    return lead, segments, merged
-
-
-def _join_slash(lead, segments):
-    text = "/".join(segments)
-    return lead + text[2:] if lead else text
-
-
-def _mask_slash_path(head):
-    """Mask ``head``, a path starting ``/`` with no literal ``?`` or ``#``.
-
-    Every mask of the raw readings (``_slash_readings``) is kept; only when
-    they mask nothing is the path decoded (``_mask_path``).
-    """
-    lead, segments, merged = _slash_readings(head)
-    if merged == segments:
-        merged = _mask_path("/".join(segments)).split("/")
-    return _join_slash(lead, merged)
-
-
 def _redact_tail(rest):
     """``rest`` empty or starting ``?`` or ``#``: masked as ``redact_url`` masks them."""
     redact_query = _utils()._redact_query
@@ -209,71 +143,61 @@ def _redact_tail(rest):
     return rest + hash_ + fragment
 
 
-def _redact_absolute(core):
-    """A token that does not start with ``/``: ``redact_url``, and one more path reading.
-
-    ``redact_url`` is the baseline and its masks are never given up. When it
-    leaves a URL's path unmasked, the path is read again, and only the path
-    text of the result changes; the userinfo, query and fragment are masked
-    exactly as ``redact_url`` masks them and the parts are joined as strings,
-    so nothing decoded is parsed again (a decoded ``?`` stays in the path).
-    The second reading is ``_mask_path``, which also tries the path decoded
-    (``http://h/%6dovie/<user>/<pass>/1``). When that finds nothing and the
-    host (after any userinfo) cannot be a host, it is tried once more over the
-    host and the path together: the host is an Xtream prefix
-    (``error://live/<user>/<pass>/abc``), or decodes to one or to text with a
-    ``/`` in it (``word://movie%2F<user>%2F<pass>%2F1``). Only then: reading
-    every host as a path would mask the host of ``http://h/a/5``, and
-    ``path://<user>/<pass>/1.ts`` is spelled exactly like that URL, so it
-    stays as it is. The readings are tried in that fixed order and the first
-    that masks anything is used; results are never compared with each other.
-    """
-    baseline = _redact_url(core)
+def _masked_segments(text, start):
+    """Indices of ``text.split("/")`` that ``_redact_path`` masks reading from segment ``start``."""
     utils = _utils()
-    scheme = _SCHEME_RE.match(core)
-    if not scheme:
-        return baseline
-    rest = core[scheme.end():]
-    authority = None
-    if rest.startswith("//"):
-        stop = _AUTHORITY_END_RE.search(rest, 2)
-        stop = stop.start() if stop else len(rest)
-        authority, rest = rest[2:stop], rest[stop:]
-    end = _QUERY_OR_FRAGMENT_RE.search(rest)
-    path, tail = (rest[:end.start()], rest[end.start():]) if end else (rest, "")
-    try:
-        parts = urlsplit(core)
-    except ValueError:
-        return baseline
-    # The split above must be the one redact_url made, or the masks it
-    # applied could land on different text.
-    query, _, fragment = tail[1:].partition("#") if tail.startswith("?") else ("", "", tail[1:])
-    if (parts.netloc, parts.path, parts.query, parts.fragment) != (authority or "", path, query, fragment):
-        return baseline
-    if utils._redact_path(path) != path:
-        return baseline
-    _userinfo, at, host = (authority or "").rpartition("@")
-    decoded_host = unquote(host)
-    host_can_be_path = bool(host) and (
-        decoded_host.lower() in utils.XTREAM_PATH_PREFIXES or "/" in decoded_host
-    )
-    read_host = False
-    masked = _mask_path(path)
-    if masked == path and host_can_be_path:
-        read_host = True
-        masked = _mask_path("//" + host + path)[2:]
-        if masked == host + path:
-            return baseline
-    elif masked == path:
-        return baseline
-    out = core[:scheme.end()]
-    if authority is not None:
-        # The userinfo is masked whenever there is one, as redact_url masks it.
-        out += "//" + (utils.REDACTED + "@" if at else "")
-        out += masked if read_host else host + masked
-    else:
-        out += masked
-    return out + _redact_tail(tail)
+    read = [""] + text.split("/")[start + 1:]
+    masked = utils._redact_path("/".join(read)).split("/")
+    return {start + i for i, (was, now) in enumerate(zip(read, masked)) if was != now}
+
+
+def _mask_slash(text):
+    """Mask ``text``, which starts with ``/`` (or ``\\``): a path, its query and fragment.
+
+    Nothing is decoded and no reading is chosen over another; each step only
+    adds masks:
+
+    1. after a leading ``//``, userinfo (an ``@`` before the next ``/``,
+       ``?`` or ``#``, with no whitespace) is masked up to the last ``@``;
+    2. a path holding a ``%`` or a backslash is not interpreted: it becomes
+       ``/***``, because what the server routes is its decoded form. The path
+       is the text before the first literal ``?`` or ``#``, or the whole text
+       when what follows holds a ``/``: ``request.path`` is decoded, so that
+       can be the rest of a route whose credential holds a ``?`` or ``#``.
+       A query or fragment that is not part of the path is kept, masked;
+    3. otherwise every segment the raw Xtream masks hit is masked, reading the
+       whole text and the path alone (``request.path`` is decoded, so a ``?``
+       in it can belong to a credential), each from the first segment and,
+       after a leading ``//`` in text with no whitespace, also from the
+       segment after the host, as ``redact_url`` reads it;
+    4. the sensitive query keys after the first ``?`` or ``#`` left are masked.
+    """
+    utils = _utils()
+    lead = ""
+    if text.startswith("//") and not text.startswith("///"):
+        stop = _AUTHORITY_END_RE.search(text, 2)
+        authority = text[2:stop.start() if stop else len(text)]
+        if "@" in authority and not _SPACE_RE.search(authority):
+            lead = "//" + utils.REDACTED + "@"
+            text = "//" + authority.rpartition("@")[2] + text[2 + len(authority):]
+    end = _QUERY_OR_FRAGMENT_RE.search(text)
+    head = text[:end.start()] if end else text
+    rest = text[len(head):]
+    # A rest holding "/" can be the rest of a route whose credential holds a
+    # "?" or "#" (request.path is decoded), so it is then part of the path.
+    if _OPAQUE_PATH_RE.search(text if "/" in rest else head):
+        return "/" + utils.REDACTED + ("" if "/" in rest else _redact_tail(rest))
+    starts = (0, 2) if text.startswith("//") and not _SPACE_RE.search(text) else (0,)
+    masked = set()
+    for reading in (text, head):
+        for start in starts:
+            masked |= _masked_segments(reading, start)
+    segments = text.split("/")
+    text = "/".join(utils.REDACTED if i in masked else seg for i, seg in enumerate(segments))
+    if lead:
+        text = lead + text[2:]
+    end = _QUERY_OR_FRAGMENT_RE.search(text)
+    return text[:end.start()] + _redact_tail(text[end.start():]) if end else text
 
 
 def _redact_core(core):
@@ -282,11 +206,22 @@ def _redact_core(core):
     keyed = _KEY_PREFIX_RE.match(core)
     if keyed:
         prefix, core = core[:keyed.end()], core[keyed.end():]
-    if not core.startswith("/"):
-        return prefix + _redact_absolute(core)
-    end = _QUERY_OR_FRAGMENT_RE.search(core)
-    head, rest = (core[:end.start()], core[end.start():]) if end else (core, "")
-    return prefix + _mask_slash_path(head) + _redact_tail(rest)
+    if core.startswith("/"):
+        return prefix + _mask_slash(core)
+    # redact_url masks the userinfo, path and query as it reads them; the
+    # path of a URL in its output is then masked again by _mask_slash, which
+    # only adds masks to redact_url's. (Its output, because redact_url
+    # rebuilds a URL it changed and can drop an empty "//".)
+    out = _redact_url(core)
+    scheme = _SCHEME_RE.match(out)
+    if scheme:
+        at, leads = scheme.end(), "/"
+        if out.startswith("//", at):
+            found = _PATH_START_RE.search(out, at + 2)
+            at, leads = (found.start() if found else len(out)), "/\\"
+        if out[at:at + 1] and out[at] in leads:
+            out = out[:at] + _mask_slash(out[at:])
+    return prefix + out
 
 
 def _redact_token(match):
@@ -297,16 +232,7 @@ def _redact_token(match):
         return token
     redacted = _redact_core(core)
     if redacted == core:
-        # Sentence punctuation is stripped first; a final segment made only of
-        # it ("http://h/live/<user>/.") is a path segment to redact_url, so the
-        # token is read once more with it kept.
-        kept = token[start:].rstrip(_TOKEN_PUNCTUATION)
-        if kept == core:
-            return token
-        redacted = _redact_core(kept)
-        if redacted == kept:
-            return token
-        core = kept
+        return token
     return token[:start] + redacted + token[start + len(core):]
 
 
@@ -322,40 +248,8 @@ def redact_text(text):
     if not isinstance(text, str) or not text:
         return text
     if text.startswith("/"):
-        text = _mask_whole(text)
+        text = _mask_slash(text)
     return _TOKEN_RE.sub(_redact_token, text)
-
-
-def _mask_whole(text):
-    """A string that starts with ``/``, masked whole before the token pass.
-
-    The query and fragment start at the first literal ``?`` or ``#`` of the
-    raw text, as ``redact_url`` reads it. The path before it is masked and the
-    rest is left as it is for the token pass, which masks its sensitive keys.
-
-    A credential can itself hold a ``?`` or ``#`` (``request.path`` is
-    decoded), so when the rest holds nothing ``redact_url`` would mask the
-    string is also read whole as a path, and every mask of either reading is
-    kept: the path's segments are the leading segments of the whole, the last
-    of them extended to the next ``/``. A whole reading can absorb the ``?``,
-    which is why it is never used when the rest has something to mask.
-    """
-    end = _QUERY_OR_FRAGMENT_RE.search(text)
-    if not end:
-        return _mask_slash_path(text)
-    head, rest = text[:end.start()], text[end.start():]
-    lead, head_segments, head_merged = _slash_readings(head)
-    if lead or _redact_tail(rest) != rest:
-        return _mask_slash_path(head) + rest
-    mask = _utils().REDACTED
-    _, segments, merged = _slash_readings(text)
-    merged = [
-        mask if i < len(head_merged) and head_merged[i] == mask else seg
-        for i, seg in enumerate(merged)
-    ]
-    if merged != segments:
-        return _join_slash("", merged)
-    return _mask_slash_path(head) + rest
 
 
 def _spellings(value):
@@ -410,15 +304,24 @@ def _scrub_values(text, values):
     return text
 
 
-def _redact_traceback(text, values):
-    return _scrub_values(redact_text(text), values)
+def _redact(text, values):
+    """Value scrub, pattern pass, value scrub.
+
+    Before the pattern pass only the values it could cut in two are scrubbed
+    (``_CUTTABLE_VALUE_RE``), while each is still whole. The others are
+    scrubbed after it only: one equal to an Xtream prefix word or a stream id
+    (a user called ``live``) would, scrubbed first, hide the very segment the
+    pattern pass keys on, and with it every other credential in that path.
+    """
+    before = [value for value in values if _CUTTABLE_VALUE_RE.search(value)]
+    return _scrub_values(redact_text(_scrub_values(text, before)), values)
 
 
-def _redact_args(args):
+def _redact_args(args, values):
     if isinstance(args, dict):
-        return {key: redact_text(value) for key, value in args.items()}
+        return {key: _redact(value, values) for key, value in args.items()}
     if isinstance(args, tuple):
-        return tuple(redact_text(value) for value in args)
+        return tuple(_redact(value, values) for value in args)
     return args
 
 
@@ -451,19 +354,19 @@ def redact_record(record):
     # arguments are kept as they are; otherwise the masked text is stored with
     # no arguments, which every formatter renders unchanged.
     probe = copy.copy(record)
-    probe.args = _redact_args(record.args)
+    probe.args = _redact_args(record.args, values)
     original = record.getMessage()
-    redacted = _scrub_values(redact_text(probe.getMessage()), values)
+    redacted = _redact(probe.getMessage(), values)
     if redacted != original:
         clone.msg = redacted
         clone.args = ()
     if record.exc_info and record.exc_info[0] is not None:
         text = record.exc_text or logging.Formatter().formatException(record.exc_info)
-        clone.exc_text = _redact_traceback(text, values)
+        clone.exc_text = _redact(text, values)
     elif record.exc_text:
-        clone.exc_text = _redact_traceback(record.exc_text, values)
+        clone.exc_text = _redact(record.exc_text, values)
     if record.stack_info:
-        clone.stack_info = _redact_traceback(record.stack_info, values)
+        clone.stack_info = _redact(record.stack_info, values)
     if http_request is not None:
         del clone.request
     return clone
