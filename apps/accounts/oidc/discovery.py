@@ -27,18 +27,28 @@ logger = logging.getLogger(__name__)
 
 MAX_BYTES = 1024 * 1024  # 1 MiB, enforced while streaming
 TIMEOUT = (5, 10)  # connect, read
-# A total bound on reading one response BODY, measured from before the connect. The per-read
-# timeout alone lets a server that drips a byte every few seconds hold a request until
-# uWSGI's harakiri. The deadline is checked between body reads only. What it does not bound:
-# - the connect and the response headers. Both are bounded only by TIMEOUT, and its read
-#   value is per receive, not per phase: headers dripped a byte at a time just inside the
-#   read timeout hold the request for as long as the server keeps dripping (a review
-#   measured 55.6 s at one byte per 0.7 s). requests and urllib3 offer no whole-request
-#   timeout; bounding this needs a timer around the call (gevent.Timeout under uWSGI), a
-#   recorded follow-up;
-# - one read past the deadline: up to one read timeout, and longer for a compressed body,
-#   because urllib3's read1 keeps receiving until the decoder yields output (24.2 s
-#   measured for gzip dripped at one byte per second).
+# TOTAL_DEADLINE bounds one whole outbound exchange (discovery, JWKS, the token POST): DNS,
+# connect, the request, the response headers and the body, measured from just before the
+# request starts. How it is enforced depends on the process:
+# - under gevent's socket monkey-patching (the uWSGI API workers, which serve every caller:
+#   the admin "test" action, start, link/start and the callback) ``run_bounded`` arms one
+#   ``gevent.Timeout`` around the whole call. Every socket wait there is a cooperative wait,
+#   so the timer interrupts the call wherever it waits, and the exchange answers its fixed
+#   "unreachable"/"token_exchange_failed" code at the deadline. The tests drive a dripped
+#   header read and a dripped body read; name resolution and the connect sit under the same
+#   timer but no test stalls them. Measured (apps/accounts/tests/test_oidc_outbound_deadline.py, a 1.5 s deadline, one
+#   byte per 0.1 s): dripped headers and a dripped gzip body each ended at 1.50-1.51 s,
+#   where without gevent the same calls ran 8.1 s (as long as the server dripped) and
+#   5.2 s;
+# - without it (``manage.py runserver``, a management command, Celery, Daphne, the test
+#   runner itself) nothing can interrupt a blocking read, and no thread or signal is added
+#   to try. There the old bounds still apply and only they: TIMEOUT per connect and per
+#   receive, and the deadline checked between body reads. Headers dripped just inside the
+#   read timeout still hold such a request for as long as the server keeps dripping (a
+#   review measured 55.6 s at one byte per 0.7 s), and the body can overrun the deadline by
+#   one read, longer for a compressed body because urllib3's read1 keeps receiving until
+#   the decoder yields output (24.2 s measured for gzip dripped at one byte per second).
+#   No production caller runs there today.
 TOTAL_DEADLINE = 15
 READ_SIZE = 65536
 CACHE_TTL = 3600
@@ -144,18 +154,59 @@ def deadline_from_now():
     return _now() + TOTAL_DEADLINE
 
 
+class _DeadlineExpired(BaseException):
+    """Thrown into the greenlet by ``run_bounded``'s timer.
+
+    A ``BaseException``, like ``gevent.Timeout`` itself, so no ``except Exception`` between
+    the timer and ``run_bounded`` (ours, requests', urllib3's) can swallow it; ``finally``
+    blocks still run, which is what closes the response and the socket.
+    """
+
+
+def _gevent_socket_patched():
+    """True in a process whose ``socket`` module gevent has monkey-patched (uWSGI's API)."""
+    try:
+        from gevent import monkey
+    except ImportError:  # pragma: no cover - gevent is a main dependency
+        return False
+    return monkey.is_module_patched("socket")
+
+
+def run_bounded(call, *, on_expiry, label):
+    """Return ``call(deadline)``, bounded as a whole by ``TOTAL_DEADLINE``.
+
+    ``deadline`` is the monotonic deadline for ``read_limited``'s between-reads check. Under
+    gevent a timer covers the whole call (DNS, connect, headers, body); when it fires the
+    exception ``on_expiry()`` returns is raised in place of whatever the call was waiting
+    on. Outside gevent the call runs with the per-read timeouts and the between-reads check
+    only (see the comment at ``TOTAL_DEADLINE``). The caller releases its database
+    connection before calling. ``label`` names the exchange in the log, never a URL.
+    """
+    deadline = deadline_from_now()
+    if not _gevent_socket_patched():
+        return call(deadline)
+    import gevent
+
+    expired = _DeadlineExpired()
+    try:
+        # A context manager: the timer is closed on every exit, so none is left armed.
+        with gevent.Timeout(TOTAL_DEADLINE, expired):
+            return call(deadline)
+    except _DeadlineExpired as exc:
+        if exc is not expired:
+            raise
+        logger.warning("OIDC %s exchange exceeded its total deadline", label)
+        raise on_expiry() from None
+
+
 def _read_limited(resp, kind, deadline):
     return read_limited(
         resp, deadline, too_large=f"{kind}_too_large", failed=f"{kind}_unreachable"
     )
 
 
-def _get_json(url, provider, *, kind, not_allowed_code):
-    """GET ``url`` under the SSRF policy and return the parsed JSON object."""
-    if not _scheme_allowed(url):
-        raise DiscoveryError(not_allowed_code)
-    release_db_connection()
-    deadline = deadline_from_now()
+def _fetch_body(url, provider, kind, not_allowed_code, deadline):
+    """The request and the limited body read: the part ``run_bounded`` bounds."""
     try:
         resp = fetch_outbound_http(
             url,
@@ -179,9 +230,21 @@ def _get_json(url, provider, *, kind, not_allowed_code):
         if resp.status_code != 200:
             logger.warning("OIDC %s fetch answered HTTP %s", kind, resp.status_code)
             raise DiscoveryError(f"{kind}_http_error")
-        body = _read_limited(resp, kind, deadline)
+        return _read_limited(resp, kind, deadline)
     finally:
         resp.close()
+
+
+def _get_json(url, provider, *, kind, not_allowed_code):
+    """GET ``url`` under the SSRF policy and return the parsed JSON object."""
+    if not _scheme_allowed(url):
+        raise DiscoveryError(not_allowed_code)
+    release_db_connection()
+    body = run_bounded(
+        lambda deadline: _fetch_body(url, provider, kind, not_allowed_code, deadline),
+        on_expiry=lambda: DiscoveryError(f"{kind}_unreachable"),
+        label=kind,
+    )
     try:
         doc = json.loads(body)
     except (ValueError, RecursionError):

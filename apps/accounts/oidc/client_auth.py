@@ -122,34 +122,9 @@ def client_authentication(provider, token_endpoint):
     raise CredentialUnavailable()
 
 
-def exchange_code(provider, disco, *, code, redirect_uri, code_verifier):
-    """POST the token endpoint and return the ``id_token``. Raises ``TokenExchangeFailed``.
-
-    The endpoint passes the SSRF check at every use (it comes from the IdP's document), the
-    request follows no redirect, and the response is read under the 1 MiB cap and the
-    discovery module's total deadline.
-    """
-    try:
-        discovery.check_token_endpoint(provider, disco)
-    except discovery.DiscoveryError:
-        raise TokenExchangeFailed("token_exchange_failed") from None
-    token_endpoint = disco["token_endpoint"]
-    try:
-        auth_fields, headers = client_authentication(provider, token_endpoint)
-    except CredentialUnavailable:
-        logger.warning("OIDC provider has no usable client credential")
-        raise TokenExchangeFailed("token_exchange_failed") from None
-
-    form = {
-        "grant_type": "authorization_code",
-        "code": code,
-        "redirect_uri": redirect_uri,
-        "code_verifier": code_verifier,
-        **auth_fields,
-    }
-    headers = {"Accept": "application/json", **headers}
-    discovery.release_db_connection()
-    deadline = discovery.deadline_from_now()
+def _post_token(token_endpoint, form, headers, deadline):
+    """The token POST and the limited body read: the part ``discovery.run_bounded`` bounds.
+    Returns ``(status, body)``."""
     try:
         resp = requests.post(
             token_endpoint,
@@ -173,6 +148,41 @@ def exchange_code(provider, disco, *, code, redirect_uri, code_verifier):
             raise TokenExchangeFailed("token_exchange_failed") from None
     finally:
         resp.close()
+    return status, body
+
+
+def exchange_code(provider, disco, *, code, redirect_uri, code_verifier):
+    """POST the token endpoint and return the ``id_token``. Raises ``TokenExchangeFailed``.
+
+    The endpoint passes the SSRF check at every use (it comes from the IdP's document), the
+    request follows no redirect, and the whole exchange runs under the 1 MiB cap and the
+    discovery module's total deadline (``discovery.run_bounded``).
+    """
+    try:
+        discovery.check_token_endpoint(provider, disco)
+    except discovery.DiscoveryError:
+        raise TokenExchangeFailed("token_exchange_failed") from None
+    token_endpoint = disco["token_endpoint"]
+    try:
+        auth_fields, headers = client_authentication(provider, token_endpoint)
+    except CredentialUnavailable:
+        logger.warning("OIDC provider has no usable client credential")
+        raise TokenExchangeFailed("token_exchange_failed") from None
+
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+        "code_verifier": code_verifier,
+        **auth_fields,
+    }
+    headers = {"Accept": "application/json", **headers}
+    discovery.release_db_connection()
+    status, body = discovery.run_bounded(
+        lambda deadline: _post_token(token_endpoint, form, headers, deadline),
+        on_expiry=lambda: TokenExchangeFailed("token_exchange_failed"),
+        label="token",
+    )
 
     try:
         doc = json.loads(body)
