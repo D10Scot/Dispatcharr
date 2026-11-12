@@ -414,6 +414,30 @@ class LockoutGuardTests(_GuardMixin, FlowTestCase):
         )
         self.assertTrue(stored_enabled())
 
+    def test_rule_accepts_only_an_integer_provider_claim(self):
+        # The minted claim is an int. A string or float the database would still coerce to
+        # the enabled provider's key is not a proof (guard.evaluate, the type check).
+        for value in (str(self.p.pk), float(self.p.pk)):
+            with self.subTest(oidc_provider=value):
+                reasons = guard.evaluate(
+                    password_login_enabled=True,
+                    claims={"auth_method": "oidc", "oidc_provider": value, "oidc_level": 10},
+                    switching_off=True,
+                )
+                self.assertEqual(
+                    reasons,
+                    [guard.PROVIDER_NOT_ENABLED],
+                    "a non-integer oidc_provider claim was accepted as the enabled provider",
+                )
+        self.assertEqual(
+            guard.evaluate(
+                password_login_enabled=True,
+                claims={"auth_method": "oidc", "oidc_provider": self.p.pk, "oidc_level": 10},
+                switching_off=True,
+            ),
+            [],
+        )
+
     @override_settings(PASSWORD_LOGIN_FORCE=True)
     def test_rule_applies_under_the_override(self):
         # Break-glass forces password login on; it does not exempt the switch from the rule.
@@ -766,6 +790,28 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
         self.assertEqual(codes, [200, 409])
         loser = a.result if a.result.status_code == 409 else b.result
         self.assertEqual(loser.json()["reasons"], ["last_enabled_provider"])
+
+    def test_concurrent_deletes_of_last_two_providers_one_wins(self):
+        # The delete path's floor under the same row lock: password login off, P and Q both
+        # enabled, both deleted at once. Exactly one DELETE may commit.
+        set_password_login(False)
+        barrier_around_evaluate(self)
+        client = self.admin_client
+        a = Worker(lambda: client.delete(f"{PROVIDERS}{self.p.pk}/"), "delete-p")
+        b = Worker(lambda: client.delete(f"{PROVIDERS}{self.q.pk}/"), "delete-q")
+        try:
+            run_threads(a, b)
+        finally:
+            join_all([a, b])
+        self.assertIsNone(a.error, repr(a.error))
+        self.assertIsNone(b.error, repr(b.error))
+        codes = sorted([a.result.status_code, b.result.status_code])
+        self.assertGreaterEqual(
+            OIDCProvider.objects.filter(enabled=True).count(),
+            1,
+            f"password login off with no enabled provider: both deletes committed ({codes})",
+        )
+        self.assertEqual(codes, [204, 409])
 
     def test_switch_off_racing_disable_of_only_provider_serialized(self):
         OIDCProvider.update_columns(self.p.pk, {"enabled": False})

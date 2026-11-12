@@ -331,6 +331,18 @@ class AdminSitePasswordOffTests(TestCase):
         self.assertEqual(response.status_code, 302)
 
     @override_settings(PASSWORD_LOGIN_FORCE=True)
+    def test_break_glass_admin_login_post_works_when_off(self):
+        self._switch_off()
+        response = Client().post(
+            "/admin/login/", {"username": "root", "password": "placeholder-pw", "next": "/admin/"}
+        )
+        self.assertEqual(
+            response.status_code,
+            302,
+            "the admin login refused a password under PASSWORD_LOGIN_FORCE (override ignored)",
+        )
+
+    @override_settings(PASSWORD_LOGIN_FORCE=True)
     def test_break_glass_restores_the_admin_site(self):
         self._switch_off()
         self.assertEqual(self.client.get("/admin/core/coresettings/").status_code, 200)
