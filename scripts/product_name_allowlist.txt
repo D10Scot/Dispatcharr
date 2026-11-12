@@ -232,7 +232,7 @@
 1	dispatcharr/observability/metrics.py
 4	dispatcharr/observability/propagation.py
 1	dispatcharr/observability/redaction.py
-2	dispatcharr/observability/worker_metrics.py
+1	dispatcharr/observability/worker_metrics.py
 1	dispatcharr/persistent_lock.py
 1	dispatcharr/routing.py
 18	dispatcharr/settings.py
@@ -584,7 +584,7 @@
 4	tests/test_observability_bootstrap.py
 3	tests/test_observability_django6_sample.py
 5	tests/test_observability_logs.py
-5	tests/test_observability_metrics.py
+6	tests/test_observability_metrics.py
 4	tests/test_observability_propagation.py
 3	tests/test_observability_redaction.py
 3	tests/test_observability_wsgi_cold_import.py

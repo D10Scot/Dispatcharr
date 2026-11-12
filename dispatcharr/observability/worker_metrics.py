@@ -13,44 +13,60 @@ is imported at module level (the boot trap, spec constraint 6).
 import logging
 import time
 
-from dispatcharr.observability import metrics
-
 logger = logging.getLogger(__name__)
 
 _QUEUES = ("celery", "dvr")
+_OUTCOMES = frozenset({"SUCCESS", "FAILURE", "RETRY", "REVOKED"})
+_MAX_STARTED = 10000  # a task whose task_postrun never fires must not grow this forever
 _started = {}
 _histogram = None
 _beat_registered = False
+_pending_limit = None  # M14's observations, computed by M13's callback in the same collection
+_failing = set()  # callbacks whose last run failed: log the first failure of a streak only
+
+
+def _warn_once(what, exc):
+    if what not in _failing:
+        _failing.add(what)
+        logger.warning("%s could not be read (%s)", what, type(exc).__name__)
 
 
 def _task_histogram():
     global _histogram
     if _histogram is None:
+        from . import metrics
+
         _histogram = metrics.task_duration_histogram()
     return _histogram
 
 
 def task_started(task_id):
+    if len(_started) >= _MAX_STARTED:
+        _started.pop(next(iter(_started)), None)
     _started[task_id] = time.monotonic()
 
 
 def task_finished(task_id, task_name, state):
     """Record one M11 point. Never raises: a metric must not fail a task."""
     began = _started.pop(task_id, None)
-    if began is None or not task_name:
+    # Celery also sends IGNORED and REJECTED; the catalogue's outcome set is closed.
+    if began is None or not task_name or state not in _OUTCOMES:
         return
     try:
         _task_histogram().record(
-            time.monotonic() - began, {"task": task_name, "outcome": str(state or "")}
+            time.monotonic() - began, {"task": task_name, "outcome": state}
         )
     except Exception:
         logger.debug("recording the task duration failed", exc_info=True)
 
 
-def _broker_client():
+def _queue_depths():
+    """{queue: LLEN}, on a broker connection that is released before returning."""
     from dispatcharr.celery import app
 
-    return app.connection_for_read().default_channel.client
+    with app.connection_for_read() as connection:
+        client = connection.default_channel.client
+        return {queue: int(client.llen(queue) or 0) for queue in _QUEUES}
 
 
 def _redis_client():
@@ -63,11 +79,12 @@ def observe_queue_depth(_options=None):
     from opentelemetry.metrics import Observation
 
     try:
-        client = _broker_client()
-        return [Observation(int(client.llen(queue) or 0), {"queue": queue}) for queue in _QUEUES]
-    except Exception:
-        logger.warning("queue depth could not be read")
+        depths = _queue_depths()
+    except Exception as exc:
+        _warn_once("queue depth", exc)
         return []
+    _failing.discard("queue depth")
+    return [Observation(depth, {"queue": queue}) for queue, depth in depths.items()]
 
 
 def _active_profiles():
@@ -101,20 +118,30 @@ def _slot_observations():
     return in_use, limit
 
 
-def _observe_slots(index):
-    try:
-        return _slot_observations()[index]
-    except Exception:
-        logger.warning("provider slots could not be read")
-        return []
-
-
 def observe_slots_in_use(_options=None):
-    return _observe_slots(0)
+    """M13. Also computes M14's observations, so one collection reads rows and Redis once."""
+    global _pending_limit
+    _pending_limit = None
+    try:
+        in_use, limit = _slot_observations()
+    except Exception as exc:
+        _warn_once("provider slots", exc)
+        return []
+    _failing.discard("provider slots")
+    _pending_limit = limit
+    return in_use
 
 
 def observe_slots_limit(_options=None):
-    return _observe_slots(1)
+    global _pending_limit
+    limit, _pending_limit = _pending_limit, None
+    if limit is not None:
+        return limit
+    try:
+        return _slot_observations()[1]
+    except Exception as exc:
+        _warn_once("provider slots", exc)
+        return []
 
 
 def register_beat_gauges():
@@ -123,7 +150,7 @@ def register_beat_gauges():
     if _beat_registered:
         return
     _beat_registered = True
-    from opentelemetry.metrics import CallbackOptions  # noqa: F401  (API presence check)
+    from . import metrics
 
     meter = metrics.get_meter()
     meter.create_observable_gauge(

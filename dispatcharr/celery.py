@@ -143,9 +143,12 @@ app.conf.task_routes = {
 @task_prerun.connect
 def reset_db_connection_before_task(**kwargs):
     """Discard stale DB connections before each task (Celery workers are long-lived)."""
-    from dispatcharr.observability import worker_metrics
+    try:
+        from dispatcharr.observability import worker_metrics
 
-    worker_metrics.task_started(kwargs.get("task_id"))
+        worker_metrics.task_started(kwargs.get("task_id"))
+    except Exception:
+        logger.debug("recording the task start failed", exc_info=True)
     from django.db import close_old_connections
 
     try:
@@ -163,9 +166,12 @@ def cleanup_task_memory(**kwargs):
     # Get task name from kwargs
     task_name = kwargs.get('task').name if kwargs.get('task') else ''
 
-    from dispatcharr.observability import worker_metrics
+    try:
+        from dispatcharr.observability import worker_metrics
 
-    worker_metrics.task_finished(kwargs.get("task_id"), task_name, kwargs.get("state"))
+        worker_metrics.task_finished(kwargs.get("task_id"), task_name, kwargs.get("state"))
+    except Exception:
+        logger.debug("recording the task duration failed", exc_info=True)
 
     # Return all DB connections to the pool in a clean state
     try:

@@ -21,7 +21,7 @@ from apps.proxy import relay_client
 from apps.proxy.internal_auth import HEADER_RELAY_TRACEPARENT
 from tests.otel_rig import SENTINEL_UUID, Rig, reset_semconv
 
-TRACEPARENT_SHAPE = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$")
+TRACEPARENT_SHAPE = re.compile(r"^00-[0-9a-f]{32}-[0-9a-f]{16}-0[0-3]$")
 
 
 class _Base(TestCase):
@@ -59,6 +59,11 @@ class AuthorizeTraceparentTests(_Base):
         self.assertEqual(len(servers), 1, "one server span per request")
         ctx = servers[0].get_span_context()
         self.assertEqual(header.split("-")[1:3], [f"{ctx.trace_id:032x}", f"{ctx.span_id:016x}"])
+        # The relay's ParentBased sampler keys on this byte: it must be the span's own flags,
+        # with the sampled bit set, and one the relay's propagator accepts (version 00: 0 to 3).
+        flags = int(header.split("-")[3], 16)
+        self.assertEqual(flags, int(servers[0].get_span_context().trace_flags))
+        self.assertTrue(flags & 1, "the sampled bit is not set")
 
     def test_the_header_carries_a_traceparent_and_nothing_of_the_request(self):
         header = self._authorize(f"/proxy/ts/stream/{self.channel.uuid}")[HEADER_RELAY_TRACEPARENT]
