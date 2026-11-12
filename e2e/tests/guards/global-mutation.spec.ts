@@ -86,6 +86,11 @@ function resolveText(expr: ts.Expression, consts: Map<string, string>): string {
 }
 
 function writesGlobalSettings(sf: ts.SourceFile): boolean {
+  return writesTo(sf, [SETTINGS_PATH]);
+}
+
+/** Whether `sf` makes a write call whose URL argument contains any of `needles`. */
+function writesTo(sf: ts.SourceFile, needles: readonly string[]): boolean {
   const consts = collectStringConsts(sf);
   let found = false;
   function visit(node: ts.Node): void {
@@ -99,7 +104,8 @@ function writesGlobalSettings(sf: ts.SourceFile): boolean {
       // Only string-shaped arguments are inspected, so the route appearing in
       // a comment is invisible here — the same reason `capabilities.spec.ts`
       // parses instead of scanning text.
-      if (arg && resolveText(arg, consts).includes(SETTINGS_PATH)) found = true;
+      const text = arg ? resolveText(arg, consts) : '';
+      if (needles.some((needle) => text.includes(needle))) found = true;
     }
     ts.forEachChild(node, visit);
   }
@@ -130,4 +136,43 @@ test('instance-wide settings writes are confined to their allowlist', { tag: '@c
       'diff: which group it writes, why nothing else reads it, and how teardown restores ' +
       'it. See docs/adr/0003.',
   ).toEqual([...GLOBAL_SETTINGS_WRITE.allow].sort());
+});
+
+/**
+ * SSO spec PR S5: the OIDC configuration is instance-wide too. `auth_settings` (behind
+ * `/api/accounts/oidc/settings/`: `public_base_url` and the password-login toggle) is a
+ * CoreSettings group like the nine above, but is refused by `/api/core/settings/` and
+ * written only through its own route; a provider row (`providers-admin/`) appears on
+ * every user's login page. Both are written only by the `sso` project, which runs
+ * against a scoped stack of its own (`tests/sso/scope.ts`), so the allowlist is a
+ * directory rather than a file list.
+ */
+const OIDC_WRITE_PATHS = ['accounts/oidc/settings', 'accounts/oidc/providers-admin'] as const;
+const OIDC_WRITE_DIR = 'tests/sso/';
+
+test('instance-wide OIDC configuration writes are confined to tests/sso/', { tag: '@characterization' }, async () => {
+  const hits: string[] = [];
+  for (const [dir, prefix] of ROOTS) {
+    for (const rel of await listTsFiles(path.join(E2E_ROOT, dir), prefix)) {
+      if (rel.startsWith('tests/guards/')) continue;
+      const src = await readSpec(rel);
+      if (writesTo(ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true), OIDC_WRITE_PATHS)) {
+        hits.push(rel);
+      }
+    }
+  }
+
+  // Guards the guard: the sso project does write both, so an empty scan is this
+  // detector being broken, not the suite being clean.
+  expect(
+    hits.length,
+    'No write to the OIDC configuration found anywhere, although tests/sso/ makes them: ' +
+      'this guard is broken, not the suite clean — check OIDC_WRITE_PATHS and writesTo.',
+  ).toBeGreaterThan(0);
+  expect(
+    hits.filter((rel) => !rel.startsWith(OIDC_WRITE_DIR)).sort(),
+    'A write to /api/accounts/oidc/settings/ or providers-admin/ outside tests/sso/. Both ' +
+      'are instance-wide (password login off locks every password user out of the shared ' +
+      'container), so they belong only to the sso project, on its own scoped stack.',
+  ).toEqual([]);
 });

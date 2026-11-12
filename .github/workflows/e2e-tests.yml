@@ -97,7 +97,7 @@ jobs:
           # `lifecycle-tests.yml`'s `upgrade-migrations` job does, and that job
           # already runs the project on every `migration/**` branch. Listing it
           # here too ran it without the baseline and failed every full run.
-          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","streaming-split","lifecycle","frontend","dvr"]'
+          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","streaming-split","lifecycle","frontend","dvr","sso"]'
           echo "projects=$projects" >> "$GITHUB_OUTPUT"
 
           if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ]; then
@@ -279,6 +279,26 @@ jobs:
       # to this repository. Every consumer — the script's readiness curl and
       # Playwright's E2E_BASE_URL — runs on this same runner, and
       # ubuntu-latest resolves `localhost` to 127.0.0.1.
+      # The `sso` project runs only against a scoped stack of its own (SSO
+      # spec PR S5; e2e/tests/sso/scope.ts refuses anything else), because
+      # turning password login off is instance-wide. Exported through
+      # GITHUB_ENV so the boot, the Playwright run and the two cleanup steps
+      # below all see the same names. Literals only: nothing here is read from
+      # the event. The provider stays the shared default, which
+      # scripts/e2e_up.sh's check_scope accepts beside a scoped stack.
+      # E2E_OIDC_ALLOW_HTTP=1 makes the script pass MINO_OIDC_ALLOW_HTTP=1, so
+      # Mino accepts the fake OP's plain-http issuer; no other project gets it.
+      - name: Scope the sso project's stack
+        if: matrix.project == 'sso'
+        run: |
+          {
+            echo "DISPATCHARR_E2E_CONTAINER=dispatcharr-e2e-sso"
+            echo "DISPATCHARR_E2E_VOLUME=dispatcharr-e2e-sso-data"
+            echo "DISPATCHARR_E2E_NETWORK=dispatcharr-e2e-sso-net"
+            echo "DISPATCHARR_E2E_PORT=9291"
+            echo "E2E_OIDC_ALLOW_HTTP=1"
+          } >> "$GITHUB_ENV"
+
       - name: Run the container and wait for it to be ready
         env:
           # 120 polls at 5s = 600s, the budget this job's hand-rolled loop had
@@ -314,14 +334,15 @@ jobs:
       - name: Run E2E tests
         working-directory: ./e2e
         env:
-          E2E_BASE_URL: http://localhost:9191
+          # The sso project's scoped stack publishes 9291 (the step above).
+          E2E_BASE_URL: ${{ matrix.project == 'sso' && 'http://localhost:9291' || 'http://localhost:9191' }}
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
         run: npx playwright test --project="$PLAYWRIGHT_PROJECT"
 
       - name: Container logs (on failure)
         if: failure()
         run: |
-          docker logs dispatcharr-e2e || true
+          docker logs "${DISPATCHARR_E2E_CONTAINER:-dispatcharr-e2e}" || true
           docker logs e2e-upstream || true
 
       - name: Upload Playwright report
@@ -335,7 +356,7 @@ jobs:
 
       - name: Stop the container
         if: always()
-        run: docker rm -f dispatcharr-e2e || true
+        run: docker rm -f "${DISPATCHARR_E2E_CONTAINER:-dispatcharr-e2e}" || true
 
   # The single check the Main ruleset requires. Matrix jobs can't be required
   # directly: when `changes` gates the suite off, the matrix is skipped before

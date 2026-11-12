@@ -296,10 +296,19 @@ else
   # comment) instead of the default's literal `e2e-upstream`. A provider
   # created before this change keeps its old environment until it is
   # recreated -- run with --down or --recreate to pick it up.
+  #
+  # -e UPSTREAM_CONTROL_ORIGIN: the host-published origin, which the fake
+  # OpenID provider puts in its authorization_endpoint because the Playwright
+  # browser, not Mino, follows that one (e2e-upstream/README.md, "Fake OpenID
+  # provider"). E2E_UPSTREAM_CONTROL_URL when set (check_scope has already
+  # matched its port to ours), else the default built from our port.
+  CONTROL_ORIGIN="${E2E_UPSTREAM_CONTROL_URL:-http://127.0.0.1:${UPSTREAM_PORT}}"
+  CONTROL_ORIGIN="${CONTROL_ORIGIN%/}"
   docker run -d --name "$UPSTREAM_NAME" \
     --network "$NETWORK" \
     -p "127.0.0.1:${UPSTREAM_PORT}:8080" \
     -e UPSTREAM_INTERNAL_ORIGIN="http://${UPSTREAM_NAME}:8080" \
+    -e UPSTREAM_CONTROL_ORIGIN="$CONTROL_ORIGIN" \
     "$UPSTREAM_IMAGE" >/dev/null
 fi
 ensure_on_network "$UPSTREAM_NAME"
@@ -366,6 +375,17 @@ else
   #
   # A container created before this change keeps its old environment; run
   # with --down or --recreate to pick up DISPATCHARR_TRUSTED_PROXIES.
+  #
+  # MINO_OIDC_ALLOW_HTTP: the fake OpenID provider's issuer is plain http on
+  # the Docker network, which Mino refuses unless this is "1" (SSO spec PR
+  # S5). Passed only when E2E_OIDC_ALLOW_HTTP is exactly "1", so every other
+  # stack keeps the production refusal. The `${a[@]+...}` form is the bash
+  # 3.2-safe expansion of a possibly empty array under set -u (see
+  # check_scope's comment).
+  OIDC_ENV=()
+  if [[ "${E2E_OIDC_ALLOW_HTTP:-}" == "1" ]]; then
+    OIDC_ENV=(-e MINO_OIDC_ALLOW_HTTP=1)
+  fi
   docker run -d --name "$NAME" \
     --network "$NETWORK" \
     -p "127.0.0.1:${PORT}:9191" \
@@ -373,6 +393,7 @@ else
     -e DISPATCHARR_ENV=aio \
     -e DISPATCHARR_LOG_LEVEL=info \
     -e DISPATCHARR_TRUSTED_PROXIES="$GATEWAY" \
+    ${OIDC_ENV[@]+"${OIDC_ENV[@]}"} \
     "$IMAGE" >/dev/null
 fi
 ensure_on_network "$NAME"
