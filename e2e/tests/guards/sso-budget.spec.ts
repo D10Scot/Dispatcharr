@@ -17,8 +17,9 @@
  * - no browser or page is made under `tests/sso/` except through the counted `context`
  *   fixture: no `newContext`, `launchPersistentContext`, `launch`, `connect` or
  *   `connectOverCDP` call, no `newPage` on anything but `context`, and no `browser`,
- *   `browserType` or `playwright` fixture taken. A second context's requests would not
- *   reach the ledger;
+ *   `browserType` or `playwright` reached, whether taken as a fixture or through property
+ *   or element access (`f.page.context().browser()`, `f['browser']`). A second context's
+ *   requests would not reach the ledger;
  * - every TypeScript or JavaScript file under `tests/sso/` is read, so a `.js` or `.mjs`
  *   module beside the specs is not skipped;
  * - the path classifier counts exactly the four throttled routes.
@@ -101,6 +102,14 @@ function uncountedBrowserProblems(sf: ts.SourceFile): string[] {
       } else if (name === 'newPage' && !(ts.isIdentifier(receiver) && receiver.text === 'context')) {
         problems.push(`calls newPage() on something other than the context fixture (line ${lineOf(sf, node)}): its requests would not reach the oidc ledger`);
       }
+    }
+    const accessed = ts.isPropertyAccessExpression(node)
+      ? node.name.text
+      : ts.isElementAccessExpression(node) && ts.isStringLiteralLike(node.argumentExpression)
+        ? node.argumentExpression.text
+        : undefined;
+    if (accessed !== undefined && UNCOUNTED_FIXTURES.has(accessed)) {
+      problems.push(`reaches .${accessed} (line ${lineOf(sf, node)}), which makes contexts the oidc ledger does not watch`);
     }
     if (ts.isBindingElement(node)) {
       const key = node.propertyName ?? node.name;

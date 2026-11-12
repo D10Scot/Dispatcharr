@@ -49,7 +49,8 @@
  *    `timeout`), so `retries` cannot come back for one file; and no `test.use(...)`,
  *    `test.extend(...)` or `use` on one of the four projects may set an option in
  *    `STACK_IDENTITY_OPTIONS` (`baseURL`, `storageState`, `extraHTTPHeaders`,
- *    `httpCredentials`, `proxy`, `clientCertificates`), any of which would point the
+ *    `httpCredentials`, `proxy`, `clientCertificates`, and the `contextOptions`,
+ *    `launchOptions` and `connectOptions` that can carry them), any of which would point the
  *    browser at another stack, or carry its identity, while `assertScopedStack()`, which
  *    reads `process.env`, still passes. An options object this cannot read (a variable,
  *    a spread, a computed key) fails.
@@ -61,12 +62,20 @@
  *    is where a retry, `expect.poll` or `toPass` would put it), with no backoff, retry or
  *    poll call before it in that body. Every SSO project carries `retries: 0`.
  *
+ * 3. The `sso-faults` cases and the fake OP's faults are the same set. Every fault in
+ *    `OIDC_FAULTS` (`e2e-upstream/src/oidc/index.ts`, the list the OP accepts) has a
+ *    case under `tests/sso/faults/`, the cases name no fault the OP does not know, and
+ *    `OidcFault` in `tests/sso/helpers.ts` lists the same faults. A case is a string in
+ *    an array bound to a `…_FAULTS` constant or a `fault:` property. The run-time ledger
+ *    checks only an upper bound, so a dropped case would otherwise pass.
+ *
  * What it cannot see: code outside `tests/sso/` that a spec imports (`fixtures/`,
  * `setup/`, another directory's helpers) runs at import too, and is policed only as the
  * rest of the suite is; a deliberately computed property name in a fixture definition
  * (`{ ['au' + 'to']: … }`); and configuration set outside `tests/sso/` and the four
  * projects (the config's top-level `use`, whose `baseURL` is `E2E_BASE_URL`, the very
- * variable `assertScopedStack()` reads).
+ * variable `assertScopedStack()` reads); and an absolute URL in a navigation or request
+ * (`page.goto('http://localhost:9191/…')`), which reaches another stack with no option set.
  *
  * `@characterization`: these pin the harness's own safety, which no client observes
  * (`docs/adr/0002`).
@@ -74,7 +83,8 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import * as ts from 'typescript';
-import { E2E_ROOT, listSourceFiles, listTsFiles, readSpec } from './ast';
+import { readFile } from 'node:fs/promises';
+import { E2E_ROOT, REPO_ROOT, listSourceFiles, listTsFiles, readSpec } from './ast';
 
 const SSO_DIR = 'tests/sso';
 const SSO_ABS = path.join(E2E_ROOT, SSO_DIR);
@@ -125,7 +135,9 @@ const CONFIGURE_KEYS = new Set(['mode', 'timeout']);
  * identity, while `assertScopedStack()` (which reads `process.env`, not the fixture) still
  * passes. `baseURL` re-points every relative URL; `storageState` loads another origin's
  * tokens and cookies; `extraHTTPHeaders` and `httpCredentials` attach an `Authorization` to
- * every request; `proxy` reroutes them all; `clientCertificates` presents an identity. The
+ * every request; `proxy` reroutes them all; `clientCertificates` presents an identity;
+ * `contextOptions`, `launchOptions` and `connectOptions` can carry any of those (a nested
+ * `extraHTTPHeaders`, `proxy` or `storageState`), so they are refused whole. The
  * SSO projects need none of them: the browser signs in through the flow, and `api` is
  * built from the project's own pair.
  */
@@ -136,6 +148,9 @@ const STACK_IDENTITY_OPTIONS = new Set([
   'httpCredentials',
   'proxy',
   'clientCertificates',
+  'contextOptions',
+  'launchOptions',
+  'connectOptions',
 ]);
 
 /** The key of a property, or undefined when it is computed, spread or otherwise unreadable. */
@@ -709,6 +724,70 @@ test.describe('the sso projects', () => {
         })(s);
       }
       expect(before, `${at}: no backoff, retry or poll call before the probe in the test body`).toEqual([]);
+    }
+  );
+
+  test(
+    'has a case under tests/sso/faults/ for every fault the fake OP knows, and none it does not',
+    { tag: '@characterization' },
+    async () => {
+      const opRel = 'e2e-upstream/src/oidc/index.ts';
+      const op = ts.createSourceFile(opRel, await readFile(path.join(REPO_ROOT, opRel), 'utf8'), ts.ScriptTarget.Latest, true);
+      let known: string[] | undefined;
+      (function visit(node: ts.Node): void {
+        if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === 'OIDC_FAULTS' && node.initializer) {
+          let init: ts.Expression = node.initializer;
+          while (ts.isAsExpression(init) || ts.isParenthesizedExpression(init)) init = init.expression;
+          if (ts.isArrayLiteralExpression(init) && init.elements.every(ts.isStringLiteralLike)) {
+            known = init.elements.map((e) => (e as ts.StringLiteralLike).text);
+          }
+        }
+        ts.forEachChild(node, visit);
+      })(op);
+      expect(known, `${opRel}: OIDC_FAULTS is an array literal of strings`).toBeDefined();
+      const opFaults = [...new Set(known)].sort();
+      expect(opFaults.length, 'the fake OP knows some faults').toBeGreaterThan(0);
+
+      const named = new Set<string>();
+      const faultFiles = (await ssoFiles()).filter((rel) => rel.startsWith(`${SSO_DIR}/faults/`));
+      expect(faultFiles, 'the scan found the fault spec').toContain('tests/sso/faults/id-token-faults.spec.ts');
+      for (const rel of faultFiles) {
+        const sf = ts.createSourceFile(rel, await readSpec(rel), ts.ScriptTarget.Latest, true);
+        (function visit(node: ts.Node): void {
+          if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && /_FAULTS$/.test(node.name.text) && node.initializer) {
+            let init: ts.Expression = node.initializer;
+            while (ts.isAsExpression(init) || ts.isParenthesizedExpression(init) || ts.isSatisfiesExpression(init)) init = init.expression;
+            if (ts.isArrayLiteralExpression(init)) {
+              for (const e of init.elements) if (ts.isStringLiteralLike(e)) named.add(e.text);
+            }
+          }
+          if (
+            ts.isPropertyAssignment(node) &&
+            (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) &&
+            node.name.text === 'fault' &&
+            ts.isStringLiteralLike(node.initializer)
+          ) {
+            named.add(node.initializer.text);
+          }
+          ts.forEachChild(node, visit);
+        })(sf);
+      }
+      expect(
+        opFaults.filter((f) => !named.has(f)),
+        `faults the fake OP knows (${opRel}, OIDC_FAULTS) with no case under tests/sso/faults/`
+      ).toEqual([]);
+      expect(
+        [...named].filter((f) => !opFaults.includes(f)).sort(),
+        `faults named under tests/sso/faults/ that the fake OP does not know (${opRel}, OIDC_FAULTS)`
+      ).toEqual([]);
+
+      const helpers = ts.createSourceFile('helpers.ts', await readSpec(`${SSO_DIR}/helpers.ts`), ts.ScriptTarget.Latest, true);
+      const alias = helpers.statements.find((s): s is ts.TypeAliasDeclaration => ts.isTypeAliasDeclaration(s) && s.name.text === 'OidcFault');
+      const members =
+        alias && ts.isUnionTypeNode(alias.type)
+          ? alias.type.types.map((t) => (ts.isLiteralTypeNode(t) && ts.isStringLiteral(t.literal) ? t.literal.text : '?'))
+          : [];
+      expect(members.sort(), `tests/sso/helpers.ts: OidcFault lists the fake OP's faults (${opRel}, OIDC_FAULTS)`).toEqual(opFaults);
     }
   );
 });
