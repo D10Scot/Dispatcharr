@@ -438,6 +438,23 @@ NAME_CASES = (
     ("trace, f-string url", 'logger.trace(f"fetch {stream_url}")', True),
     ("trace, pattern", 'logger.trace("using %s", search_pattern)', True),
     ("trace, redacted", 'logger.trace("fetch %s", redact_url(url))', False),
+    ("format field attribute", 'logger.info("{0.search_pattern}".format(profile))', True),
+    ("format field with conversion", 'logger.info("{0.url!s}".format(obj))', True),
+    ("format named field", 'logger.info("{o.url}".format(o=obj))', True),
+    ("format of a redacted value", 'logger.info("{}".format(redact_url(url)))', False),
+    ("format fields naming nothing", 'logger.info("{0.name} {1}".format(obj, n))', False),
+    ("percent mapping key", 'logger.info("%(url)s", obj)', False),
+    ("percent mapping key applied", 'logger.info("%(url)s" % row)', True),
+    ("getattr literal", 'logger.info("%s", getattr(obj, "url"))', True),
+    ("getattr literal pattern", 'logger.info("%s", getattr(obj, "search_pattern", None))', True),
+    ("getattr redacted", 'logger.info("%s", redact_url(getattr(obj, "url")))', False),
+    ("getattr other name", 'logger.info("%s", getattr(obj, "name"))', False),
+    ("subscript literal", 'logger.info("%s", row["url"])', True),
+    ("dict get literal", 'logger.info("%s", row.get("search_pattern"))', True),
+    ("dict get other key", 'logger.info("%s", row.get("name"))', False),
+    ("extra mapping value", 'logger.info("fetch", extra={"value": url})', True),
+    ("extra mapping redacted", 'logger.info("fetch", extra={"value": redact_url(url)})', False),
+    ("extra mapping key only", 'logger.info("fetch", extra={"url": name})', False),
     ("trace, nothing credential-like", 'logger.trace("started %s", name)', False),
 )
 
@@ -467,7 +484,7 @@ class WidenedNameRuleTests(SimpleTestCase):
 
     def test_a_marker_with_a_reason_clears_a_bare_name(self):
         result = self.run_case(
-            'logger.debug("using %s", search_pattern)  # credential-logging: ignore - operator regex'
+            'logger.debug("using %s", search_pattern)  # credential-logging: ignore - presence only'
         )
         self.assertEqual(result.returncode, 0, result.stdout)
 
@@ -489,3 +506,34 @@ class WidenedNameRuleTests(SimpleTestCase):
         self.assertGreater(len(targets), 100)
         result = self.run_guard(*targets)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The CLI only warns about a file it cannot read or parse and still
+        # exits 0, so a skipped file would pass the line above unseen.
+        self.assertEqual(result.stderr, "", "a file was not scanned")
+
+    def test_a_marker_inside_a_string_does_not_clear_a_call(self):
+        for label, source in (
+            ("message string", 'logger.info("credential-logging: ignore - demo %s", url)'),
+            (
+                "multiline string",
+                'logger.info("""\ncredential-logging: ignore - demo\n%s""", url)',
+            ),
+            (
+                "docstring beside the call",
+                '"""credential-logging: ignore - demo"""\n    logger.info("%s", url)',
+            ),
+        ):
+            with self.subTest(label):
+                result = self.run_case(source)
+                self.assertEqual(result.returncode, 1, f"{label} cleared the call")
+
+    def test_a_marker_in_a_real_comment_on_any_spanned_line_clears_a_call(self):
+        result = self.run_case(
+            'logger.info(\n        "%s",  # credential-logging: ignore - demo reason\n        url,\n    )'
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_marker_on_a_line_the_call_does_not_span_clears_nothing(self):
+        result = self.run_case(
+            '# credential-logging: ignore - demo reason\n    logger.info("%s", url)'
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)

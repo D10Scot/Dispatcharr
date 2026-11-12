@@ -28,7 +28,7 @@ class _BoundedFilterPattern:
 
     A stream filter's pattern is operator-authored and can carry catastrophic
     backtracking that survives ``regex``'s own optimizer. Once a search times
-    out, the pattern trips: it logs once (naming the pattern) and returns
+    out, the pattern trips: it logs once (never the pattern: it can match, and so contain, a stream URL) and returns
     non-matching (``None``) for the rest of this compiled set, i.e. for the
     rest of that refresh, instead of paying the timeout cost again for every
     remaining stream. A timed-out *exclude* filter therefore lets streams
@@ -51,10 +51,9 @@ class _BoundedFilterPattern:
             return self._compiled.search(target, timeout=self._timeout)
         except TimeoutError:
             self.tripped = True
-            logger.warning(  # credential-logging: ignore - operator-authored M3U filter regex: no credential
-                "Stream filter pattern %r timed out after %.2fs; treating "
+            logger.warning(
+                "A stream filter regex timed out after %.2fs; treating "
                 "as non-matching for the rest of this refresh",
-                self.pattern,
                 self._timeout,
             )
             return None

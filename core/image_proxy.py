@@ -198,9 +198,7 @@ def serve_local_or_remote_image(
     if url.startswith("/data"):
         safe_path = resolve_safe_local_data_path(url)
         if safe_path is None or not os.path.exists(safe_path):
-            logger.error(  # credential-logging: ignore - url starts with /data here: a local file path, never a provider URL
-                "%s file not found or unsafe path: %s", log_label, url
-            )
+            logger.error("%s file not found or unsafe path", log_label)
             raise Http404("Image not found")
 
         try:

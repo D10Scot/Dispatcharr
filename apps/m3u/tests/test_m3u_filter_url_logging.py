@@ -33,6 +33,7 @@ from apps.m3u.models import M3UAccount
 
 from apps.m3u import tasks as m3u_tasks
 from apps.m3u.utils import _BoundedFilterPattern
+from apps.m3u.utils import logger as m3u_logger
 from apps.proxy.tests.test_profile_pattern_logging import capture, record_text
 
 URL = "http://prov.example.com/live/olduser/oldpass/1.ts"
@@ -84,7 +85,7 @@ class FilterMatchLoggingTests(SimpleTestCase):
                         )
                     self.assertEqual(passed, not exclude)
                     self.assertTrue(
-                        any("matches filter pattern" in r.getMessage() for r in logs.records),
+                        any("matches a " in r.getMessage() for r in logs.records),
                         "the match DEBUG line must still be emitted",
                     )
                     assert_no_secret(self, logs.records)
@@ -657,9 +658,9 @@ class GeneratedNameLoggingTests(TestCase):
                 self.assertNotIn(secret, text, f"leaked {secret!r}: {text}")
         self.assertIn("Processing stream: BBC News in group Live", trace_lines)
         self.assertIn("Processing stream: <withheld: URL-shaped> in group Live", trace_lines)
-        matches = [r.getMessage() for r in logs.records if "matches filter pattern" in r.getMessage()]
-        self.assertIn("Stream BBC News (group Live) matches filter pattern acct|News", matches)
-        self.assertIn("Stream <withheld: URL-shaped> (group Live) matches filter pattern acct|News", matches)
+        matches = [r.getMessage() for r in logs.records if "matches a " in r.getMessage()]
+        self.assertIn("Stream BBC News (group Live) matches a name filter", matches)
+        self.assertIn("Stream <withheld: URL-shaped> (group Live) matches a name filter", matches)
         self.assertTrue(any("URL too long" in r.getMessage() for r in logs.records))
         self.assertTrue(any("name too long" in r.getMessage() for r in logs.records))
 
@@ -830,3 +831,52 @@ class UntruncatedClassificationTests(TestCase):
                 1, records, {"Live": 1}, [], compiled_filters=compiled("name", "acct", False),
             )
         helper.assert_not_called()
+
+
+class FilterPatternLoggingTests(TestCase):
+    """A filter's regex can match a stream URL, so it can contain the login
+    (`/live/olduser/oldpass/`). Its contents must reach no log line: a match,
+    the trace line, the batch's filter list, or the timeout warning."""
+
+    PATTERN = r"/live/olduser/oldpass/"
+
+    def test_match_and_trace_lines_name_no_pattern(self):
+        with mock.patch.object(m3u_tasks.logger, "trace") as trace:
+            with capture(m3u_tasks.logger) as logs:
+                passed = m3u_tasks._stream_passes_m3u_filters(
+                    "BBC News", URL, "Live TV", compiled("url", self.PATTERN, True),
+                )
+        self.assertFalse(passed)
+        self.assertTrue(trace.called, "the trace line must still be emitted")
+        assert_no_secret(self, logs.records)
+        self.assertNotIn("olduser", repr(trace.call_args_list))
+        self.assertNotIn("oldpass", repr(trace.call_args_list))
+
+    def test_batch_filter_list_names_no_pattern(self):
+        account = SimpleNamespace(account_type="STD", filters=mock.MagicMock())
+        manager = mock.MagicMock()
+        manager.select_related.return_value.get.return_value = account
+        with (
+            mock.patch.object(django.db.connections, "close_all"),
+            mock.patch.object(m3u_tasks.M3UAccount, "objects", manager),
+        ):
+            with capture(m3u_tasks.logger) as logs:
+                m3u_tasks.process_m3u_batch_direct(
+                    1, [{"name": "BBC News", "url": URL, "attributes": {}}], {}, [],
+                    compiled_filters=compiled("url", self.PATTERN, False),
+                )
+        self.assertTrue(
+            any("compiled filters" in r.getMessage() for r in logs.records),
+            "the filter-count line must still be emitted",
+        )
+        assert_no_secret(self, logs.records)
+
+    def test_timeout_warning_names_no_pattern(self):
+        fake = mock.MagicMock()
+        fake.pattern = self.PATTERN
+        fake.search.side_effect = TimeoutError
+        bounded = _BoundedFilterPattern(fake)
+        with capture(m3u_logger) as logs:
+            self.assertIsNone(bounded.search(URL))
+        self.assertTrue(bounded.tripped)
+        assert_no_secret(self, logs.records)

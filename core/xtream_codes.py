@@ -3,10 +3,25 @@ import logging
 import traceback
 import json
 
-from dispatcharr.observability.redaction import redact_exception, redact_text
+from dispatcharr.observability.redaction import redact_exception
 from dispatcharr.utils import redact_url
 
 logger = logging.getLogger(__name__)
+
+
+def _frames(exc):
+    """The traceback's frames without the exception message.
+
+    A provider response, a URL or a login can sit in an exception's text, so
+    the stack is logged alone.
+    """
+    return "Traceback frames:\n" + "".join(traceback.format_tb(exc.__traceback__))
+
+
+def _loggable_id(value):
+    """A provider id for a log line: short digits as they are, else a placeholder."""
+    text = str(value)
+    return text if text.isdigit() and len(text) <= 20 else "<id>"
 
 
 def normalize_server_url(url):
@@ -92,9 +107,7 @@ class Client:
             response_text = response.text.strip()
             if response_text.lower() in ['blocked', 'forbidden', 'access denied', 'unauthorized']:
                 error_msg = f"XC API request blocked by server from {url}. Response: {response_text}"
-                logger.error(
-                    f"XC API request blocked by server from {redact_url(url)}. Response: {response_text}"
-                )
+                logger.error(f"XC API request blocked by server from {redact_url(url)}")
                 logger.error(f"This may indicate IP blocking, User-Agent filtering, or rate limiting")
                 raise ValueError(error_msg)
 
@@ -114,7 +127,7 @@ class Client:
             # Check for XC-specific error responses
             if isinstance(data, dict) and data.get('user_info') is None and 'error' in data:
                 error_msg = f"XC API Error: {data.get('error', 'Unknown error')}"
-                logger.error(error_msg)
+                logger.error("XC API returned an error response")
                 raise ValueError(error_msg)
 
             return data
@@ -126,11 +139,11 @@ class Client:
             raise
         except ValueError as e:
             # This could be from JSON parsing or our explicit raises
-            logger.error(f"XC API Invalid response: {redact_text(str(e))}")
+            logger.error(f"XC API Invalid response: {redact_exception(e)}")
             raise
         except Exception as e:
-            logger.error(f"XC API Unexpected error: {redact_text(str(e))}")
-            logger.error(redact_text(traceback.format_exc()))
+            logger.error(f"XC API Unexpected error: {redact_exception(e)}")
+            logger.error(_frames(e))
             raise
 
     def authenticate(self):
@@ -146,14 +159,14 @@ class Client:
 
             if not self.server_info or not self.server_info.get('user_info'):
                 error_msg = "Authentication failed: Invalid response from server"
-                logger.error(f"{error_msg}. Response: {self.server_info}")
+                logger.error(error_msg)
                 raise ValueError(error_msg)
 
-            logger.info(f"XC Authentication successful for user {self.username}")
+            logger.info("XC Authentication successful")
             return self.server_info
         except Exception as e:
-            logger.error(f"XC Authentication failed: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"XC Authentication failed: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_account_info(self):
@@ -214,15 +227,14 @@ class Client:
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid categories response: {categories}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(categories).__name__)
                 raise ValueError(error_msg)
 
             logger.info(f"Successfully retrieved {len(categories)} live categories")
-            logger.debug(f"Categories: {json.dumps(categories[:5])}...")
             return categories
         except Exception as e:
-            logger.error(f"Failed to get live categories: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get live categories: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_live_category_streams(self, category_id):
@@ -243,14 +255,14 @@ class Client:
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid streams response for category {category_id}: {streams}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(streams).__name__)
                 raise ValueError(error_msg)
 
-            logger.info(f"Successfully retrieved {len(streams)} streams for category {category_id}")
+            logger.info(f"Successfully retrieved {len(streams)} streams for category {_loggable_id(category_id)}")
             return streams
         except Exception as e:
-            logger.error(f"Failed to get streams for category {category_id}: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get streams for category {_loggable_id(category_id)}: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_all_live_streams(self):
@@ -271,14 +283,14 @@ class Client:
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid streams response for all live streams: {streams}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(streams).__name__)
                 raise ValueError(error_msg)
 
             logger.info(f"Successfully retrieved {len(streams)} total live streams")
             return streams
         except Exception as e:
-            logger.error(f"Failed to get all live streams: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get all live streams: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_stream_url(self, stream_id):
@@ -310,14 +322,14 @@ class Client:
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid VOD categories response: {categories}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(categories).__name__)
                 raise ValueError(error_msg)
 
             logger.info(f"Successfully retrieved {len(categories)} VOD categories")
             return categories
         except Exception as e:
-            logger.error(f"Failed to get VOD categories: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get VOD categories: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_vod_streams(self, category_id=None):
@@ -340,14 +352,14 @@ class Client:
 
             if not isinstance(streams, list):
                 error_msg = f"Invalid VOD streams response for category {category_id}: {streams}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(streams).__name__)
                 raise ValueError(error_msg)
 
-            logger.info(f"Successfully retrieved {len(streams)} VOD streams for category {category_id}")
+            logger.info(f"Successfully retrieved {len(streams)} VOD streams for category {_loggable_id(category_id)}")
             return streams
         except Exception as e:
-            logger.error(f"Failed to get VOD streams for category {category_id}: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get VOD streams for category {_loggable_id(category_id)}: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_vod_info(self, vod_id):
@@ -368,14 +380,14 @@ class Client:
 
             if not isinstance(vod_info, dict):
                 error_msg = f"Invalid VOD info response for vod_id {vod_id}: {vod_info}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(vod_info).__name__)
                 raise ValueError(error_msg)
 
-            logger.info(f"Successfully retrieved VOD info for vod_id {vod_id}")
+            logger.info(f"Successfully retrieved VOD info for vod_id {_loggable_id(vod_id)}")
             return vod_info
         except Exception as e:
-            logger.error(f"Failed to get VOD info for vod_id {vod_id}: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get VOD info for vod_id {_loggable_id(vod_id)}: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_series_categories(self):
@@ -395,14 +407,14 @@ class Client:
 
             if not isinstance(categories, list):
                 error_msg = f"Invalid series categories response: {categories}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(categories).__name__)
                 raise ValueError(error_msg)
 
             logger.info(f"Successfully retrieved {len(categories)} series categories")
             return categories
         except Exception as e:
-            logger.error(f"Failed to get series categories: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get series categories: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_series(self, category_id=None):
@@ -425,14 +437,14 @@ class Client:
 
             if not isinstance(series, list):
                 error_msg = f"Invalid series response for category {category_id}: {series}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(series).__name__)
                 raise ValueError(error_msg)
 
-            logger.info(f"Successfully retrieved {len(series)} series for category {category_id}")
+            logger.info(f"Successfully retrieved {len(series)} series for category {_loggable_id(category_id)}")
             return series
         except Exception as e:
-            logger.error(f"Failed to get series for category {category_id}: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get series for category {_loggable_id(category_id)}: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def get_series_info(self, series_id):
@@ -453,14 +465,14 @@ class Client:
 
             if not isinstance(series_info, dict):
                 error_msg = f"Invalid series info response for series_id {series_id}: {series_info}"
-                logger.error(error_msg)
+                logger.error("XC API returned an unexpected response shape: %s", type(series_info).__name__)
                 raise ValueError(error_msg)
 
-            logger.info(f"Successfully retrieved series info for series_id {series_id}")
+            logger.info(f"Successfully retrieved series info for series_id {_loggable_id(series_id)}")
             return series_info
         except Exception as e:
-            logger.error(f"Failed to get series info for series_id {series_id}: {str(e)}")
-            logger.error(traceback.format_exc())
+            logger.error(f"Failed to get series info for series_id {_loggable_id(series_id)}: {type(e).__name__}")
+            logger.error(_frames(e))
             raise
 
     def close(self):
@@ -469,7 +481,7 @@ class Client:
             try:
                 self.session.close()
             except Exception as e:
-                logger.debug(f"Error closing XC session: {e}")
+                logger.debug(f"Error closing XC session: {type(e).__name__}")
 
     def __enter__(self):
         """Enter the context manager"""
