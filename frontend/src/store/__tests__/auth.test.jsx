@@ -652,10 +652,12 @@ describe('useAuthStore', () => {
         error.message = `HTTP error! Status: ${status}`;
         API.refreshToken.mockRejectedValue(error);
 
-        await expect(useAuthStore.getState().getRefreshToken()).resolves.toBe(
-          false
-        );
+        // Advance past every wait a retry would take, so a retrying build fails on
+        // the call count rather than hanging on a timer nothing advances.
+        const pending = useAuthStore.getState().getRefreshToken();
+        await vi.advanceTimersByTimeAsync(5000);
         expect(API.refreshToken).toHaveBeenCalledTimes(1);
+        await expect(pending).resolves.toBe(false);
         expect(API.logout).toHaveBeenCalledTimes(1);
         expect(vi.getTimerCount()).toBe(0);
       }
