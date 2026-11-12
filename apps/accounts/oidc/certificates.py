@@ -12,31 +12,13 @@ from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
-from gevent import monkey
 
 CERT_VALID_DAYS = 730
 KEY_SIZE = 2048
 
 
 def generate_pair(slug):
-    """Return ``(private_key_pem, certificate_pem)`` as text. RSA 2048, SHA-256, 730 days.
-
-    RSA key generation is CPU-bound and does not yield to gevent: inline, it stalls every
-    other request greenlet on the uWSGI worker for its whole duration (measured at a 23 ms
-    median and up to 90 ms on a fast host). Under gevent's monkey-patching it therefore runs
-    on the hub's native threadpool, where the OpenSSL call releases the GIL and the hub keeps
-    scheduling; the calling greenlet waits and any exception re-raises in it unchanged. Every
-    process that is not monkey-patched (tests, management commands, Celery, Daphne)
-    generates inline, as before.
-    """
-    if monkey.is_module_patched("socket"):
-        import gevent
-
-        return gevent.get_hub().threadpool.apply(_generate_pair, (slug,))
-    return _generate_pair(slug)
-
-
-def _generate_pair(slug):
+    """Return ``(private_key_pem, certificate_pem)`` as text. RSA 2048, SHA-256, 730 days."""
     key = rsa.generate_private_key(public_exponent=65537, key_size=KEY_SIZE)
     name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, f"mino-oidc-{slug}")])
     now = datetime.datetime.now(datetime.timezone.utc)
