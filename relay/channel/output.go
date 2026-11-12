@@ -2,6 +2,8 @@ package channel
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
@@ -156,6 +158,7 @@ func (c *Channel) AttachOutput(format string, spec OutputSpec) (*output.Pipeline
 		pipeline, err = output.StartProfile(context.Background(), output.ProfileConfig{
 			ChannelID:   c.id,
 			ProfileID:   spec.Profile.ID,
+			ChannelPK:   c.pk,
 			Source:      source,
 			Command:     spec.Profile.Command(),
 			Argv:        spec.Profile.Args(),
@@ -169,6 +172,8 @@ func (c *Channel) AttachOutput(format string, spec OutputSpec) (*output.Pipeline
 	} else {
 		pipeline, err = output.Start(context.Background(), output.Config{
 			ChannelID:   c.id,
+			ChannelPK:   c.pk,
+			ProfileID:   profileIDOfKey(format),
 			Source:      source,
 			JoinBehind:  c.tuning.JoinBehind,
 			Retention:   c.tuning.Retention,
@@ -262,4 +267,19 @@ func (c *Channel) OutputFormats() []string {
 		out = append(out, format)
 	}
 	return out
+}
+
+// profileIDOfKey is the Output Profile id an output key carries
+// (output.FormatKey's ":p<id>"), zero for a bare format. It labels a
+// profiled fMP4 chain's remux with the profile it reads (M8, M9).
+func profileIDOfKey(key string) int {
+	_, suffix, found := strings.Cut(key, ":p")
+	if !found {
+		return 0
+	}
+	id, err := strconv.Atoi(suffix)
+	if err != nil || id < 0 {
+		return 0
+	}
+	return id
 }

@@ -19,6 +19,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/output"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 	"github.com/D10Scot/Dispatcharr/relay/session"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // StreamDeps is everything the live TS handler needs.
@@ -227,6 +228,30 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 	}
 
 	return func(w http.ResponseWriter, r *http.Request) {
+		// relay.tune (observability D11), owned here: started before anything
+		// else, under the authorize hop's context only when the request
+		// carries a valid relay marker, and ended by the first byte, a
+		// failure branch's Fail or, deferred, as abandoned. The writer is
+		// wrapped ONCE, disarmed, so no error body below can end the span as
+		// streaming or count toward M3.
+		trusted := control.IsRelayTrusted(deps.Secret, r.Header.Get(control.HeaderAuthorized))
+		ctx, tune := telemetry.StartTune(r.Context(), r, trusted)
+		r = r.WithContext(ctx)
+		defer tune.End()
+		tune.SetRoute(r.Pattern)
+		recorder := &statusRecorder{ResponseWriter: w}
+		w = telemetry.NewFirstWriteWriter(recorder, tune)
+		// A branch that writes its own error and returns without a Fail of
+		// its own -- an HLS entry, an Output Profile that would not start,
+		// the fMP4 remux's 500 -- ends the span as failed at its status. An
+		// earlier Fail or the first byte has already completed it, and this
+		// is then a no-op.
+		defer func() {
+			if recorder.status >= http.StatusBadRequest {
+				tune.Fail(telemetry.OutcomeFailed, recorder.status)
+			}
+		}()
+
 		if deps.Lifecycle.Draining() {
 			// FIRST, before the channel is even identified: a tune started
 			// now would be torn down seconds later by the drain that is
@@ -236,6 +261,7 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 			// client retry into the replacement process.
 			w.Header().Set("Retry-After", "1")
 			http.Error(w, "the relay is shutting down", http.StatusServiceUnavailable)
+			tune.Fail(telemetry.OutcomeDraining, http.StatusServiceUnavailable)
 			return
 		}
 		// D5, exception 2: with no nginx there is no auth_request, and a Go
@@ -247,17 +273,21 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 		decision, err := authorizeTune(r, deps, log)
 		if err != nil {
 			writeAuthorizeFailure(w, log, err)
+			tune.Fail(authorizeFailureOutcome(err), recorder.status)
 			return
 		}
 		id, client, err := identify(r, deps.Secret, now, decision)
 		if err != nil {
 			writeTuneFailure(w, log, id, err)
+			tune.Fail(tuneFailureOutcome(err), recorder.status)
 			return
 		}
 		if id == "" {
 			http.Error(w, "no channel in the request", http.StatusBadRequest)
+			tune.Fail(telemetry.OutcomeRefused, http.StatusBadRequest)
 			return
 		}
+		tune.SetOutputFormat(client.OutputFormat)
 		// request_is_internal (apps/proxy/internal_auth.py): the DVR's own
 		// fetch carries the static X-Dispatcharr-Internal and no bound
 		// counterpart, and views.py:461 reads it off the decision to keep a
@@ -273,11 +303,14 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 			viaProxy, proxyReason = true, "an HLS output"
 		}
 
+		started := false
 		ch, release, err := deps.Channels.Attach(id, client, func() (channel.Started, error) {
+			started = true
 			return startTune(r.Context(), tuneDeps{control: deps.Control, probe: deps.Probe, log: log, proxyReason: proxyReason, rewind: deps.HLS.Rewind, reclaim: func(ids []int) channel.Reclaim {
 				return deps.Channels.ReclaimFor(ids, tuneBudget)
 			}}, id, viaProxy)
 		})
+		tune.SetJoined(!started)
 		if err != nil {
 			var redirect *redirectAnswer
 			if errors.As(err, &redirect) {
@@ -288,11 +321,14 @@ func StreamHandler(deps StreamDeps) http.HandlerFunc {
 				log.Info("redirecting the client to the provider", "channel", id, "status", redirect.Status)
 				w.Header().Set("Location", redirect.Location)
 				w.WriteHeader(redirect.Status)
+				tune.Fail(telemetry.OutcomeRedirect, redirect.Status)
 				return
 			}
 			writeTuneFailure(w, log, id, err)
+			tune.Fail(tuneFailureOutcome(err), recorder.status)
 			return
 		}
+		tune.SetChannelID(ch.PK())
 		// Phase 4a-1b: the HLS branch is taken BEFORE `defer release()`,
 		// because an HLS viewer's registry entry outlives this request: the
 		// entry hands release to its session, which runs it when the session
@@ -836,6 +872,8 @@ func startTune(parent context.Context, deps tuneDeps, id string, viaProxy bool) 
 		Info:           infoFrom(answer.Source),
 		OutputProfiles: outputProfilesFrom(answer),
 		HLSProfile:     hlsProfileFrom(answer),
+		ChannelPK:      channelPKFrom(answer),
+		Tune:           telemetry.SpanRefFrom(parent),
 		Resolver: &resolver{
 			control:    client,
 			id:         id,
@@ -844,6 +882,14 @@ func startTune(parent context.Context, deps tuneDeps, id string, viaProxy bool) 
 			log:        deps.log,
 		},
 	}, nil
+}
+
+// channelPKFrom is the answer's channel_pk, zero when it named none.
+func channelPKFrom(answer *control.NextSourceAnswer) int {
+	if answer.ChannelPK == nil || *answer.ChannelPK < 0 {
+		return 0
+	}
+	return *answer.ChannelPK
 }
 
 // infoFrom is what the status endpoints render about a source.
@@ -1053,6 +1099,8 @@ func serveClient(
 	client *channel.Client,
 	log *slog.Logger,
 ) {
+	// Setup has succeeded: the next byte written is the tune's first.
+	arm(w)
 	tuning := ch.Tuning()
 
 	// POSITIONED ONCE, at setup, exactly as output/ts/generator.py:264-302

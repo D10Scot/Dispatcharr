@@ -12,6 +12,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	"github.com/D10Scot/Dispatcharr/relay/procstat"
 )
 
 // Process is one running transcode subprocess: ffmpeg, VLC or streamlink,
@@ -59,6 +61,14 @@ type Process struct {
 	// ended is closed by Wait once the process has been reaped.
 	ended chan struct{}
 	err   error
+
+	// trackMu guards untrack and reaped: Track registers the process group
+	// with procstat.Default (observability M8/M9), and Wait unregisters it
+	// once the process has been reaped. A Process nobody tracks never
+	// touches the registry.
+	trackMu sync.Mutex
+	untrack func()
+	reaped  bool
 }
 
 // KillWait is how long a killed process is given to be reaped before Wait
@@ -306,6 +316,33 @@ func (p *Process) Stdout() io.Reader { return p.stdout }
 // PID is the process id, for tests and logs.
 func (p *Process) PID() int { return p.cmd.Process.Pid }
 
+// Track registers the process's group -- PID, which Setpgid makes the group
+// id -- with procstat.Default under l, so M8 and M9 count its CPU and memory
+// and those of any child it spawns into the group (observability spec D7).
+// Wait unregisters it. Tracking is opt-in and calling it is the whole of the
+// change for a call site: the spawn API is unchanged, and CPU spent between
+// the start and this call is not lost, because M8 counts an identity's CPU
+// from zero. A second Track, or one after Wait, does nothing.
+func (p *Process) Track(l procstat.Labels) {
+	p.trackMu.Lock()
+	defer p.trackMu.Unlock()
+	if p.untrack != nil || p.reaped {
+		return
+	}
+	p.untrack = procstat.Default.Track(p.PID(), l)
+}
+
+// forget unregisters a tracked group, once, after the process is reaped.
+func (p *Process) forget() {
+	p.trackMu.Lock()
+	untrack := p.untrack
+	p.untrack, p.reaped = nil, true
+	p.trackMu.Unlock()
+	if untrack != nil {
+		untrack()
+	}
+}
+
 // maxStderrLine is the most ReadStderr holds without a terminator before it
 // flushes the buffer as a line regardless of what it carries (issue #24).
 const maxStderrLine = 64 << 10
@@ -422,6 +459,9 @@ func (p *Process) Wait() error {
 		err = &ErrExited{Code: -1}
 	}
 	p.err = err
+	// After cmd.Wait, so the group's last CPU reading is taken while the
+	// accumulator still holds it: untrack keeps what was counted.
+	p.forget()
 	p.cancel()
 	close(p.ended)
 	return err
