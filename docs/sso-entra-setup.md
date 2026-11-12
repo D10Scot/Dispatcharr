@@ -42,6 +42,8 @@ The secret field is write-only: Mino never shows a stored secret. Leave the fiel
 
 Press **Test** in the provider form. It fetches the provider's discovery document and signing keys and reports fixed problem messages. Enable the provider, open a private window, and sign in with the button on the login page. Only after that works should you consider anything that relies on SSO being the only way in.
 
+If Test reports an invalid discovery endpoint, note that an endpoint URL with a raw non-ASCII host is refused; the provider must publish it in punycode (`xn--...`).
+
 ## 8. Sovereign clouds and External ID
 
 National-cloud tenants and Microsoft Entra External ID use the **generic OIDC** form, with the issuer and endpoints Microsoft documents for that cloud.
@@ -62,7 +64,7 @@ Mino shows a fixed message for each code; the code is in the address as `sso_err
 | `provider_mismatch` | The response did not match the provider the attempt started with. | Start again from the login page. |
 | `state_invalid`, `binding_invalid` | The attempt expired, was reused, or started in a different browser. | Start again from the login page. |
 | `token_exchange_failed` | The provider did not accept the sign-in code. | Check the credential and redirect URI. |
-| `provider_unavailable` | Discovery or the provider could not be reached. | Run Test; check the network. |
+| `provider_unavailable` | Sign-in could not be completed. This is also what Mino answers for an unexpected internal error, so it does not necessarily mean the provider is down. | Try again; run Test; if it persists, check the server log. |
 
 Microsoft shows its own error page for problems before the user returns to Mino, and records codes in the sign-in log. Microsoft's reference is https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes.
 

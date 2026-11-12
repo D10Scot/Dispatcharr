@@ -91,7 +91,7 @@ export const SSO_ERROR_COPY = {
   provisioning_failed:
     'Your account could not be created or updated. Ask an administrator.',
   provider_unavailable:
-    'The identity provider could not be reached. Try again shortly.',
+    'Sign-in could not be completed. Try again, or ask an administrator.',
   sso_unavailable:
     'Single sign-on is temporarily unavailable. Try again shortly.',
   sso_not_configured: 'Single sign-on is not configured on this server.',
@@ -146,7 +146,7 @@ export const TEST_PROBLEM_COPY = {
   discovery_endpoint_missing:
     'The discovery document is missing a required endpoint.',
   discovery_endpoint_invalid:
-    'The discovery document has an endpoint that is not a valid URL.',
+    'The discovery document has an endpoint that is not a valid URL. An endpoint with a raw non-ASCII host is refused; the provider must give it in punycode.',
   discovery_endpoint_insecure:
     'The discovery document has an endpoint that is not https.',
   token_endpoint_not_allowed:
