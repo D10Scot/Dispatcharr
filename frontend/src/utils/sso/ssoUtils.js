@@ -325,12 +325,15 @@ const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 /**
  * The body for an EDIT: only the fields the administrator changed from
  * `baseline` (the form values of the provider as the server last returned
- * it), plus any credential keys. The provider PATCH carries no concurrency
- * check (`version` is read-only), so a field sent unchanged would overwrite a
- * newer value written meanwhile, by another administrator or by the provider
- * list's enable switch: a credential save from a form opened while the
- * provider was disabled would quietly disable it again. A new provider sends
- * everything.
+ * it), plus the credential keys the credential block produces. The provider
+ * PATCH carries no concurrency check (`version` is read-only), so a field sent
+ * unchanged would overwrite a newer value written meanwhile, by another
+ * administrator or by the provider list's enable switch: a credential save
+ * from a form opened while the provider was disabled would quietly disable it
+ * again. `client_auth_method` follows the same rule: it decides which
+ * credential the provider uses, so it is sent only when it differs from the
+ * provider as last loaded, never re-sent from a form opened before another
+ * administrator activated a certificate. A new provider sends everything.
  */
 export const providerEditPayload = ({
   values,
@@ -350,6 +353,13 @@ export const providerEditPayload = ({
     if (!Object.hasOwn(base, key) || !sameValue(base[key], value)) {
       out[key] = value;
     }
+  }
+  const loaded = credentialState?.provider ?? provider;
+  if (
+    Object.hasOwn(out, 'client_auth_method') &&
+    out.client_auth_method === loaded.client_auth_method
+  ) {
+    delete out.client_auth_method;
   }
   return out;
 };

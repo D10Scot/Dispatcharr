@@ -288,10 +288,10 @@ describe('SsoSettingsForm', () => {
     await userEvent.click(screen.getByTestId('sso-provider-save'));
 
     await waitFor(() => expect(API.updateOidcProvider).toHaveBeenCalled());
-    // client_auth_method is a credential key: the credential block owns it.
-    const { client_auth_method: _method, ...rest } =
-      API.updateOidcProvider.mock.calls[0][1];
-    expect(rest).toEqual({ display_name: 'Work' });
+    // client_auth_method is unchanged, so it is not sent either.
+    expect(API.updateOidcProvider.mock.calls[0][1]).toEqual({
+      display_name: 'Work',
+    });
   });
 
   it('after a refused save, untouched fields take the server state and edits survive', async () => {
@@ -324,9 +324,9 @@ describe('SsoSettingsForm', () => {
     await waitFor(() =>
       expect(API.updateOidcProvider).toHaveBeenCalledTimes(2)
     );
-    const { client_auth_method: _method, ...rest } =
-      API.updateOidcProvider.mock.calls[1][1];
-    expect(rest).toEqual({ client_id: 'new-cid' });
+    expect(API.updateOidcProvider.mock.calls[1][1]).toEqual({
+      client_id: 'new-cid',
+    });
   });
 
   it('the password toggle switches password sign-in off through the settings endpoint', async () => {
