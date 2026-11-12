@@ -471,7 +471,7 @@ describe('SsoSettingsForm', () => {
   // saving twice cannot drop a typed secret or wipe a stored date.
   describe('fix round 3: radio switches and consecutive saves', () => {
     it('a secret typed before switching to Certificate is shown as pending, sent, and the form then shows the stored state', async () => {
-      API.updateOidcProvider.mockResolvedValueOnce(
+      API.updateOidcProvider.mockResolvedValue(
         provider({ client_secret_expires_at: null })
       );
       await open(provider({ client_secret_expires_at: D }));
