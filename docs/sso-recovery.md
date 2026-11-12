@@ -157,6 +157,14 @@ Deactivation also stops the user's API key and Xtream (XC) credentials: Xtream l
 playlists and every new stream request made with them are refused exactly as a wrong password
 is. A stream already playing is not stopped; it continues until the player disconnects.
 
+Deactivation does not reach URLs that carry no user credential, because there the URL itself
+is the permission: a live stream by channel UUID (`/proxy/ts/stream/<uuid>`), a VOD URL by
+content UUID (`/proxy/vod/…`), the plain playlist and guide (`/output/m3u`, `/output/epg`) and
+the HDHomeRun endpoints. Anyone who already holds one of them can keep using it. To cut those
+off, narrow the instance-wide lists in Settings, Network Access (Stream Endpoints covers the
+stream and VOD URLs; M3U / EPG Endpoints covers the playlist, guide and HDHomeRun), or mark a
+channel Hidden, which refuses it to everyone but admins on every output.
+
 ## Sign-in errors that point here
 
 The login page shows a fixed message for each `sso_error` code. Two of them mean an operator

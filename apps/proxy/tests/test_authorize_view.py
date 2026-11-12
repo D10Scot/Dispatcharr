@@ -263,6 +263,41 @@ class AuthorizeViewTests(TestCase):
                 self.assertEqual(response["X-Relay-User"], str(inactive.id))
 
 
+    def test_a_deactivated_users_right_password_answers_like_an_active_users_wrong_one(self):
+        """The comparator is an ACTIVE account's wrong password, on every XC
+        URI shape the hop resolves, so a refusal that differs by account
+        state reddens here."""
+        inactive = User.objects.create_user(
+            username="pr5-view-deactivated", password="unused",
+            custom_properties={"xc_password": "fake-xc-pass-9"},
+        )
+        inactive.is_active = False
+        inactive.save(update_fields=["is_active"])
+        active = User.objects.create_user(
+            username="pr5-view-active", password="unused",
+            custom_properties={"xc_password": "fake-xc-pass-10"},
+        )
+        cid = self.channel.id
+        shapes = [
+            "/live/{u}/{p}/%d" % cid,
+            "/{u}/{p}/%d" % cid,
+            "/timeshift/{u}/{p}/0/0/%d.ts" % cid,
+            "/streaming/timeshift.php?username={u}&password={p}&stream=%d.ts" % cid,
+            "/movie/{u}/{p}/1.mp4",
+            "/series/{u}/{p}/1.mp4",
+        ]
+        for shape in shapes:
+            with self.subTest(uri=shape):
+                active_wrong = self._get(shape.format(u=active.username, p="not-the-password"))
+                refused = self._get(shape.format(u=inactive.username, p="fake-xc-pass-9"))
+                self.assertEqual(refused.status_code, 401)
+                self.assertEqual(refused.status_code, active_wrong.status_code)
+                self.assertEqual(refused.content, active_wrong.content)
+                self.assertEqual(
+                    refused["X-Authorize-Status"], active_wrong["X-Authorize-Status"]
+                )
+
+
 class ResolveAuthorizationTests(TestCase):
     @classmethod
     def setUpTestData(cls):
