@@ -142,7 +142,9 @@ KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
     bytes of a response body). Read the arguments next to a marker, and keep
     the reason about the whole call.
   * NAME_RE judges a literal lookup only in these shapes: `"{0.url}".format(o)`,
-    `"%(url)s" % o`, logging's lazy `logger.info("%(url)s", row)`,
+    `"%(url)s" % o`, logging's lazy `logger.info("%(url)s", row)` (for an inline
+    dict literal the values selected by the template keys are judged and a
+    redact_* wrapper or a literal clears them; any other mapping is flagged),
     `getattr(o, "url")`, `d["url"]` and `d.get("url")`. Everything else is a
     gap, stated plainly: `format_map` (`"{url}".format_map(row)`), a starred
     lookup argument (`getattr(*(o, "url"))`), a nested format-spec field
@@ -318,6 +320,29 @@ def _percent_keys(template):
     return [m.group(1) for m in _PERCENT_KEY_RE.finditer(template) if m.group(1)]
 
 
+def _inline_mapping(node):
+    """Whether `node` is a dict literal whose keys are all plain strings."""
+    return isinstance(node, ast.Dict) and all(
+        _is_str_constant(key) for key in node.keys
+    )
+
+
+def _unsafe_selected_keys(template_keys, mapping):
+    """Template keys that name a URL/pattern whose inline value is not safe.
+
+    Only for an inline dict literal. A selected value is safe when it is a
+    redact_* call or a literal; anything else keeps the conservative flag.
+    Any other kind of mapping is never judged here: the caller flags it.
+    """
+    return [
+        key.value
+        for key, value in zip(mapping.keys, mapping.values)
+        if key.value in template_keys
+        and NAME_RE.search(key.value)
+        and not (_is_redact_call(value) or _is_literal(value))
+    ]
+
+
 def _is_str_constant(node):
     return isinstance(node, ast.Constant) and isinstance(node.value, str)
 
@@ -363,7 +388,10 @@ class _Blank(ast.NodeTransformer):
     def visit_BinOp(self, node):
         fields = None
         if isinstance(node.op, ast.Mod) and _is_str_constant(node.left):
-            fields = " ".join(_percent_keys(node.left.value))
+            keys = _percent_keys(node.left.value)
+            if _inline_mapping(node.right):
+                keys = _unsafe_selected_keys(keys, node.right)
+            fields = " ".join(keys)
         self.generic_visit(node)
         if fields is not None:
             node.left = ast.Constant(value=fields)
@@ -394,12 +422,12 @@ def _unredacted_arguments(call):
     """Yield the arguments of `call` that reach the log unredacted."""
     arguments = list(call.args) + [keyword.value for keyword in call.keywords]
     # logging's lazy mapping form: logger.info("%(url)s", row) looks up row["url"].
-    if (
-        len(call.args) > 1
-        and _is_str_constant(call.args[0])
-        and NAME_RE.search(" ".join(_percent_keys(call.args[0].value)))
-    ):
-        yield call.args[1]
+    if len(call.args) > 1 and _is_str_constant(call.args[0]):
+        keys = _percent_keys(call.args[0].value)
+        mapping = call.args[1]
+        if NAME_RE.search(" ".join(keys)):
+            if not _inline_mapping(mapping) or _unsafe_selected_keys(keys, mapping):
+                yield mapping
     for argument in arguments:
         if _is_literal(argument):
             continue

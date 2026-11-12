@@ -8,7 +8,11 @@ from django.test import SimpleTestCase
 from rest_framework_simplejwt.exceptions import InvalidToken
 
 from core import redis_pubsub
-from core.tests.test_credential_logging_url_sites import assert_no_secret, capture
+from core.tests.test_credential_logging_url_sites import (
+    assert_logged,
+    assert_no_secret,
+    capture,
+)
 from dispatcharr import jwt_ws_auth
 
 
@@ -20,6 +24,7 @@ class JwtWsAuthLoggingTests(SimpleTestCase):
             with capture(jwt_ws_auth.logger) as logs:
                 user = jwt_ws_auth.get_user.func({"user_id": 1})
         self.assertTrue(user.is_anonymous)
+        assert_logged(self, logs.records, "RuntimeError")
         assert_no_secret(self, logs.records)
 
     def test_invalid_token_logs_its_type_only(self):
@@ -36,6 +41,7 @@ class JwtWsAuthLoggingTests(SimpleTestCase):
             with capture(jwt_ws_auth.logger) as logs:
                 async_to_sync(middleware)(scope, None, None)
         self.assertTrue(scope["user"].is_anonymous)
+        assert_logged(self, logs.records, "Invalid token: InvalidToken")
         assert_no_secret(self, logs.records)
 
     def test_unexpected_middleware_error_logs_its_type_only(self):
@@ -51,6 +57,7 @@ class JwtWsAuthLoggingTests(SimpleTestCase):
         ):
             with capture(jwt_ws_auth.logger) as logs:
                 async_to_sync(middleware)(scope, None, None)
+        assert_logged(self, logs.records, "Error in JWT authentication: RuntimeError")
         assert_no_secret(self, logs.records)
 
 
@@ -60,4 +67,5 @@ class PubSubLoggingTests(SimpleTestCase):
         manager.pubsub = MagicMock()
         with capture(redis_pubsub.logger) as logs:
             manager.psubscribe("events:fakesecret:*")
+        assert_logged(self, logs.records, "Subscribed to a pattern")
         assert_no_secret(self, logs.records)

@@ -6,7 +6,11 @@ from django.test import SimpleTestCase
 from django.utils import timezone
 
 from apps.output import epg
-from core.tests.test_credential_logging_url_sites import assert_no_secret, capture
+from core.tests.test_credential_logging_url_sites import (
+    assert_logged,
+    assert_no_secret,
+    capture,
+)
 
 
 class EpgPatternLoggingTests(SimpleTestCase):
@@ -28,6 +32,7 @@ class EpgPatternLoggingTests(SimpleTestCase):
                 time_pattern=r"(?<hour>x)|fakesecret",
                 date_pattern=r"(?<month>y)|fakesecret",
             )
+        assert_logged(self, logs.records, "Title pattern loaded")
         assert_no_secret(self, logs.records)
 
     def test_invalid_patterns_are_not_logged(self):
@@ -36,4 +41,5 @@ class EpgPatternLoggingTests(SimpleTestCase):
                 props = {"title_pattern": r"(?<title>.+)", field: r"(fakeuser/fakepass"}
                 with capture(epg.logger) as logs:
                     self.call(**props)
+                assert_logged(self, logs.records, "regex pattern after conversion")
                 assert_no_secret(self, logs.records)

@@ -84,6 +84,14 @@ def assert_no_secret(test, records):
             )
 
 
+def assert_logged(test, records, fragment):
+    """The event under test was emitted, so a passing no-secret check is not vacuous."""
+    test.assertTrue(
+        any(fragment in r.getMessage() for r in records),
+        f"no record containing {fragment!r}: {[r.getMessage() for r in records]}",
+    )
+
+
 class XtreamClientLoggingTests(SimpleTestCase):
     def make_client(self):
         return xtream_codes.Client("http://prov.example.com", "fakeuser", "fakepass")
@@ -230,8 +238,12 @@ class XtreamPublicMethodLoggingTests(SimpleTestCase):
                 client = self.make_client()
                 client.session.get = MagicMock(return_value=response)
                 with capture(xtream_codes.logger) as logs:
-                    with self.assertRaises(ValueError):
+                    with self.assertRaises(ValueError) as caught:
                         client.authenticate()
+                self.assertRegex(
+                    str(caught.exception),
+                    r"^(XC API Error|Authentication failed|XC API returned invalid JSON)",
+                )
                 assert_no_secret(self, logs.records)
 
     def test_every_fetcher_logs_no_body_on_an_unexpected_shape(self):
@@ -243,8 +255,10 @@ class XtreamPublicMethodLoggingTests(SimpleTestCase):
                     shape = self.BODY  # a str where a dict is expected
                 client.session.get = MagicMock(return_value=self.response(shape))
                 with capture(xtream_codes.logger) as logs:
-                    with self.assertRaises(ValueError):
+                    with self.assertRaises(ValueError) as caught:
                         getattr(client, name)(*args)
+                self.assertTrue(str(caught.exception).startswith("Invalid "), caught.exception)
+                assert_logged(self, logs.records, "unexpected response shape")
                 assert_no_secret(self, logs.records)
 
     def test_every_fetcher_logs_no_exception_text_or_traceback_message(self):
@@ -286,29 +300,33 @@ class XtreamPublicMethodLoggingTests(SimpleTestCase):
     def test_traceback_frames_carry_no_source_line_or_chained_message(self):
         # The raising frame's own SOURCE contains a credential-bearing literal;
         # format_tb() would log that line. The chained cause has a message too.
-        def raises_with_literal_source():
+        # Both fixtures are session.get side effects, so they take its arguments.
+        def raises_chained(*args, **kwargs):
             try:
                 raise ValueError("fakesecret cause")
             except ValueError as cause:
                 raise RuntimeError("fakesecret") from cause  # http://prov.example.com/live/fakeuser/fakepass/1.ts
 
-        def literal_in_call_source(*args, **kwargs):
+        def raises_with_literal_in_source(*args, **kwargs):
             raise OSError("http://prov.example.com/live/fakeuser/fakepass/1.ts")
 
-        for label, raiser in (
-            ("chained", raises_with_literal_source),
-            ("literal in the raising line", literal_in_call_source),
+        for label, raiser, expected in (
+            ("chained", raises_chained, RuntimeError),
+            ("literal in the raising line", raises_with_literal_in_source, OSError),
         ):
             with self.subTest(label):
                 client = self.authed(self.make_client())
                 client.session.get = MagicMock(side_effect=raiser)
                 with capture(xtream_codes.logger) as logs:
-                    with self.assertRaises(Exception):
+                    with self.assertRaises(expected) as caught:
                         client.get_live_categories()
+                if expected is RuntimeError:
+                    self.assertIsInstance(caught.exception.__cause__, ValueError)
                 assert_no_secret(self, logs.records)
                 frames = [r.getMessage() for r in logs.records if "Traceback frames" in r.getMessage()]
                 self.assertTrue(frames, "the frame metadata must still be logged")
                 self.assertIn("xtream_codes.py", frames[0])
+                self.assertIn(raiser.__name__, frames[0], "the raising frame must be named")
 
     def test_raised_messages_are_unchanged(self):
         client = self.authed(self.make_client())
@@ -333,6 +351,7 @@ class ImageProxyLoggingTests(TestCase):
             with capture(image_proxy.logger) as logs:
                 with self.assertRaises(Http404):
                     image_proxy.serve_local_or_remote_image(self.URL, failure_cache={})
+        assert_logged(self, logs.records, "Blocked unsafe remote image URL")
         assert_no_secret(self, logs.records)
 
     def test_rejected_local_path_input_is_not_logged(self):
@@ -342,6 +361,7 @@ class ImageProxyLoggingTests(TestCase):
             with capture(image_proxy.logger) as logs:
                 with self.assertRaises(Http404):
                     image_proxy.serve_local_or_remote_image(url, failure_cache={})
+        assert_logged(self, logs.records, "file not found or unsafe path")
         assert_no_secret(self, logs.records)
 
     def test_fetch_failure_logs_neither_url_nor_exception_text(self):
@@ -353,6 +373,7 @@ class ImageProxyLoggingTests(TestCase):
             with capture(image_proxy.logger) as logs:
                 with self.assertRaises(Http404):
                     image_proxy.serve_local_or_remote_image(self.URL, failure_cache={})
+        assert_logged(self, logs.records, "Error fetching remote")
         assert_no_secret(self, logs.records)
 
 
@@ -370,6 +391,7 @@ class SdRequestLoggingTests(TestCase):
                 sd_utils.sd_authorized_request(
                     "GET", url, source=source, token="stale"
                 )
+        assert_logged(self, logs.records, "clearing cached token and retrying once")
         assert_no_secret(self, logs.records)
 
 
@@ -391,6 +413,7 @@ class PluginRepoLoggingTests(TestCase):
             with capture(plugin_api_views.logger) as logs:
                 response = self.client.post(f"/api/plugins/repos/{repo.pk}/refresh/")
         self.assertEqual(response.status_code, 502)
+        assert_logged(self, logs.records, "Manifest fetch failed")
         assert_no_secret(self, logs.records)
 
     def test_create_failure_logs_no_repo_url_secret(self):
@@ -402,4 +425,5 @@ class PluginRepoLoggingTests(TestCase):
                     "/api/plugins/repos/", {"url": self.URL}, format="json"
                 )
         self.assertGreaterEqual(response.status_code, 400)
+        assert_logged(self, logs.records, "Initial manifest fetch failed")
         assert_no_secret(self, logs.records)
