@@ -16,7 +16,7 @@ a call that never carried the sentinel cannot make a test pass.
 import logging
 import os
 import uuid
-from unittest import mock
+from unittest import mock, skipUnless
 
 import psycopg
 import redis
@@ -294,6 +294,7 @@ class InstrumentationLeakTests(TestCase):
 
     # ---- psycopg ----------------------------------------------------------
 
+    @skipUnless(connection.vendor == "postgresql", "opens a raw PostgreSQL connection with psycopg")
     def test_psycopg_syntax_error_echoing_a_literal(self):
         conn = psycopg.connect(**connection.get_connection_params())
         self.addCleanup(conn.close)
