@@ -812,14 +812,31 @@ REDACT_TEXT_TABLE = (
     (f"rtsp://{Q_USER}:{Q_PASS}@cam%2Flive/ch/main/av", "rtsp://***@cam/live/***/***/av"),
     (f"http://{Q_USER}:{Q_PASS}@h%2Fmovie%2Fa%2Fb", "http://***@h/movie/***/***"),
     (f"http://{Q_USER}:{Q_PASS}@%2Flive/a/b", "http://***@/live/***/***"),
-    # review round 5, C: a decoded "?" or "#" stays path text; the real query
-    # and fragment are masked as they are
-    (f"http://h/%6dovie/a/b/c%3Fd?token={Q_PASS}", "http://h/movie/***/***/c?d?token=***"),
+    # review round 5, C: a decoded "?" or "#" stays path text (put back
+    # encoded since round 6); the real query and fragment are masked as they are
+    (f"http://h/%6dovie/a/b/c%3Fd?token={Q_PASS}", "http://h/movie/***/***/c%3Fd?token=***"),
     (f"http://h/%6dovie/a/b/c%3Fd?username={Q_USER}&password={Q_PASS}",
-     "http://h/movie/***/***/c?d?username=***&password=***"),
-    (f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}", "http://h/movie/***/***/c#d?password=***"),
-    (f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}", "http://h/movie/***/***/c#d#token=***"),
-    (f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}", "http://h/live/***/***/1?.ts?password=***"),
+     "http://h/movie/***/***/c%3Fd?username=***&password=***"),
+    (f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}", "http://h/movie/***/***/c%23d?password=***"),
+    (f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}", "http://h/movie/***/***/c%23d#token=***"),
+    (f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}", "http://h/live/***/***/1%3F.ts?password=***"),
+    # review round 6, D: a whole path with a query keeps its query masks when
+    # the path only matches decoded
+    (f"/%6cive/a/b/c%3Fd?password={Q_PASS}", "/live/***/***/c%3Fd?password=***"),
+    (f"/%6dovie/a/b/c%23d?username={Q_USER}&password={Q_PASS}",
+     "/movie/***/***/c%23d?username=***&password=***"),
+    (f"/get.php%3Fx/%6cive/a/b/c?username={Q_USER}&password={Q_PASS}",
+     "/get.php%3Fx/live/***/***/c?username=***&password=***"),
+    # review round 6, E: userinfo in a token that starts "//"
+    (f"//{Q_USER}:{Q_PASS}@h/x", "//***@h/x"),
+    (f'"//{Q_USER}:{Q_PASS}@cdn.example/app.js"', '"//***@cdn.example/app.js"'),
+    (f"//{Q_USER}:{Q_PASS}@h/live/a/b/1.ts", "//***@h/live/***/***/1.ts"),
+    (f"url=//{Q_USER}:{Q_PASS}@h/a/b", "url=//***@h/a/b"),
+    # review round 6, the accepted-ambiguity class: //<host>/<user>/<pass>/<id>
+    (f"//h/{Q_USER}/{Q_PASS}/1.ts", "//h/***/***/1.ts"),
+    # review round 6, F(1): a final segment that is only trailing punctuation
+    (f"http://h/live/{Q_USER}/.", "http://h/live/***/***"),
+    (f"http://h/live/{Q_USER}/...", "http://h/live/***/***"),
 )
 
 
@@ -851,61 +868,97 @@ class RedactTextTableTests(SimpleTestCase):
                 self.assertEqual(out, expected)
 
 
-def _url_grid():
-    """Absolute URLs built from components, each credential a distinct sentinel.
+_GRID_USERINFOS = (
+    ("", ()),
+    ("s-ui-user:s-ui-pass@", ("s-ui-user", "s-ui-pass")),
+    ("s-ui-user%3Ax:s-ui-pass%40y@", ("s-ui-user", "s-ui-pass")),
+)
+_GRID_HOSTS = (
+    "h", "h.example:8080", "[::1]", "live", "Movie", "timeshift", "%6cive",
+    "h%2Flive", "cam%2Fmovie", "%2Flive", "h%2Fx", "",
+)
+_GRID_PATHS = (
+    ("/live/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+    ("/%6cive/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+    ("/live%2Fs-p-user%2Fs-p-pass%2F1.ts", ("s-p-user", "s-p-pass")),
+    ("/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+    ("/s-p-user/s-p-pass/%31.ts", ("s-p-user", "s-p-pass")),
+    ("/timeshift/s-p-user/s-p-pass/60/x/5.ts", ("s-p-user", "s-p-pass")),
+    ("/%6dovie/a/b/c%3Fd", ()),
+    ("/%6dovie/a/b/c%23d", ()),
+    ("/%6cive/a/b/1%3F.ts", ()),
+    ("/%6dovie/a/b/c%40d", ()),
+    ("/%6dovie/a/b/c%2F%2Fd", ()),
+    ("/get.php%3Fx/%6cive/a/b/c", ()),
+    ("/a/b/c", ()),
+    ("/a/b/5", ()),
+    ("", ()),
+)
+_GRID_TAILS = (
+    ("", ()),
+    ("?token=s-q-token", ("s-q-token",)),
+    ("?username=s-q-user&password=s-q-pass", ("s-q-user", "s-q-pass")),
+    ("?password=s-q-pass#token=s-f-token", ("s-q-pass", "s-f-token")),
+    ("#token=s-f-token", ("s-f-token",)),
+    ("?a=1", ()),
+)
+# How a token reaches redact_text: alone, in a request line, after a key, in
+# message text. Each is applied to the scheme-less forms.
+_GRID_WRAPPERS = (
+    ("bare", "{}"),
+    ("request line", "GET {} HTTP/1.1"),
+    ("key=", "path={}"),
+    ("key: ", "path: {}"),
+    ("quoted key", '{{"path":"{}"}}'),
+    ("message", "Not Found: {}"),
+)
 
-    Yields (url, sentinels): every sentinel the URL carries, so a survivor can
-    be named. Deterministic; a few thousand inputs.
+
+def _token_grid():
+    """Tokens built from components, each credential a distinct sentinel.
+
+    Yields (text, token, sentinels, form): the text handed to redact_text,
+    the token in it that redact_url is asked about, every sentinel the token
+    carries (so a survivor can be named), and the token's form. The forms are
+    every one redact_text reads differently: ``scheme://...`` URLs, scheme-less
+    ``//host/...`` tokens with and without userinfo, and bare ``/path...``
+    tokens. The last two are also wrapped in each of _GRID_WRAPPERS. Deterministic.
     """
-    schemes = ("http", "https", "rtsp", "word")
-    userinfos = (
-        ("", ()),
-        ("s-ui-user:s-ui-pass@", ("s-ui-user", "s-ui-pass")),
-        ("s-ui-user%3Ax:s-ui-pass%40y@", ("s-ui-user", "s-ui-pass")),
-    )
-    hosts = (
-        "h", "h.example:8080", "[::1]", "live", "Movie", "timeshift", "%6cive",
-        "h%2Flive", "cam%2Fmovie", "%2Flive", "h%2Fx", "",
-    )
-    paths = (
-        ("/live/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
-        ("/%6cive/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
-        ("/live%2Fs-p-user%2Fs-p-pass%2F1.ts", ("s-p-user", "s-p-pass")),
-        ("/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
-        ("/s-p-user/s-p-pass/%31.ts", ("s-p-user", "s-p-pass")),
-        ("/timeshift/s-p-user/s-p-pass/60/x/5.ts", ("s-p-user", "s-p-pass")),
-        ("/%6dovie/a/b/c%3Fd", ()),
-        ("/%6dovie/a/b/c%23d", ()),
-        ("/%6cive/a/b/1%3F.ts", ()),
-        ("/%6dovie/a/b/c%40d", ()),
-        ("/%6dovie/a/b/c%2F%2Fd", ()),
-        ("/a/b/c", ()),
-        ("/a/b/5", ()),
-        ("", ()),
-    )
-    tails = (
-        ("", ()),
-        ("?token=s-q-token", ("s-q-token",)),
-        ("?username=s-q-user&password=s-q-pass", ("s-q-user", "s-q-pass")),
-        ("?password=s-q-pass#token=s-f-token", ("s-q-pass", "s-f-token")),
-        ("#token=s-f-token", ("s-f-token",)),
-        ("?a=1", ()),
-    )
-    for scheme in schemes:
-        for userinfo, ui_sentinels in userinfos:
-            for host in hosts:
-                for path, p_sentinels in paths:
-                    for tail, t_sentinels in tails:
-                        url = f"{scheme}://{userinfo}{host}{path}{tail}"
-                        yield url, ui_sentinels + p_sentinels + t_sentinels
+    for scheme in ("http", "https", "rtsp", "word"):
+        for userinfo, ui in _GRID_USERINFOS:
+            for host in _GRID_HOSTS:
+                for path, ps in _GRID_PATHS:
+                    for tail, ts in _GRID_TAILS:
+                        token = f"{scheme}://{userinfo}{host}{path}{tail}"
+                        yield token, token, ui + ps + ts, "scheme://"
+    for userinfo, ui in _GRID_USERINFOS:
+        for host in _GRID_HOSTS:
+            if not host:
+                continue  # "///..." is a bare path, below
+            for path, ps in _GRID_PATHS:
+                for tail, ts in _GRID_TAILS:
+                    token = f"//{userinfo}{host}{path}{tail}"
+                    for name, wrapper in _GRID_WRAPPERS:
+                        yield wrapper.format(token), token, ui + ps + ts, f"//host, {name}"
+    for path, ps in _GRID_PATHS:
+        for lead in ("", "/"):
+            if not path:
+                continue
+            for tail, ts in _GRID_TAILS:
+                token = f"{lead}{path}{tail}"
+                for name, wrapper in _GRID_WRAPPERS:
+                    yield wrapper.format(token), token, ps + ts, f"/path, {name}"
 
 
 class NeverLessThanRedactUrlTests(SimpleTestCase):
-    """Review round 5: redact_text never leaves a credential redact_url masks.
+    """redact_text never leaves a credential that redact_url masks in the same token.
 
-    The oracle is ``redact_url`` from the project package, on the same token, which
-    this PR does not change. Every extra reading in this module may only add
-    masks to it, never trade one of its masks for another.
+    The oracle is ``redact_url`` from the project package, applied to the
+    token alone, which this PR does not change. The grid covers every form
+    redact_text reads differently (``scheme://`` URLs, scheme-less ``//host``
+    tokens, bare ``/path`` tokens with a query or fragment), each also inside a
+    request line, after a key and in message text. Every extra reading in
+    this module may only add masks to redact_url's, never trade one away.
     """
 
     QUOTED = (
@@ -919,22 +972,72 @@ class NeverLessThanRedactUrlTests(SimpleTestCase):
         f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}",
         f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}",
         f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}",
+        # review round 6, D and E, verbatim
+        f"/%6cive/a/b/c%3Fd?password={Q_PASS}",
+        f"/%6dovie/a/b/c%23d?username={Q_USER}&password={Q_PASS}",
+        f"/get.php%3Fx/%6cive/a/b/c?username={Q_USER}&password={Q_PASS}",
+        f"//{Q_USER}:{Q_PASS}@h/x",
+        f"//{Q_USER}:{Q_PASS}@cdn.example/app.js",
+        f"//{Q_USER}:{Q_PASS}@h/live/a/b/1.ts",
+        f"url=//{Q_USER}:{Q_PASS}@h/a/b",
     )
 
+    # The oracle must keep masking, or the invariant would hold vacuously:
+    # the share of the grid's sentinels redact_url itself masks (0.870, 85,532
+    # of 98,348, when this was written).
+    MIN_ORACLE_MASKED = 0.80
+
+    # The one class where the two readings genuinely differ: a scheme-less
+    # "//<host>/<user>/<pass>/<id>" token, which redact_url reads as a host and
+    # a bare-root path, and the server (round 1) as a path whose first segment
+    # is not a host. It has no exception: both readings' masks are kept, so
+    # its count of survivors is asserted to be zero, by name, before the rest.
+    AMBIGUOUS_HOST_PATH_SURVIVORS = 0
+
+    def _cases(self):
+        cases = list(_token_grid())
+        for text in self.QUOTED:
+            token = text.split("=", 1)[1] if text.startswith("url=") else text
+            cases.append((text, token, (Q_USER, Q_PASS), "quoted"))
+        return cases
+
     def test_no_credential_redact_url_masks_survives(self):
-        cases = list(_url_grid()) + [(url, (Q_USER, Q_PASS)) for url in self.QUOTED]
-        self.assertGreater(len(cases), 2000)
+        cases = self._cases()
+        forms = {form.split(",")[0] for _, _, _, form in cases}
+        self.assertEqual(forms, {"scheme://", "//host", "/path", "quoted"})
+        self.assertGreater(len(cases), 20000)
         survivors = []
-        for url, sentinels in cases:
-            baseline = redact_url(url)
-            out = redact_text(url)
+        sentinels_total = sentinels_masked = 0
+        for text, token, sentinels, form in cases:
+            baseline = redact_url(token)
+            out = redact_text(text)
             for sentinel in sentinels:
-                if sentinel not in baseline and sentinel in out:
-                    survivors.append(f"{sentinel} in {out!r} (redact_url: {baseline!r})")
+                sentinels_total += 1
+                if sentinel not in baseline:
+                    sentinels_masked += 1
+                    if sentinel in out:
+                        survivors.append(f"[{form}] {sentinel} in {out!r} (redact_url: {baseline!r})")
+        self.assertGreaterEqual(
+            sentinels_masked / sentinels_total, self.MIN_ORACLE_MASKED,
+            f"the oracle masked only {sentinels_masked} of {sentinels_total} sentinels",
+        )
+        ambiguous = [
+            line for line in survivors
+            if line.startswith("[//host") and line[line.index("] ") + 2:].startswith("s-p-")
+        ]
+        self.assertEqual(
+            len(ambiguous), self.AMBIGUOUS_HOST_PATH_SURVIVORS,
+            f"//<host>/<user>/<pass>/<id> class: {ambiguous[:3]}",
+        )
+        by_class = {}
+        for line in survivors:
+            form = line[1:line.index("]")].split(",")[0]
+            kind = line[line.index("] ") + 2:].split(" ")[0]
+            by_class.setdefault(f"{form} {kind}", []).append(line)
         self.assertFalse(
             survivors,
-            f"{len(survivors)} credential(s) of {len(cases)} inputs survive that redact_url masks; "
-            f"first: {survivors[:5]}",
+            f"{len(survivors)} credential(s) of {len(cases)} inputs survive that redact_url masks; by class: "
+            + "; ".join(f"{key}: {len(lines)}, e.g. {lines[0]}" for key, lines in sorted(by_class.items())),
         )
 
 
