@@ -1,6 +1,6 @@
 # Central log scrubber for provider-supplied text
 
-- **Status:** draft for internal review, round 4 (§ 14 lists what changed after rounds 1–3).
+- **Status:** draft for internal review, round 5 (§ 14 lists what changed after rounds 1–4).
 - **Seed SHA:** `1302b665` (`origin/main`, after #642). Every `file:line` below was read at that SHA; line numbers drift.
 - **Authority:** the owner's ruling **R15** (2026-11-12): handle provider-supplied text in log lines with a **central log scrubber**, not by editing each call site to log IDs only. CLAUDE.md (§ Architecture, § Known defects and traps → Security, § Test hooks), the observability spec `docs/superpowers/specs/2026-10-31-observability-design.md` (D8, D9, ruling R-Q17), and the two merged leak fixes it follows: #636 (`0c142c15`, M3U profile search/replace patterns) and #642 (`1302b665`, URLs, record dumps, headers and exception text on the M3U refresh path).
 - **Execution:** implement this spec PR by PR with subagents, per CLAUDE.md § Delegation for phase work (`implement-review-escalate`, `pr-merge-gate`). Security-adjacent: reviews run on `fable` from round one.
@@ -204,11 +204,11 @@ This is the whole rule. It masks every `redact_url` carrier in any token, includ
 | `Not Found: /api/channels/5/` (Django's `django.request` logger) | `Not Found: /***` | the root shape; `redact_url` already masks two segments of it |
 | `https://h.invalid/api/v1/2` | `https://h.invalid/***` | the root shape in a URL path |
 | `/srv/live/cache/config.json`, `C:/live/cache/config.json` | `/srv/live/***`, `C:/live/***` | the prefix rule with no URL context; `redact_url` masks these too |
-| prose such as `movie/series counts` | `movie/***` | the prefix rule after a non-alphanumeric boundary |
-| `csrf_token=abc`, `next_token=…` | `csrf_token=***` | the key rule matches by containment |
+| prose such as `movie/series counts` | `movie/*** counts` | the prefix rule after a non-alphanumeric boundary |
+| `csrf_token=abc`, `next_token=…` | `csrf_token=***`, `next_token=***` | the key rule matches by containment |
 | `'password=x',`, `(/live/u/p)` | `'password=***`, `(/live/***` | closing punctuation after a mask is absorbed, never restored |
 
-**Observability's byte-identity promise.** The observability spec promised `MINO_LOG_FORMAT=text` byte-identical (D8). That still holds for every line the rule does not match. Lines it matches change; the first row of the table above is the visible case. Q1 asks the owner to confirm the trade.
+**Observability's byte-identity promise.** The observability spec promised `MINO_LOG_FORMAT=text` byte-identical (D8). That still holds for every line within the applicable cap (§ 4.4) that the rule does not match. Lines it matches change; the first row of the table above is the visible case. Q1 asks the owner to confirm the trade.
 
 ### 4.4 Bounds (D4)
 
@@ -991,4 +991,26 @@ I hand-walked every named wrong edit to the assertion it must redden. Four were 
 - **T4 (b) and (c).** The expected failure now names the sentinel being present, not a generic falsifying example.
 
 The other break-checks walk to their stated failures as written: T1, T3 (a) and (b), T6 (a), (b) and (c), T7 (a) and (b), T8 (a) and (b), T10 (a) and (b), T11, T12, and § 9.2's `apps/m3u/tasks.py:1592` check.
+
+### Round 4 → round 5 (review pinned at `83a65e0e`)
+
+| # | Finding | Severity | Disposition |
+|---|---|---|---|
+| 1 | § 4.3's over-mask table gives `movie/series counts` → `movie/***`, but the rule gives `movie/*** counts` (`counts` is a separate token) | should-fix | **Fixed.** The expected output is corrected. The rule is untouched. |
+| 2 | The byte-identity paragraph after that table lacks "within the applicable cap" | nit | **Fixed.** |
+
+**Hand-walk of every exact-output row.** I ran every input through the scratch prototype that Appendix B prints (`scrub5.py`), using only fake values, and compared the result with the spec's stated output:
+
+- § 3.3, all twelve rows: every input listed, the unchanged rows included.
+- § 4.3's over-mask table, all eight rows: both inputs where a row names two.
+- § 12's fixed examples, all eighteen.
+- T4's fixed cases: the three exact-output cases, `http://[<s>`, the nested-URL cases in a query, a fragment and a bare assignment, `x=token=<s>`, `pass%77ord=<s>`, `//u:<s>@h/x` and `http://h//u/<s>/1.ts`.
+- T5's benign same-object list.
+- The `"username=x " * 1489` and `"word " * 300000` lengths in § 4.4, T6 and § 12.
+
+Two rows changed:
+- the `movie/series counts` row (finding 1);
+- `csrf_token=abc`, `next_token=…`, whose output column showed only the first input's result. It now reads `csrf_token=***`, `next_token=***`.
+
+Every other row matched as written. That includes the same-object marks: `http://127.0.0.1:5658`, `/api/channels/streams/`, `page 1/2/3/4`, `2026/11/12`, and the residual rows of § 3.3. The changelog rows of rounds 1–3 describe earlier designs and were not re-walked.
 
