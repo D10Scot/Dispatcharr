@@ -91,24 +91,17 @@ export function uniqueToken(): string {
   return randomBytes(5).toString('hex');
 }
 
-/** The fake OP's two issuers: the Entra-shaped one, and one that advertises RFC 9207 `iss`. */
-export type OpIssuerPath = '/oidc' | '/oidc/rfc9207';
-
 /**
  * Seed an enabled generic provider in Mino pointed at the fake OP, and register its
  * redirect URI with the OP. One per test: the OP's queue and log are per client.
  */
-export async function createSsoProvider(
-  api: ApiClient,
-  label: string,
-  options: { issuerPath?: OpIssuerPath } = {}
-): Promise<SsoProvider> {
+export async function createSsoProvider(api: ApiClient, label: string): Promise<SsoProvider> {
   const token = uniqueToken();
   const slug = `e2e-${label}-${token}`;
   const displayName = `E2E ${label} ${token}`;
   const clientId = `mino-e2e-${token}`;
   const clientSecret = randomBytes(24).toString('base64url');
-  const issuer = `${UPSTREAM_INTERNAL_BASE.replace(/\/+$/, '')}${options.issuerPath ?? '/oidc'}`;
+  const issuer = `${UPSTREAM_INTERNAL_BASE.replace(/\/+$/, '')}/oidc`;
 
   const created = await api.json<{ id: number; slug: string; redirect_uri: string | null }>(
     await api.post('/api/accounts/oidc/providers-admin/', {
@@ -177,7 +170,15 @@ export async function signInThroughSso(page: Page, provider: SsoProvider): Promi
   await page.goto('/login');
   const button = page.getByTestId(ssoLoginButton(provider.slug));
   await expect(button, `the login page offers ${provider.displayName}`).toBeVisible();
+  const started = page.waitForResponse((r) => /^\/api\/accounts\/oidc\/[^/]+\/start\/$/.test(new URL(r.url()).pathname));
   await button.click();
+  // A throttled start shows raw JSON and would otherwise surface as an opaque URL timeout.
+  const start = await started;
+  expect(
+    start.status(),
+    `GET ${new URL(start.url()).pathname} answered 429: Mino's oidc throttle, 20 a minute per client IP ` +
+      'over start, link/start, callback and exchange (e2e/README.md, "The sso project")'
+  ).not.toBe(429);
 }
 
 /** A user row as `GET /api/accounts/users/` returns it, the fields these specs read. */

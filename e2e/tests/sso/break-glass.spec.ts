@@ -18,6 +18,9 @@
  * Password-request budget: exactly two `POST /api/accounts/token/`, the refused probe
  * and the recovered login. The refused probe is a raw request, never retried, so a retry
  * can never turn a real 200 into a pass.
+ *
+ * SSO request budget: 3 of the `oidc` throttle's 20 a minute per client IP (start, callback and exchange).
+ * The project spends 8 a run; see e2e/README.md, "The sso project".
  */
 import { test, expect } from './fixtures';
 import { ADMIN } from '../../setup/credentials';

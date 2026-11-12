@@ -10,6 +10,9 @@
  * Plays over HLS in the floating player, which decodes H.264 and AAC through MSE: like
  * `tests/frontend/player-hls.spec.ts`, it cannot run in Playwright's linux/arm64
  * Chromium.
+ *
+ * SSO request budget: 3 of the `oidc` throttle's 20 a minute per client IP (start, callback and exchange).
+ * The project spends 8 a run; see e2e/README.md, "The sso project".
  */
 import type { Page } from '@playwright/test';
 import { test, expect } from './fixtures';

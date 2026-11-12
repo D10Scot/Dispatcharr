@@ -129,7 +129,7 @@ it is recreated (`--down`/`--recreate`).
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-restore` | Takes a backup, mutates the database, restores it. **Runs alone** and resets its container: `restore_backup` drops and rebuilds the `public` schema, replacing every row under anything else sharing the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-scheduling` | Non-zero `refresh_interval` and `cron_expression`, and the django-celery-beat rows behind them. **Runs alone** and resets its container: a non-zero interval leaves an *enabled* hourly beat task re-refreshing that account for the life of the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
-| `sso` | Sign-in through a fake OpenID provider (in `e2e-upstream`), the refusal of each ID-token fault it can inject, the password-login toggle and its break-glass recovery. **Only against a scoped stack of its own** — every spec's first act is `assertScopedStack()`, which refuses the shared container. Its own bootstrap, `sso-setup`, writes `playwright/.auth/sso-tokens.json` and never touches `tokens.json`. One worker, no retries, 180s. See "The sso project" below |
+| `sso` | Sign-in through a fake OpenID provider (in `e2e-upstream`), the password-login toggle and its break-glass recovery. **Only against a scoped stack of its own** — every spec's first act is `assertScopedStack()`, which refuses the shared container. Its own bootstrap, `sso-setup`, writes `playwright/.auth/sso-tokens.json` and never touches `tokens.json`. One worker, no retries, 180s. See "The sso project" below |
 
 `frontend` depends on two rules that are not obvious from the config alone:
 
@@ -308,13 +308,15 @@ its shape, and both projects' `retries: 0`); the recovered login waits out one
 throttle window at most. Two runs inside a minute can therefore exceed the
 3/minute budget; the probe fails naming it rather than retrying.
 
-**ID-token faults.** `id-token-faults.spec.ts` has one case per fault the fake OP
-can inject. The six ID-token faults (wrong `iss`, wrong `aud`, bad nonce,
-expired, `alg=none`, unknown `kid`) must land on `/login?sso_error=id_token_invalid`
-and `missing-iss-param` (against the OP's `/oidc/rfc9207` issuer) on
-`sso_error=issuer_mismatch`. Each case must also create no user, although its claims map to
-Admin. A control case signs in through the RFC 9207 issuer honestly. None sends a
-password.
+**SSO request budget: 8 of 20 a run.** Mino's `oidc` throttle allows 20 requests
+a minute per client IP across `start`, `link/start`, `callback` and `exchange`
+(`OIDCRateThrottle`, the `oidc` entry in the settings' throttle rates). A sign-in that succeeds spends 3
+(start, callback, exchange); one Mino refuses on the callback spends 2. The three
+specs spend 8: `sign-in` 3, `unmapped` 2, `break-glass` 3. That ceiling, not the
+password budget, is what a new browser sign-in spec runs into: past 20 in a
+minute, `start` answers 429 with raw JSON, and `signInThroughSso` fails naming
+the throttle. A spec that would take the run past 20 has to wait out the window
+itself or run on a stack of its own.
 
 **Break-glass.** `break-glass.spec.ts` is the only `sso` spec that takes the
 `instance` fixture (allowlisted in `tests/guards/allowlist.ts`): it runs

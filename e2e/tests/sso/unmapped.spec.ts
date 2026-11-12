@@ -4,6 +4,9 @@
  * The OP authenticates the person; Mino refuses to provision them, because nothing maps
  * them to a level. The browser lands on the login page with the fixed `no_mapping` code
  * and no user is created.
+ *
+ * SSO request budget: 2 of the `oidc` throttle's 20 a minute per client IP (start and callback; Mino refuses on the callback, so there is no exchange).
+ * The project spends 8 a run; see e2e/README.md, "The sso project".
  */
 import { test, expect } from './fixtures';
 import { listRows } from '../../setup/http';
