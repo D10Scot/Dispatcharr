@@ -1,8 +1,56 @@
 {
  "detail": null,
- "fetched_at": "2026-11-11T13:37:28+00:00",
+ "fetched_at": "2026-11-12T14:41:08+00:00",
  "kind": "codeql_alerts",
  "records": [
+  {
+   "created_at": "2026-11-12T14:21:05Z",
+   "dismissed_at": null,
+   "dismissed_reason": null,
+   "fixed_at": null,
+   "id": 278,
+   "path": "apps/accounts/oidc/flow.py",
+   "rule_id": "py/cookie-injection",
+   "severity": "medium",
+   "state": "open",
+   "tool": "CodeQL"
+  },
+  {
+   "created_at": "2026-11-12T14:21:05Z",
+   "dismissed_at": null,
+   "dismissed_reason": null,
+   "fixed_at": null,
+   "id": 277,
+   "path": "apps/accounts/oidc/flow.py",
+   "rule_id": "py/cookie-injection",
+   "severity": "medium",
+   "state": "open",
+   "tool": "CodeQL"
+  },
+  {
+   "created_at": "2026-11-12T04:00:48Z",
+   "dismissed_at": null,
+   "dismissed_reason": null,
+   "fixed_at": null,
+   "id": 276,
+   "path": "relay/channel/failover.go",
+   "rule_id": "go/clear-text-logging",
+   "severity": "high",
+   "state": "open",
+   "tool": "CodeQL"
+  },
+  {
+   "created_at": "2026-11-12T04:00:48Z",
+   "dismissed_at": null,
+   "dismissed_reason": null,
+   "fixed_at": null,
+   "id": 275,
+   "path": "relay/channel/failover.go",
+   "rule_id": "go/clear-text-logging",
+   "severity": "high",
+   "state": "open",
+   "tool": "CodeQL"
+  },
   {
    "created_at": "2026-09-29T21:52:01Z",
    "dismissed_at": null,
@@ -1171,24 +1219,24 @@
    "created_at": "2026-09-16T01:27:17Z",
    "dismissed_at": null,
    "dismissed_reason": null,
-   "fixed_at": null,
+   "fixed_at": "2026-11-12T04:00:48Z",
    "id": 177,
    "path": "relay/channel/failover.go",
    "rule_id": "go/clear-text-logging",
    "severity": "high",
-   "state": "open",
+   "state": "fixed",
    "tool": "CodeQL"
   },
   {
    "created_at": "2026-09-16T01:27:17Z",
    "dismissed_at": null,
    "dismissed_reason": null,
-   "fixed_at": null,
+   "fixed_at": "2026-11-12T04:00:48Z",
    "id": 176,
    "path": "relay/channel/failover.go",
    "rule_id": "go/clear-text-logging",
    "severity": "high",
-   "state": "open",
+   "state": "fixed",
    "tool": "CodeQL"
   },
   {

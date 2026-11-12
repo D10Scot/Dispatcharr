@@ -1,8 +1,170 @@
 {
  "detail": null,
- "fetched_at": "2026-11-11T13:39:59+00:00",
+ "fetched_at": "2026-11-12T14:44:34+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-11-12T14:36:06Z",
+   "id": 659,
+   "label_events": [
+    {
+     "at": "2026-11-12T14:36:07Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Failed jobs: Pull request review",
+   "updated_at": "2026-11-12T14:36:06Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-12T04:50:04Z",
+   "id": 650,
+   "label_events": [
+    {
+     "at": "2026-11-12T04:50:05Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "apps.m3u: SlotScriptFakeParityProperties flaked once in CI (step 0 release reads '1' from Lua)",
+   "updated_at": "2026-11-12T04:50:04Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-12T03:48:43Z",
+   "id": 648,
+   "label_events": [
+    {
+     "at": "2026-11-12T03:48:44Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "relay/httpapi: TestAnAutomaticSessionTakesItsPipelinesTargetDuration flakes off-by-one (clock vs sweeper tick)",
+   "updated_at": "2026-11-12T03:48:43Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-11T22:05:44Z",
+   "id": 645,
+   "label_events": [
+    {
+     "at": "2026-11-11T22:05:46Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "E2E jobs fail when the Playwright report upload fails, though the tests passed",
+   "updated_at": "2026-11-11T22:05:44Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-11T20:49:07Z",
+   "id": 643,
+   "label_events": [
+    {
+     "at": "2026-11-11T20:49:08Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "golangci-lint v2.15.0 reports errcheck at relay/httpapi/drain_test.go:123",
+   "updated_at": "2026-11-11T20:49:07Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-11T19:52:17Z",
+   "id": 641,
+   "label_events": [
+    {
+     "at": "2026-11-11T19:52:19Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Go dependency gate: replace directives and name-only driver ban",
+   "updated_at": "2026-11-11T19:52:17Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-11T16:56:29Z",
+   "id": 634,
+   "label_events": [
+    {
+     "at": "2026-11-11T16:56:31Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "Flake: pr-review agent job fails installing ripgrep when runner DNS fails",
+   "updated_at": "2026-11-11T16:56:29Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-11T16:55:46Z",
+   "id": 633,
+   "label_events": [
+    {
+     "at": "2026-11-11T16:55:48Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Pull request review failed",
+   "updated_at": "2026-11-11T20:08:54Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-11T16:44:00Z",
+   "id": 632,
+   "label_events": [
+    {
+     "at": "2026-11-11T16:44:01Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "DVR Celery worker (threads pool) never runs worker_process_init, so plugins are never discovered there",
+   "updated_at": "2026-11-11T16:44:00Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-11-09T20:14:20Z",
