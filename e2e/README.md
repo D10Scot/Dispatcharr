@@ -129,7 +129,7 @@ it is recreated (`--down`/`--recreate`).
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-restore` | Takes a backup, mutates the database, restores it. **Runs alone** and resets its container: `restore_backup` drops and rebuilds the `public` schema, replacing every row under anything else sharing the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-scheduling` | Non-zero `refresh_interval` and `cron_expression`, and the django-celery-beat rows behind them. **Runs alone** and resets its container: a non-zero interval leaves an *enabled* hourly beat task re-refreshing that account for the life of the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
-| `sso` | Sign-in through a fake OpenID provider (in `e2e-upstream`), the password-login toggle and its break-glass recovery. **Only against a scoped stack of its own** — every spec's first act is `assertScopedStack()`, which refuses the shared container. Its own bootstrap, `sso-setup`, writes `playwright/.auth/sso-tokens.json` and never touches `tokens.json`. One worker, no retries, 180s. See "The sso project" below |
+| `sso` | Sign-in through a fake OpenID provider (in `e2e-upstream`), the refusal of each ID-token fault it can inject, the password-login toggle and its break-glass recovery. **Only against a scoped stack of its own** — every spec's first act is `assertScopedStack()`, which refuses the shared container. Its own bootstrap, `sso-setup`, writes `playwright/.auth/sso-tokens.json` and never touches `tokens.json`. One worker, no retries, 180s. See "The sso project" below |
 
 `frontend` depends on two rules that are not obvious from the config alone:
 
@@ -269,7 +269,11 @@ instance-wide, and the shared container must never see it. `tests/sso/scope.ts`'
 `assertScopedStack()` runs first in `sso-setup` and in a `beforeAll` of every
 spec, and refuses unless `DISPATCHARR_E2E_CONTAINER`, `_VOLUME`, `_NETWORK` and
 `_PORT` are all set, the container and port are not the shared defaults, and
-`E2E_BASE_URL` is set explicitly to a loopback origin on that port. The app
+`E2E_BASE_URL` is set explicitly to a loopback origin on that port.
+`tests/guards/sso-structure.spec.ts` fails, naming the file, unless that call is
+the first statement of the setup test and of a `test.beforeAll` that is the first
+`test` call in every file under `tests/sso/` the two projects load, so a new spec
+cannot forget it. The app
 container also needs `MINO_OIDC_ALLOW_HTTP=1`, because the fake OP's issuer is
 plain http on the Docker network: `scripts/e2e_up.sh` passes it only when
 `E2E_OIDC_ALLOW_HTTP=1` is exported, so no other stack gets it. A container
@@ -283,7 +287,7 @@ export DISPATCHARR_E2E_CONTAINER=mino-e2e-sso \
        E2E_BASE_URL=http://localhost:39291 \
        E2E_OIDC_ALLOW_HTTP=1
 ./scripts/e2e_up.sh
-cd e2e && npx playwright test --project=sso
+cd e2e && npm run test:sso
 ```
 
 A worktree that changes `e2e-upstream/` adds a private provider as in "Running a
@@ -299,9 +303,18 @@ pair; nothing in the project reads `tokens.json` or `principals.json`.
 
 **Password-request budget: at most 3 a run.** One in `sso-setup` on a cold run
 (none on a warm one), and the break-glass spec's two probes. The password-off
-probe is a raw, never-retried request; the recovered login waits out one
+probe is a raw, never-retried request (`tests/guards/sso-structure.spec.ts` holds
+its shape, and both projects' `retries: 0`); the recovered login waits out one
 throttle window at most. Two runs inside a minute can therefore exceed the
 3/minute budget; the probe fails naming it rather than retrying.
+
+**ID-token faults.** `id-token-faults.spec.ts` has one case per fault the fake OP
+can inject. The six ID-token faults (wrong `iss`, wrong `aud`, bad nonce,
+expired, `alg=none`, unknown `kid`) must land on `/login?sso_error=id_token_invalid`
+and `missing-iss-param` (against the OP's `/oidc/rfc9207` issuer) on
+`sso_error=issuer_mismatch`. Each case must also create no user, although its claims map to
+Admin. A control case signs in through the RFC 9207 issuer honestly. None sends a
+password.
 
 **Break-glass.** `break-glass.spec.ts` is the only `sso` spec that takes the
 `instance` fixture (allowlisted in `tests/guards/allowlist.ts`): it runs

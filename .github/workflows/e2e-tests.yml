@@ -249,36 +249,6 @@ jobs:
       - name: Load the image
         run: docker load < /tmp/dispatcharr-e2e.tar.gz
 
-      # The same script developers run, not a second copy of its boot path.
-      # This step used to duplicate scripts/e2e_up.sh's `docker run` and
-      # readiness loop almost verbatim — same image, volume, env and port
-      # binding — and the two had already drifted, which is the argument for
-      # calling it: a change to how the container boots can no longer be made
-      # in one place and forgotten in the other.
-      #
-      # The AIO image does not rebuild here: the script's `docker image
-      # inspect` short-circuit sees the image loaded above, under the tag it
-      # defaults to. Its defaults are exactly what this job used — container
-      # dispatcharr-e2e, volume dispatcharr-e2e-data, image
-      # dispatcharr-e2e:local, port 9191 — so nothing needs overriding.
-      #
-      # The provider image is different: scripts/e2e_up.sh rebuilds it
-      # unconditionally by default, which here would silently discard the
-      # artifact `build` already produced and loaded above — one build
-      # feeding every consumer is the same guarantee the AIO image gets from
-      # being build-if-absent, and ffmpeg being deliberately unpinned means a
-      # second build here is not guaranteed to carry the same asset.
-      # DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD below opts the script out of that
-      # rebuild so the loaded artifact is what actually runs.
-      #
-      # Each project gets its own container. pristine in particular needs an
-      # instance with no superuser, which the bootstrap project consumes.
-      #
-      # Published on 127.0.0.1 only, which the script enforces: once bootstrap
-      # has run, this container holds a superuser whose password is committed
-      # to this repository. Every consumer — the script's readiness curl and
-      # Playwright's E2E_BASE_URL — runs on this same runner, and
-      # ubuntu-latest resolves `localhost` to 127.0.0.1.
       # The `sso` project runs only against a scoped stack of its own (SSO
       # spec PR S5; e2e/tests/sso/scope.ts refuses anything else), because
       # turning password login off is instance-wide. Exported through
@@ -299,6 +269,37 @@ jobs:
             echo "E2E_OIDC_ALLOW_HTTP=1"
           } >> "$GITHUB_ENV"
 
+      # The same script developers run, not a second copy of its boot path.
+      # This step used to duplicate scripts/e2e_up.sh's `docker run` and
+      # readiness loop almost verbatim — same image, volume, env and port
+      # binding — and the two had already drifted, which is the argument for
+      # calling it: a change to how the container boots can no longer be made
+      # in one place and forgotten in the other.
+      #
+      # The AIO image does not rebuild here: the script's `docker image
+      # inspect` short-circuit sees the image loaded above, under the tag it
+      # defaults to. Its defaults are exactly what this job used — container
+      # dispatcharr-e2e, volume dispatcharr-e2e-data, image
+      # dispatcharr-e2e:local, port 9191 — so nothing needs overriding, except
+      # for the sso project, whose own stack the step above scopes.
+      #
+      # The provider image is different: scripts/e2e_up.sh rebuilds it
+      # unconditionally by default, which here would silently discard the
+      # artifact `build` already produced and loaded above — one build
+      # feeding every consumer is the same guarantee the AIO image gets from
+      # being build-if-absent, and ffmpeg being deliberately unpinned means a
+      # second build here is not guaranteed to carry the same asset.
+      # DISPATCHARR_E2E_SKIP_UPSTREAM_BUILD below opts the script out of that
+      # rebuild so the loaded artifact is what actually runs.
+      #
+      # Each project gets its own container. pristine in particular needs an
+      # instance with no superuser, which the bootstrap project consumes.
+      #
+      # Published on 127.0.0.1 only, which the script enforces: once bootstrap
+      # has run, this container holds a superuser whose password is committed
+      # to this repository. Every consumer — the script's readiness curl and
+      # Playwright's E2E_BASE_URL — runs on this same runner, and
+      # ubuntu-latest resolves `localhost` to 127.0.0.1.
       - name: Run the container and wait for it to be ready
         env:
           # 120 polls at 5s = 600s, the budget this job's hand-rolled loop had

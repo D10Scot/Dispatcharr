@@ -91,17 +91,24 @@ export function uniqueToken(): string {
   return randomBytes(5).toString('hex');
 }
 
+/** The fake OP's two issuers: the Entra-shaped one, and one that advertises RFC 9207 `iss`. */
+export type OpIssuerPath = '/oidc' | '/oidc/rfc9207';
+
 /**
  * Seed an enabled generic provider in Mino pointed at the fake OP, and register its
  * redirect URI with the OP. One per test: the OP's queue and log are per client.
  */
-export async function createSsoProvider(api: ApiClient, label: string): Promise<SsoProvider> {
+export async function createSsoProvider(
+  api: ApiClient,
+  label: string,
+  options: { issuerPath?: OpIssuerPath } = {}
+): Promise<SsoProvider> {
   const token = uniqueToken();
   const slug = `e2e-${label}-${token}`;
   const displayName = `E2E ${label} ${token}`;
   const clientId = `mino-e2e-${token}`;
   const clientSecret = randomBytes(24).toString('base64url');
-  const issuer = `${UPSTREAM_INTERNAL_BASE.replace(/\/+$/, '')}/oidc`;
+  const issuer = `${UPSTREAM_INTERNAL_BASE.replace(/\/+$/, '')}${options.issuerPath ?? '/oidc'}`;
 
   const created = await api.json<{ id: number; slug: string; redirect_uri: string | null }>(
     await api.post('/api/accounts/oidc/providers-admin/', {

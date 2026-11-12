@@ -49,8 +49,12 @@ setup('create the scoped stack admin and persist its pair', async ({ request, ba
     throw new Error(
       'Password login is off on this stack, so a previous sso run died mid-test (the ' +
         'break-glass spec leaves it on when it finishes). Recreate the stack with the same ' +
-        'scoped variables exported (DISPATCHARR_E2E_CONTAINER, _VOLUME, _NETWORK, _PORT, ' +
-        'E2E_BASE_URL and E2E_OIDC_ALLOW_HTTP=1): scripts/e2e_up.sh --reset'
+        'variables exported that it was started with: the scoped stack ' +
+        '(DISPATCHARR_E2E_CONTAINER, _VOLUME, _NETWORK, _PORT, _IMAGE, E2E_BASE_URL and ' +
+        'E2E_OIDC_ALLOW_HTTP=1) and, for a private provider, its upstream variables ' +
+        '(_UPSTREAM_CONTAINER, _UPSTREAM_PORT, _UPSTREAM_IMAGE, E2E_UPSTREAM_CONTROL_URL and ' +
+        'E2E_UPSTREAM_INTERNAL_URL), or --reset acts on the default provider name, e2e-upstream: ' +
+        'scripts/e2e_up.sh --reset'
     );
   }
 
