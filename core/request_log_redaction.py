@@ -75,8 +75,10 @@ _TOKEN_PUNCTUATION = "'\"<>()[]{},;"
 _TOKEN_RE = re.compile(r"\S+")
 # Sentence punctuation stripped from the end of a token only.
 _TRAILING_PUNCTUATION = ".:"
-# ``path=/user/pass/1.ts``: a key and ``=`` in front of a path.
-_KEY_PREFIX_RE = re.compile(r"[A-Za-z_][\w.-]*=(?=/)")
+# ``path=/user/pass/1.ts``, ``"path":"/user/pass/1.ts"``, ``url=http://h/...``:
+# a key, an optional quote, ``=`` or ``:``, an optional quote, then a path or
+# a URL.
+_KEY_PREFIX_RE = re.compile(r"""[A-Za-z_][\w.-]*["']?[=:]["']?(?=/|[A-Za-z][A-Za-z0-9+.-]*://)""")
 _QUERY_OR_FRAGMENT_RE = re.compile(r"[?#]")
 
 # A credential shorter than this is not scrubbed by value: replacing every
@@ -135,10 +137,16 @@ def _redact_core(core):
     end = _QUERY_OR_FRAGMENT_RE.search(core)
     head, rest = (core[:end.start()], core[end.start():]) if end else (core, "")
     head = _mask_path(head)
+    redact_query = _utils()._redact_query
     if rest.startswith("?"):
         query, hash_, fragment = rest[1:].partition("#")
-        rest = "?" + _utils()._redact_query(query) + hash_ + fragment
-    return prefix + head + rest
+        rest = "?" + redact_query(query)
+    else:
+        hash_, fragment, rest = rest[:1], rest[1:], ""
+    # As redact_url does: a fragment shaped like a query string is masked too.
+    if "=" in fragment:
+        fragment = redact_query(fragment)
+    return prefix + head + rest + hash_ + fragment
 
 
 def _redact_token(match):

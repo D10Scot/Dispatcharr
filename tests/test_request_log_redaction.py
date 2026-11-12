@@ -605,19 +605,54 @@ class RoundOneTests(SimpleTestCase):
         self.assertNotIn(Q_USER, out.stack_info)
         self.assertEqual(record.stack_info, f"Stack at /movie/{Q_USER}/{Q_PASS}/1.mp4")
 
-    def test_a_long_hostile_input_is_linear(self):
-        hostile = (
-            "/" * 200_000,
-            "/movie/" + "a/" * 100_000,
-            "%" * 200_000,
-            "/" + "%2F" * 70_000,
-            "&password=x" * 20_000,
-            "a " * 100_000,
+    def test_a_query_shaped_fragment_is_masked(self):
+        for text in (
+            f"GET /player_api.php#password={Q_PASS} HTTP/1.1",
+            f"GET /x?a=1#username={Q_USER}&password={Q_PASS} HTTP/1.1",
+            f"GET //x#password={Q_PASS} HTTP/1.1",
+        ):
+            with self.subTest(text=text):
+                out = redact_text(text)
+                self.assertNotIn(Q_PASS, out)
+                self.assertNotIn(Q_USER, out)
+        self.assertEqual(redact_text("GET /x?a=1#section HTTP/1.1"), "GET /x?a=1#section HTTP/1.1")
+
+    def test_a_bare_root_path_after_a_quoted_key_or_inside_a_url_value(self):
+        for text in (
+            f'{{"path":"/{Q_USER}/{Q_PASS}/1.ts"}}',
+            f'path="/{Q_USER}/{Q_PASS}/1.ts"',
+            f"url=http://h/{Q_USER}/{Q_PASS}/1.ts",
+        ):
+            with self.subTest(text=text):
+                self._assert_masked(text)
+
+    def test_cost_grows_linearly_on_hostile_input(self):
+        shapes = (
+            lambda n: "/" * n,
+            lambda n: "/movie/" + "a/" * (n // 2),
+            lambda n: "%" * n,
+            lambda n: "/" + "%2F" * (n // 3),
+            lambda n: "&password=x" * (n // 11),
+            lambda n: "a " * (n // 2),
+            lambda n: "k" * n + "=/",
+            lambda n: "/?" + "#=" * (n // 2),
         )
-        started = time.monotonic()
-        for text in hostile:
-            redact_text(text)
-        self.assertLess(time.monotonic() - started, 10)
+
+        def best_of(text, runs=3):
+            best = float("inf")
+            for _ in range(runs):
+                started = time.perf_counter()
+                redact_text(text)
+                best = min(best, time.perf_counter() - started)
+            return best
+
+        for index, shape in enumerate(shapes):
+            with self.subTest(shape=index):
+                small = best_of(shape(20_000))
+                large = best_of(shape(200_000))
+                # 10x the input: linear is ~10x, quadratic ~100x. Allow 40x,
+                # with a floor so timer noise on a tiny small run cannot trip it.
+                self.assertLess(large, max(small, 0.002) * 40, f"{small:.4f}s -> {large:.4f}s")
 
 
 class PlacementTests(_SinkAssertions, SimpleTestCase):
