@@ -54,7 +54,7 @@ This module is imported while settings load, so it imports nothing from
 import copy
 import logging
 import re
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit, urlunsplit
 
 # Loggers whose records are redacted, matched as the name itself or a dotted
 # descendant. ``django.channels.server`` is the request line of the
@@ -136,6 +136,46 @@ def _mask_path(path):
     return path
 
 
+def _redact_absolute(core):
+    """A token that does not start with ``/``: ``redact_url``, plus two readings.
+
+    For a token with a URL scheme, two more readings are tried and the one
+    that masks the most is kept (``redact_url``'s own on a tie):
+
+    * its path through ``_mask_path``, which also tries the path decoded, as
+      the slash-leading branch does (``http://h/%6dovie/<user>/<pass>/1``);
+    * when the host cannot be a host, everything from ``//`` on as a path:
+      the host is an Xtream prefix (``error://live/<user>/<pass>/abc``, where
+      ``live`` was read as the host), or decodes to one or to text with a
+      ``/`` in it (``word://movie%2F<user>%2F<pass>%2F1``). Only then: masking
+      every ``//...`` as a path would mask the host of ``http://h/a/5``, and
+      ``path://<user>/<pass>/1.ts`` is spelled exactly like that URL, so it
+      stays as it is.
+    """
+    redacted = _redact_url(core)
+    try:
+        parts = urlsplit(core)
+    except ValueError:
+        return redacted
+    if not parts.scheme:
+        return redacted
+    mask = _utils().REDACTED
+    best = redacted
+    if "%" in parts.path:
+        decoded = _mask_path(parts.path)
+        if decoded != parts.path:
+            candidate = _redact_url(urlunsplit(parts._replace(path=decoded)))
+            if candidate.count(mask) > best.count(mask):
+                best = candidate
+    host = unquote(parts.netloc)
+    if parts.netloc and (host.lower() in _utils().XTREAM_PATH_PREFIXES or "/" in host):
+        cut = core.index("//")
+        candidate = core[:cut] + _redact_core(core[cut:])
+        if candidate.count(mask) > best.count(mask):
+            best = candidate
+    return best
+
+
 def _redact_core(core):
     """One token with its quoting stripped: a path, a ``key=path`` or a URL."""
     prefix = ""
@@ -143,7 +183,7 @@ def _redact_core(core):
     if keyed:
         prefix, core = core[:keyed.end()], core[keyed.end():]
     if not core.startswith("/"):
-        return prefix + _redact_url(core)
+        return prefix + _redact_absolute(core)
     end = _QUERY_OR_FRAGMENT_RE.search(core)
     head, rest = (core[:end.start()], core[end.start():]) if end else (core, "")
     head = _mask_path(head)

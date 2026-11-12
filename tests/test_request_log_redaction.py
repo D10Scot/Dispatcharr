@@ -645,6 +645,9 @@ class RoundOneTests(SimpleTestCase):
         # well clear of timer noise and the ratio below means something for
         # every shape (a fixed 20,000 characters ran in under 0.1 ms for some).
         floor_seconds = 0.005
+        # The loop stops at the first doubling at or above this, so the
+        # small run can reach 5,120,000 characters and the large one
+        # 51,200,000 (about 50 MB, briefly).
         max_small = 4_000_000
 
         def best_of(text, runs=3):
@@ -758,6 +761,25 @@ REDACT_TEXT_TABLE = (
     (f"rtsp://h/{Q_USER}/{Q_PASS}/1", "rtsp://h/***/***/1"),
     (f"ftp://{Q_USER}:{Q_PASS}@h/", "ftp://***@h/"),
     (f"rtmp://h/live/{Q_USER}/{Q_PASS}/1", "rtmp://h/live/***/***/1"),
+    # review round 4: an unquoted word, "://", then an Xtream prefix read as
+    # a host (masked at 1f7eb88e), and an absolute URL with an encoded path
+    (f"path://timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts", "path://timeshift/***/***/60/x/5.ts"),
+    (f"error://live/{Q_USER}/{Q_PASS}/abc", "error://live/***/***/abc"),
+    (f"Forbidden://live/{Q_USER}/{Q_PASS}/abc", "Forbidden://live/***/***/abc"),
+    (f"uri://movie/{Q_USER}/{Q_PASS}/1.mp4", "uri://movie/***/***/1.mp4"),
+    (f"http://h/%6dovie/{Q_USER}/{Q_PASS}/1.mp4", "http://h/movie/***/***/1.mp4"),
+    (f"http://h/movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4", "http://h/movie/***/***/1.mp4"),
+    # the same with the host percent-encoded (it decodes to a prefix or holds
+    # an encoded "/", so it cannot be a host), and with an empty host
+    (f"word://movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4", "word://movie/***/***/1.mp4"),
+    (f"word://%2F{Q_USER}%2F{Q_PASS}%2F1.ts", "word:///***/***/1.ts"),
+    (f"word:///%6dovie/{Q_USER}/{Q_PASS}/1.mp4", "word:/movie/***/***/1.mp4"),
+    # given up (round 4, class c): spelled exactly like http://h/a/5, a URL
+    # whose host is the first segment; masked at 1f7eb88e only
+    (f"path://{Q_USER}/{Q_PASS}/1.ts", f"path://{Q_USER}/{Q_PASS}/1.ts"),
+    # given up (round 4): a host glued to the username; the path is two
+    # segments after a real-looking host, as in http://h/a/5
+    (f"http://h{Q_USER}/{Q_PASS}/1.ts", f"http://h{Q_USER}/{Q_PASS}/1.ts"),
     # near-misses that stay unchanged
     ("http://h/a/b", "http://h/a/b"),
     ("http://h/a/5", "http://h/a/5"),
@@ -780,6 +802,10 @@ REDACT_TEXT_TABLE = (
     ('"detail":"/static/js/1.js"', '"detail":"/***/***/1.js"'),
     ("status: /api/channels/5", "status: /***/***/5"),
     ("C:/x/y/1", "C:/***/***/1"),
+    # over-masked (round 4): a URL whose host is an Xtream prefix is also
+    # read as a path
+    ("http://live/a/b", "http://live/***/***"),
+    ("http://h/a%2Fb/5", "http://h/***/***/5"),
 )
 
 
