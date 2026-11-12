@@ -35,6 +35,7 @@ export const userToFormValues = (user) => {
 
   return {
     username: user.username,
+    is_active: user.is_active !== false,
     first_name: user.first_name || '',
     last_name: user.last_name || '',
     email: user.email,
@@ -102,6 +103,13 @@ export const formValuesToPayload = (values, existingUser) => {
 
   payload.custom_properties = customProps;
 
+  // Send is_active only when the admin changed it from the user loaded when the form
+  // opened. A form opened before another admin deactivated this user would otherwise send a
+  // stale is_active: true and reactivate them. On create (no existingUser) the key is kept.
+  if (existingUser && payload.is_active === existingUser.is_active) {
+    delete payload.is_active;
+  }
+
   if (payload.channel_profiles?.includes('0')) {
     payload.channel_profiles = [];
   }
@@ -112,6 +120,7 @@ export const formValuesToPayload = (values, existingUser) => {
 export const getFormInitialValues = () => {
   return {
     username: '',
+    is_active: true,
     first_name: '',
     last_name: '',
     email: '',
