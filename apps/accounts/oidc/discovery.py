@@ -36,10 +36,10 @@ TIMEOUT = (5, 10)  # connect, read
 #   so the timer interrupts the call wherever it waits, and the exchange answers its fixed
 #   "unreachable"/"token_exchange_failed" code at the deadline. The tests drive a dripped
 #   header read and a dripped body read; name resolution and the connect sit under the same
-#   timer but no test stalls them. Measured (apps/accounts/tests/test_oidc_outbound_deadline.py, a 1.5 s deadline, one
-#   byte per 0.1 s): dripped headers and a dripped gzip body each ended at 1.50-1.51 s,
-#   where without gevent the same calls ran 8.1 s (as long as the server dripped) and
-#   5.2 s;
+#   timer but no test stalls them. Measured while writing this (a 1.5 s deadline, one byte
+#   per 0.1 s): dripped headers and a dripped gzip body each ended at 1.50-1.51 s, where
+#   without gevent the same calls ran 8.1 s (as long as the server dripped) and 5.2 s.
+#   apps/accounts/tests/test_oidc_outbound_deadline.py pins it at a 0.5 s deadline;
 # - without it (``manage.py runserver``, a management command, Celery, Daphne, the test
 #   runner itself) nothing can interrupt a blocking read, and no thread or signal is added
 #   to try. There the old bounds still apply and only they: TIMEOUT per connect and per
