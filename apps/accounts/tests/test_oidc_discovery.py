@@ -8,7 +8,12 @@ An in-process ``http.server`` thread on 127.0.0.1 plays the OP, so the class run
 import socket
 from unittest import mock
 
+import itertools
+
+import requests
+from django.core.cache import cache
 from django.test import TestCase, override_settings
+from rest_framework.test import APIClient
 
 from apps.accounts.oidc import discovery
 from core.http_security import validate_outbound_http_url
@@ -63,15 +68,20 @@ class TestActionTests(OPTestCase):
         self.op.serve_provider("/realms/x")
         provider = make_provider(issuer=self.op.base + "/realms/x")
         before = type(provider).objects.filter(pk=provider.pk).values().get()
-        self.run_test_action(provider)
         from django.core.cache import cache
 
-        for prefix in ("disco", "jwks"):
-            self.assertIsNone(
-                cache.get(f"oidc:{prefix}:{provider.pk}:{provider.version}"),
-                "the test action wrote to the cache",
-            )
+        keys = (discovery.discovery_cache_key(provider), discovery.jwks_cache_key(provider))
+        cache.delete_many(keys)
+        self.run_test_action(provider)
+        for key in keys:
+            self.assertIsNone(cache.get(key), f"the test action wrote {key} to the cache")
         self.assertEqual(type(provider).objects.filter(pk=provider.pk).values().get(), before)
+        # The keys are the ones the login flow really fills (spec 3.5), so the assertion
+        # above can fail.
+        discovery.get_jwks(provider, discovery.get_discovery(provider))
+        for key in keys:
+            self.assertIsNotNone(cache.get(key), f"the flow's cache does not use {key}")
+        cache.delete_many(keys)
 
     def test_unset_public_base_url_is_reported(self):
         set_auth_settings(public_base_url="")
@@ -353,6 +363,53 @@ class OutboundPolicyTests(TestCase):
             ok = self.client.post(f"{PROVIDERS}{provider.pk}/test/")
         self.assertEqual(ok.json()["problems"], [])
 
+    def test_discovered_token_endpoint_checked_at_callback(self):
+        from .oidc_flow_support import FlowOP, forbid_last_resort, query_of
+
+        forbid_last_resort(self)
+        # The discovery cache is keyed by pk and version, and SQLite reuses a rolled-back
+        # pk, so a document an earlier test cached would answer this one without a fetch.
+        cache.clear()
+        op = FlowOP()
+        op.start()
+        self.addCleanup(op.stop)
+        op.discovery_extra = {"token_endpoint": "http://10.0.0.5/token"}
+        provider = make_provider(
+            slug="p1", enabled=True, issuer=op.issuer, client_id="mino-client",
+            client_auth_method="client_secret_post",
+        )
+        posted = []
+
+        def record_post(url, **kwargs):
+            posted.append(url)
+            raise requests.ConnectionError("the test refuses every POST")
+
+        client = APIClient()
+        with override_settings(OIDC_ALLOW_HTTP=True), mock.patch("requests.post", side_effect=record_post):
+            start = client.get("/api/accounts/oidc/p1/start/")
+            self.assertEqual(start.status_code, 302)
+            params = op.authorize(start["Location"], {"roles": ["admins"]})
+            response = client.get("/api/accounts/oidc/p1/callback/", params)
+        self.assertEqual(query_of(response["Location"]).get("sso_error"), "token_exchange_failed")
+        self.assertEqual(posted, [], "a token request was sent to a private address")
+        self.assertEqual(op.token_requests, [])
+
+    def test_loopback_needs_env_switch_for_the_flow(self):
+        from .oidc_flow_support import FlowOP, forbid_last_resort, query_of
+
+        forbid_last_resort(self)
+        # The discovery cache is keyed by pk and version, and SQLite reuses a rolled-back
+        # pk, so a document an earlier test cached would answer this one without a fetch.
+        cache.clear()
+        op = FlowOP()
+        op.start()
+        self.addCleanup(op.stop)
+        make_provider(slug="p1", enabled=True, issuer=op.issuer, allow_private_network=True)
+        with override_settings(OIDC_ALLOW_HTTP=False):
+            response = APIClient().get("/api/accounts/oidc/p1/start/")
+        self.assertEqual(query_of(response["Location"]).get("sso_error"), "provider_unavailable")
+        self.assertEqual(op.gets, [])
+
     def test_entra_provider_cannot_reach_a_private_address(self):
         provider = make_entra()
         self.assertFalse(provider.allow_private_network)
@@ -363,3 +420,55 @@ class OutboundPolicyTests(TestCase):
         with mock.patch("core.http_security.socket.getaddrinfo", return_value=_addrinfo("10.0.0.5")):
             with self.assertRaises(ValueError):
                 validate_outbound_http_url("https://x.example/")
+
+
+class _EndlessRaw:
+    """A body that never ends: one KiB per receive."""
+
+    def __init__(self):
+        self.reads = 0
+
+    def read1(self, amt=8192, decode_content=True):
+        self.reads += 1
+        return b" " * 1024
+
+
+class _EndlessResponse:
+    status_code = 200
+    headers = {}
+
+    def __init__(self):
+        self.raw = _EndlessRaw()
+
+    def close(self):
+        pass
+
+
+class DeadlineTests(TestCase):
+    """The limited reader stops at a total monotonic deadline, checked between receives,
+    so a server that drips bytes inside the per-read timeout cannot hold a worker."""
+
+    def test_dripping_body_stops_at_the_deadline(self):
+        clock = itertools.count(start=1000.0, step=1.0)  # one second per reading
+        response = _EndlessResponse()
+        with mock.patch.object(discovery, "_now", side_effect=lambda: next(clock)):
+            deadline = discovery.deadline_from_now()
+            with self.assertRaises(discovery.DiscoveryError) as caught:
+                discovery.read_limited(response, deadline, too_large="too_large", failed="unreachable")
+        self.assertEqual(
+            caught.exception.code, "unreachable",
+            f"the endless body ended as {caught.exception.code!r} after {response.raw.reads} reads, "
+            "not at the deadline",
+        )
+        self.assertLessEqual(response.raw.reads, discovery.TOTAL_DEADLINE + 1)
+
+    def test_dripping_discovery_reported_unreachable(self):
+        client, _ = admin_client()
+        set_auth_settings(public_base_url="https://mino.example.com")
+        provider = make_provider(issuer="https://idp.example/realms/x")
+        clock = itertools.count(start=1000.0, step=1.0)
+        with mock.patch("core.http_security.socket.getaddrinfo", return_value=_addrinfo("93.184.216.34")), \
+                mock.patch("requests.get", return_value=_EndlessResponse()), \
+                mock.patch.object(discovery, "_now", side_effect=lambda: next(clock)):
+            result = client.post(f"{PROVIDERS}{provider.pk}/test/").json()
+        self.assertEqual(result["problems"], ["discovery_unreachable"])

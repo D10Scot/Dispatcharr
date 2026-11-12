@@ -379,3 +379,41 @@ class ProviderTestResultSerializer(serializers.Serializer):
     ok = serializers.BooleanField()
     redirect_uri = serializers.CharField(allow_null=True)
     problems = serializers.ListField(child=serializers.CharField())
+
+
+# ---- the login flow (PR S2) -----------------------------------------------------------
+
+
+class PublicProviderSerializer(serializers.Serializer):
+    slug = serializers.CharField()
+    display_name = serializers.CharField()
+
+
+class PublicAuthConfigSerializer(serializers.Serializer):
+    """``GET providers/``: never an issuer, client id or secret."""
+
+    providers = PublicProviderSerializer(many=True)
+    password_login_enabled = serializers.BooleanField()
+
+
+class LinkStartRequestSerializer(serializers.Serializer):
+    next = serializers.CharField(required=False, allow_blank=True, max_length=4096)
+
+
+class LinkStartResponseSerializer(serializers.Serializer):
+    authorize_url = serializers.CharField()
+
+
+class ExchangeRequestSerializer(serializers.Serializer):
+    code = serializers.CharField(max_length=256, trim_whitespace=False)
+
+
+class ExchangeResponseSerializer(serializers.Serializer):
+    access = serializers.CharField()
+    refresh = serializers.CharField()
+    next = serializers.CharField()
+    intent = serializers.ChoiceField(choices=["login", "link"])
+
+
+class CodedErrorSerializer(serializers.Serializer):
+    code = serializers.CharField()

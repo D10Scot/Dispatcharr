@@ -353,6 +353,9 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {
         "login": "3/minute",
+        # OIDC start, link/start, callback and exchange (SSO spec 3.1). Not the shared
+        # login scope: one SSO login costs three requests.
+        "oidc": "20/minute",
     },
 }
 
@@ -506,6 +509,11 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,  # Optional: Whether to rotate refresh tokens
     "BLACKLIST_AFTER_ROTATION": True,  # Optional: Whether to blacklist refresh tokens
 }
+
+# An SSO-issued refresh token lives 12 hours (SSO spec 3.3 step 9, ruling B3). It is stamped
+# at mint with set_exp; refresh enforces the token's own exp, and ROTATE_REFRESH_TOKENS must
+# stay off or a rotation would re-stamp it with the class lifetime above.
+OIDC_REFRESH_TOKEN_LIFETIME = timedelta(hours=12)
 
 # Redis connection settings — _default_redis_url uses rediss:// when REDIS_SSL is enabled
 REDIS_URL = os.environ.get("REDIS_URL", _default_redis_url)

@@ -1,9 +1,14 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter, SimpleRouter
 from .oidc.api_views import (
+    OIDCCallbackView,
+    OIDCExchangeView,
     OIDCIdentityAdminViewSet,
+    OIDCLinkStartView,
     OIDCProviderAdminViewSet,
+    OIDCPublicProvidersView,
     OIDCSettingsView,
+    OIDCStartView,
 )
 from .api_views import (
     AuthViewSet,
@@ -25,7 +30,7 @@ router.register(r"users", UserViewSet, basename="user")
 router.register(r"groups", GroupViewSet, basename="group")
 router.register(r"api-keys", APIKeyViewSet, basename="api-key")
 
-# OIDC admin API (SSO spec 3.1). The login-flow routes arrive with PR S2.
+# OIDC admin API (SSO spec 3.1).
 oidc_router = SimpleRouter()
 oidc_router.register(r"providers-admin", OIDCProviderAdminViewSet, basename="oidc-provider")
 oidc_router.register(r"identities", OIDCIdentityAdminViewSet, basename="oidc-identity")
@@ -48,7 +53,14 @@ urlpatterns = [
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
     # OIDC
     path("oidc/settings/", OIDCSettingsView.as_view(), name="oidc-settings"),
+    # The login flow (SSO spec 3.1). Fixed segments come before the router and the slug
+    # routes; a provider slug can never equal one of them (RESERVED_SLUGS).
+    path("oidc/providers/", OIDCPublicProvidersView.as_view(), name="oidc-providers"),
+    path("oidc/exchange/", OIDCExchangeView.as_view(), name="oidc-exchange"),
     path("oidc/", include(oidc_router.urls)),
+    path("oidc/<slug:slug>/start/", OIDCStartView.as_view(), name="oidc-start"),
+    path("oidc/<slug:slug>/link/start/", OIDCLinkStartView.as_view(), name="oidc-link-start"),
+    path("oidc/<slug:slug>/callback/", OIDCCallbackView.as_view(), name="oidc-callback"),
 ]
 
 # 🔹 Include ViewSet routes
