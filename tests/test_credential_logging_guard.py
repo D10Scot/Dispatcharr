@@ -443,7 +443,11 @@ NAME_CASES = (
     ("format named field", 'logger.info("{o.url}".format(o=obj))', True),
     ("format of a redacted value", 'logger.info("{}".format(redact_url(url)))', False),
     ("format fields naming nothing", 'logger.info("{0.name} {1}".format(obj, n))', False),
-    ("percent mapping key", 'logger.info("%(url)s", obj)', False),
+    ("lazy mapping template", 'logger.info("%(url)s", row)', True),
+    ("lazy mapping template, other key", 'logger.info("%(name)s", row)', False),
+    ("lazy mapping, escaped percent", 'logger.info("%%(url)s", row)', False),
+    ("escaped percent then a real key", 'logger.info("%%%(url)s" % row)', True),
+    ("escaped percent is text", 'logger.info("%%(url)s %s" % name)', False),
     ("percent mapping key applied", 'logger.info("%(url)s" % row)', True),
     ("getattr literal", 'logger.info("%s", getattr(obj, "url"))', True),
     ("getattr literal pattern", 'logger.info("%s", getattr(obj, "search_pattern", None))', True),
@@ -537,3 +541,26 @@ class WidenedNameRuleTests(SimpleTestCase):
             '# credential-logging: ignore - demo reason\n    logger.info("%s", url)'
         )
         self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_one_marker_cannot_clear_two_calls_on_one_line(self):
+        result = self.run_case(
+            'logger.info("%s", url); logger.info("%d", len(name))'
+            '  # credential-logging: ignore - length only'
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ambiguous", result.stdout)
+
+    def test_one_marker_cannot_clear_a_nested_logging_call(self):
+        result = self.run_case(
+            'logger.info("%s", [logger.debug("%s", url)])'
+            '  # credential-logging: ignore - demo reason'
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ambiguous", result.stdout)
+
+    def test_a_marker_on_its_own_single_call_line_still_clears(self):
+        result = self.run_case(
+            'logger.info("%s", url)  # credential-logging: ignore - demo reason\n'
+            '    logger.info("%s", url)  # credential-logging: ignore - demo reason'
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)

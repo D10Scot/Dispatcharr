@@ -10,12 +10,16 @@ logger = logging.getLogger(__name__)
 
 
 def _frames(exc):
-    """The traceback's frames without the exception message.
+    """The traceback's frame metadata only: file, line number and function.
 
-    A provider response, a URL or a login can sit in an exception's text, so
-    the stack is logged alone.
+    Not `traceback.format_tb()`: that adds each frame's source line, and a
+    source line can hold a URL literal. No locals, no exception message, and
+    no chained exception.
     """
-    return "Traceback frames:\n" + "".join(traceback.format_tb(exc.__traceback__))
+    frames = traceback.extract_tb(exc.__traceback__)
+    return "Traceback frames:\n" + "\n".join(
+        f"  {frame.filename}:{frame.lineno} in {frame.name}" for frame in frames
+    )
 
 
 def _loggable_id(value):

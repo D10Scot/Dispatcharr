@@ -80,20 +80,20 @@ unrelated pull requests. Three gaps are known and were found by reading:
 Closing them means working off the resulting backlog in one pass. Until then,
 read a diff for these shapes yourself; the check will not do it for you.
 
-BARE NAMES AND TRACE (covered, within the limits above). A second pattern, NAME_RE, flags a bare `url`
-(`url`, `repo.url`) and `pattern` / `*_pattern` (`search_pattern`,
-`flt.pattern`) in a log argument, and `trace` is one of LOG_LEVELS beside the
-standard five. NAME_RE is matched against the argument's *expressions* only,
-with every string literal blanked and every redact_* call cut out, because
-"url" and "pattern" are ordinary message words: `f"Generated stream url:
-{redact_url(u)}"` is clear. The older CREDENTIAL_RE still reads message text,
-as before. M3U profile search/replace patterns are the provider login in
-Xtream "simple" mode, which is why `*_pattern` is flagged; a call logging an
-regex is not harmless to log: an M3U filter can match a stream URL, so its
-pattern can contain a login; log a filter id, a count or a fixed
-classification instead, and reserve the marker for a call whose arguments are
-visibly not a credential. The whole backend source tree is at zero findings under both, and
-tests/test_credential_logging_guard.py holds it there.
+BARE NAMES AND TRACE. A second pattern, NAME_RE, flags a bare `url` (`url`,
+`repo.url`) and `pattern` / `*_pattern` (`search_pattern`, `flt.pattern`) in a
+log argument, and `trace` is one of LOG_LEVELS beside the standard five.
+NAME_RE is matched against the argument's *expressions* only, with every string
+literal blanked and every redact_* call cut out, because "url" and "pattern"
+are ordinary message words: `f"Generated stream url: {redact_url(u)}"` is
+clear. The older CREDENTIAL_RE still reads message text, as before. M3U profile
+search/replace patterns are the provider login in Xtream "simple" mode, which
+is why `*_pattern` is flagged, and an M3U filter regex is no safer: it can
+match a stream URL, so it can contain a login. Log a filter id, a count or a
+fixed classification instead of a pattern, and reserve the marker for a call
+whose arguments are visibly not a credential. The limits of this rule are the
+gaps listed above, which are gaps and not claims. The whole backend source tree
+is at zero findings, and tests/test_credential_logging_guard.py holds it there.
 
 TELEMETRY CALLS (observability spec D9). The same one-argument-at-a-time rule
 applies to a span, tracer, metric-instrument or meter call, because a span
@@ -134,17 +134,24 @@ KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
     pins that through its public methods; nothing mechanical stops the next
     `str(e)`. Exception-text detection is deliberately not attempted here.
   * An ignore marker clears the WHOLE call, every argument in it, not only the
-    one the reason names. A marker justified by one redacted argument also
+    one the reason names, and only when exactly one logging call spans the
+    marker's line (two calls on a line, or one inside another, make it
+    ambiguous and it clears neither). A marker justified by one redacted argument also
     covers an unredacted neighbour on that call; apps/timeshift/views.py has
     two such markers (a redacted URL beside a raw Content-Type and the first
     bytes of a response body). Read the arguments next to a marker, and keep
     the reason about the whole call.
-  * NAME_RE judges a literal lookup only in the shapes _Blank keeps:
-    `"{0.url}".format(o)`, `"%(url)s" % o`, `getattr(o, "url")`, `d["url"]`
-    and `d.get("url")`. Not supported: a template or attribute name held in a
+  * NAME_RE judges a literal lookup only in these shapes: `"{0.url}".format(o)`,
+    `"%(url)s" % o`, logging's lazy `logger.info("%(url)s", row)`,
+    `getattr(o, "url")`, `d["url"]` and `d.get("url")`. Everything else is a
+    gap, stated plainly: `format_map` (`"{url}".format_map(row)`), a starred
+    lookup argument (`getattr(*(o, "url"))`), a nested format-spec field
+    (`"{:{url}}".format(x, url=y)`), a template or attribute name held in a
     variable (`fmt.format(o)`, `getattr(o, name)`), `operator.attrgetter`,
-    `vars(o)` and `o.__dict__` as a whole, and logging a whole object whose
-    `repr` carries the value (`logger.info("%s", profile)`).
+    `vars(o)` and `o.__dict__` as a whole, a key-only `extra={"url": value}`
+    (the key is literal text; a value that names a URL is still found), and
+    logging a whole object whose `repr` carries the value
+    (`logger.info("%s", profile)`).
 
 All three are follow-ups, not gaps to work around with the ignore marker.
 """
@@ -205,6 +212,11 @@ IGNORE_REASON_RE = re.compile(r"\s*[-:–—]\s*\S")
 NEEDS_REASON = (
     "'# credential-logging: ignore' needs a reason "
     "('# credential-logging: ignore - <why>'); not cleared:"
+)
+
+AMBIGUOUS_MARKER = (
+    "'# credential-logging: ignore' is ambiguous: more than one logging call "
+    "spans its line, so it clears none of them; not cleared:"
 )
 
 MAX_REPORTED_CHARS = 200
@@ -281,7 +293,8 @@ def _residual_source(node):
     return text
 
 
-_PERCENT_KEY_RE = re.compile(r"%\(([^)]*)\)")
+# `%%` is an escaped percent: it consumes the percent a key would start with.
+_PERCENT_KEY_RE = re.compile(r"%%|%\(([^)]*)\)")
 
 # Calls whose first / second positional string argument names a key or
 # attribute that is looked up at run time: `d.get("url")`, `getattr(o, "url")`.
@@ -298,6 +311,11 @@ def _format_fields(template):
         ]
     except ValueError:
         return []
+
+
+def _percent_keys(template):
+    """The mapping keys of a %-template: `%(url)s` -> ["url"], `%%(url)s` -> []."""
+    return [m.group(1) for m in _PERCENT_KEY_RE.finditer(template) if m.group(1)]
 
 
 def _is_str_constant(node):
@@ -345,7 +363,7 @@ class _Blank(ast.NodeTransformer):
     def visit_BinOp(self, node):
         fields = None
         if isinstance(node.op, ast.Mod) and _is_str_constant(node.left):
-            fields = " ".join(_PERCENT_KEY_RE.findall(node.left.value))
+            fields = " ".join(_percent_keys(node.left.value))
         self.generic_visit(node)
         if fields is not None:
             node.left = ast.Constant(value=fields)
@@ -375,6 +393,13 @@ def _expression_source(node):
 def _unredacted_arguments(call):
     """Yield the arguments of `call` that reach the log unredacted."""
     arguments = list(call.args) + [keyword.value for keyword in call.keywords]
+    # logging's lazy mapping form: logger.info("%(url)s", row) looks up row["url"].
+    if (
+        len(call.args) > 1
+        and _is_str_constant(call.args[0])
+        and NAME_RE.search(" ".join(_percent_keys(call.args[0].value)))
+    ):
+        yield call.args[1]
     for argument in arguments:
         if _is_literal(argument):
             continue
@@ -401,16 +426,31 @@ def _comments_by_line(source):
     return comments
 
 
-def _ignore_marker(comments, first, last):
-    """Whether a comment on lines first..last carries the marker, and a reason."""
+def _ignore_marker(comments, first, last, spans):
+    """Classify the markers on lines first..last: (marked, cleared, why_not).
+
+    A marker clears a call only when it carries a reason AND exactly one
+    logging/telemetry call (`spans`, a list of (first, last) line pairs)
+    spans the marker's line. Two calls on one line, or one call inside
+    another, make the comment ambiguous about which it justifies, so it clears
+    neither.
+    """
+    marked = False
+    why_not = ""
     for lineno in range(first, last + 1):
         for comment in comments.get(lineno, ()):
             index = comment.find(IGNORE_MARKER)
             if index == -1:
                 continue
+            marked = True
             rest = comment[index + len(IGNORE_MARKER) :]
-            return True, bool(IGNORE_REASON_RE.match(rest))
-    return False, False
+            if not IGNORE_REASON_RE.match(rest):
+                why_not = why_not or NEEDS_REASON
+            elif sum(1 for lo, hi in spans if lo <= lineno <= hi) != 1:
+                why_not = AMBIGUOUS_MARKER
+            else:
+                return True, True, ""
+    return marked, False, why_not
 
 
 def _collapse(text):
@@ -445,6 +485,11 @@ def check_file(path, out=sys.stdout, err=sys.stderr):
     lines = source.splitlines()
     comments = _comments_by_line(source)
     findings = []
+    spans = [
+        (node.lineno, getattr(node, "end_lineno", node.lineno) or node.lineno)
+        for node in ast.walk(tree)
+        if _is_logging_call(node) or _is_telemetry_call(node)
+    ]
 
     for node in ast.walk(tree):
         if not (_is_logging_call(node) or _is_telemetry_call(node)):
@@ -456,8 +501,8 @@ def check_file(path, out=sys.stdout, err=sys.stderr):
         # The marker sits on any line the call spans, including a trailing
         # comment after the closing paren, which the source segment excludes.
         end = getattr(node, "end_lineno", node.lineno) or node.lineno
-        marked, has_reason = _ignore_marker(comments, node.lineno, end)
-        if marked and has_reason:
+        marked, cleared, why_not = _ignore_marker(comments, node.lineno, end, spans)
+        if cleared:
             continue
 
         segment = ast.get_source_segment(source, node)
@@ -468,7 +513,7 @@ def check_file(path, out=sys.stdout, err=sys.stderr):
 
         content = _collapse(segment)
         if marked:
-            content = f"{NEEDS_REASON} {content}"
+            content = f"{why_not} {content}"
         findings.append((node.lineno, content))
 
     for lineno, content in sorted(findings):

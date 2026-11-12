@@ -283,6 +283,33 @@ class XtreamPublicMethodLoggingTests(SimpleTestCase):
         self.assertEqual(result, [{"category_name": "fakesecret"}])
         assert_no_secret(self, logs.records)
 
+    def test_traceback_frames_carry_no_source_line_or_chained_message(self):
+        # The raising frame's own SOURCE contains a credential-bearing literal;
+        # format_tb() would log that line. The chained cause has a message too.
+        def raises_with_literal_source():
+            try:
+                raise ValueError("fakesecret cause")
+            except ValueError as cause:
+                raise RuntimeError("fakesecret") from cause  # http://prov.example.com/live/fakeuser/fakepass/1.ts
+
+        def literal_in_call_source(*args, **kwargs):
+            raise OSError("http://prov.example.com/live/fakeuser/fakepass/1.ts")
+
+        for label, raiser in (
+            ("chained", raises_with_literal_source),
+            ("literal in the raising line", literal_in_call_source),
+        ):
+            with self.subTest(label):
+                client = self.authed(self.make_client())
+                client.session.get = MagicMock(side_effect=raiser)
+                with capture(xtream_codes.logger) as logs:
+                    with self.assertRaises(Exception):
+                        client.get_live_categories()
+                assert_no_secret(self, logs.records)
+                frames = [r.getMessage() for r in logs.records if "Traceback frames" in r.getMessage()]
+                self.assertTrue(frames, "the frame metadata must still be logged")
+                self.assertIn("xtream_codes.py", frames[0])
+
     def test_raised_messages_are_unchanged(self):
         client = self.authed(self.make_client())
         client.session.get = MagicMock(return_value=self.response({"detail": "d"}))
