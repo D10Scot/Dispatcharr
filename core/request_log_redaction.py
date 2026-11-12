@@ -1,0 +1,267 @@
+"""Xtream credentials out of Django's own request log records.
+
+Django writes ``Unauthorized: <request.path>`` (and ``Not Found``, ``Bad
+Request``, ``Internal Server Error`` ...) for every 4xx/5xx response through
+the ``django.request`` logger, ``Forbidden (<reason>): <path>`` through
+``django.security.csrf``, a ``SuspiciousOperation``'s text and traceback
+through ``django.security.<ExceptionName>``, and one line per request through
+the development servers' loggers. On this project the Xtream routes carry a
+user's login in the path (``/live|movie|series|timeshift/<user>/<pass>/...``
+and the bare ``/<user>/<pass>/<id>``) or the query string (``player_api.php``,
+``get.php``, ``xmltv.php``, ``streaming/timeshift.php``), so those lines leak
+working credentials. ``scripts/check_credential_logging.py`` cannot see them:
+the log calls are inside Django.
+
+``RequestLogCredentialFilter`` hands its handler a *copy* of each record from
+``REDACTED_LOGGER_TREES`` with the credentials masked in the message template,
+every string argument and the formatted traceback, and with the attached
+``request`` object dropped. The original record is never mutated (a filter
+returning a record replaces it for that handler only, Python 3.12+). Records
+outside the trees pass through as themselves, and no record is suppressed: an
+operator still sees that a 401 happened and on which route
+(``/movie/***/***/1.mp4``).
+
+The path shapes are not defined here. Every string goes through the project
+package's ``utils.redact_url``, whose ``XTREAM_PATH_PREFIXES`` and
+``XC_STREAM_ID_PATTERN`` (the latter shared with the urlconf) are the single
+definition; ``tests/test_request_log_redaction.py`` fails if a urlconf pattern
+capturing a username and a password is one that definition does not cover.
+
+``with_request_log_redaction(LOGGING)`` puts the filter on EVERY handler a
+record from these trees can reach, so there is no route around it:
+
+* ``console`` and ``otel`` on the root, which every propagating record reaches,
+  including the per-exception ``django.security.<Name>`` loggers that cannot
+  be enumerated in advance;
+* the ``django`` and ``django.server`` loggers' handlers, re-declared exactly
+  as Django's ``DEFAULT_LOGGING`` declares them (same classes, filters, levels,
+  formatter) plus this filter. Without that, ``django``'s ``console`` (which
+  writes when ``settings.DEBUG`` is true) and the ``django.server`` handler
+  would be handlers this configuration never names and so cannot filter. The
+  re-declared names are prefixed ``django.`` because ``console`` is taken.
+
+``tests/test_request_log_redaction.py`` walks the configured logger tree and
+fails if any handler reachable from these loggers lacks the filter.
+
+This module is imported while settings load, so it imports nothing from
+``apps.*`` or ``core.models`` at module level.
+"""
+import copy
+import logging
+import re
+from urllib.parse import quote
+
+# Loggers whose records are redacted, matched as the name itself or a dotted
+# descendant. ``django.channels.server`` is the request line of the
+# ``runserver`` this project actually runs (Daphne's, since ``daphne`` is in
+# INSTALLED_APPS); ``django.server`` is Django's own.
+REDACTED_LOGGER_TREES = (
+    "django.request",
+    "django.security",
+    "django.server",
+    "django.channels.server",
+)
+
+FILTER_NAME = "request_log_credentials"
+
+# Characters stripped from either end of a whitespace-delimited token before
+# it is treated as a URL: quoting and bracketing from reprs and tracebacks.
+_TOKEN_PUNCTUATION = "'\"<>()[]{},;"
+_TOKEN_RE = re.compile(r"\S+")
+
+# A credential shorter than this is not scrubbed by value from a traceback:
+# replacing every occurrence of a one- to three-character string would leave
+# the traceback unreadable. Its path position is still masked.
+MIN_SCRUBBED_VALUE_LENGTH = 4
+
+
+def _in_scope(name):
+    return any(name == tree or name.startswith(tree + ".") for tree in REDACTED_LOGGER_TREES)
+
+
+def _utils():
+    # Lazy: the project package's utils imports core.models, which cannot
+    # load while settings are still being read.
+    from dispatcharr import utils
+
+    return utils
+
+
+def _redact_url(value):
+    return _utils().redact_url(value)
+
+
+def _redact_decoded_path(path):
+    """``redact_url`` on a string that is wholly a path.
+
+    ``request.path`` is percent-decoded, so a ``?`` or ``#`` inside a
+    credential is a literal character there, and ``redact_url`` would read
+    the rest of the path as a query string or fragment. Escaping ``%``, ``?``
+    and ``#`` first keeps every segment a segment; the escape is undone on
+    the result, so unmasked segments come back byte-identical.
+    """
+    escaped = path.replace("%", "%25").replace("?", "%3F").replace("#", "%23")
+    redacted = _redact_url(escaped)
+    if redacted == escaped:
+        return path
+    return redacted.replace("%23", "#").replace("%3F", "?").replace("%25", "%")
+
+
+def _redact_token(match):
+    token = match.group(0)
+    core = token.strip(_TOKEN_PUNCTUATION)
+    if not core:
+        return token
+    start = token.find(core)
+    redacted = _redact_url(core)
+    if redacted == core:
+        return token
+    return token[:start] + redacted + token[start + len(core):]
+
+
+def redact_text(text):
+    """Mask the Xtream credentials in every URL or path inside ``text``.
+
+    A string that is itself a path (it starts with ``/``: ``request.path`` in
+    Django's own arguments) is redacted whole and as a path first, so a
+    credential containing a space, ``?`` or ``#`` is still one segment. Every
+    whitespace-delimited token is then redacted on its own, which catches a
+    URL inside a request line or a traceback. Non-strings are returned as
+    they are.
+    """
+    if not isinstance(text, str) or not text:
+        return text
+    if text.startswith("/"):
+        text = _redact_decoded_path(text)
+    return _TOKEN_RE.sub(_redact_token, text)
+
+
+def _spellings(value):
+    return {
+        value,
+        quote(value, safe=""),
+        quote(value),
+        value.encode("unicode_escape").decode("ascii"),
+    }
+
+
+def _request_credentials(request):
+    """The credential values the request itself names: route kwargs and query."""
+    values = set()
+    match = getattr(request, "resolver_match", None)
+    kwargs = getattr(match, "kwargs", None) or {}
+    for key in ("username", "password"):
+        if isinstance(kwargs.get(key), str):
+            values.add(kwargs[key])
+    query = getattr(request, "GET", None)
+    if query is not None:
+        for key in query:
+            if key.lower() in _utils().SENSITIVE_QUERY_KEYS:
+                values.update(v for v in query.getlist(key) if isinstance(v, str))
+    spelled = set()
+    for value in values:
+        if len(value) >= MIN_SCRUBBED_VALUE_LENGTH:
+            spelled |= _spellings(value)
+    return sorted(spelled, key=len, reverse=True)
+
+
+def _redact_traceback(text, request):
+    text = redact_text(text)
+    if request is not None:
+        for value in _request_credentials(request):
+            text = text.replace(value, _utils().REDACTED)
+    return text
+
+
+def _redact_args(args):
+    if isinstance(args, dict):
+        return {key: redact_text(value) for key, value in args.items()}
+    if isinstance(args, tuple):
+        return tuple(redact_text(value) for value in args)
+    return args
+
+
+def redact_record(record):
+    """A redacted copy of ``record``, or ``record`` itself when out of scope."""
+    if not _in_scope(record.name):
+        return record
+    # django.request and django.security attach the HttpRequest, whose repr
+    # (and path, GET and META) carry the credentials. No configured handler
+    # needs it; AdminEmailHandler, the one Django handler that reads it,
+    # tolerates its absence. django.server's ``request`` is the socket.
+    request = getattr(record, "request", None)
+    http_request = request if hasattr(request, "path") else None
+
+    clone = copy.copy(record)
+    clone.msg = redact_text(record.msg)
+    clone.args = _redact_args(record.args)
+    if record.exc_info and record.exc_info[0] is not None:
+        text = record.exc_text or logging.Formatter().formatException(record.exc_info)
+        clone.exc_text = _redact_traceback(text, http_request)
+    elif record.exc_text:
+        clone.exc_text = _redact_traceback(record.exc_text, http_request)
+    if http_request is not None:
+        del clone.request
+    return clone
+
+
+class RequestLogCredentialFilter(logging.Filter):
+    """Pass every record on; in-scope ones as a redacted copy."""
+
+    def filter(self, record):
+        try:
+            return redact_record(record)
+        except Exception:  # noqa: BLE001 - a log call must never raise
+            # Fail closed on the content, open on the record: the operator
+            # still learns that something was logged, and from where.
+            clone = copy.copy(record)
+            clone.msg = "[request log record withheld: redaction failed]"
+            clone.args = ()
+            clone.exc_info = None
+            clone.exc_text = None
+            if hasattr(clone, "request"):
+                del clone.request
+            return clone
+
+
+def _attach(handler_config):
+    attached = handler_config.setdefault("filters", [])
+    if FILTER_NAME not in attached:
+        attached.append(FILTER_NAME)
+
+
+def with_request_log_redaction(logging_config):
+    """Return ``logging_config`` with the filter wired in (see module docstring)."""
+    from django.utils.log import DEFAULT_LOGGING
+
+    cfg = copy.deepcopy(logging_config)
+    filters = cfg.setdefault("filters", {})
+    filters[FILTER_NAME] = {"()": f"{__name__}.RequestLogCredentialFilter"}
+    formatters = cfg.setdefault("formatters", {})
+    handlers = cfg.setdefault("handlers", {})
+    loggers = cfg.setdefault("loggers", {})
+
+    for name in ("console", "otel"):
+        if name in handlers:
+            _attach(handlers[name])
+
+    # Re-declare DEFAULT_LOGGING's two request-path loggers and their handlers.
+    for logger_name in ("django", "django.server"):
+        if logger_name in loggers:
+            continue  # the configuration already declares it; leave it alone
+        declared = copy.deepcopy(DEFAULT_LOGGING["loggers"][logger_name])
+        renamed = []
+        for handler_name in declared.get("handlers", []):
+            own = f"django.{handler_name}" if not handler_name.startswith("django.") else handler_name
+            handler = copy.deepcopy(DEFAULT_LOGGING["handlers"][handler_name])
+            for filter_name in handler.get("filters", []):
+                filters.setdefault(filter_name, copy.deepcopy(DEFAULT_LOGGING["filters"][filter_name]))
+            formatter = handler.get("formatter")
+            if formatter:
+                formatters.setdefault(formatter, copy.deepcopy(DEFAULT_LOGGING["formatters"][formatter]))
+            _attach(handler)
+            handlers[own] = handler
+            renamed.append(own)
+        declared["handlers"] = renamed
+        loggers[logger_name] = declared
+    return cfg
