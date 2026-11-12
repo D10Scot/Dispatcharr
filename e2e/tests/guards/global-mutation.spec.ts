@@ -33,13 +33,19 @@
  * Scans `ROOTS` (`tests/`, `fixtures/`, `setup/`), the same as
  * `capabilities.spec.ts`, for the same reason that guard gives: a write
  * hidden inside a fixture or setup helper runs on every test that imports it
- * and is invisible to a scan of `tests/` alone.
+ * and is invisible to a scan of `tests/` alone. It reads every TypeScript and
+ * JavaScript file there (`listSourceFiles`), so a `.js` or `.mjs` helper is
+ * read too, and treats `fetch(new Request(url, { method }))` as the write it is.
+ *
+ * What it cannot see: a URL or method built at run time from values it cannot
+ * resolve statically (a function's return value, an imported constant, a
+ * `Request` held in a variable), and a write through a module outside `ROOTS`.
  */
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import * as ts from 'typescript';
 import { GLOBAL_SETTINGS_WRITE } from './allowlist';
-import { E2E_ROOT, listTsFiles, readSpec, ROOTS } from './ast';
+import { E2E_ROOT, listSourceFiles, readSpec, ROOTS } from './ast';
 
 const WRITE_METHODS = new Set(['post', 'patch', 'put', 'delete']);
 const SETTINGS_PATH = 'core/settings';
@@ -121,10 +127,18 @@ function fetchWrites(options: ts.Expression | undefined): boolean {
   return writes;
 }
 
+/** `new Request(url, init)`: the method and the URL travel inside it, not in `fetch`'s own arguments. */
+function asRequestObject(expr: ts.Expression | undefined): ts.NewExpression | undefined {
+  return expr && ts.isNewExpression(expr) && ts.isIdentifier(expr.expression) && expr.expression.text === 'Request'
+    ? expr
+    : undefined;
+}
+
 /**
  * Whether `node` is a write call: `x.post|patch|put|delete(url, …)`, or a `fetch(url,
  * options)` (Playwright's `request.fetch` or the global one) whose options name a
- * mutating method (`fetchWrites`).
+ * mutating method (`fetchWrites`), or a `fetch(new Request(url, init))` whose `init`
+ * does.
  */
 function isWriteCall(node: ts.CallExpression): boolean {
   const callee = node.expression;
@@ -134,7 +148,15 @@ function isWriteCall(node: ts.CallExpression): boolean {
     : ts.isIdentifier(callee)
       ? callee.text
       : undefined;
-  return name === 'fetch' && fetchWrites(node.arguments[1]);
+  if (name !== 'fetch') return false;
+  const req = asRequestObject(node.arguments[0]);
+  return fetchWrites(node.arguments[1]) || (!!req && fetchWrites(req.arguments?.[1]));
+}
+
+/** The URL argument of a write call: `fetch(new Request(url, …))`'s is inside the `Request`. */
+function urlArgument(node: ts.CallExpression): ts.Expression | undefined {
+  const arg = node.arguments[0];
+  return asRequestObject(arg)?.arguments?.[0] ?? arg;
 }
 
 /** Whether `sf` makes a write call whose URL argument contains any of `needles`. */
@@ -144,7 +166,7 @@ function writesTo(sf: ts.SourceFile, needles: readonly string[]): boolean {
   function visit(node: ts.Node): void {
     if (found) return;
     if (ts.isCallExpression(node) && isWriteCall(node)) {
-      const arg = node.arguments[0];
+      const arg = urlArgument(node);
       // Only string-shaped arguments are inspected, so the route appearing in
       // a comment is invisible here — the same reason `capabilities.spec.ts`
       // parses instead of scanning text.
@@ -164,7 +186,7 @@ function writesTo(sf: ts.SourceFile, needles: readonly string[]): boolean {
 test('instance-wide settings writes are confined to their allowlist', { tag: '@characterization' }, async () => {
   const hits: string[] = [];
   for (const [dir, prefix] of ROOTS) {
-    for (const rel of await listTsFiles(path.join(E2E_ROOT, dir), prefix)) {
+    for (const rel of await listSourceFiles(path.join(E2E_ROOT, dir), prefix)) {
       if (rel.startsWith('tests/guards/')) continue;
       const src = await readSpec(rel);
       if (writesGlobalSettings(ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true))) {
@@ -197,7 +219,7 @@ const OIDC_WRITE_DIR = 'tests/sso/';
 test('instance-wide OIDC configuration writes are confined to tests/sso/', { tag: '@characterization' }, async () => {
   const hits: string[] = [];
   for (const [dir, prefix] of ROOTS) {
-    for (const rel of await listTsFiles(path.join(E2E_ROOT, dir), prefix)) {
+    for (const rel of await listSourceFiles(path.join(E2E_ROOT, dir), prefix)) {
       if (rel.startsWith('tests/guards/')) continue;
       const src = await readSpec(rel);
       if (writesTo(ts.createSourceFile(rel, src, ts.ScriptTarget.Latest, true), OIDC_WRITE_PATHS)) {

@@ -14,9 +14,11 @@
  *    scan also holds `sso.setup.ts`, which imports `test` from `@playwright/test`
  *    directly.
  *
- *    Every file under `tests/sso/` is either a declared support module (`SUPPORT_MODULES`)
- *    or a file the projects load (`sso.setup.ts`, or a `.spec.ts`); anything else fails,
- *    so a project matching a new suffix cannot load an unscanned file. The rules:
+ *    Every TypeScript or JavaScript file under `tests/sso/` (`.js` and `.mjs` included)
+ *    is either a declared support module (`SUPPORT_MODULES`) or a file the projects load
+ *    (`sso.setup.ts`, or a `.spec.ts`); anything else fails, so a project matching a new
+ *    suffix cannot load an unscanned file, and a `.js` module cannot sit beside the specs
+ *    unread. The rules:
  *
  *    - Placement, per loaded file: it imports `assertScopedStack` from
  *      `tests/sso/scope.ts`; it has no top-level `await`; and its first call on the `test`
@@ -42,6 +44,16 @@
  *    or contains it) must be one of the four, with its `testDir`, `testMatch`,
  *    `testIgnore` and `retries` pinned.
  *
+ *    Configuration may not undo either rule. Anywhere under `tests/sso/`, a
+ *    `test.describe.configure(...)` may carry only the keys in `CONFIGURE_KEYS` (`mode`,
+ *    `timeout`), so `retries` cannot come back for one file; and no `test.use(...)`,
+ *    `test.extend(...)` or `use` on one of the four projects may set an option in
+ *    `STACK_IDENTITY_OPTIONS` (`baseURL`, `storageState`, `extraHTTPHeaders`,
+ *    `httpCredentials`, `proxy`, `clientCertificates`), any of which would point the
+ *    browser at another stack, or carry its identity, while `assertScopedStack()`, which
+ *    reads `process.env`, still passes. An options object this cannot read (a variable,
+ *    a spread, a computed key) fails.
+ *
  * 2. The password-off probe in `break-glass.spec.ts` is never retried: a retry could turn
  *    a real 200 into a pass. The one `POST /api/accounts/token/` under `tests/sso/` that
  *    is not a backoff login is a raw `request.post`, awaited as a `const` initializer
@@ -51,7 +63,10 @@
  *
  * What it cannot see: code outside `tests/sso/` that a spec imports (`fixtures/`,
  * `setup/`, another directory's helpers) runs at import too, and is policed only as the
- * rest of the suite is; and a deliberately computed property name (`{ ['au' + 'to']: … }`).
+ * rest of the suite is; a deliberately computed property name in a fixture definition
+ * (`{ ['au' + 'to']: … }`); and configuration set outside `tests/sso/` and the four
+ * projects (the config's top-level `use`, whose `baseURL` is `E2E_BASE_URL`, the very
+ * variable `assertScopedStack()` reads).
  *
  * `@characterization`: these pin the harness's own safety, which no client observes
  * (`docs/adr/0002`).
@@ -59,7 +74,7 @@
 import { test, expect } from '@playwright/test';
 import path from 'node:path';
 import * as ts from 'typescript';
-import { E2E_ROOT, listTsFiles, readSpec } from './ast';
+import { E2E_ROOT, listSourceFiles, listTsFiles, readSpec } from './ast';
 
 const SSO_DIR = 'tests/sso';
 const SSO_ABS = path.join(E2E_ROOT, SSO_DIR);
@@ -92,9 +107,96 @@ const SSO_PROJECTS: Record<string, { testDir: string; testMatch: string; testIgn
   'sso-faults': { testDir: "'./tests/sso/faults'", testMatch: '/\\.spec\\.ts$/', retries: '0' },
 };
 
-/** Every `.ts` file under `tests/sso/`. */
+/** Every TypeScript or JavaScript file under `tests/sso/`, so a `.js` or `.mjs` module cannot escape. */
 async function ssoFiles(): Promise<string[]> {
-  return listTsFiles(SSO_ABS, SSO_DIR);
+  return listSourceFiles(SSO_ABS, SSO_DIR);
+}
+
+/**
+ * The keys a `test.describe.configure({...})` under `tests/sso/` may carry. An allowlist:
+ * `retries` would re-enable retries the projects turn off (rule 2), and any key not named
+ * here fails rather than being judged.
+ */
+const CONFIGURE_KEYS = new Set(['mode', 'timeout']);
+
+/**
+ * Options no `test.use`, `test.extend` or SSO project `use` may set under `tests/sso/`:
+ * each can point the browser and `request` at another stack, or carry another stack's
+ * identity, while `assertScopedStack()` (which reads `process.env`, not the fixture) still
+ * passes. `baseURL` re-points every relative URL; `storageState` loads another origin's
+ * tokens and cookies; `extraHTTPHeaders` and `httpCredentials` attach an `Authorization` to
+ * every request; `proxy` reroutes them all; `clientCertificates` presents an identity. The
+ * SSO projects need none of them: the browser signs in through the flow, and `api` is
+ * built from the project's own pair.
+ */
+const STACK_IDENTITY_OPTIONS = new Set([
+  'baseURL',
+  'storageState',
+  'extraHTTPHeaders',
+  'httpCredentials',
+  'proxy',
+  'clientCertificates',
+]);
+
+/** The key of a property, or undefined when it is computed, spread or otherwise unreadable. */
+function propertyKey(prop: ts.ObjectLiteralElementLike): string | undefined {
+  if (ts.isSpreadAssignment(prop) || !prop.name) return undefined;
+  return ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name) ? prop.name.text : undefined;
+}
+
+/**
+ * Problems with the options object `arg`: a key outside `allowed` (when given), a key in
+ * `denied`, or anything this cannot read (not an object literal, a spread, a computed key).
+ * An unreadable shape fails: a guard that cannot read it cannot vouch for it.
+ */
+function optionProblems(
+  arg: ts.Expression | undefined,
+  what: string,
+  line: number,
+  rule: { allowed?: Set<string>; denied?: Set<string> }
+): string[] {
+  if (!arg || !ts.isObjectLiteralExpression(arg)) return [`${what} (line ${line}) is not given an object literal this guard can read`];
+  const problems: string[] = [];
+  for (const prop of arg.properties) {
+    const key = propertyKey(prop);
+    if (key === undefined) {
+      problems.push(`${what} (line ${line}) has a spread or computed key this guard cannot read`);
+    } else if (rule.allowed && !rule.allowed.has(key)) {
+      problems.push(`${what} (line ${line}) sets '${key}': only ${[...rule.allowed].join(', ')} are allowed`);
+    } else if (rule.denied?.has(key)) {
+      problems.push(`${what} (line ${line}) sets '${key}', which can point the browser at another stack or carry its identity`);
+    }
+  }
+  return problems;
+}
+
+/**
+ * Every `test.describe.configure` (any chain ending in `configure`), `test.use` and
+ * `test.extend` call on the `test` binding, anywhere in the file, held to its option
+ * rule. `extend` is read for its option overrides only: a fixture defined there is a
+ * function, which `fixtureOrderProblems` and the load-time scan already police.
+ */
+function configurationProblems(sf: ts.SourceFile): string[] {
+  const names = testBindings(sf);
+  const problems: string[] = [];
+  (function visit(node: ts.Node): void {
+    if (ts.isCallExpression(node)) {
+      const root = rootIdentifier(node.expression);
+      const chain = calleeChain(node.expression);
+      const last = chain[chain.length - 1];
+      const line = lineOf(sf, node);
+      if (root && names.has(root) && ts.isPropertyAccessExpression(node.expression)) {
+        const what = `${root}.${chain.join('.')}(...)`;
+        if (last === 'configure') problems.push(...optionProblems(node.arguments[0], what, line, { allowed: CONFIGURE_KEYS }));
+        else if (last === 'use') problems.push(...optionProblems(node.arguments[0], what, line, { denied: STACK_IDENTITY_OPTIONS }));
+        else if (last === 'extend' && node.arguments[0] && ts.isObjectLiteralExpression(node.arguments[0])) {
+          problems.push(...optionProblems(node.arguments[0], what, line, { denied: STACK_IDENTITY_OPTIONS }));
+        } else if (last === 'extend') problems.push(`${what} (line ${line}) is not given an object literal this guard can read`);
+      }
+    }
+    ts.forEachChild(node, visit);
+  })(sf);
+  return problems;
 }
 
 function isLoadedFile(rel: string): boolean {
@@ -346,9 +448,15 @@ function supportModuleProblems(sf: ts.SourceFile): string[] {
 }
 
 /** The config's projects, by name, with the text of each property; problems for what cannot be read. */
-function readProjects(sf: ts.SourceFile): { projects: Map<string, Record<string, string>>; topTestDir?: string; problems: string[] } {
+function readProjects(sf: ts.SourceFile): {
+  projects: Map<string, Record<string, string>>;
+  nodes: Map<string, ts.ObjectLiteralExpression>;
+  topTestDir?: string;
+  problems: string[];
+} {
   const problems: string[] = [];
   const projects = new Map<string, Record<string, string>>();
+  const nodes = new Map<string, ts.ObjectLiteralExpression>();
   let topTestDir: string | undefined;
   let config: ts.ObjectLiteralExpression | undefined;
   (function visit(node: ts.Node): void {
@@ -363,7 +471,7 @@ function readProjects(sf: ts.SourceFile): { projects: Map<string, Record<string,
     }
     ts.forEachChild(node, visit);
   })(sf);
-  if (!config) return { projects, problems: ['playwright.config.ts: no defineConfig({...}) this guard can read'] };
+  if (!config) return { projects, nodes, problems: ['playwright.config.ts: no defineConfig({...}) this guard can read'] };
 
   let list: ts.Expression | undefined;
   for (const p of config.properties) {
@@ -372,7 +480,7 @@ function readProjects(sf: ts.SourceFile): { projects: Map<string, Record<string,
     if (p.name.text === 'projects') list = p.initializer;
   }
   if (!list || !ts.isArrayLiteralExpression(list)) {
-    return { projects, topTestDir, problems: ['playwright.config.ts: `projects` is not an array literal'] };
+    return { projects, nodes, topTestDir, problems: ['playwright.config.ts: `projects` is not an array literal'] };
   }
   for (const el of list.elements) {
     if (!ts.isObjectLiteralExpression(el)) {
@@ -390,8 +498,9 @@ function readProjects(sf: ts.SourceFile): { projects: Map<string, Record<string,
       continue;
     }
     projects.set(name.slice(1, -1), props);
+    nodes.set(name.slice(1, -1), el);
   }
-  return { projects, topTestDir, problems };
+  return { projects, nodes, topTestDir, problems };
 }
 
 /** Whether a project with `testDirText` can load a file under `tests/sso/`; undefined if unreadable. */
@@ -459,6 +568,36 @@ test.describe('the sso projects', () => {
         'Code under tests/sso/ that runs when a file is imported, or a fixture that is set up ' +
           'before every beforeAll, runs before assertScopedStack() and could reach the shared ' +
           'container (tests/guards/sso-structure.spec.ts says why).'
+      ).toEqual([]);
+    }
+  );
+
+  test(
+    're-enables no retry and re-points no browser: configure, use and extend under tests/sso/, and the projects\' use',
+    { tag: '@characterization' },
+    async () => {
+      const problems: string[] = [];
+      for (const rel of await ssoFiles()) {
+        for (const p of configurationProblems(parse(rel, await readSpec(rel)))) problems.push(`${rel}: ${p}`);
+      }
+      const sf = parse('playwright.config.ts', await readSpec('playwright.config.ts'));
+      const { nodes } = readProjects(sf);
+      for (const name of Object.keys(SSO_PROJECTS)) {
+        const use = nodes.get(name)?.properties.find((p) => propertyKey(p) === 'use');
+        if (!use) continue;
+        const init = ts.isPropertyAssignment(use) ? use.initializer : undefined;
+        problems.push(
+          ...optionProblems(init, `project '${name}' use`, lineOf(sf, use), { denied: STACK_IDENTITY_OPTIONS }).map(
+            (p) => `playwright.config.ts: ${p}`
+          )
+        );
+      }
+      expect(
+        problems,
+        'Under tests/sso/, test.describe.configure may set only mode and timeout (retries would ' +
+          're-enable what the projects turn off), and no test.use, test.extend or SSO project use ' +
+          'may set an option that points the browser at another stack or carries its identity ' +
+          '(tests/guards/sso-structure.spec.ts says why).'
       ).toEqual([]);
     }
   );
