@@ -627,6 +627,10 @@ class RoundOneTests(SimpleTestCase):
                 self._assert_masked(text)
 
     def test_cost_grows_linearly_on_hostile_input(self):
+        # One shape per code path, so a quadratic edit to any of them reddens
+        # at least one shape: the whole-path mask (1, 2), its decode retry (4),
+        # redact_url on a token with no leading slash (3, 5), the per-token
+        # loop (6), the key prefix (7) and the query/fragment split (8).
         shapes = (
             lambda n: "/" * n,
             lambda n: "/movie/" + "a/" * (n // 2),
@@ -637,6 +641,11 @@ class RoundOneTests(SimpleTestCase):
             lambda n: "k" * n + "=/",
             lambda n: "/?" + "#=" * (n // 2),
         )
+        # The small run is grown until it takes at least this long, so it is
+        # well clear of timer noise and the ratio below means something for
+        # every shape (a fixed 20,000 characters ran in under 0.1 ms for some).
+        floor_seconds = 0.005
+        max_small = 4_000_000
 
         def best_of(text, runs=3):
             best = float("inf")
@@ -648,11 +657,158 @@ class RoundOneTests(SimpleTestCase):
 
         for index, shape in enumerate(shapes):
             with self.subTest(shape=index):
-                small = best_of(shape(20_000))
-                large = best_of(shape(200_000))
-                # 10x the input: linear is ~10x, quadratic ~100x. Allow 40x,
-                # with a floor so timer noise on a tiny small run cannot trip it.
-                self.assertLess(large, max(small, 0.002) * 40, f"{small:.4f}s -> {large:.4f}s")
+                n = 20_000
+                while best_of(shape(n), runs=1) < floor_seconds and n < max_small:
+                    n *= 2
+                small = best_of(shape(n))
+                large = best_of(shape(n * 10))
+                # 10x the input: linear is ~10x, quadratic ~100x. Allow 40x.
+                self.assertLess(large, small * 40, f"n={n}: {small:.4f}s -> {large:.4f}s")
+
+
+# Review round 3: one literal expectation per input, covering every input the
+# three review rounds and the PR body quote. Each expected value is what the
+# reviews said is correct, written out, never computed by the code under test.
+# Rows marked "over-masked" are the bare-root rule's accepted false positives.
+REDACT_TEXT_TABLE = (
+    # path forms
+    (f"/movie/{Q_USER}/{Q_PASS}/1.mp4", "/movie/***/***/1.mp4"),
+    (f"/live/{Q_USER}/{Q_PASS}/1.ts", "/live/***/***/1.ts"),
+    (f"/series/{Q_USER}/{Q_PASS}/1.mkv", "/series/***/***/1.mkv"),
+    (f"/timeshift/{Q_USER}/{Q_PASS}/60/2026-01-01:10-00/5.ts", "/timeshift/***/***/60/2026-01-01:10-00/5.ts"),
+    (f"/{Q_USER}/{Q_PASS}/1.ts", "/***/***/1.ts"),
+    (f"/MOVIE/{Q_USER}/{Q_PASS}/1.mp4", "/MOVIE/***/***/1.mp4"),
+    (f"/live//{Q_USER}//{Q_PASS}/abc", "/live//***//***/abc"),
+    (f"/movie/{Q_USER}/{Q_PASS}", "/movie/***/***"),
+    # double-slash forms
+    (f"//timeshift/{Q_USER}/{Q_PASS}/60/2026-01-01:10-00/5.ts", "//timeshift/***/***/60/2026-01-01:10-00/5.ts"),
+    (f"//live/{Q_USER}/{Q_PASS}/abc", "//live/***/***/abc"),
+    (f"GET //timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts HTTP/1.1", "GET //timeshift/***/***/60/x/5.ts HTTP/1.1"),
+    (f"//movie/{Q_USER}/{Q_PASS}/1.mp4", "//movie/***/***/1.mp4"),
+    (f"///series/{Q_USER}/{Q_PASS}/1.mkv", "///series/***/***/1.mkv"),
+    (f"////live//{Q_USER}//{Q_PASS}//abc", "////live//***//***//abc"),
+    (f"//{Q_USER}/{Q_PASS}/1.ts", "//***/***/1.ts"),
+    (f"GET //movie/{Q_USER}/{Q_PASS}/1.mp4?password={Q_PASS} HTTP/1.1",
+     "GET //movie/***/***/1.mp4?password=*** HTTP/1.1"),
+    (f"GET //x#password={Q_PASS} HTTP/1.1", "GET //x#password=*** HTTP/1.1"),
+    (f"path=//timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts", "path=//timeshift/***/***/60/x/5.ts"),
+    (f'"path"://timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts', '"path"://timeshift/***/***/60/x/5.ts'),
+    # percent-encoded forms (the server decodes once before routing)
+    (f"/%6dovie/{Q_USER}/{Q_PASS}/x", "/movie/***/***/x"),
+    (f"/%4DOVIE/{Q_USER}/{Q_PASS}/x", "/MOVIE/***/***/x"),
+    (f"/movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4", "/movie/***/***/1.mp4"),
+    (f"/movie%2f{Q_USER}%2f{Q_PASS}%2f1.mp4", "/movie/***/***/1.mp4"),
+    (f'"GET /%6dovie/{Q_USER}/{Q_PASS}/x HTTP/1.1"', '"GET /movie/***/***/x HTTP/1.1"'),
+    (f"/movie/a/b/%6cive/{Q_USER}/{Q_PASS}/1", "/movie/***/***/live/***/***/1"),
+    # double-encoded: not a route (the server decodes once), left alone
+    (f"/movie%252F{Q_USER}%252F{Q_PASS}%252F1", f"/movie%252F{Q_USER}%252F{Q_PASS}%252F1"),
+    ("/a%20b/c", "/a%20b/c"),
+    ("/a%2Fb", "/a%2Fb"),
+    ("/x/%41", "/x/%41"),
+    ("/a%zz/b%", "/a%zz/b%"),
+    # request lines
+    (f"GET /movie/{Q_USER}/{Q_PASS}/1.mp4?username={Q_USER}&password={Q_PASS} HTTP/1.1",
+     "GET /movie/***/***/1.mp4?username=***&password=*** HTTP/1.1"),
+    (f'"GET /movie/{Q_USER}/{Q_PASS}/1.mp4 HTTP/1.1" 401 17', '"GET /movie/***/***/1.mp4 HTTP/1.1" 401 17'),
+    (f"HTTP GET /live/{Q_USER}/{Q_PASS}/1.ts 401", "HTTP GET /live/***/***/1.ts 401"),
+    # query forms
+    (f"/player_api.php?username={Q_USER}&password={Q_PASS}", "/player_api.php?username=***&password=***"),
+    (f"/get.php?username={Q_USER}&password={Q_PASS}&type=m3u_plus",
+     "/get.php?username=***&password=***&type=m3u_plus"),
+    (f"/x?PASSWORD={Q_PASS}", "/x?PASSWORD=***"),
+    (f"/x?pass%77ord={Q_PASS}", "/x?pass%77ord=***"),
+    (f"/x?password={Q_PASS}&a=1&password={Q_PASS}", "/x?password=***&a=1&password=***"),
+    # fragments
+    (f"GET /player_api.php#password={Q_PASS} HTTP/1.1", "GET /player_api.php#password=*** HTTP/1.1"),
+    (f"GET /x?a=1#username={Q_USER}&password={Q_PASS} HTTP/1.1",
+     "GET /x?a=1#username=***&password=*** HTTP/1.1"),
+    ("GET /x?a=1#section HTTP/1.1", "GET /x?a=1#section HTTP/1.1"),
+    # quoted, bracketed and keyed forms
+    (f'{{"path":"/{Q_USER}/{Q_PASS}/1.ts"}}', '{"path":"/***/***/1.ts"}'),
+    (f'path="/{Q_USER}/{Q_PASS}/1.ts"', 'path="/***/***/1.ts"'),
+    (f"path='/{Q_USER}/{Q_PASS}/1.ts'", "path='/***/***/1.ts'"),
+    (f"path=/{Q_USER}/{Q_PASS}/1.ts", "path=/***/***/1.ts"),
+    (f"{{'path': '/{Q_USER}/{Q_PASS}/1.ts'}}", "{'path': '/***/***/1.ts'}"),
+    (f"url=http://h/{Q_USER}/{Q_PASS}/1.ts", "url=http://h/***/***/1.ts"),
+    (f'"url":"http://h/{Q_USER}/{Q_PASS}/1.ts"', '"url":"http://h/***/***/1.ts"'),
+    (f"url:http://h/{Q_USER}/{Q_PASS}/1.ts", "url:http://h/***/***/1.ts"),
+    (f"url=http://h/movie/{Q_USER}/{Q_PASS}/1", "url=http://h/movie/***/***/1"),
+    (f'url="http://{Q_USER}:{Q_PASS}@h/x"', 'url="http://***@h/x"'),
+    (f"at /{Q_USER}/{Q_PASS}/1.ts.", "at /***/***/1.ts."),
+    (f"failed: /{Q_USER}/{Q_PASS}/1.ts:", "failed: /***/***/1.ts:"),
+    (f"error:/{Q_USER}/{Q_PASS}/1.ts", "error:/***/***/1.ts"),
+    (f"'/movie/{Q_USER}/{Q_PASS}/1.mp4'", "'/movie/***/***/1.mp4'"),
+    (f"(/movie/{Q_USER}/{Q_PASS}/1.mp4)", "(/movie/***/***/1.mp4)"),
+    (f"<http://h/{Q_USER}/{Q_PASS}/1.ts>", "<http://h/***/***/1.ts>"),
+    # absolute URLs, with and without userinfo and ports (review round 3, E)
+    (f"http://h/{Q_USER}/{Q_PASS}/1.ts", "http://h/***/***/1.ts"),
+    (f"https://h:8080/{Q_USER}/{Q_PASS}/1.ts", "https://h:8080/***/***/1.ts"),
+    (f"GET http://h/{Q_USER}/{Q_PASS}/1.ts HTTP/1.1", "GET http://h/***/***/1.ts HTTP/1.1"),
+    (f"http://{Q_USER}:{Q_PASS}@h/x", "http://***@h/x"),
+    (f"https://{Q_USER}:{Q_PASS}@h:8080/live/{Q_USER}/{Q_PASS}/1.ts", "https://***@h:8080/live/***/***/1.ts"),
+    (f"http://h/movie/{Q_USER}/{Q_PASS}/1.mp4", "http://h/movie/***/***/1.mp4"),
+    (f"http://h/player_api.php?username={Q_USER}&password={Q_PASS}",
+     "http://h/player_api.php?username=***&password=***"),
+    (f"http://h/x#password={Q_PASS}", "http://h/x#password=***"),
+    (f'"http://h/{Q_USER}/{Q_PASS}/1.ts"', '"http://h/***/***/1.ts"'),
+    (f"http://h/{Q_USER}/{Q_PASS}/1.ts.", "http://h/***/***/1.ts."),
+    (f"RuntimeError: fetch http://h/{Q_USER}/{Q_PASS}/1.ts failed",
+     "RuntimeError: fetch http://h/***/***/1.ts failed"),
+    # non-HTTP schemes
+    (f"rtsp://h/{Q_USER}/{Q_PASS}/1", "rtsp://h/***/***/1"),
+    (f"ftp://{Q_USER}:{Q_PASS}@h/", "ftp://***@h/"),
+    (f"rtmp://h/live/{Q_USER}/{Q_PASS}/1", "rtmp://h/live/***/***/1"),
+    # near-misses that stay unchanged
+    ("http://h/a/b", "http://h/a/b"),
+    ("http://h/a/5", "http://h/a/5"),
+    ("url=http://h/a/5", "url=http://h/a/5"),
+    ("https://h:8080/a/5", "https://h:8080/a/5"),
+    ("http://h", "http://h"),
+    ("status: ok", "status: ok"),
+    ("time: 12:30:45", "time: 12:30:45"),
+    ("key: /api/channels/", "key: /api/channels/"),
+    ("key: a/b/c", "key: a/b/c"),
+    ('"detail": "/static/x"', '"detail": "/static/x"'),
+    ("/api/accounts/users/5/", "/api/accounts/users/5/"),
+    ("Unauthorized: /player_api.php", "Unauthorized: /player_api.php"),
+    ("the quick brown fox jumps over the lazy dog", "the quick brown fox jumps over the lazy dog"),
+    ("ratio 3:1 at 10:00", "ratio 3:1 at 10:00"),
+    # over-masked: three segments ending in a stream id look like the bare
+    # root route; masked at every earlier head too (stated in the PR body)
+    ("/static/js/1.js", "/***/***/1.js"),
+    ("/output/m3u/3", "/***/***/3"),
+    ('"detail":"/static/js/1.js"', '"detail":"/***/***/1.js"'),
+    ("status: /api/channels/5", "status: /***/***/5"),
+    ("C:/x/y/1", "C:/***/***/1"),
+)
+
+
+class RedactTextTableTests(SimpleTestCase):
+    """Every row of REDACT_TEXT_TABLE, compared exactly."""
+
+    def test_the_table_is_large_enough_to_mean_something(self):
+        self.assertGreaterEqual(len(REDACT_TEXT_TABLE), 60)
+        self.assertEqual(len({text for text, _ in REDACT_TEXT_TABLE}), len(REDACT_TEXT_TABLE))
+
+    def test_every_row(self):
+        for text, expected in REDACT_TEXT_TABLE:
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), expected)
+
+    def test_an_absolute_url_is_never_split_at_its_scheme(self):
+        # Review round 3, finding E: the key prefix took "http:" as a key and
+        # masked the URL as a path, so the host became a segment.
+        for text, expected in (
+            (f"http://h/{Q_USER}/{Q_PASS}/1.ts", "http://h/***/***/1.ts"),
+            (f"GET http://h/{Q_USER}/{Q_PASS}/1.ts HTTP/1.1", "GET http://h/***/***/1.ts HTTP/1.1"),
+            (f"http://{Q_USER}:{Q_PASS}@h/x", "http://***@h/x"),
+            ("http://h/a/5", "http://h/a/5"),
+        ):
+            with self.subTest(text=text):
+                out = redact_text(text)
+                self.assertNotIn(Q_USER, out, f"{Q_USER} survived in {out!r}")
+                self.assertNotIn(Q_PASS, out, f"{Q_PASS} survived in {out!r}")
+                self.assertEqual(out, expected)
 
 
 class PlacementTests(_SinkAssertions, SimpleTestCase):

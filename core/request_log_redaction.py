@@ -76,9 +76,19 @@ _TOKEN_RE = re.compile(r"\S+")
 # Sentence punctuation stripped from the end of a token only.
 _TRAILING_PUNCTUATION = ".:"
 # ``path=/user/pass/1.ts``, ``"path":"/user/pass/1.ts"``, ``url=http://h/...``:
-# a key, an optional quote, ``=`` or ``:``, an optional quote, then a path or
-# a URL.
-_KEY_PREFIX_RE = re.compile(r"""[A-Za-z_][\w.-]*["']?[=:]["']?(?=/|[A-Za-z][A-Za-z0-9+.-]*://)""")
+# a key, then a separator, then a path or a URL. ``=`` (quoted or not) is
+# always a separator. ``:`` is one only when it cannot be a URL scheme's own
+# colon: after a quoted key (``"path"://...``), before a quote, before a single
+# ``/`` (``key:/u/p/1``), or before another scheme (``url:http://...``). An
+# unquoted ``word:`` followed by ``//`` is the scheme of an absolute URL
+# (``http://h/u/p/1``), which goes to ``redact_url`` whole, so its host stays a
+# host and its userinfo is masked. A bare path that starts ``//`` has no key
+# and is not affected.
+_KEY_PREFIX_RE = re.compile(
+    r"""[A-Za-z_][\w.-]*"""
+    r"""(?:["']?=["']?|["']:["']?|:["']|:(?!//))"""
+    r"""(?=/|[A-Za-z][A-Za-z0-9+.-]*://)"""
+)
 _QUERY_OR_FRAGMENT_RE = re.compile(r"[?#]")
 
 # A credential shorter than this is not scrubbed by value: replacing every
