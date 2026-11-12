@@ -966,9 +966,10 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
         fields.update(overrides)
         return make_provider(**fields)
 
-    def _held_kind_change_to_entra(self, provider, meanwhile):
+    def _held_kind_change_to_entra(self, provider, meanwhile, before_release=None):
         """Hold a PATCH {kind: entra} of ``provider`` before the lock, apply the PATCH
-        ``meanwhile`` from another admin, release. Returns (version before release, row)."""
+        ``meanwhile`` from another admin, call ``before_release`` if given, release.
+        Returns (version before release, row)."""
         entered, release = self.hold_at_lock("held-rederive")
         client = self.admin_client
         worker = Worker(
@@ -981,6 +982,8 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
             response = client.patch(f"{PROVIDERS}{provider.pk}/", meanwhile, format="json")
             self.assertEqual(response.status_code, 200, response.content)
             before = OIDCProvider.objects.get(pk=provider.pk).version
+            if before_release is not None:
+                before_release()
             release.set()
         finally:
             release.set()
@@ -1038,7 +1041,10 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
     def test_refresh_minted_before_a_rederived_bump_is_reevaluated(self):
         # An OIDC refresh token minted at the provider's version is decided without a
         # recompute; after a locked write bumps version through a re-derived column alone,
-        # the same token must be re-evaluated (spec 5.4, D17).
+        # the same token must be re-evaluated (spec 5.4, D17). The token is minted after
+        # the meanwhile PATCH (itself a security-relevant write that bumps version) and
+        # before the held PATCH is released, so the re-derived bump is the only difference
+        # between the token's version and the row's.
         generic = self._generic_with_tenant("gen-refresh", enabled=True)
         user = User.objects.create_user(username="sso-u", user_level=User.UserLevel.ADMIN)
         identity = OIDCIdentity.objects.create(
@@ -1049,25 +1055,35 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
             mapping_claim_path="roles",
             mapping_claim_values=["admins"],
         )
-        _, refresh_token = flow.mint(user, generic, identity, User.UserLevel.ADMIN)
-        with mock.patch.object(
-            refresh_mod, "_recompute", wraps=refresh_mod._recompute
-        ) as recompute:
-            self.assertEqual(self.refresh(refresh_token).status_code, 200)
-        recompute.assert_not_called()
+        minted = {}
 
-        before, row = self._held_kind_change_to_entra(generic, {"client_assertion_alg": "RS256"})
-        self.assertEqual(row.version, before + 1)
+        def mint_at_current_version():
+            current = OIDCProvider.objects.get(pk=generic.pk)
+            _, minted["token"] = flow.mint(user, current, identity, User.UserLevel.ADMIN)
+            minted["version"] = current.version
+            with mock.patch.object(
+                refresh_mod, "_recompute", wraps=refresh_mod._recompute
+            ) as recompute:
+                self.assertEqual(self.refresh(minted["token"]).status_code, 200)
+            recompute.assert_not_called()
+
+        before, row = self._held_kind_change_to_entra(
+            generic, {"client_assertion_alg": "RS256"}, before_release=mint_at_current_version
+        )
+        self.assertEqual(minted["version"], before)
         with mock.patch.object(
             refresh_mod, "_recompute", wraps=refresh_mod._recompute
         ) as recompute:
-            response = self.refresh(refresh_token)
+            response = self.refresh(minted["token"])
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(
             recompute.call_count,
             1,
-            "a refresh token minted before a re-derived version bump was not re-evaluated",
+            f"a refresh token minted at version {minted['version']} was not re-evaluated "
+            f"after the locked write left the row at version {row.version}: the re-derived "
+            "client_assertion_alg did not bump version",
         )
+        self.assertEqual(row.version, before + 1)
 
     def test_concurrent_disables_of_last_two_providers_one_wins(self):
         set_password_login(False)
