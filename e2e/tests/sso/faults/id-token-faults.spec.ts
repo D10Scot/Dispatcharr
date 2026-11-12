@@ -110,11 +110,13 @@ for (const { fault, issuerPath, ssoError, opLog } of CASES) {
       await expect(page).toHaveURL(new RegExp(`/login\\?sso_error=${ssoError}$`), { timeout: 30_000 });
       await expect(page.getByTestId(SSO_TESTIDS.error)).toBeVisible();
 
-      // No session: the SPA stored no token pair, and the browser carries nothing the API
-      // accepts (a GET outside the oidc throttle).
+      // No session: the SPA stored no token pair. That pair is the only credential a
+      // browser can present: the API authenticates by bearer JWT or API key and has no
+      // session authentication (DRF's DEFAULT_AUTHENTICATION_CLASSES in the settings module),
+      // so a cookie-only request would answer 401 whatever the browser held and proves
+      // nothing.
       const stored = await page.evaluate(() => [localStorage.getItem('accessToken'), localStorage.getItem('refreshToken')]);
       expect(stored, 'no token pair was stored').toEqual([null, null]);
-      expect((await page.request.get('/api/accounts/users/')).status(), 'the browser is not signed in').toBe(401);
 
       const users = listRows<UserRow>(await api.json<unknown>(await api.get('/api/accounts/users/'), 'list users'));
       expect(users.map((u) => u.username), 'no user was provisioned').not.toContain(username);
