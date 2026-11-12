@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/D10Scot/Dispatcharr/relay/redact"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // Resolver is how a channel asks for its next source: the port of
@@ -187,13 +188,33 @@ func (f *failureCounter) clear() {
 // Serialised by switchMu, because the stderr reader and the run loop can
 // both reach it, and a second switch racing the first would exclude the
 // wrong stream id.
+//
+// It owns relay.failover and M4 (observability D11): the span is a new root
+// linked to the tune that published the channel, the resolver's next-source
+// call is its child, and each return ends it and counts once with the
+// outcome that return reports.
 func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 	c.switchMu.Lock()
 	defer c.switchMu.Unlock()
 
+	ctx, span := telemetry.StartFailover(ctx, c.tuneRef)
+	if c.pk > 0 {
+		span.SetChannelID(c.pk)
+	}
+	span.SetTrigger(why)
+	resolved, outcome := c.failoverLocked(ctx, why)
+	span.SetOutcome(outcome)
+	span.End()
+	telemetry.Current().Failover(ctx, c.pk, why, outcome)
+	return resolved, outcome == telemetry.OutcomeSwitched
+}
+
+// failoverLocked is failover's body, under switchMu. It returns the resolved
+// source and M4's outcome; only OutcomeSwitched carries a source.
+func (c *Channel) failoverLocked(ctx context.Context, why string) (Resolved, string) {
 	if c.resolver == nil {
 		c.log.Error("no alternate stream available: this channel has no resolver", "channel", c.id, "trigger", why)
-		return Resolved{}, false
+		return Resolved{}, telemetry.OutcomeNoResolver
 	}
 
 	c.mu.RLock()
@@ -212,10 +233,10 @@ func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 	if err != nil {
 		if errors.Is(err, ErrNoAlternate) {
 			c.log.Error("no alternate stream available", "channel", c.id, "trigger", why)
-		} else {
-			c.log.Error("the failover could not be resolved", "channel", c.id, "trigger", why, "error", redact.Error(err))
+			return Resolved{}, telemetry.OutcomeNoAlternate
 		}
-		return Resolved{}, false
+		c.log.Error("the failover could not be resolved", "channel", c.id, "trigger", why, "error", redact.Error(err))
+		return Resolved{}, telemetry.OutcomeUnresolved
 	}
 
 	c.mu.Lock()
@@ -226,7 +247,7 @@ func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 		// update_url returns False on the URL already playing, and
 		// _try_next_stream reports the failover failed (:2143-2153).
 		c.log.Error("the failover named the URL already playing", "channel", c.id, "stream", resolved.Info.StreamID)
-		return Resolved{}, false
+		return Resolved{}, telemetry.OutcomeSameURL
 	}
 
 	c.log.Info("switching stream", "channel", c.id, "trigger", why, "stream", resolved.Info.StreamID, "m3u_profile", resolved.Info.M3UProfileID)
@@ -242,7 +263,7 @@ func (c *Channel) failover(ctx context.Context, why string) (Resolved, bool) {
 		// (:2191-2202).
 		c.emit("channel_error", map[string]any{"reason": "degraded_failover"})
 	}
-	return resolved, true
+	return resolved, telemetry.OutcomeSwitched
 }
 
 // applySwitch is update_url's success path (input/manager.py:1479-1530)

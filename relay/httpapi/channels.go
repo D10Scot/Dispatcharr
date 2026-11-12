@@ -13,6 +13,7 @@ import (
 	"github.com/D10Scot/Dispatcharr/relay/channel"
 	"github.com/D10Scot/Dispatcharr/relay/control"
 	"github.com/D10Scot/Dispatcharr/relay/session"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // DefaultClientLimit caps the clients list when ?clients=all is absent.
@@ -349,6 +350,10 @@ func RequireInternal(secret string, now func() time.Time, next http.HandlerFunc)
 		if len(body) > 0 {
 			r.Body = io.NopCloser(bytes.NewReader(body))
 		}
+		// The caller's trace context, adopted only now that the request is
+		// proven to come from this deployment (observability D11): a client
+		// must never choose a trace id.
+		r = r.WithContext(telemetry.ExtractTraceparent(r.Context(), r.Header))
 		next(w, r)
 	}
 }

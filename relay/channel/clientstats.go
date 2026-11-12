@@ -139,8 +139,8 @@ func (c Client) Stats(at time.Time) ClientStats {
 // math.Round is half-away-from-zero and Python's round() is banker's, which
 // differ only on an exact .x5 of a rate computed from a byte count over a
 // wall-clock interval. Recorded as a stated divergence rather than emulated:
-// banker's rounding to one place would need a decimal library and this
-// module is stdlib-only (Global Constraint 3).
+// banker's rounding to one place would need a decimal library, which the
+// relay does not take for this (ADR 0011 allows only the listed modules).
 func round1(v float64) float64 {
 	return math.Round(v*10) / 10
 }

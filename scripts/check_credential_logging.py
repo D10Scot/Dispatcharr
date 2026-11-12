@@ -64,7 +64,7 @@ makes this hatch safe to have.
 KNOWN GAPS IN THE PATTERN. It is inherited verbatim from the advisory grep this
 check replaced, and widening it is a deliberate change, not a drive-by — a
 wider pattern would flag pre-existing calls across the whole tree and redden
-unrelated pull requests. Three gaps are known and were found by reading:
+unrelated pull requests. Five gaps are known and were found by reading:
 
   * `\bpassword\b` requires a word boundary, and `_` is a word character, so it
     misses `base_password`, `xc_password` and `transformed_password`. A call
@@ -75,9 +75,19 @@ unrelated pull requests. Three gaps are known and were found by reading:
   * `_url\b` does not match `_uri`, so `request.build_absolute_uri()` — which
     returns the full request URL, credentials in the path and all — is not
     reported.
+  * A bare `url` argument and a `*_pattern` argument are not matched
+    (`_url\b` needs the underscore), so `logger.debug("%s", url)` or
+    `logger.debug("%s", search_pattern)` passes. An M3U filter's DEBUG line
+    logged a raw stream URL this way. Measured at 0c142c15: widening the
+    pattern for both adds 22 findings over 8 files, mostly harmless
+    (logo.url, filter regexes, EPG title patterns) and some real
+    (core/image_proxy.py, apps/epg/sd_utils.py, apps/plugins/api_views.py),
+    so it was not landed with that fix.
+  * `trace` is not in LOG_LEVELS, so `logger.trace(...)` calls are not
+    examined at all.
 
 Closing them means working off the resulting backlog in one pass. Until then,
-read a diff for these three shapes yourself; the check will not do it for you.
+read a diff for these shapes yourself; the check will not do it for you.
 
 TELEMETRY CALLS (observability spec D9). The same one-argument-at-a-time rule
 applies to a span, tracer, metric-instrument or meter call, because a span
