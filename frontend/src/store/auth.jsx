@@ -341,6 +341,12 @@ const useAuthStore = create((set, get) => ({
           await new Promise((resolve) =>
             setTimeout(resolve, retryAfterMs(error))
           );
+          // A logout or a new sign-in during the wait replaced the session this
+          // retry started from: abandon it, leaving the current session (or its
+          // absence) untouched.
+          if (localStorage.getItem('refreshToken') !== refreshToken) {
+            return false;
+          }
           continue;
         }
         console.error('Token refresh failed:', error);

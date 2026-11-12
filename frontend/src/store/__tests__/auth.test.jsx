@@ -612,6 +612,102 @@ describe('useAuthStore', () => {
       expect(vi.getTimerCount()).toBe(0);
     });
 
+    it('caps a huge Retry-After at ten seconds', async () => {
+      const token = createMockToken();
+      API.refreshToken
+        .mockRejectedValueOnce(busy('3600'))
+        .mockResolvedValueOnce({ access: token });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(9999);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(API.refreshToken).toHaveBeenCalledTimes(2);
+      await expect(pending).resolves.toBe(token);
+    });
+
+    it.each([
+      ['a negative value', '-5'],
+      ['an HTTP-date', 'Wed, 21 Oct 2026 07:28:00 GMT'],
+      ['garbage', 'soon'],
+    ])('waits one second when Retry-After is %s', async (_label, value) => {
+      const token = createMockToken();
+      API.refreshToken
+        .mockRejectedValueOnce(busy(value))
+        .mockResolvedValueOnce({ access: token });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(API.refreshToken).toHaveBeenCalledTimes(2);
+      await expect(pending).resolves.toBe(token);
+    });
+
+    it.each([400, 500])(
+      'does not retry a %i whose body carries admin_floor_busy',
+      async (status) => {
+        const error = busy('1');
+        error.status = status;
+        error.message = `HTTP error! Status: ${status}`;
+        API.refreshToken.mockRejectedValue(error);
+
+        await expect(useAuthStore.getState().getRefreshToken()).resolves.toBe(
+          false
+        );
+        expect(API.refreshToken).toHaveBeenCalledTimes(1);
+        expect(API.logout).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    );
+
+    it('abandons the retry when the user logged out during the wait', async () => {
+      let stored = 'refresh-token';
+      localStorageMock.getItem.mockImplementation((key) =>
+        key === 'refreshToken' ? stored : null
+      );
+      API.refreshToken.mockRejectedValueOnce(busy('2'));
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(1000);
+      stored = null; // logout() removed the stored pair
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await expect(pending).resolves.toBe(false);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      expect(localStorageMock.setItem).not.toHaveBeenCalledWith(
+        'accessToken',
+        expect.anything()
+      );
+      expect(API.logout).not.toHaveBeenCalled();
+    });
+
+    it('abandons the retry when a new session signed in during the wait', async () => {
+      let stored = 'refresh-token';
+      localStorageMock.getItem.mockImplementation((key) =>
+        key === 'refreshToken' ? stored : null
+      );
+      API.refreshToken
+        .mockRejectedValueOnce(busy('2'))
+        .mockResolvedValueOnce({ access: createMockToken() });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(1000);
+      stored = 'new-session-refresh-token'; // loginWithTokens stored a new pair
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await expect(pending).resolves.toBe(false);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      expect(localStorageMock.setItem).not.toHaveBeenCalledWith(
+        'accessToken',
+        expect.anything()
+      );
+      expect(API.logout).not.toHaveBeenCalled();
+      expect(localStorageMock.removeItem).not.toHaveBeenCalledWith(
+        'refreshToken'
+      );
+    });
+
     it('does not retry a 503 with another code', async () => {
       const error = busy('1');
       error.body = { code: 'something_else' };
