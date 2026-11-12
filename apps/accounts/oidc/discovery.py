@@ -363,14 +363,27 @@ def _cache_set(key, doc):
 
 
 def get_jwks(provider, discovery, *, refetch=False):
-    """The JWKS, cached like discovery. ``refetch`` bypasses the cache (an unknown ``kid``)."""
+    """The JWKS, cached like discovery. ``refetch`` bypasses the cache (an unknown ``kid``).
+
+    The entry records what it was fetched for: the ``jwks_uri`` and the provider's issuer.
+    A hit counts only when both equal the current ones, as ``get_discovery`` checks the
+    cached document's issuer: a database restored under a Redis that kept its keys could
+    otherwise pair this row's (pk, version) with another provider's signing keys. A
+    mismatched entry, or one in the shape written before the binding (a bare JWKS), is a
+    miss and is refetched, never an error.
+    """
     key = jwks_cache_key(provider)
     if not refetch:
-        doc = _cache_get(key)
-        if isinstance(doc, dict):
-            return doc
+        entry = _cache_get(key)
+        if (
+            isinstance(entry, dict)
+            and entry.get("jwks_uri") == discovery["jwks_uri"]
+            and entry.get("issuer") == provider.issuer
+            and isinstance(entry.get("jwks"), dict)
+        ):
+            return entry["jwks"]
     doc = fetch_jwks(provider, discovery)
-    _cache_set(key, doc)
+    _cache_set(key, {"jwks_uri": discovery["jwks_uri"], "issuer": provider.issuer, "jwks": doc})
     return doc
 
 
