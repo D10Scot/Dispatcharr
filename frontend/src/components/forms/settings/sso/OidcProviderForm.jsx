@@ -229,7 +229,13 @@ const OidcProviderForm = ({
           secret={secret}
           onSecretChange={(value) => {
             setSecret(value);
-            if (!expiryTouched) setSecretExpiry('');
+            // Untouched date: a typed secret starts without a date (spec 5.2); an
+            // emptied field gives the stored date of the secret still in use back.
+            if (!expiryTouched) {
+              setSecretExpiry(
+                value === '' ? (provider?.client_secret_expires_at ?? '') : ''
+              );
+            }
           }}
           authMethod={authMethod}
           onAuthMethodChange={setAuthMethod}

@@ -360,4 +360,110 @@ describe('SsoSettingsForm', () => {
     await userEvent.click(screen.getByTestId('sso-delete-confirm-entra'));
     expect(API.deleteOidcProvider).toHaveBeenCalledWith(7);
   });
+
+  // Spec 5.2: a new secret never inherits the old date; a secret that is not
+  // being replaced keeps its date. Stored date D = 2026-12-01 in every row.
+  // 'key' is the secret field, 'date' the expiry field; 'expires' is the payload
+  // expectation: ABSENT (key not sent), null (cleared) or a date.
+  const ABSENT = Symbol('absent');
+  const D = '2026-12-01';
+  const X = '2027-06-30';
+  const setDate = async (value) => {
+    const field = screen.getByTestId('sso-secret-expiry');
+    await userEvent.clear(field);
+    if (value) await userEvent.type(field, value);
+  };
+  const typeSecret = (v) =>
+    userEvent.type(screen.getByTestId('sso-client-secret'), v);
+  const eraseSecret = () =>
+    userEvent.clear(screen.getByTestId('sso-client-secret'));
+
+  it.each([
+    ['A untouched, no secret', [], undefined, ABSENT, D],
+    ['B type secret', [['type', 'new']], 'new', null, ''],
+    ['C type then erase', [['type', 'new'], ['erase']], undefined, ABSENT, D],
+    [
+      'D type, erase, type again',
+      [['type', 'a'], ['erase'], ['type', 'b']],
+      'b',
+      null,
+      '',
+    ],
+    [
+      'E set date, then type secret',
+      [
+        ['date', X],
+        ['type', 'new'],
+      ],
+      'new',
+      X,
+      X,
+    ],
+    [
+      'F type secret, then set date',
+      [
+        ['type', 'new'],
+        ['date', X],
+      ],
+      'new',
+      X,
+      X,
+    ],
+    ['G set date, no secret', [['date', X]], undefined, X, X],
+    [
+      'H set date, type secret, erase secret',
+      [['date', X], ['type', 'new'], ['erase']],
+      undefined,
+      X,
+      X,
+    ],
+    [
+      'I type secret, set date, erase secret',
+      [['type', 'new'], ['date', X], ['erase']],
+      undefined,
+      X,
+      X,
+    ],
+    ['J clear the date, no secret', [['date', '']], undefined, null, ''],
+    [
+      'K change the date and put it back',
+      [
+        ['date', X],
+        ['date', D],
+      ],
+      undefined,
+      ABSENT,
+      D,
+    ],
+  ])(
+    'secret and expiry: %s',
+    async (_name, steps, secret, expires, shownDate) => {
+      API.updateOidcProvider.mockResolvedValue(provider());
+      await open(provider({ client_secret_expires_at: D }));
+      for (const [kind, value] of steps) {
+        if (kind === 'type') await typeSecret(value);
+        if (kind === 'erase') await eraseSecret();
+        if (kind === 'date') await setDate(value);
+      }
+      expect(screen.getByTestId('sso-secret-expiry')).toHaveValue(shownDate);
+
+      await userEvent.click(screen.getByTestId('sso-provider-save'));
+
+      await waitFor(() => expect(API.updateOidcProvider).toHaveBeenCalled());
+      const payload = API.updateOidcProvider.mock.calls[0][1];
+      if (secret === undefined) {
+        expect(Object.hasOwn(payload, 'client_secret')).toBe(false);
+      } else {
+        expect(payload.client_secret).toBe(secret);
+      }
+      if (expires === ABSENT) {
+        expect(
+          Object.hasOwn(payload, 'client_secret_expires_at'),
+          'an unchanged date must not be sent'
+        ).toBe(false);
+      } else {
+        expect(payload.client_secret_expires_at).toBe(expires);
+      }
+    }
+  );
 });

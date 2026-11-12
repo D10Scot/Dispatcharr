@@ -64,6 +64,8 @@ Mino shows a fixed message for each code; the code is in the address as `sso_err
 | `provider_mismatch` | The response did not match the provider the attempt started with. | Start again from the login page. |
 | `state_invalid`, `binding_invalid` | The attempt expired, was reused, or started in a different browser. | Start again from the login page. |
 | `token_exchange_failed` | The provider did not accept the sign-in code. | Check the credential and redirect URI. |
+| `ui_access_denied` | Client-side code (Mino's own sign-in page, not the server). The account is a Streamer, and Streamers cannot use the web UI. | An administrator raises the account's level, or maps the role to Standard or Admin. |
+| `exchange_failed` | Client-side code. The sign-in finished at the provider but Mino could not complete it (expired or reused handoff, or the web UI could not load). | Start again from the login page. |
 | `provider_unavailable` | Sign-in could not be completed. This is also what Mino answers for an unexpected internal error, so it does not necessarily mean the provider is down. | Try again; run Test; if it persists, check the server log. |
 
 Microsoft shows its own error page for problems before the user returns to Mino, and records codes in the sign-in log. Microsoft's reference is https://learn.microsoft.com/en-us/entra/identity-platform/reference-error-codes.

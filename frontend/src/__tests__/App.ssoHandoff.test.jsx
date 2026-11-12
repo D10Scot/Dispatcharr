@@ -221,6 +221,17 @@ describe('App refused link attempt', () => {
     expect(window.location.search).toBe('');
   });
 
+  it('ignores an sso_error parameter on any path but /login', async () => {
+    window.history.pushState({}, '', '/channels?sso_error=link_conflict');
+
+    render(<App />);
+
+    await waitFor(() =>
+      expect(screen.getByTestId('channels-page')).toBeInTheDocument()
+    );
+    expect(showNotification).not.toHaveBeenCalled();
+  });
+
   it('shows nothing when there is no sso_error', async () => {
     window.history.pushState({}, '', '/login');
     render(<App />);
