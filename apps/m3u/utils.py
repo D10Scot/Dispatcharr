@@ -51,7 +51,7 @@ class _BoundedFilterPattern:
             return self._compiled.search(target, timeout=self._timeout)
         except TimeoutError:
             self.tripped = True
-            logger.warning(
+            logger.warning(  # credential-logging: ignore - operator-authored M3U filter regex: no credential
                 "Stream filter pattern %r timed out after %.2fs; treating "
                 "as non-matching for the rest of this refresh",
                 self.pattern,

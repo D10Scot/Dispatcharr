@@ -3,6 +3,8 @@ import logging
 import traceback
 import json
 
+from dispatcharr.utils import redact_url
+
 logger = logging.getLogger(__name__)
 
 
@@ -72,7 +74,9 @@ class Client:
         """Make request with detailed error handling"""
         try:
             url = f"{self.server_url}/{endpoint}"
-            logger.debug(f"XC API Request: {url} with params: {params}")
+            logger.debug(
+                f"XC API Request: {redact_url(url)} with params: {sorted(params or {})}"
+            )
 
             response = self.session.get(url, params=params, timeout=60)
             response.raise_for_status()
@@ -114,7 +118,9 @@ class Client:
         except requests.RequestException as e:
             error_msg = f"XC API Request failed: {str(e)}"
             logger.error(error_msg)
-            logger.error(f"Request details: URL={url}, Params={params}")
+            logger.error(
+                f"Request details: URL={redact_url(url)}, Params={sorted(params or {})}"
+            )
             raise
         except ValueError as e:
             # This could be from JSON parsing or our explicit raises

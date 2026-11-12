@@ -89,7 +89,7 @@ class RedisPubSubManager:
 
             if self.pubsub:
                 self.pubsub.psubscribe(pattern)
-                logger.info(f"Subscribed to pattern: {pattern}")
+                logger.info(f"Subscribed to pattern: {pattern}")  # credential-logging: ignore - a Redis pub/sub channel glob, not a URL or credential
 
     def publish(self, channel, message):
         """

@@ -18,10 +18,10 @@ def get_user(validated_token):
         user = jwt_auth.get_user(validated_token)
         return user
     except User.DoesNotExist:
-        logger.warning(f"User from token does not exist. User ID: {validated_token.get('user_id', 'unknown')}")
+        logger.warning(f"User from token does not exist. User ID: {validated_token.get('user_id', 'unknown')}")  # credential-logging: ignore - message text names a JWT but logs a user id or the JWT library error text, never the token itself
         return AnonymousUser()
     except Exception as e:
-        logger.error(f"Error getting user from token: {str(e)}")
+        logger.error(f"Error getting user from token: {str(e)}")  # credential-logging: ignore - message text names a JWT but logs a user id or the JWT library error text, never the token itself
         return AnonymousUser()
 
 class JWTAuthMiddleware(BaseMiddleware):
@@ -36,7 +36,7 @@ class JWTAuthMiddleware(BaseMiddleware):
                     validated_token = JWTAuthentication().get_validated_token(token)
                     scope["user"] = await get_user(validated_token)
                 except (InvalidToken, TokenError) as e:
-                    logger.warning(f"Invalid token: {str(e)}")
+                    logger.warning(f"Invalid token: {str(e)}")  # credential-logging: ignore - message text names a JWT but logs a user id or the JWT library error text, never the token itself
                     scope["user"] = AnonymousUser()
             else:
                 scope["user"] = AnonymousUser()

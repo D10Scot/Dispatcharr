@@ -64,7 +64,7 @@ makes this hatch safe to have.
 KNOWN GAPS IN THE PATTERN. It is inherited verbatim from the advisory grep this
 check replaced, and widening it is a deliberate change, not a drive-by — a
 wider pattern would flag pre-existing calls across the whole tree and redden
-unrelated pull requests. Five gaps are known and were found by reading:
+unrelated pull requests. Three gaps are known and were found by reading:
 
   * `\bpassword\b` requires a word boundary, and `_` is a word character, so it
     misses `base_password`, `xc_password` and `transformed_password`. A call
@@ -75,19 +75,22 @@ unrelated pull requests. Five gaps are known and were found by reading:
   * `_url\b` does not match `_uri`, so `request.build_absolute_uri()` — which
     returns the full request URL, credentials in the path and all — is not
     reported.
-  * A bare `url` argument and a `*_pattern` argument are not matched
-    (`_url\b` needs the underscore), so `logger.debug("%s", url)` or
-    `logger.debug("%s", search_pattern)` passes. An M3U filter's DEBUG line
-    logged a raw stream URL this way. Measured at 0c142c15: widening the
-    pattern for both adds 22 findings over 8 files, mostly harmless
-    (logo.url, filter regexes, EPG title patterns) and some real
-    (core/image_proxy.py, apps/epg/sd_utils.py, apps/plugins/api_views.py),
-    so it was not landed with that fix.
-  * `trace` is not in LOG_LEVELS, so `logger.trace(...)` calls are not
-    examined at all.
 
 Closing them means working off the resulting backlog in one pass. Until then,
 read a diff for these shapes yourself; the check will not do it for you.
+
+BARE NAMES AND TRACE (closed). A second pattern, NAME_RE, flags a bare `url`
+(`url`, `repo.url`) and `pattern` / `*_pattern` (`search_pattern`,
+`flt.pattern`) in a log argument, and `trace` is one of LOG_LEVELS beside the
+standard five. NAME_RE is matched against the argument's *expressions* only,
+with every string literal blanked and every redact_* call cut out, because
+"url" and "pattern" are ordinary message words: `f"Generated stream url:
+{redact_url(u)}"` is clear. The older CREDENTIAL_RE still reads message text,
+as before. M3U profile search/replace patterns are the provider login in
+Xtream "simple" mode, which is why `*_pattern` is flagged; a call logging an
+operator-authored regex that is no credential takes the ignore marker, with
+its reason. The whole backend source tree is at zero findings under both, and
+tests/test_credential_logging_guard.py holds it there.
 
 TELEMETRY CALLS (observability spec D9). The same one-argument-at-a-time rule
 applies to a span, tracer, metric-instrument or meter call, because a span
@@ -126,10 +129,11 @@ All three are follow-ups, not gaps to work around with the ignore marker.
 """
 
 import ast
+import copy
 import re
 import sys
 
-LOG_LEVELS = frozenset({"info", "debug", "warning", "error", "exception"})
+LOG_LEVELS = frozenset({"info", "debug", "warning", "error", "exception", "trace"})
 
 # Expressions that can carry a provider credential. Inherited verbatim from the
 # advisory grep in .claude/hooks/run-affected-tests.sh — see KNOWN GAPS above.
@@ -137,6 +141,12 @@ CREDENTIAL_RE = re.compile(
     r"request\.headers|request\.META|get_full_path|\bpassword\b"
     r"|api_key|\btoken\b|_url\b|url\}"
 )
+
+# Bare `url` and `pattern` / `*_pattern` names. Matched against the argument's
+# expressions only, with every string literal blanked (see _expression_source):
+# the words "url" and "pattern" are ordinary message text, and a rule that read
+# message text would flag f"Generated stream url: {redact_url(u)}".
+NAME_RE = re.compile(r"\burl\b|_pattern\b|\bpattern\b")
 
 # redact_text and redact_exception are dispatcharr/observability/redaction.py's:
 # the first scrubs a free-text body (best effort), the second reduces an
@@ -247,6 +257,30 @@ def _residual_source(node):
     return text
 
 
+class _Blank(ast.NodeTransformer):
+    """Empty every string literal and cut out every redact_* call."""
+
+    def visit_Call(self, node):
+        if _is_redact_call(node):
+            return ast.Constant(value="")
+        return self.generic_visit(node)
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, str):
+            return ast.Constant(value="")
+        return node
+
+
+def _expression_source(node):
+    """The argument's source with string literals and redact_* calls removed.
+
+    What remains is the argument's identifiers, attributes and calls, so a
+    name-based rule (NAME_RE) judges what is evaluated and not what is said.
+    """
+    blanked = _Blank().visit(copy.deepcopy(node))
+    return ast.unparse(ast.fix_missing_locations(blanked))
+
+
 def _unredacted_arguments(call):
     """Yield the arguments of `call` that reach the log unredacted."""
     arguments = list(call.args) + [keyword.value for keyword in call.keywords]
@@ -254,6 +288,8 @@ def _unredacted_arguments(call):
         if _is_literal(argument):
             continue
         if CREDENTIAL_RE.search(_residual_source(argument)):
+            yield argument
+        elif NAME_RE.search(_expression_source(argument)):
             yield argument
 
 

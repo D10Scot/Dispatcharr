@@ -1186,7 +1186,7 @@ def _stream_passes_m3u_filters(name, url, group_title, compiled_filters, log_nam
     complete, untruncated name and group; they default to the arguments.
     """
     for pattern, filter_obj in compiled_filters:
-        logger.trace("Checking filter pattern %s", pattern.pattern)
+        logger.trace("Checking filter pattern %s", pattern.pattern)  # credential-logging: ignore - operator-authored M3U filter regex, or a URL length: no credential
         if filter_obj.filter_type == "url":
             target = url
         elif filter_obj.filter_type == "group":
@@ -1195,7 +1195,7 @@ def _stream_passes_m3u_filters(name, url, group_title, compiled_filters, log_nam
             target = name
 
         if pattern.search(target or ""):
-            logger.debug(
+            logger.debug(  # credential-logging: ignore - operator-authored M3U filter regex, or a URL length: no credential
                 "Stream %s (group %s) matches filter pattern %s",
                 log_name or _LoggableText(name), log_group or _LoggableText(group_title),
                 filter_obj.regex_pattern,
@@ -1470,7 +1470,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
     if compiled_filters:
-        logger.debug(
+        logger.debug(  # credential-logging: ignore - operator-authored M3U filter regex, or a URL length: no credential
             "Using compiled filters: %s",
             [filter_obj.regex_pattern for _, filter_obj in compiled_filters],
         )
@@ -1487,7 +1487,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
 
             # Validate URL length - maximum of 4096 characters
             if url and len(url) > 4096:
-                logger.warning("Skipping stream '%s': URL too long (%d characters, max 4096)", log_name, len(url))
+                logger.warning("Skipping stream '%s': URL too long (%d characters, max 4096)", log_name, len(url))  # credential-logging: ignore - operator-authored M3U filter regex, or a URL length: no credential
                 continue
 
             # Truncate name if it exceeds the model field limit

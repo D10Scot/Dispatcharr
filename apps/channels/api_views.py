@@ -2593,9 +2593,9 @@ class BulkDeleteLogosAPIView(APIView):
                     if os.path.exists(logo.url):
                         os.remove(logo.url)
                         local_files_deleted += 1
-                        logger.info(f"Deleted local logo file: {os.path.basename(logo.url)}")
+                        logger.info(f"Deleted local logo file: {os.path.basename(logo.url)}")  # credential-logging: ignore - logo.url is a local /data/logos file path (guarded by startswith), not a provider URL
                 except Exception as e:
-                    logger.error(f"Failed to delete logo file {os.path.basename(logo.url)}: {str(e)}")
+                    logger.error(f"Failed to delete logo file {os.path.basename(logo.url)}: {str(e)}")  # credential-logging: ignore - logo.url is a local /data/logos file path (guarded by startswith), not a provider URL
                     return Response(
                         {"error": f"Failed to delete logo file {logo.url}: {str(e)}"},
                         status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -2663,9 +2663,9 @@ class CleanupUnusedLogosAPIView(APIView):
                         if os.path.exists(logo.url):
                             os.remove(logo.url)
                             local_files_deleted += 1
-                            logger.info(f"Deleted local logo file: {os.path.basename(logo.url)}")
+                            logger.info(f"Deleted local logo file: {os.path.basename(logo.url)}")  # credential-logging: ignore - logo.url is a local /data/logos file path (guarded by startswith), not a provider URL
                     except Exception as e:
-                        logger.error(f"Failed to delete logo file {os.path.basename(logo.url)}: {str(e)}")
+                        logger.error(f"Failed to delete logo file {os.path.basename(logo.url)}: {str(e)}")  # credential-logging: ignore - logo.url is a local /data/logos file path (guarded by startswith), not a provider URL
                         return Response(
                             {"error": f"Failed to delete logo file {logo.url}: {str(e)}"},
                             status=status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -2781,9 +2781,9 @@ class LogoViewSet(viewsets.ModelViewSet):
             try:
                 if os.path.exists(logo.url):
                     os.remove(logo.url)
-                    logger.info(f"Deleted local logo file: {os.path.basename(logo.url)}")
+                    logger.info(f"Deleted local logo file: {os.path.basename(logo.url)}")  # credential-logging: ignore - logo.url is a local /data/logos file path (guarded by startswith), not a provider URL
             except Exception as e:
-                logger.error(f"Failed to delete logo file {os.path.basename(logo.url)}: {str(e)}")
+                logger.error(f"Failed to delete logo file {os.path.basename(logo.url)}: {str(e)}")  # credential-logging: ignore - logo.url is a local /data/logos file path (guarded by startswith), not a provider URL
                 return Response(
                     {"error": f"Failed to delete logo file: {str(e)}"},
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR

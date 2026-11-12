@@ -416,3 +416,76 @@ class CredentialLoggingGuardTests(SimpleTestCase):
         ]
         result = self.run_guard(*targets)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+# The bare-name and TRACE rules. Each source is (name, source, reported lines).
+HEADER = "import logging\nfrom dispatcharr.utils import redact_url, redact_text\nlogger = logging.getLogger(__name__)\n"
+
+NAME_CASES = (
+    ("bare url, percent form", 'logger.debug("fetch %s", url)', True),
+    ("bare url, f-string", 'logger.debug(f"fetch {url}")', True),
+    ("bare url, attribute", 'logger.info("fetch %s", repo.url)', True),
+    ("bare url, redact_url", 'logger.debug("fetch %s", redact_url(url))', False),
+    ("bare url, f-string redact_url", 'logger.debug(f"fetch {redact_url(url)}")', False),
+    ("bare url, redact_text", 'logger.debug("fetch %s", redact_text(url))', False),
+    ("url only in message text", 'logger.info(f"Generated stream url: {redact_url(u)}")', False),
+    ("pattern, percent form", 'logger.debug("using %s", search_pattern)', True),
+    ("pattern, f-string", 'logger.debug(f"using {replace_pattern!r}")', True),
+    ("bare pattern, attribute", 'logger.warning("using %s", flt.pattern)', True),
+    ("pattern, redact_text", 'logger.debug("using %s", redact_text(search_pattern))', False),
+    ("pattern only in message text", 'logger.info(f"Custom pattern did not match {name}")', False),
+    ("trace, bare url", 'logger.trace("fetch %s", url)', True),
+    ("trace, f-string url", 'logger.trace(f"fetch {stream_url}")', True),
+    ("trace, pattern", 'logger.trace("using %s", search_pattern)', True),
+    ("trace, redacted", 'logger.trace("fetch %s", redact_url(url))', False),
+    ("trace, nothing credential-like", 'logger.trace("started %s", name)', False),
+)
+
+
+class WidenedNameRuleTests(SimpleTestCase):
+    """Bare `url`, `pattern`/`*_pattern` and `logger.trace` (R15)."""
+
+    setUp = CredentialLoggingGuardTests.setUp
+    write = CredentialLoggingGuardTests.write
+    run_guard = CredentialLoggingGuardTests.run_guard
+
+    def run_case(self, source):
+        path = self.write("case.py", HEADER + "def go():\n    " + source + "\n")
+        return self.run_guard(path)
+
+    def test_each_name_and_trace_case(self):
+        for label, source, reported in NAME_CASES:
+            with self.subTest(label):
+                result = self.run_case(source)
+                if reported:
+                    self.assertEqual(result.returncode, 1, f"{label} not reported: {source}")
+                    self.assertEqual(len(result.stdout.splitlines()), 1, result.stdout)
+                else:
+                    self.assertEqual(
+                        result.returncode, 0, f"{label} wrongly reported: {result.stdout}"
+                    )
+
+    def test_a_marker_with_a_reason_clears_a_bare_name(self):
+        result = self.run_case(
+            'logger.debug("using %s", search_pattern)  # credential-logging: ignore - operator regex'
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_marker_without_a_reason_does_not_clear_a_bare_name(self):
+        result = self.run_case(
+            'logger.trace("using %s", search_pattern)  # credential-logging: ignore'
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("needs a reason", result.stdout)
+
+    def test_the_source_tree_is_clean_under_the_widened_rule(self):
+        # A live ratchet over every backend source file, not a fixture.
+        repo = GUARD.resolve().parent.parent
+        targets = sorted(
+            p
+            for top in ("apps", "core", "dispatcharr")
+            for p in (repo / top).rglob("*.py")
+        )
+        self.assertGreater(len(targets), 100)
+        result = self.run_guard(*targets)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
