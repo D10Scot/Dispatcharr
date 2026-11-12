@@ -20,6 +20,17 @@ import {
 } from '@mantine/core';
 import logo from '../../assets/logo.png';
 import { showNotification } from '../../utils/notificationUtils.js';
+import API from '../../api';
+import SsoSignIn from './SsoSignIn';
+
+const readLoginParams = () => {
+  const params = new URLSearchParams(window.location.search);
+  return {
+    ssoError: params.get('sso_error'),
+    // Validated where it is used (ssoStartUrl), never taken raw into a URL.
+    next: params.get('next'),
+  };
+};
 
 const LoginForm = () => {
   const login = useAuthStore((s) => s.login);
@@ -35,6 +46,9 @@ const LoginForm = () => {
   const [savePassword, setSavePassword] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  // null until the login configuration arrives (or fails): both show the password form.
+  const [authConfig, setAuthConfig] = useState(null);
+  const [{ ssoError, next }] = useState(readLoginParams);
 
   // Simple base64 encoding/decoding for localStorage
   // Note: This is obfuscation, not encryption. Use browser's password manager for real security.
@@ -85,6 +99,26 @@ const LoginForm = () => {
       }
     }
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve()
+      .then(() => API.getAuthConfig())
+      .then((config) => {
+        if (!cancelled && config && Array.isArray(config.providers)) {
+          setAuthConfig(config);
+        }
+      })
+      .catch(() => {
+        // Fail open to the password form: SSO is optional, the form always worked.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const providers = authConfig?.providers ?? [];
+  const showPasswordForm = authConfig?.password_login_enabled !== false;
 
   useEffect(() => {
     if (isAuthenticated) {
@@ -178,90 +212,100 @@ const LoginForm = () => {
           </Text>
           <Divider style={{ width: '100%' }} />
         </Stack>
-        <form onSubmit={handleSubmit}>
-          <Stack>
-            <TextInput
-              label="Username"
-              name="username"
-              value={formData.username}
-              onChange={handleInputChange}
-              required
-            />
+        {(providers.length > 0 || ssoError) && (
+          <Stack mb={showPasswordForm ? 'md' : 0}>
+            <SsoSignIn providers={providers} errorCode={ssoError} next={next} />
+            {showPasswordForm && providers.length > 0 && (
+              <Divider label="or" labelPosition="center" />
+            )}
+          </Stack>
+        )}
+        {showPasswordForm && (
+          <form onSubmit={handleSubmit}>
+            <Stack>
+              <TextInput
+                label="Username"
+                name="username"
+                value={formData.username}
+                onChange={handleInputChange}
+                required
+              />
 
-            <TextInput
-              label="Password"
-              type="password"
-              name="password"
-              value={formData.password}
-              onChange={handleInputChange}
-              // required
-            />
+              <TextInput
+                label="Password"
+                type="password"
+                name="password"
+                value={formData.password}
+                onChange={handleInputChange}
+                // required
+              />
 
-            <Group justify="space-between" align="center">
-              <Group align="center" spacing="xs">
-                <Checkbox
-                  label="Remember me"
-                  checked={rememberMe}
-                  onChange={(e) => setRememberMe(e.currentTarget.checked)}
-                  size="sm"
-                />
-                {rememberMe && (
+              <Group justify="space-between" align="center">
+                <Group align="center" spacing="xs">
                   <Checkbox
-                    label="Save password"
-                    checked={savePassword}
-                    onChange={(e) => setSavePassword(e.currentTarget.checked)}
+                    label="Remember me"
+                    checked={rememberMe}
+                    onChange={(e) => setRememberMe(e.currentTarget.checked)}
                     size="sm"
                   />
-                )}
-              </Group>
-              <Anchor
-                size="sm"
-                component="button"
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  setForgotPasswordOpened(true);
-                }}
-              >
-                Forgot password?
-              </Anchor>
-            </Group>
-
-            <div
-              style={{
-                position: 'relative',
-                height: '0',
-                overflow: 'visible',
-                marginBottom: '-4px',
-              }}
-            >
-              {savePassword && (
-                <Text
-                  size="xs"
-                  color="red"
-                  style={{
-                    marginTop: '-10px',
-                    marginBottom: '0',
-                    lineHeight: '1.2',
+                  {rememberMe && (
+                    <Checkbox
+                      label="Save password"
+                      checked={savePassword}
+                      onChange={(e) => setSavePassword(e.currentTarget.checked)}
+                      size="sm"
+                    />
+                  )}
+                </Group>
+                <Anchor
+                  size="sm"
+                  component="button"
+                  type="button"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    setForgotPasswordOpened(true);
                   }}
                 >
-                  ⚠ Password will be stored locally without encryption. Only use
-                  on trusted devices.
-                </Text>
-              )}
-            </div>
+                  Forgot password?
+                </Anchor>
+              </Group>
 
-            <Button
-              type="submit"
-              fullWidth
-              loading={isLoading}
-              disabled={isLoading}
-              loaderProps={{ type: 'dots' }}
-            >
-              {isLoading ? 'Logging you in...' : 'Login'}
-            </Button>
-          </Stack>
-        </form>
+              <div
+                style={{
+                  position: 'relative',
+                  height: '0',
+                  overflow: 'visible',
+                  marginBottom: '-4px',
+                }}
+              >
+                {savePassword && (
+                  <Text
+                    size="xs"
+                    color="red"
+                    style={{
+                      marginTop: '-10px',
+                      marginBottom: '0',
+                      lineHeight: '1.2',
+                    }}
+                  >
+                    ⚠ Password will be stored locally without encryption. Only
+                    use on trusted devices.
+                  </Text>
+                )}
+              </div>
+
+              <Button
+                type="submit"
+                fullWidth
+                loading={isLoading}
+                disabled={isLoading}
+                loaderProps={{ type: 'dots' }}
+              >
+                {isLoading ? 'Logging you in...' : 'Login'}
+              </Button>
+            </Stack>
+          </form>
+        )}
 
         {storedVersion.version && (
           <Text

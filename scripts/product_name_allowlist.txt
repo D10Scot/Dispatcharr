@@ -409,6 +409,7 @@
 2	frontend/src/utils/components/__tests__/FloatingVideoUtils.test.js
 4	frontend/src/utils/components/__tests__/pluginUtils.test.js
 2	frontend/src/utils/components/pluginUtils.js
+1	frontend/src/utils/sso/ssoUtils.js
 2	manage.py
 1	metrics/build/__main__.py
 1	metrics/curated/defects.yml
