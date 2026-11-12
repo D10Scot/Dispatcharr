@@ -1,6 +1,6 @@
 # `e2e-upstream` contract
 
-**Version:** 1.3.0
+**Version:** 1.4.0
 
 **An unlisted behaviour is not a guarantee.** If it isn't named below, a
 consumer test must not depend on it, however consistently it happens to
@@ -20,7 +20,11 @@ Everything under `e2e-upstream/src/` reachable over HTTP: `POST`/`GET`/
 `DELETE /scenarios`, the four `/s/<id>/*` control routes (`fault`, `rate`,
 `log`, `connections`), the three provider-facing routes (`playlist.m3u`,
 `epg.xml`, `stream/<id>.ts`), and the six XC routes (`player_api.php`,
-`/live/`, `/movie/`, `/series/`, `/timeshift/`, `/streaming/timeshift.php`).
+`/live/`, `/movie/`, `/series/`, `/timeshift/`, `/streaming/timeshift.php`),
+and the fake OpenID provider under `/oidc` (1.4.0): its control routes
+(`POST /oidc/clients`, `POST /oidc/clients/<id>/logins`,
+`GET /oidc/clients/<id>/log`, `DELETE /oidc/clients/<id>`) and, per issuer
+(`/oidc` and `/oidc/rfc9207`), discovery, `authorize`, `token` and `jwks`.
 `e2e-upstream/scripts/` (asset generation) and `e2e-upstream/test/` (the
 package's own vitest suite) are covered only insofar as their behaviour is
 observable through those routes — the build scripts' internals and the test
@@ -101,6 +105,17 @@ depend on. Each links to the README section that documents the mechanism.
   the server from the asset it serves. See "The asset" in the README. This is
   a guarantee about internal consistency, not about a *specific* duration or
   packet count — see "Non-guarantees".
+
+- **The fake OpenID provider is strict where a real one is** (1.4.0,
+  `test/oidc.test.ts`). Its token endpoint refuses a missing or mismatched
+  PKCE `code_verifier` with `invalid_grant` although discovery does not
+  advertise PKCE, refuses client authentication other than
+  `client_secret_post` with `invalid_client`, spends a code on its first
+  presentation, and answers an unregistered `redirect_uri` itself rather than
+  redirecting to it. An honest login yields an RS256 ID token that verifies
+  against the published JWKS, whose entries carry no `alg`. Each of the seven
+  faults in the README's "Fake OpenID provider" section changes exactly what
+  that section says it changes. See the README's "Fake OpenID provider".
 
 ## Non-guarantees
 
@@ -239,6 +254,11 @@ test can prove Dispatcharr does *not* rely on them either.
   than requested. See `ConnectionRegistry`'s `disconnect` doc comment
   (`src/connections.ts`) and "Fault catalogue" in the README.
 
+- **The fake OpenID provider's keys and clients do not survive a restart.**
+  Keys are generated at start-up and never written anywhere, and clients,
+  queued logins and codes live in memory, so a recreated provider publishes a
+  new `kid` and forgets every client.
+
 ## Known consumers
 
 `e2e/fixtures/upstream.ts` is the one sanctioned client — see the README's
@@ -262,6 +282,10 @@ consumer yet. Their planned consumers are Phase 4a's HLS work
 § Testing): 4a-1a's real-ffmpeg packager tests, which may build the fixtures
 themselves with `scripts/make-asset.sh <out> <name>`, and the `streaming` and
 `frontend` project specs of 4a-1b, 4a-1c, 4a-1d and 4a-2.
+
+The fake OpenID provider's (1.4.0) only consumer is the `sso` Playwright
+project, `e2e/tests/sso/`, which registers one client per provider it creates
+and queues one login per sign-in.
 
 `e2e-upstream`'s own `test/*.test.ts` (vitest) is not a consumer in this
 sense — it is the thing that keeps this document honest (see "Enforcement").
@@ -305,6 +329,11 @@ channel `asset` field and six named codec fixtures (Phase 4a-0), and makes
 the fixtures' shapes a guarantee. That is a backward-compatible addition by
 the rule above: an omitted `asset` resolves to `loop`, the file every
 scenario served before, and the echo gains a key rather than changing one.
+
+**This landing is 1.4.0, a minor bump from 1.3.0.** It adds the fake
+OpenID provider under `/oidc` for the SSO e2e tests (SSO spec PR S5): new
+routes and one new optional environment variable, `UPSTREAM_CONTROL_ORIGIN`,
+which only those routes read. No existing route, field or fault changes.
 
 ## Enforcement
 
