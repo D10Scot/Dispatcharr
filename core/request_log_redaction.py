@@ -73,6 +73,11 @@ FILTER_NAME = "request_log_credentials"
 # it is treated as a URL: quoting and bracketing from reprs and tracebacks.
 _TOKEN_PUNCTUATION = "'\"<>()[]{},;"
 _TOKEN_RE = re.compile(r"\S+")
+# Sentence punctuation stripped from the end of a token only.
+_TRAILING_PUNCTUATION = ".:"
+# ``path=/user/pass/1.ts``: a key and ``=`` in front of a path.
+_KEY_PREFIX_RE = re.compile(r"[A-Za-z_][\w.-]*=(?=/)")
+_QUERY_OR_FRAGMENT_RE = re.compile(r"[?#]")
 
 # A credential shorter than this is not scrubbed by value: replacing every
 # occurrence of a one- to three-character string would shred unrelated text
@@ -97,29 +102,52 @@ def _redact_url(value):
     return _utils().redact_url(value)
 
 
-def _redact_decoded_path(path):
-    """``redact_url`` on a string that is wholly a path.
+def _mask_path(path):
+    """Mask the credential segments of a string that is wholly a path.
 
-    ``request.path`` is percent-decoded, so a ``?`` or ``#`` inside a
-    credential is a literal character there, and ``redact_url`` would read
-    the rest of the path as a query string or fragment. Escaping ``%``, ``?``
-    and ``#`` first keeps every segment a segment; the escape is undone on
-    the result, so unmasked segments come back byte-identical.
+    Segments are masked directly, never through ``urlsplit``: a path that
+    starts ``//`` would be read as a host and its first segment lost, and a
+    decoded ``?`` or ``#`` inside a credential would end the path early. A
+    path with percent-escapes is also tried decoded, because the server
+    decodes ``/%6dovie/...`` and ``/movie%2Fu%2Fp%2F1`` before routing; the
+    decoded form is returned only when it is the one that carried a match.
     """
-    escaped = path.replace("%", "%25").replace("?", "%3F").replace("#", "%23")
-    redacted = _redact_url(escaped)
-    if redacted == escaped:
-        return path
-    return redacted.replace("%23", "#").replace("%3F", "?").replace("%25", "%")
+    redact_path = _utils()._redact_path
+    masked = redact_path(path)
+    if masked != path:
+        return masked
+    if "%" in path:
+        decoded = "/".join(unquote(part) for part in path.split("/"))
+        masked = redact_path(decoded)
+        if masked != decoded:
+            return masked
+    return path
+
+
+def _redact_core(core):
+    """One token with its quoting stripped: a path, a ``key=path`` or a URL."""
+    prefix = ""
+    keyed = _KEY_PREFIX_RE.match(core)
+    if keyed:
+        prefix, core = core[:keyed.end()], core[keyed.end():]
+    if not core.startswith("/"):
+        return prefix + _redact_url(core)
+    end = _QUERY_OR_FRAGMENT_RE.search(core)
+    head, rest = (core[:end.start()], core[end.start():]) if end else (core, "")
+    head = _mask_path(head)
+    if rest.startswith("?"):
+        query, hash_, fragment = rest[1:].partition("#")
+        rest = "?" + _utils()._redact_query(query) + hash_ + fragment
+    return prefix + head + rest
 
 
 def _redact_token(match):
     token = match.group(0)
-    core = token.strip(_TOKEN_PUNCTUATION)
+    start = len(token) - len(token.lstrip(_TOKEN_PUNCTUATION))
+    core = token[start:].rstrip(_TOKEN_PUNCTUATION + _TRAILING_PUNCTUATION)
     if not core:
         return token
-    start = token.find(core)
-    redacted = _redact_url(core)
+    redacted = _redact_core(core)
     if redacted == core:
         return token
     return token[:start] + redacted + token[start + len(core):]
@@ -129,16 +157,15 @@ def redact_text(text):
     """Mask the Xtream credentials in every URL or path inside ``text``.
 
     A string that is itself a path (it starts with ``/``: ``request.path`` in
-    Django's own arguments) is redacted whole and as a path first, so a
-    credential containing a space, ``?`` or ``#`` is still one segment. Every
-    whitespace-delimited token is then redacted on its own, which catches a
-    URL inside a request line or a traceback. Non-strings are returned as
-    they are.
+    Django's own arguments) is masked whole first, so a credential containing
+    a space, ``?`` or ``#`` is still one segment. Every whitespace-delimited
+    token is then masked on its own, which catches a URL or a path inside a
+    request line or a traceback. Non-strings are returned as they are.
     """
     if not isinstance(text, str) or not text:
         return text
     if text.startswith("/"):
-        text = _redact_decoded_path(text)
+        text = _mask_path(text)
     return _TOKEN_RE.sub(_redact_token, text)
 
 
@@ -166,11 +193,18 @@ def _request_credentials(request):
     for key in ("username", "password"):
         if isinstance(kwargs.get(key), str):
             values.add(kwargs[key])
-    query = getattr(request, "GET", None)
-    if query is not None:
-        for key in query:
-            if key.lower() in _utils().SENSITIVE_QUERY_KEYS:
-                values.update(v for v in query.getlist(key) if isinstance(v, str))
+    try:
+        # Parsing the query string can raise (TooManyFieldsSent on a request
+        # with more fields than DATA_UPLOAD_MAX_NUMBER_FIELDS, the very event
+        # django.security logs): the record must still be emitted, redacted by
+        # pattern, so a failure here only costs the by-value pass for the query.
+        query = getattr(request, "GET", None)
+        if query is not None:
+            for key in query:
+                if key.lower() in _utils().SENSITIVE_QUERY_KEYS:
+                    values.update(v for v in query.getlist(key) if isinstance(v, str))
+    except Exception:  # noqa: BLE001
+        pass
     spelled = set()
     for value in values:
         if len(value) >= MIN_SCRUBBED_VALUE_LENGTH:
@@ -219,24 +253,28 @@ def redact_record(record):
     values = _request_credentials(http_request) if http_request is not None else []
 
     clone = copy.copy(record)
-    clone.msg = redact_text(record.msg)
-    clone.args = _redact_args(record.args)
-    if values:
-        # Scrub the RENDERED message, not the template and each argument
-        # apart: a value can straddle the two. When the scrub changes
-        # nothing the template and the arguments (non-strings included) are
-        # kept as they are; when it does, the rendered text is stored with
-        # no arguments, which every formatter renders unchanged.
-        rendered = clone.getMessage()
-        scrubbed = _scrub_values(rendered, values)
-        if scrubbed != rendered:
-            clone.msg = scrubbed
-            clone.args = ()
+    # Render the message, then mask the rendered text: a template can carry a
+    # credential at a %s position, an argument need not be a string, and a
+    # value can straddle the template and an argument. String arguments are
+    # masked first, as the whole paths they usually are, so the escaping a
+    # credential needs survives. A message that cannot render raises here and
+    # is withheld by the filter. When nothing changes the template and the
+    # arguments are kept as they are; otherwise the masked text is stored with
+    # no arguments, which every formatter renders unchanged.
+    probe = copy.copy(record)
+    probe.args = _redact_args(record.args)
+    original = record.getMessage()
+    redacted = _scrub_values(redact_text(probe.getMessage()), values)
+    if redacted != original:
+        clone.msg = redacted
+        clone.args = ()
     if record.exc_info and record.exc_info[0] is not None:
         text = record.exc_text or logging.Formatter().formatException(record.exc_info)
         clone.exc_text = _redact_traceback(text, values)
     elif record.exc_text:
         clone.exc_text = _redact_traceback(record.exc_text, values)
+    if record.stack_info:
+        clone.stack_info = _redact_traceback(record.stack_info, values)
     if http_request is not None:
         del clone.request
     return clone

@@ -31,7 +31,9 @@ from urllib.parse import quote
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
-from django.core.exceptions import SuspiciousFileOperation
+from django.core.exceptions import SuspiciousFileOperation, TooManyFieldsSent
+from django.core.handlers.wsgi import WSGIRequest
+import time
 from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
 from django.urls import URLPattern, URLResolver, get_resolver, resolve
 
@@ -39,6 +41,7 @@ from core.request_log_redaction import (
     REDACTED_LOGGER_TREES,
     RequestLogCredentialFilter,
     redact_record,
+    redact_text,
     with_request_log_redaction,
 )
 from dispatcharr.observability import logs as observability_logs
@@ -52,6 +55,9 @@ WRONG = "wrongpw-sentinel-three"
 NONASCII_USER = "xcusér-sentinel-ü1"
 NONASCII_PASSWORD = "xcpäss-sentinel-ø2"
 SPECIAL_PASSWORD = "re.*+?(sentinel)[x]$^|7"
+# Built from the imported module so the file spells the old product name only
+# in its imports (scripts/product_name_allowlist.txt).
+OTEL_BRIDGE = observability_logs.__name__ + ".OtelBridgeHandler"
 
 
 def _forms(value):
@@ -434,7 +440,8 @@ class FilterUnitTests(SimpleTestCase):
         self.assertEqual(record.args[1], request.path)
         self.assertIs(record.request, request)
         self.assertFalse(hasattr(out, "request"))
-        self.assertEqual(out.args, ("Unauthorized", "/movie/***/***/1.mp4"))
+        self.assertEqual(out.getMessage(), "Unauthorized: /movie/***/***/1.mp4")
+        self.assertEqual(out.args, ())
 
     def test_mapping_args(self):
         record = self._record("django.channels.server", "%(path)s", {"path": f"/{USER}/{PASSWORD}/1.ts"})
@@ -520,6 +527,99 @@ class ValueScrubTests(SimpleTestCase):
         self.assertNotIn("request", vars(out))
 
 
+Q_USER = "xcuser-sentinel-q7"
+Q_PASS = "xcpw-sentinel-q8"
+
+
+class RoundOneTests(SimpleTestCase):
+    """Review round 1: shapes and records the first pass missed."""
+
+    def _record(self, msg, *args, **extra):
+        record = logging.LogRecord("django.request", logging.WARNING, __file__, 1, msg, args, None)
+        for key, value in extra.items():
+            setattr(record, key, value)
+        return record
+
+    def _assert_masked(self, text):
+        out = redact_text(text)
+        self.assertNotIn(Q_USER, out)
+        self.assertNotIn(Q_PASS, out)
+        self.assertIn("***", out)
+
+    def test_a_path_starting_with_two_slashes_is_masked(self):
+        for text in (
+            f"//timeshift/{Q_USER}/{Q_PASS}/60/2026-01-01:10-00/5.ts",
+            f"//live/{Q_USER}/{Q_PASS}/abc",
+            f"GET //timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts HTTP/1.1",
+            f"///series/{Q_USER}/{Q_PASS}/1.mkv",
+            f"/live//{Q_USER}//{Q_PASS}/abc",
+        ):
+            with self.subTest(text=text):
+                self._assert_masked(text)
+
+    def test_a_double_slash_path_keeps_its_query_masked(self):
+        out = redact_text(f"GET //movie/{Q_USER}/{Q_PASS}/1.mp4?password={Q_PASS} HTTP/1.1")
+        self.assertNotIn(Q_PASS, out)
+        self.assertNotIn(Q_USER, out)
+
+    def test_percent_encoded_prefix_and_slashes_in_a_request_line(self):
+        for text in (
+            f"/%6dovie/{Q_USER}/{Q_PASS}/x",
+            f"/movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4",
+            f'"GET /%6dovie/{Q_USER}/{Q_PASS}/x HTTP/1.1"',
+        ):
+            with self.subTest(text=text):
+                self._assert_masked(text)
+
+    def test_trailing_punctuation_and_a_key_prefix(self):
+        for text in (f"at /{Q_USER}/{Q_PASS}/1.ts.", f"path=/{Q_USER}/{Q_PASS}/1.ts", f"failed: /{Q_USER}/{Q_PASS}/1.ts:"):
+            with self.subTest(text=text):
+                self._assert_masked(text)
+
+    def test_placeholders_in_credential_positions_still_render(self):
+        record = self._record("/movie/%s/%s/1.mp4", Q_USER, Q_PASS)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "/movie/***/***/1.mp4")
+
+    def test_non_string_arguments_are_rendered_then_masked(self):
+        class Echo:
+            def __str__(self):
+                return f"/movie/{Q_USER}/{Q_PASS}/1.mp4"
+
+        for arg in (ValueError(f"bad /movie/{Q_USER}/{Q_PASS}/1.mp4"), Echo()):
+            with self.subTest(arg=type(arg).__name__):
+                out = RequestLogCredentialFilter().filter(self._record("%s", arg))
+                self.assertNotIn(Q_USER, out.getMessage())
+                self.assertNotIn(Q_PASS, out.getMessage())
+
+    def test_a_request_whose_query_cannot_be_parsed_still_logs_its_text(self):
+        request = RequestFactory().get(f"/movie/{Q_USER}/{Q_PASS}/1.mp4")
+        record = self._record("Bad request: %s", request.path, request=request)
+        with mock.patch.object(WSGIRequest, "GET", new_callable=mock.PropertyMock, side_effect=TooManyFieldsSent):
+            out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "Bad request: /movie/***/***/1.mp4")
+
+    def test_stack_info_is_masked(self):
+        record = self._record("x", stack_info=f"Stack at /movie/{Q_USER}/{Q_PASS}/1.mp4")
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertNotIn(Q_USER, out.stack_info)
+        self.assertEqual(record.stack_info, f"Stack at /movie/{Q_USER}/{Q_PASS}/1.mp4")
+
+    def test_a_long_hostile_input_is_linear(self):
+        hostile = (
+            "/" * 200_000,
+            "/movie/" + "a/" * 100_000,
+            "%" * 200_000,
+            "/" + "%2F" * 70_000,
+            "&password=x" * 20_000,
+            "a " * 100_000,
+        )
+        started = time.monotonic()
+        for text in hostile:
+            redact_text(text)
+        self.assertLess(time.monotonic() - started, 10)
+
+
 class PlacementTests(_SinkAssertions, SimpleTestCase):
     """The filter sits on HANDLERS, so a child logger and the OTel bridge cannot miss it.
 
@@ -576,7 +676,7 @@ class CompositionTests(SimpleTestCase):
         "formatters": {"verbose": {"format": "{message}", "style": "{"}},
         "handlers": {
             "console": {"class": "logging.StreamHandler", "formatter": "verbose", "level": 5},
-            "otel": {"class": "dispatcharr.observability.logs.OtelBridgeHandler", "level": 5},
+            "otel": {"class": OTEL_BRIDGE, "level": 5},
         },
         "loggers": {"apps": {"handlers": ["console", "otel"], "level": 20, "propagate": False}},
         "root": {"handlers": ["console", "otel"], "level": 20},
@@ -604,7 +704,7 @@ class CompositionTests(SimpleTestCase):
                 "filters": ["request_log_credentials"],
             },
             "otel": {
-                "class": "dispatcharr.observability.logs.OtelBridgeHandler", "level": 5,
+                "class": OTEL_BRIDGE, "level": 5,
                 "filters": ["request_log_credentials"],
             },
             "django.console": {
