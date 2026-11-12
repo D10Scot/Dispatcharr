@@ -10,6 +10,7 @@ import (
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/ffmpeg"
+	"github.com/D10Scot/Dispatcharr/relay/procstat"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
 )
 
@@ -82,6 +83,11 @@ type ProfileConfig struct {
 	ChannelID string
 	ProfileID int
 
+	// ChannelPK is the channel's numeric id, the label M8 and M9 count this
+	// transcode's process group under (observability D7). Zero when the
+	// channel has none.
+	ChannelPK int
+
 	// Source is the channel's TS ring: the transcode's fd 0.
 	Source *buffer.Ring
 
@@ -139,6 +145,7 @@ func StartProfile(ctx context.Context, cfg ProfileConfig) (*Pipeline, error) {
 		cancel()
 		return nil, fmt.Errorf("output: starting the Output Profile transcode: %w", redact.Error(err))
 	}
+	proc.Track(procstat.Labels{ChannelID: cfg.ChannelPK, Kind: procstat.KindOutput, ProfileID: cfg.ProfileID})
 	p := &Pipeline{
 		// THE COMMAND FIELDS ARE FILLED IN even though nothing restarts this
 		// pipeline: `bsf` is false, so run's retry arm is unreachable. Left

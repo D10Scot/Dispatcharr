@@ -48,6 +48,7 @@ from apps.proxy.internal_auth import (
     HEADER_RELAY_CHANNEL,
     HEADER_RELAY_CLIENT,
     HEADER_RELAY_CLIENT_IP,
+    HEADER_RELAY_TRACEPARENT,
     HEADER_RELAY_NAME,
     HEADER_RELAY_OUTPUT,
     HEADER_RELAY_OUTPUT_FORMAT,
@@ -65,6 +66,7 @@ from apps.proxy.internal_auth import (
     request_is_relay_trusted,
 )
 from apps.proxy.permissions import IsInternalRelay
+from dispatcharr.observability.propagation import current_traceparent
 
 logger = logging.getLogger(__name__)
 
@@ -358,6 +360,9 @@ def authorize_view(request):
     # get_client_ip's trusted-proxy configuration (client_ip).
     response[HEADER_RELAY_OUTPUT_FORMAT] = result.output_format
     response[HEADER_RELAY_CLIENT_IP] = result.client_ip
+    traceparent = current_traceparent()
+    if traceparent:
+        response[HEADER_RELAY_TRACEPARENT] = traceparent
     return response
 
 
