@@ -315,6 +315,23 @@ class DevelopmentServerLogTests(_SinkAssertions, SimpleTestCase):
             self.sinks.server.getvalue(),
         )
 
+    def test_django_runserver_server_time_is_not_masked(self):
+        # Review round 8, F5: a date is three parts ending in a number, which
+        # the pattern pass reads as the bare-root route ("12/Nov/2026" ->
+        # "***/***/2026"). django.server's date is the record's server_time,
+        # added by the formatter after the filter, so it is never read.
+        from django.core.servers.basehttp import WSGIRequestHandler
+
+        handler = WSGIRequestHandler.__new__(WSGIRequestHandler)
+        handler.request = mock.Mock(spec=socket.socket)
+        handler.client_address = ("127.0.0.1", 50000)
+        with mock.patch.object(WSGIRequestHandler, "log_date_time_string", return_value="12/Nov/2026 23:10:00"):
+            handler.log_message('"%s" %s %s', f"GET /movie/{USER}/{PASSWORD}/1.mp4 HTTP/1.1", "401", "17")
+        self.assertIn(
+            '[12/Nov/2026 23:10:00] "GET /movie/***/***/1.mp4 HTTP/1.1" 401 17',
+            self.sinks.server.getvalue(),
+        )
+
     def test_daphne_runserver_request_line(self):
         from daphne.management.commands.runserver import Command
 
@@ -517,11 +534,12 @@ class ValueScrubTests(SimpleTestCase):
         out = RequestLogCredentialFilter().filter(record)
         self.assertEqual(out.getMessage(), "Not Found: /movie/***/***/1.mp4")
 
-    def test_a_value_the_pattern_pass_would_cut_is_scrubbed_before_it(self):
+    def test_a_value_the_pattern_pass_would_cut_is_masked_whole(self):
         # A password with a space, in a message template (no arguments, so no
-        # whole-path reading): the token pass masks "xcpw" as the password
-        # segment and leaves "sentinel-q8/1.mp4" as a token of its own, where
-        # the whole value can no longer be found. Scrubbed first, it is whole.
+        # whole-path reading): the token pass reads "/movie/<user>/xcpw" and
+        # "sentinel-q8/1.mp4" as two tokens. The value is found in the text
+        # itself, whole, and its mask is added to the pattern masks (round 8:
+        # the two passes no longer run one after the other).
         password = "xcpw sentinel-q8"
         request = _xc_request(f"/movie/xcuser-sentinel-q7/{quote(password, safe='')}/1.mp4")
         self.assertEqual(request.resolver_match.kwargs["password"], password)
@@ -529,17 +547,40 @@ class ValueScrubTests(SimpleTestCase):
         out = RequestLogCredentialFilter().filter(record)
         self.assertEqual(out.getMessage(), "lookup failed for /movie/***/***/1.mp4")
 
-    def test_a_value_that_is_a_prefix_word_is_not_scrubbed_before_the_pattern_pass(self):
-        # A user called "live" with a three-character password: scrubbed
-        # first, "/live/live/q9z/1.ts" would become "/***/***/q9z/1.ts", where
-        # no prefix is left for the pattern pass to key on, and "q9z" is too
-        # short to be scrubbed by value. Scrubbed after, both are gone.
+    def test_a_value_that_is_a_prefix_word_does_not_hide_the_prefix(self):
+        # A user called "live" with a three-character password: had the value
+        # been replaced before the pattern pass, "/live/live/q9z/1.ts" would
+        # read "/***/***/q9z/1.ts", with no prefix left to key on, and "q9z"
+        # is too short to be scrubbed by value. Both passes read the text as
+        # it is, so both are gone.
         request = _xc_request("/live/live/q9z/1.ts")
         kwargs = request.resolver_match.kwargs
         self.assertEqual((kwargs["username"], kwargs["password"]), ("live", "q9z"))
         record = self._record("fetch /live/live/q9z/1.ts failed", request=request)
         out = RequestLogCredentialFilter().filter(record)
         self.assertEqual(out.getMessage(), "fetch /***/***/***/1.ts failed")
+
+    def test_a_path_argument_is_read_whole_where_it_sits(self):
+        # Review round 8: a %s string argument is also read whole, on its own
+        # (a credential holding a space is one segment only there), and its
+        # masks are placed where it sits in the rendered message. No request
+        # is attached, so the value pass cannot help.
+        path = f"/movie/{Q_USER}/xcpw sentinel-q8/1.mp4"
+        out = RequestLogCredentialFilter().filter(self._record("Not Found: %s", path))
+        self.assertEqual(out.getMessage(), "Not Found: /movie/***/***/1.mp4")
+        daphne = "HTTP %(method)s %(path)s %(status)s [%(time_taken).2f, %(client)s]"
+        out = RequestLogCredentialFilter().filter(self._record(
+            daphne, {"method": "GET", "path": path, "status": 404, "time_taken": 0.01, "client": "127.0.0.1:1"},
+            name="django.channels.server",
+        ))
+        self.assertEqual(out.getMessage(), "HTTP GET /movie/***/***/1.mp4 404 [0.01, 127.0.0.1:1]")
+
+    def test_a_template_whose_arguments_cannot_be_placed_masks_them_first(self):
+        # %r renders an argument as other text, so it cannot be placed: the
+        # string arguments are masked first and the message masked after.
+        path = f"/movie/{Q_USER}/xcpw sentinel-q8/1.mp4"
+        out = RequestLogCredentialFilter().filter(self._record("lookup %r failed", path))
+        self.assertEqual(out.getMessage(), "lookup '/movie/***/***/1.mp4' failed")
 
     def test_a_one_character_password_does_not_shred_the_message(self):
         request = _xc_request("/movie/u/a/1.mp4")
@@ -670,8 +711,9 @@ class RoundOneTests(SimpleTestCase):
         # at least one shape: the whole-path mask (1, 2), the unread path (4),
         # redact_url on a token with no leading slash (3, 5), the per-token
         # loop (6), the key prefix (7), the query/fragment split (8), the
-        # "//" userinfo and after-host reading (9, 10) and the path of a
-        # scheme:// URL (11).
+        # "//" userinfo and after-host reading (9, 10), the path of a
+        # scheme:// URL (11) and the search for a query start outside the
+        # masked segments (12).
         shapes = (
             lambda n: "/" * n,
             lambda n: "/movie/" + "a/" * (n // 2),
@@ -684,6 +726,8 @@ class RoundOneTests(SimpleTestCase):
             lambda n: "//" + "a@" * (n // 2) + "/x",
             lambda n: "//h" + "/a" * (n // 2),
             lambda n: "http://h" + "/a?" * (n // 3),
+            # round 8: many "?" inside one masked segment (the second query start)
+            lambda n: "/live/" + "a?" * (n // 2) + "/b/1",
         )
         # The small run is grown until it takes at least this long, so it is
         # well clear of timer noise and the ratio below means something for
@@ -920,6 +964,22 @@ REDACT_TEXT_TABLE = (
     (f"/live/a/b/1?next=/movie/{Q_USER}/{Q_PASS}/2&password=p", "/live/***/***/1?next=/movie/***/***/2&password=***"),
     (f"/x?a=1/live/{Q_USER}/{Q_PASS}/1.ts&b=z", "/x?a=1/live/***/***/1.ts&b=z"),
     (f"/live/a/b/1?next=/movie/{Q_USER}/{Q_PASS}/2&b=p", "/live/***/***/1?next=/movie/***/***/2&b=p"),
+    # review round 8, F1: a "?" or "#" inside a masked segment; the query is
+    # located on the raw text, so a sensitive key after the next "/" is masked
+    (f'"GET /api/vod/series/12/?page=1&next=/x&token={Q_PASS} HTTP/1.1" 200 12',
+     '"GET /api/vod/series/***/***/x&token=*** HTTP/1.1" 200 12'),
+    (f"GET /proxy/vod/movie/0b5c3f9e-1d2a-4c6b-9e8f-7a6b5c4d3e2f/sess1?x=a/b&token={Q_PASS} HTTP/1.1",
+     "GET /proxy/vod/movie/***/***/b&token=*** HTTP/1.1"),
+    (f"GET /movie/{Q_USER}/{Q_PASS}?password={Q_PASS}/{Q_USER} HTTP/1.1", "GET /movie/***/*** HTTP/1.1"),
+    (f"Not Found: /api/vod/series/12/?search=a/b&token={Q_PASS}", "Not Found: /api/vod/series/***/***/b&token=***"),
+    (f"/x/live/a#b=/c/d&access_token={Q_PASS}", "/x/live/***/***/d&access_token=***"),
+    # review round 8, F2: the path of a scheme URL is read from the input, not
+    # from redact_url's output, whose query mask had already removed the route
+    (f"http://h/live/{Q_USER}?token={Q_PASS}/{Q_PASS}b/1", "http://h/live/***"),
+    (f"http://h/live/{Q_USER}?password={Q_PASS}/{Q_PASS}b/1.ts", "http://h/live/***"),
+    # review round 8, F3: the keyed prefix-word host (given up, "prefix-word
+    # host"); dc436dfa and 2e83e395 masked it by accident, the key read as a segment
+    (f"url=word://live/{Q_USER}/{Q_PASS}/x", f"url=word://live/{Q_USER}/{Q_PASS}/x"),
     # review round 7, I: a prefix-word host with a path that only matches
     # decoded; the encoded path is "/***"
     (f"//u@movie/%6cive/{Q_USER}/{Q_PASS}/1.ts", "/***"),
@@ -1049,6 +1109,14 @@ ORDINARY_UNCHANGED = (
     '/timeshift/',
 )
 ORDINARY_OVER_MASKED = (
+    # review round 8, F3: a readable path whose query holds "%" or a backslash
+    ('/redirect?next=/a%20b/c', '/***'),
+    ('/index.php?s=/Index/\\think\\app/invokefunction', '/***'),
+    ('GET /api/x?q=a%20b HTTP/1.1', 'GET /*** HTTP/1.1'),
+    # review round 8, F5: a relative three-part token ending in a number is
+    # read as the bare-root route, as redact_url reads it (every head)
+    ('12/Nov/2026', '***/***/2026'),
+    ('ratio 10/5/2', 'ratio ***/***/2'),
     # a "%" in the query makes the whole token "/***" (round 7 addendum)
     ('/search?q=live%20tv', '/***'),
     ('/search?q=a%2Fb', '/***'),
@@ -1118,6 +1186,9 @@ _GRID_PATHS = (
     ("/get.php%3Fx/%6cive/a/b/c", ()),
     ("/a/b/c", ()),
     ("/a/b/5", ()),
+    # review round 8, F1: short prefix paths of this project's own routes
+    ("/api/vod/series/12/", ()),
+    ("/proxy/vod/movie/u-u-i-d/sess1", ()),
     ("", ()),
 )
 _GRID_TAILS = (
@@ -1127,6 +1198,10 @@ _GRID_TAILS = (
     ("?password=s-q-pass#token=s-f-token", ("s-q-pass", "s-f-token")),
     ("#token=s-f-token", ("s-f-token",)),
     ("?a=1", ()),
+    # review round 8, F1: a query value holding "/" before a sensitive key
+    ("?next=/x&token=s-q-token", ("s-q-token",)),
+    ("?a=b/c&password=s-q-pass", ("s-q-pass",)),
+    ("#b=/c/d&token=s-f-token", ("s-f-token",)),
 )
 # How a token reaches redact_text: alone, in a request line, after a key, in
 # message text. Each is applied to the scheme-less forms.
@@ -1216,9 +1291,12 @@ class NeverLessThanRedactUrlTests(SimpleTestCase):
     )
 
     # The oracle must keep masking, or the invariant would hold vacuously:
-    # the share of the grid's sentinels redact_url itself masks (0.870, 85,532
-    # of 98,348, when this was written).
+    # the share of the grid's sentinels redact_url itself masks. The counts
+    # are asserted exactly (review round 8, F4), so the numbers quoted here
+    # and in the PR are the ones the test checks.
     MIN_ORACLE_MASKED = 0.80
+    ORACLE_SENTINELS = 162096
+    ORACLE_MASKED = 142864
 
     # The one class where two raw readings genuinely differ: a scheme-less
     # "//<host>/<user>/<pass>/<id>" token, which redact_url reads as a host and
@@ -1239,6 +1317,7 @@ class NeverLessThanRedactUrlTests(SimpleTestCase):
         forms = {form.split(",")[0] for _, _, _, form in cases}
         self.assertEqual(forms, {"scheme://", "//host", "/path", "quoted"})
         self.assertGreater(len(cases), 20000)
+        self.assertEqual(len(cases), 54075)
         survivors = []
         sentinels_total = sentinels_masked = 0
         for text, token, sentinels, form in cases:
@@ -1250,6 +1329,7 @@ class NeverLessThanRedactUrlTests(SimpleTestCase):
                     sentinels_masked += 1
                     if sentinel in out:
                         survivors.append(f"[{form}] {sentinel} in {out!r} (redact_url: {baseline!r})")
+        self.assertEqual((sentinels_masked, sentinels_total), (self.ORACLE_MASKED, self.ORACLE_SENTINELS))
         self.assertGreaterEqual(
             sentinels_masked / sentinels_total, self.MIN_ORACLE_MASKED,
             f"the oracle masked only {sentinels_masked} of {sentinels_total} sentinels",
@@ -1278,7 +1358,11 @@ class NeverLessThanRedactUrlTests(SimpleTestCase):
 # distinct sentinels around a character the pattern pass could misread, and
 # the form is spelled raw or with any one segment or path separator
 # percent-encoded. No sentinel may survive, in any container or wrapper.
-_ROUTE_SPECIALS = ("", "?", "#", "&", "=", "@", ";", "%", "?username=x&", "#password=x&")
+_ROUTE_SPECIALS = (
+    "", "?", "#", "&", "=", "@", ";", "%", "?username=x&", "#password=x&",
+    # review round 8, F2: a sensitive key with no "&" after it
+    "?token=", "?password=",
+)
 _PATH_ROUTES = (
     "/live/{u}/{p}/1.ts",
     "/live/{u}/{p}/1.m3u8",
@@ -1371,11 +1455,12 @@ class XtreamRouteGridTests(SimpleTestCase):
     """No credential in an Xtream route form survives redact_text, however it is spelled."""
 
     # The classes left out, by name and count (see _route_grid):
-    # 4 specials x 4 query routes x 2 key spellings; and 4 specials x 2 bare
-    # root routes x 4 containers x 8 wrappers, with the query tail only.
+    # 4 specials x 4 query routes x 2 key spellings; and 6 specials (every
+    # one starting "?" or "#") x 2 bare root routes x 4 containers x 8
+    # wrappers, with the query tail only.
     EXCLUDED = {
         "query route, raw '&' or '#' credential": 32,
-        "bare root route, raw '?' or '#' credential, query": 256,
+        "bare root route, raw '?' or '#' credential, query": 384,
     }
 
     def test_no_sentinel_survives(self):
@@ -1391,6 +1476,75 @@ class XtreamRouteGridTests(SimpleTestCase):
         self.assertFalse(
             survivors,
             f"{sum(len(v) for v in survivors.values())} case(s) of {len(cases)} leak a sentinel; by form: "
+            + "; ".join(f"{key}: {len(lines)}, e.g. {lines[0]}" for key, lines in sorted(survivors.items())),
+        )
+
+
+# Review round 8, F1: a query (or query-shaped fragment) whose first value
+# holds "/", after a short prefix path, with a sensitive key later in the same
+# query. The prefixes are this project's own routes (and the Xtream ones with a
+# credential pair that is masked only when the query is read as part of the
+# path). No sentinel may survive, in any container or wrapper.
+_UUID = "0b5c3f9e-1d2a-4c6b-9e8f-7a6b5c4d3e2f"
+_SLASH_QUERY_PREFIXES = (
+    ("/api/vod/series/12/", ()),
+    ("/api/vod/series/12", ()),
+    ("/api/vod/movies/7/", ()),
+    (f"/proxy/vod/movie/{_UUID}/sess1", ()),
+    (f"/proxy/vod/series/{_UUID}/sess1", ()),
+    (f"/proxy/vod/episode/{_UUID}/sess1", ()),
+    ("/x/live/a", ()),
+    ("/live/a/b/1", ()),
+    ("/movie/s-s-ua/s-s-pa", ("s-s-ua", "s-s-pa")),
+    ("/s-s-ua/s-s-pa/1", ("s-s-ua", "s-s-pa")),
+    ("/a", ()),
+    ("/a/b", ()),
+)
+_SLASH_QUERY_FIRST = ("next=/x", "search=a/b", "x=a/b/c", "b=/c/d", "next=/a/b/1.ts", "r=//h/p")
+_SLASH_QUERY_SENSITIVE = tuple(
+    (f"{key}={value}", sentinels)
+    for key in ("token", "password", "access_token")
+    for value, sentinels in (("s-s-qa", ("s-s-qa",)), ("s-s-qa/s-s-qb", ("s-s-qa", "s-s-qb")))
+)
+_SLASH_QUERY_CONTAINERS = (
+    ("", ()),
+    ("//h", ()),
+    ("http://h", ()),
+    ("http://s-s-ui:s-s-uj@h", ("s-s-ui", "s-s-uj")),
+)
+
+
+def _slash_query_grid():
+    cases = []
+    for prefix, ps in _SLASH_QUERY_PREFIXES:
+        for lead in ("?", "#"):
+            for first in _SLASH_QUERY_FIRST:
+                for pair, qs in _SLASH_QUERY_SENSITIVE:
+                    for container, cs in _SLASH_QUERY_CONTAINERS:
+                        token = f"{container}{prefix}{lead}{first}&{pair}"
+                        for name, wrapper in _ROUTE_WRAPPERS:
+                            label = f"{prefix}{lead}{first}&{pair.split('=')[0]}= container={container!r} {name}"
+                            cases.append((wrapper.format(token), ps + qs + cs, label))
+    return cases
+
+
+class SlashInQueryGridTests(SimpleTestCase):
+    """A sensitive query value survives no "/" in an earlier query value."""
+
+    def test_no_sentinel_survives(self):
+        cases = _slash_query_grid()
+        self.assertEqual(len(cases), 27648)
+        survivors = {}
+        for text, sentinels, label in cases:
+            out = redact_text(text)
+            leaked = [sentinel for sentinel in sentinels if sentinel in out]
+            if leaked:
+                survivors.setdefault(label.split(" container=")[0].split("?")[0].split("#")[0], []).append(
+                    f"{leaked} in {text!r} -> {out!r}"
+                )
+        self.assertFalse(
+            survivors,
+            f"{sum(len(v) for v in survivors.values())} case(s) of {len(cases)} leak a sentinel; by prefix: "
             + "; ".join(f"{key}: {len(lines)}, e.g. {lines[0]}" for key, lines in sorted(survivors.items())),
         )
 

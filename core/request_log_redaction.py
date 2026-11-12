@@ -20,11 +20,14 @@ path shapes and sensitive query keys, wherever they appear) and by value (the
 username, password and sensitive query values the attached request itself
 names, in their decoded, percent-encoded and unicode-escaped spellings, at
 least ``MIN_SCRUBBED_VALUE_LENGTH`` characters long), so a credential in a
-form or position the patterns miss is still removed. The pattern pass reads
-text as it is and never writes decoded text: a path it cannot read plainly
-(one holding ``%`` or a backslash) is logged as ``/***``, and every step only
-adds masks (``_mask_slash``). The original record is never mutated (a filter
-returning a record replaces it for that handler only, Python 3.12+). Records
+form or position the patterns miss is still removed. Both passes read the
+text as it is, never decoded and never another pass's output: each mask is a
+range of that text, and the union of the ranges is applied once
+(``_render``). The one exception is a message template whose string
+arguments cannot be placed in the rendered text (``_redact_message``). A
+path the pattern pass cannot read plainly (one holding ``%`` or a
+backslash) is logged as ``/***``. The original record is never mutated (a
+filter returning a record replaces it for that handler only, Python 3.12+). Records
 outside the trees pass through as themselves, and no record is suppressed: an
 operator still sees that a 401 happened and on which route
 (``/movie/***/***/1.mp4``).
@@ -57,7 +60,7 @@ This module is imported while settings load, so it imports nothing from
 import copy
 import logging
 import re
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlsplit
 
 # Loggers whose records are redacted, matched as the name itself or a dotted
 # descendant. ``django.channels.server`` is the request line of the
@@ -97,14 +100,9 @@ _QUERY_OR_FRAGMENT_RE = re.compile(r"[?#]")
 _SCHEME_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 _AUTHORITY_END_RE = re.compile(r"[/?#]")
 _PATH_START_RE = re.compile(r"[/\\?#]")
-# A path holding either of these is not read at all (see _mask_slash).
+# A path holding either of these is not read at all (see _slash_ranges).
 _OPAQUE_PATH_RE = re.compile(r"[%\\]")
 _SPACE_RE = re.compile(r"\s")
-# A credential holding one of these can be cut in two by the pattern pass
-# (a segment boundary, a query or fragment start, a pair separator, the end
-# of userinfo, or a token boundary), so it is scrubbed by value before the
-# pattern pass as well as after it.
-_CUTTABLE_VALUE_RE = re.compile(r"[/?#&=@\s]")
 
 # A credential shorter than this is not scrubbed by value: replacing every
 # occurrence of a one- to three-character string would shred unrelated text
@@ -125,22 +123,45 @@ def _utils():
     return utils
 
 
-def _redact_url(value):
-    return _utils().redact_url(value)
+# A mask is a range of the text it was computed from: (start, end, opaque).
+# Every structural decision (where a token, a path, an authority, a query or a
+# fragment starts and ends, which segments exist) is taken from the text as
+# it is, and every mask is a range of that same text. No step reads another
+# step's output, so masks only ever add: _render applies their union once.
 
 
-def _redact_tail(rest):
-    """``rest`` empty or starting ``?`` or ``#``: masked as ``redact_url`` masks them."""
-    redact_query = _utils()._redact_query
-    if rest.startswith("?"):
-        query, hash_, fragment = rest[1:].partition("#")
-        rest = "?" + redact_query(query)
-    else:
-        hash_, fragment, rest = rest[:1], rest[1:], ""
-    # As redact_url does: a fragment shaped like a query string is masked too.
-    if "=" in fragment:
-        fragment = redact_query(fragment)
-    return rest + hash_ + fragment
+def _render(text, ranges):
+    """``text`` with the union of ``ranges`` masked.
+
+    Overlapping or touching ranges become one ``***``; a group holding an
+    opaque range (a path that is not read) becomes ``/***``. A range may be
+    empty (an empty query value), which inserts the mask.
+    """
+    if not ranges:
+        return text
+    redacted = _utils().REDACTED
+    groups = []
+    for start, end, opaque in sorted(ranges):
+        if groups and start <= groups[-1][1]:
+            groups[-1][1] = max(groups[-1][1], end)
+            groups[-1][2] = groups[-1][2] or opaque
+        else:
+            groups.append([start, end, opaque])
+    out, pos = [], 0
+    for start, end, opaque in groups:
+        out += [text[pos:start], "/" + redacted if opaque else redacted]
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+def _segment_spans(text):
+    """(start, end) of each item of ``text.split("/")``."""
+    spans, start = [], 0
+    for segment in text.split("/"):
+        spans.append((start, start + len(segment)))
+        start += len(segment) + 1
+    return spans
 
 
 def _masked_segments(text, start):
@@ -151,11 +172,50 @@ def _masked_segments(text, start):
     return {start + i for i, (was, now) in enumerate(zip(read, masked)) if was != now}
 
 
-def _mask_slash(text):
-    """Mask ``text``, which starts with ``/`` (or ``\\``): a path, its query and fragment.
+def _path_ranges(text, start, end, base):
+    """The segments of ``text[start:end]`` (a URL's path) that ``redact_url`` masks."""
+    path = text[start:end]
+    masked = _utils()._redact_path(path).split("/")
+    return [
+        (base + start + a, base + start + b, False)
+        for (a, b), was, now in zip(_segment_spans(path), path.split("/"), masked)
+        if was != now
+    ]
 
-    Nothing is decoded and no reading is chosen over another; each step only
-    adds masks:
+
+def _query_ranges(text, start, end, base):
+    """The values of the sensitive pairs in ``text[start:end]``, as ``redact_url`` masks them."""
+    redact_query = _utils()._redact_query
+    ranges = []
+    while True:
+        amp = text.find("&", start, end)
+        stop = end if amp < 0 else amp
+        part = text[start:stop]
+        if redact_query(part) != part:
+            ranges.append((base + start + part.index("=") + 1, base + stop, False))
+        if amp < 0:
+            return ranges
+        start = amp + 1
+
+
+def _tail_ranges(text, start, base):
+    """``text[start:]`` starts ``?`` or ``#``: its query and query-shaped fragment."""
+    ranges = []
+    fragment = start
+    if text[start] == "?":
+        fragment = text.find("#", start + 1)
+        fragment = len(text) if fragment < 0 else fragment
+        ranges += _query_ranges(text, start + 1, fragment, base)
+    # As redact_url does: a fragment shaped like a query string is masked too.
+    if fragment < len(text) and "=" in text[fragment + 1:]:
+        ranges += _query_ranges(text, fragment + 1, len(text), base)
+    return ranges
+
+
+def _slash_ranges(text, base=0):
+    """The masks of ``text``, which starts with ``/`` (or ``\\``): a path, its query and fragment.
+
+    Nothing is decoded and no reading is chosen over another:
 
     1. after a leading ``//``, userinfo (an ``@`` before the next ``/``,
        ``?`` or ``#``, with no whitespace) is masked up to the last ``@``;
@@ -163,92 +223,148 @@ def _mask_slash(text):
        included, is not interpreted: all of it becomes ``/***``, because what
        the server routes is its decoded form, and ``request.path`` is decoded,
        so a ``?`` or ``#`` in it can belong to a credential and what follows
-       can be the rest of the route. No step depends on what follows the
-       first ``?`` or ``#``;
+       can be the rest of the route;
     3. otherwise every segment the raw Xtream masks hit is masked, reading the
        whole text and the path alone (``request.path`` is decoded, so a ``?``
        in it can belong to a credential), each from the first segment and,
        after a leading ``//`` in text with no whitespace, also from the
        segment after the host, as ``redact_url`` reads it;
-    4. the sensitive query keys after the first ``?`` or ``#`` left are masked.
+    4. the sensitive keys after the first ``?`` or ``#`` of the text are
+       masked, and also after the first one outside the segments step 3
+       masks (a ``?`` or ``#`` in a decoded credential is not where the
+       query starts). Both are located in the text itself, and both are kept.
     """
-    utils = _utils()
-    lead = ""
+    ranges = []
+    read = text
     if text.startswith("//") and not text.startswith("///"):
         stop = _AUTHORITY_END_RE.search(text, 2)
         authority = text[2:stop.start() if stop else len(text)]
         if "@" in authority and not _SPACE_RE.search(authority):
-            lead = "//" + utils.REDACTED + "@"
-            text = "//" + authority.rpartition("@")[2] + text[2 + len(authority):]
-    end = _QUERY_OR_FRAGMENT_RE.search(text)
-    head = text[:end.start()] if end else text
-    # Nothing here depends on what follows the first "?" or "#": a "%" or a
-    # backslash anywhere in the text makes all of it unreadable.
-    if _OPAQUE_PATH_RE.search(text):
-        return "/" + utils.REDACTED
-    starts = (0, 2) if text.startswith("//") and not _SPACE_RE.search(text) else (0,)
+            ranges.append((base + 2, base + 2 + authority.rindex("@"), False))
+            # The host alone is read in step 3 (a userinfo-free authority has
+            # no "/", so the segment indices are the text's own).
+            read = "//" + authority.rpartition("@")[2] + text[2 + len(authority):]
+    if _OPAQUE_PATH_RE.search(read):
+        return [(base, base + len(text), True)]
+    end = _QUERY_OR_FRAGMENT_RE.search(read)
+    head = read[:end.start()] if end else read
+    starts = (0, 2) if read.startswith("//") and not _SPACE_RE.search(read) else (0,)
     masked = set()
-    for reading in (text, head):
+    for reading in (read, head):
         for start in starts:
             masked |= _masked_segments(reading, start)
-    segments = text.split("/")
-    text = "/".join(utils.REDACTED if i in masked else seg for i, seg in enumerate(segments))
-    if lead:
-        text = lead + text[2:]
-    end = _QUERY_OR_FRAGMENT_RE.search(text)
-    return text[:end.start()] + _redact_tail(text[end.start():]) if end else text
+    spans = _segment_spans(text)
+    ranges += [(base + spans[i][0], base + spans[i][1], False) for i in masked]
+    tails, segment, counted = [], 0, 0
+    for found in _QUERY_OR_FRAGMENT_RE.finditer(text):
+        if not tails:
+            tails.append(found.start())
+        segment += text.count("/", counted, found.start())
+        counted = found.start()
+        if segment not in masked:
+            if found.start() != tails[0]:
+                tails.append(found.start())
+            break
+    for start in tails:
+        ranges += _tail_ranges(text, start, base)
+    return ranges
 
 
-def _redact_core(core):
-    """One token with its quoting stripped: a path, a ``key=path`` or a URL."""
-    prefix = ""
-    keyed = _KEY_PREFIX_RE.match(core)
-    if keyed:
-        prefix, core = core[:keyed.end()], core[keyed.end():]
-    if core.startswith("/"):
-        return prefix + _mask_slash(core)
-    # redact_url masks the userinfo, path and query as it reads them; the
-    # path of a URL in its output is then masked again by _mask_slash, which
-    # only adds masks to redact_url's. (Its output, because redact_url
-    # rebuilds a URL it changed and can drop an empty "//".)
-    out = _redact_url(core)
-    scheme = _SCHEME_RE.match(out)
+# What urlsplit strips from the start of a URL before reading it.
+_URL_LEADING_JUNK = "".join(chr(code) for code in range(0x21))
+
+
+def _url_ranges(core, base):
+    """The masks of a token that is not a bare path: ``redact_url``'s, then ``_slash_ranges``'s.
+
+    ``redact_url``'s masks (userinfo, the Xtream path, the sensitive query and
+    fragment keys) are located in the token itself through ``urlsplit``. A
+    token ``urlsplit`` refuses is masked whole, as ``redact_url`` masks it.
+    When the token has a scheme, its own path from the first ``/`` (or, after
+    ``//``, ``\\``) is also read as a bare path.
+    """
+    whole = [(base, base + len(core), False)]
+    try:
+        parts = urlsplit(core)
+    except Exception:  # noqa: BLE001 - redact_url answers "***" here
+        return whole
+    at = len(core) - len(core.lstrip(_URL_LEADING_JUNK))
+    if parts.scheme:
+        at += len(parts.scheme) + 1
+    netloc = None
+    if core.startswith("//", at):
+        netloc, at = at + 2, at + 2 + len(parts.netloc)
+    path = at
+    at += len(parts.path)
+    query = fragment = None
+    if core.startswith("?", at):
+        query, at = at + 1, at + 1 + len(parts.query)
+    if core.startswith("#", at):
+        fragment, at = at + 1, at + 1 + len(parts.fragment)
+    if at != len(core) or core[path:path + len(parts.path)] != parts.path:
+        return whole  # urlsplit read the token in a way it cannot be located in
+    ranges = []
+    if netloc is not None and "@" in parts.netloc:
+        ranges.append((base + netloc, base + netloc + parts.netloc.rindex("@"), False))
+    ranges += _path_ranges(core, path, path + len(parts.path), base)
+    if query is not None:
+        ranges += _query_ranges(core, query, query + len(parts.query), base)
+    if fragment is not None and "=" in parts.fragment:
+        ranges += _query_ranges(core, fragment, len(core), base)
+    scheme = _SCHEME_RE.match(core)
     if scheme:
         at, leads = scheme.end(), "/"
-        if out.startswith("//", at):
-            found = _PATH_START_RE.search(out, at + 2)
-            at, leads = (found.start() if found else len(out)), "/\\"
-        if out[at:at + 1] and out[at] in leads:
-            out = out[:at] + _mask_slash(out[at:])
-    return prefix + out
+        if core.startswith("//", at):
+            found = _PATH_START_RE.search(core, at + 2)
+            at, leads = (found.start() if found else len(core)), "/\\"
+        if core[at:at + 1] and core[at] in leads:
+            ranges += _slash_ranges(core[at:], base + at)
+    return ranges
 
 
-def _redact_token(match):
-    token = match.group(0)
-    start = len(token) - len(token.lstrip(_TOKEN_PUNCTUATION))
-    core = token[start:].rstrip(_TOKEN_PUNCTUATION + _TRAILING_PUNCTUATION)
-    if not core:
-        return token
-    redacted = _redact_core(core)
-    if redacted == core:
-        return token
-    return token[:start] + redacted + token[start + len(core):]
+def _token_ranges(text):
+    """The masks of every whitespace-delimited token of ``text``, each read on its own."""
+    ranges = []
+    for match in _TOKEN_RE.finditer(text):
+        token = match.group(0)
+        start = len(token) - len(token.lstrip(_TOKEN_PUNCTUATION))
+        core = token[start:].rstrip(_TOKEN_PUNCTUATION + _TRAILING_PUNCTUATION)
+        if not core:
+            continue
+        base = match.start() + start
+        keyed = _KEY_PREFIX_RE.match(core)
+        if keyed:
+            base, core = base + keyed.end(), core[keyed.end():]
+        if core.startswith("/"):
+            ranges += _slash_ranges(core, base)
+        else:
+            ranges += _url_ranges(core, base)
+    return ranges
+
+
+def _pattern_ranges(text):
+    """The masks of ``text``: whole, when it is a path, and token by token."""
+    ranges = []
+    if text.startswith("/"):
+        ranges = _slash_ranges(text)
+        if ranges and ranges[0][2]:
+            return ranges  # all of it is "/***"
+    return ranges + _token_ranges(text)
 
 
 def redact_text(text):
     """Mask the Xtream credentials in every URL or path inside ``text``.
 
     A string that is itself a path (it starts with ``/``: ``request.path`` in
-    Django's own arguments) is masked whole first, so a credential containing
-    a space, ``?`` or ``#`` is still one segment. Every whitespace-delimited
-    token is then masked on its own, which catches a URL or a path inside a
-    request line or a traceback. Non-strings are returned as they are.
+    Django's own arguments) is read whole, so a credential containing a space,
+    ``?`` or ``#`` is still one segment. Every whitespace-delimited token is
+    also read on its own, which catches a URL or a path inside a request line
+    or a traceback. Both readings are of ``text`` itself, and the union of
+    their masks is applied. Non-strings are returned as they are.
     """
     if not isinstance(text, str) or not text:
         return text
-    if text.startswith("/"):
-        text = _mask_slash(text)
-    return _TOKEN_RE.sub(_redact_token, text)
+    return _render(text, _pattern_ranges(text))
 
 
 def _spellings(value):
@@ -294,34 +410,98 @@ def _request_credentials(request):
     return sorted(spelled, key=len, reverse=True)
 
 
-def _scrub_values(text, values):
-    """Replace every listed value in ``text``; longest first, so no fragment survives."""
-    if not isinstance(text, str):
-        return text
+def _value_ranges(text, values):
+    """Every occurrence of every listed value in ``text``, as found in ``text`` itself."""
+    ranges = []
     for value in values:
-        text = text.replace(value, _utils().REDACTED)
-    return text
+        at = text.find(value)
+        while at >= 0:
+            ranges.append((at, at + len(value), False))
+            at = text.find(value, at + len(value))
+    return ranges
 
 
 def _redact(text, values):
-    """Value scrub, pattern pass, value scrub.
+    """``text`` with the union of the pattern masks and the value masks applied."""
+    if not isinstance(text, str) or not text:
+        return text
+    return _render(text, _pattern_ranges(text) + _value_ranges(text, values))
 
-    Before the pattern pass only the values it could cut in two are scrubbed
-    (``_CUTTABLE_VALUE_RE``), while each is still whole. The others are
-    scrubbed after it only: one equal to an Xtream prefix word or a stream id
-    (a user called ``live``) would, scrubbed first, hide the very segment the
-    pattern pass keys on, and with it every other credential in that path.
+
+# A printf conversion of a logging template.
+_CONVERSION_RE = re.compile(r"%(?:\(([^()]*)\))?[-#0 +]*(?:\*|\d+)?(?:\.(?:\*|\d*))?[hlL]?([diouxXeEfFgGcrsa%])")
+
+
+def _rendered_arguments(record):
+    """The record's message and where each plain ``%s`` string argument sits in it.
+
+    Returns (message, [(offset, argument)]), or None when the template is not
+    one this can render exactly as ``getMessage`` does (``*`` widths, a
+    non-string template, a string argument under any conversion but a plain
+    ``%s``, a mismatch). Django's own request records (``%s`` with a tuple)
+    and Daphne's (``%(name)s`` with a mapping) are rendered here.
     """
-    before = [value for value in values if _CUTTABLE_VALUE_RE.search(value)]
-    return _scrub_values(redact_text(_scrub_values(text, before)), values)
+    msg, args = record.msg, record.args
+    if not args:
+        return str(msg), []
+    if not isinstance(msg, str):
+        return None
+    out, placed, pos, length, index = [], [], 0, 0, 0
+    for match in _CONVERSION_RE.finditer(msg):
+        if "*" in match.group(0):
+            return None
+        literal = msg[pos:match.start()]
+        out.append(literal)
+        length += len(literal)
+        key, conversion = match.group(1), match.group(2)
+        if conversion == "%":
+            piece = "%"
+        else:
+            if key is not None:
+                value = args[key]
+                spec = "%" + match.group(0)[len(key) + 3:]
+            else:
+                value = args[index]
+                index += 1
+                spec = match.group(0)
+            if isinstance(value, str):
+                if spec != "%s":
+                    return None  # %r, %a or a width: the argument is not its own text
+                placed.append((length, value))
+            piece = spec % (value,)
+        out.append(piece)
+        length += len(piece)
+        pos = match.end()
+    out.append(msg[pos:])
+    return "".join(out), placed
 
 
-def _redact_args(args, values):
-    if isinstance(args, dict):
-        return {key: _redact(value, values) for key, value in args.items()}
-    if isinstance(args, tuple):
-        return tuple(_redact(value, values) for value in args)
-    return args
+def _redact_message(record, values):
+    """The rendered message with its masks applied.
+
+    The masks are those of the rendered text, plus, for each plain ``%s``
+    string argument, those of the argument read whole on its own (a path whose
+    credential holds a space is one segment only there), placed where the
+    argument sits. All are ranges of the rendered text. A template this cannot
+    place arguments in is rendered with its string arguments masked first and
+    then masked as a whole: the one place one mask pass reads another's output.
+    """
+    original = record.getMessage()
+    try:
+        rendered = _rendered_arguments(record)
+    except Exception:  # noqa: BLE001 - getMessage rendered it; fall back below
+        rendered = None
+    if rendered is not None and rendered[0] == original:
+        ranges = _pattern_ranges(original) + _value_ranges(original, values)
+        for offset, argument in rendered[1]:
+            ranges += [(offset + a, offset + b, opaque) for a, b, opaque in _pattern_ranges(argument)]
+        return original, _render(original, ranges)
+    probe = copy.copy(record)
+    if isinstance(record.args, dict):
+        probe.args = {key: _redact(value, values) for key, value in record.args.items()}
+    elif isinstance(record.args, tuple):
+        probe.args = tuple(_redact(value, values) for value in record.args)
+    return original, _redact(probe.getMessage(), values)
 
 
 def redact_record(record):
@@ -346,16 +526,12 @@ def redact_record(record):
     clone = copy.copy(record)
     # Render the message, then mask the rendered text: a template can carry a
     # credential at a %s position, an argument need not be a string, and a
-    # value can straddle the template and an argument. String arguments are
-    # masked first, as the whole paths they usually are, so the escaping a
-    # credential needs survives. A message that cannot render raises here and
-    # is withheld by the filter. When nothing changes the template and the
-    # arguments are kept as they are; otherwise the masked text is stored with
-    # no arguments, which every formatter renders unchanged.
-    probe = copy.copy(record)
-    probe.args = _redact_args(record.args, values)
-    original = record.getMessage()
-    redacted = _redact(probe.getMessage(), values)
+    # value can straddle the template and an argument. A message that cannot
+    # render raises here and is withheld by the filter. When nothing changes
+    # the template and the arguments are kept as they are; otherwise the
+    # masked text is stored with no arguments, which every formatter renders
+    # unchanged.
+    original, redacted = _redact_message(record, values)
     if redacted != original:
         clone.msg = redacted
         clone.args = ()
