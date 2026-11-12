@@ -311,8 +311,8 @@ process start-up files.
 
 - **Loss on restart.** A process loses at most one unsent batch of spans and logs, and at most one
   metric interval of points. The relay flushes with a two-second budget after its drain, and Celery
-  processes flush with the same budget on shutdown; I could not confirm a flush hook in the uWSGI
-  or Daphne processes, so assume none. Data produced while the collector is unreachable is dropped,
+  processes flush with the same budget on shutdown; no flush hook is installed in the uWSGI
+  or Daphne processes. Data produced while the collector is unreachable is dropped,
   not queued.
 - **Process metrics are Linux only.** On other platforms M8 and M9 have no points.
 - **M8 is a lower bound.** It is accumulated per process identity and never decreases, but it loses
