@@ -89,17 +89,61 @@ function writesGlobalSettings(sf: ts.SourceFile): boolean {
   return writesTo(sf, [SETTINGS_PATH]);
 }
 
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/**
+ * Whether a `fetch` call's options make it a write: a `method` that is not GET, HEAD or
+ * OPTIONS. Playwright's `request.fetch(url, { method })` and the global
+ * `fetch(url, { method })` default to GET, so no options, or options with no `method`,
+ * read. Anything this cannot read statically (options held in a variable, a spread, a
+ * computed or non-literal `method`) counts as a write: a guard that cannot read a shape
+ * fails closed.
+ */
+function fetchWrites(options: ts.Expression | undefined): boolean {
+  if (!options) return false;
+  if (!ts.isObjectLiteralExpression(options)) return true;
+  let writes = false;
+  for (const prop of options.properties) {
+    if (ts.isSpreadAssignment(prop)) {
+      writes = true;
+      continue;
+    }
+    const key =
+      prop.name && (ts.isIdentifier(prop.name) || ts.isStringLiteral(prop.name)) ? prop.name.text : undefined;
+    if (prop.name && ts.isComputedPropertyName(prop.name)) writes = true;
+    if (key !== 'method') continue;
+    if (!ts.isPropertyAssignment(prop) || !ts.isStringLiteralLike(prop.initializer)) {
+      writes = true;
+      continue;
+    }
+    if (!READ_METHODS.has(prop.initializer.text.toUpperCase())) writes = true;
+  }
+  return writes;
+}
+
+/**
+ * Whether `node` is a write call: `x.post|patch|put|delete(url, …)`, or a `fetch(url,
+ * options)` (Playwright's `request.fetch` or the global one) whose options name a
+ * mutating method (`fetchWrites`).
+ */
+function isWriteCall(node: ts.CallExpression): boolean {
+  const callee = node.expression;
+  if (ts.isPropertyAccessExpression(callee) && WRITE_METHODS.has(callee.name.text)) return true;
+  const name = ts.isPropertyAccessExpression(callee)
+    ? callee.name.text
+    : ts.isIdentifier(callee)
+      ? callee.text
+      : undefined;
+  return name === 'fetch' && fetchWrites(node.arguments[1]);
+}
+
 /** Whether `sf` makes a write call whose URL argument contains any of `needles`. */
 function writesTo(sf: ts.SourceFile, needles: readonly string[]): boolean {
   const consts = collectStringConsts(sf);
   let found = false;
   function visit(node: ts.Node): void {
     if (found) return;
-    if (
-      ts.isCallExpression(node) &&
-      ts.isPropertyAccessExpression(node.expression) &&
-      WRITE_METHODS.has(node.expression.name.text)
-    ) {
+    if (ts.isCallExpression(node) && isWriteCall(node)) {
       const arg = node.arguments[0];
       // Only string-shaped arguments are inspected, so the route appearing in
       // a comment is invisible here — the same reason `capabilities.spec.ts`

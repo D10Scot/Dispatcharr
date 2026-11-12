@@ -442,10 +442,39 @@ export default defineConfig({
       name: 'sso',
       testDir: './tests/sso',
       testMatch: /\.spec\.ts$/,
+      // `tests/sso/faults/` is the `sso-faults` project's: its requests do not fit
+      // beside these in one `oidc` throttle window (`tests/sso/budget.ts`).
+      testIgnore: /\/faults\//,
       dependencies: ['sso-setup'],
       workers: 1,
       fullyParallel: false,
       timeout: 180_000,
+      retries: 0,
+    },
+    {
+      // `sso-setup` again, for the `sso-faults` project's own scoped stack: the same
+      // file, writing its pair to `sso-faults-tokens.json` (`ssoTokensFile`), so the
+      // two projects never read each other's stack's pair.
+      name: 'sso-faults-setup',
+      testDir: './tests/sso',
+      testMatch: /sso\.setup\.ts$/,
+      timeout: MAX_LOGIN_WAIT_MS + 60_000,
+      retries: 0,
+    },
+    {
+      // Each ID-token fault the fake OP can inject, refused through the browser.
+      // Separate from `sso` only because of Mino's `oidc` throttle (20 a minute per
+      // client IP): this project spends 17 a run and `sso` 8, so the two cannot share
+      // one stack's window. Its own scoped stack, like `sso` (`assertScopedStack()`),
+      // and no password request beyond its setup. `retries: 0`: a retry spends the
+      // budget again.
+      name: 'sso-faults',
+      testDir: './tests/sso/faults',
+      testMatch: /\.spec\.ts$/,
+      dependencies: ['sso-faults-setup'],
+      workers: 1,
+      fullyParallel: false,
+      timeout: 120_000,
       retries: 0,
     },
   ],

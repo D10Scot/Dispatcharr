@@ -310,7 +310,7 @@
 1	e2e-upstream/test/xc-envelope.test.ts
 3	e2e-upstream/test/xc-router.test.ts
 73	e2e/COVERAGE.md
-55	e2e/README.md
+59	e2e/README.md
 1	e2e/fixtures/api.ts
 2	e2e/fixtures/auth.ts
 3	e2e/fixtures/index.ts
