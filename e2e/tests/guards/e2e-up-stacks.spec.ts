@@ -87,7 +87,8 @@ function scopedPath(): string {
 }
 
 /**
- * `process.env` with every `DISPATCHARR_E2E_*`/`E2E_UPSTREAM_*` key removed.
+ * `process.env` with every `DISPATCHARR_E2E_*`/`E2E_UPSTREAM_*`/`E2E_OIDC_*` key
+ * removed (`E2E_OIDC_*` since SSO S5, whose stack exports `E2E_OIDC_ALLOW_HTTP`).
  *
  * Without this, a shell already exporting the plan's Global constraint 6
  * overrides — exactly the environment every H-2..H-5 implementer works in —
@@ -99,7 +100,7 @@ function scopedPath(): string {
  */
 function cleanBaseEnv(): NodeJS.ProcessEnv {
   const base: NodeJS.ProcessEnv = {};
-  const leaks = /^(DISPATCHARR_E2E_|E2E_UPSTREAM_)/;
+  const leaks = /^(DISPATCHARR_E2E_|E2E_UPSTREAM_|E2E_OIDC_)/;
   for (const [k, v] of Object.entries(process.env)) {
     if (leaks.test(k)) continue;
     base[k] = v;
@@ -440,6 +441,79 @@ test.describe('e2e_up.sh: stack teardown scoping', () => {
       expectNoUnhandled(result.log);
     },
   );
+
+  // SSO spec PR S5: the fake OpenID provider puts the host-published origin
+  // in its authorization_endpoint, because the browser follows that one.
+  test(
+    'the provider is told its host-published control origin (SSO S5)',
+    { tag: '@characterization' },
+    () => {
+      const stack = mkStack();
+      const state = createState();
+
+      const result = runScript('', {
+        DISPATCHARR_E2E_CONTAINER: stack.container,
+        DISPATCHARR_E2E_VOLUME: stack.volume,
+        DISPATCHARR_E2E_NETWORK: stack.network,
+        DISPATCHARR_E2E_PORT: stack.port,
+        DISPATCHARR_E2E_IMAGE: `${stack.container}-img:local`,
+        DISPATCHARR_E2E_UPSTREAM_CONTAINER: stack.upstream,
+        DISPATCHARR_E2E_UPSTREAM_PORT: stack.upstreamPort,
+        E2E_UPSTREAM_CONTROL_URL: `http://127.0.0.1:${stack.upstreamPort}/`,
+      }, state);
+
+      expect(result.status).toBe(0);
+      expect(containerEnvLines(state, stack.upstream)).toContain(
+        `UPSTREAM_CONTROL_ORIGIN=http://127.0.0.1:${stack.upstreamPort}`,
+      );
+      expectNoUnhandled(result.log);
+    },
+  );
+
+  // SSO spec PR S5: Mino refuses an http issuer unless MINO_OIDC_ALLOW_HTTP
+  // is "1". Only a stack that asks for it gets it; every other stack keeps
+  // the production refusal. Run under /bin/bash as well, because the
+  // possibly-empty array that carries it is the bash 3.2 hazard check_scope's
+  // comment names.
+  for (const bashPath of ['bash', '/bin/bash']) {
+    for (const value of ['1', '', 'true', undefined]) {
+      const wanted = value === '1';
+      test(
+        `the app gets MINO_OIDC_ALLOW_HTTP only when E2E_OIDC_ALLOW_HTTP is exactly "1" (value ${value === undefined ? 'unset' : JSON.stringify(value)}, ${bashPath}) (SSO S5)`,
+        { tag: '@characterization' },
+        () => {
+          const stack = mkStack();
+          const state = createState();
+          const env: NodeJS.ProcessEnv = {
+            DISPATCHARR_E2E_CONTAINER: stack.container,
+            DISPATCHARR_E2E_VOLUME: stack.volume,
+            DISPATCHARR_E2E_NETWORK: stack.network,
+            DISPATCHARR_E2E_PORT: stack.port,
+            DISPATCHARR_E2E_IMAGE: `${stack.container}-img:local`,
+            DISPATCHARR_E2E_UPSTREAM_CONTAINER: stack.upstream,
+            DISPATCHARR_E2E_UPSTREAM_PORT: stack.upstreamPort,
+          };
+          if (value !== undefined) env.E2E_OIDC_ALLOW_HTTP = value;
+
+          const result = runScript('', env, state, bashPath);
+
+          expect(result.status, result.stderr).toBe(0);
+          const runLine = result.log.find(
+            (l) => l.startsWith('docker run') && l.includes(`--name ${stack.container} `),
+          );
+          expect(runLine).toBeDefined();
+          const appEnv = containerEnvLines(state, stack.container);
+          expect(appEnv).toContain('DISPATCHARR_ENV=aio');
+          if (wanted) {
+            expect(appEnv).toContain('MINO_OIDC_ALLOW_HTTP=1');
+          } else {
+            expect(appEnv.filter((l) => l.startsWith('MINO_OIDC_ALLOW_HTTP'))).toEqual([]);
+          }
+          expectNoUnhandled(result.log);
+        },
+      );
+    }
+  }
 });
 
 test.describe('e2e_up.sh: check_scope (#187)', () => {
