@@ -1,6 +1,10 @@
 import React from 'react';
-import { Button, Stack, Text } from '@mantine/core';
-import { ssoErrorMessage, ssoStartUrl } from '../../utils/sso/ssoUtils';
+import { Anchor, Button, Stack, Text } from '@mantine/core';
+import {
+  RECOVERY_DOC_URL,
+  ssoErrorMessage,
+  ssoStartUrl,
+} from '../../utils/sso/ssoUtils';
 
 // Provider buttons and the fixed-copy sign-in error. Everything that comes from
 // the server or the URL is rendered as text by React, never as HTML, and the
@@ -16,6 +20,20 @@ const SsoSignIn = ({ providers = [], errorCode = null, next = null }) => {
       {errorCode && (
         <Text size="sm" c="red" role="alert" data-testid="sso-error">
           {ssoErrorMessage(errorCode)}
+          {errorCode === 'client_auth_failed' && (
+            <>
+              {' '}
+              <Anchor
+                href={RECOVERY_DOC_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                size="sm"
+                data-testid="sso-recovery-link"
+              >
+                Recovery procedure
+              </Anchor>
+            </>
+          )}
         </Text>
       )}
       {providers.map((provider) => (

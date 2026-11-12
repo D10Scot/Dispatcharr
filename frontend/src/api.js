@@ -16,6 +16,7 @@ import useStreamsTableStore from './store/streamsTable';
 import useUsersStore from './store/users';
 import useConnectStore from './store/connect';
 import Limiter, { formatApiError } from './utils';
+import { PASSWORD_LOGIN_DISABLED_COPY } from './utils/sso/ssoUtils';
 
 // If needed, you can set a base host or keep it empty if relative requests
 const host = import.meta.env.DEV
@@ -197,6 +198,16 @@ export default class API {
 
       return response;
     } catch (e) {
+      if (e?.body?.code === 'password_login_disabled') {
+        // Fixed copy, never the server text (spec 5.3).
+        notifications.show({
+          title: 'Login failed',
+          message: PASSWORD_LOGIN_DISABLED_COPY,
+          autoClose: 10000,
+          color: 'red',
+        });
+        throw e;
+      }
       errorNotification('Login failed', e);
     }
   }

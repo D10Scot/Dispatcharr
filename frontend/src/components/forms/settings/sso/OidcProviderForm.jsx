@@ -20,10 +20,11 @@ import {
   ENTRA_SETUP_DOC_URL,
   MAPPING_LEVELS,
   adminErrorLines,
-  buildProviderPayload,
   computeRedirectUri,
   emptyProviderValues,
+  providerEditPayload,
   providerToValues,
+  rebaseProviderValues,
   testProblemMessage,
 } from '../../../../utils/sso/ssoUtils';
 import {
@@ -43,6 +44,12 @@ const OidcProviderForm = ({
     initialProvider
       ? providerToValues(initialProvider)
       : emptyProviderValues(newKind)
+  );
+  // The form values of the provider as the server last returned it. A save
+  // sends only what differs from it, and a reload rebases every field the
+  // administrator has not touched (ssoUtils.providerEditPayload).
+  const [baseline, setBaseline] = useState(
+    initialProvider ? providerToValues(initialProvider) : null
   );
   // The provider as the server last returned it, plus the administrator's
   // explicit credential edits since then. What the credential block shows and
@@ -65,12 +72,20 @@ const OidcProviderForm = ({
   const redirectUri = computeRedirectUri(publicBaseUrl, values.slug);
   const tooLong = isEntra && redirectUri.length > ENTRA_MAX_REDIRECT_URI;
 
+  const rebase = (fresh) => {
+    setValues((v) => rebaseProviderValues(v, baseline, fresh));
+    setBaseline(providerToValues(fresh));
+  };
+
   const reload = async () => {
     const all = await API.getOidcProviders();
     const fresh = Array.isArray(all)
       ? all.find((p) => p.id === provider?.id)
       : null;
-    if (fresh) dispatchCredential({ type: 'reloaded', provider: fresh });
+    if (fresh) {
+      dispatchCredential({ type: 'reloaded', provider: fresh });
+      rebase(fresh);
+    }
   };
 
   const save = async (e) => {
@@ -78,8 +93,9 @@ const OidcProviderForm = ({
     setSaving(true);
     setLines([]);
     try {
-      const payload = buildProviderPayload({
+      const payload = providerEditPayload({
         values,
+        baseline,
         provider,
         credentialState,
       });
@@ -89,9 +105,17 @@ const OidcProviderForm = ({
       // Everything about the credential is re-derived from the answer: nothing
       // typed survives a save, and the date shown is the date stored.
       dispatchCredential({ type: 'saved', provider: saved });
+      if (saved && typeof saved === 'object') {
+        setValues(providerToValues(saved));
+        setBaseline(providerToValues(saved));
+      }
       onSaved?.(saved);
     } catch (error) {
       setLines(adminErrorLines(error));
+      // A refusal may be about state another administrator changed: rebase
+      // the untouched fields so the next attempt is judged against it. The
+      // administrator's own edits stay in the form.
+      if (provider) await reload().catch(() => {});
     } finally {
       setSaving(false);
     }

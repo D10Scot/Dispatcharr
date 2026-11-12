@@ -254,12 +254,148 @@ describe('SsoSettingsForm', () => {
     );
   });
 
-  it('shows the password toggle state but offers no working off', async () => {
+  it('a credential save sends no unchanged non-credential field', async () => {
+    API.updateOidcProvider.mockResolvedValue(provider({ enabled: false }));
+    await open(provider({ enabled: false }));
+
+    await userEvent.type(screen.getByTestId('sso-client-secret'), 'rotated');
+    await userEvent.click(screen.getByTestId('sso-provider-save'));
+
+    await waitFor(() => expect(API.updateOidcProvider).toHaveBeenCalled());
+    const payload = API.updateOidcProvider.mock.calls[0][1];
+    expect(payload.client_secret).toBe('rotated');
+    for (const key of [
+      'enabled',
+      'display_name',
+      'slug',
+      'mappings',
+      'client_id',
+    ]) {
+      expect(
+        Object.hasOwn(payload, key),
+        `an unchanged ${key} was re-sent and could overwrite a newer value`
+      ).toBe(false);
+    }
+  });
+
+  it('sends a field the administrator changed', async () => {
+    API.updateOidcProvider.mockResolvedValue(provider());
+    await open(provider());
+
+    const name = screen.getByTestId('sso-display-name');
+    await userEvent.clear(name);
+    await userEvent.type(name, 'Work');
+    await userEvent.click(screen.getByTestId('sso-provider-save'));
+
+    await waitFor(() => expect(API.updateOidcProvider).toHaveBeenCalled());
+    // client_auth_method is a credential key: the credential block owns it.
+    const { client_auth_method: _method, ...rest } =
+      API.updateOidcProvider.mock.calls[0][1];
+    expect(rest).toEqual({ display_name: 'Work' });
+  });
+
+  it('after a refused save, untouched fields take the server state and edits survive', async () => {
+    // Opened while disabled; meanwhile someone enabled the provider.
+    API.updateOidcProvider.mockRejectedValueOnce(
+      Object.assign(new Error('409'), {
+        status: 409,
+        body: { code: 'lockout_guard', reasons: ['last_enabled_provider'] },
+      })
+    );
+    await open(provider({ enabled: false }));
+    API.getOidcProviders.mockResolvedValue([
+      provider({ enabled: true, display_name: 'Renamed elsewhere' }),
+    ]);
+    const clientId = screen.getByTestId('sso-client-id');
+    await userEvent.clear(clientId);
+    await userEvent.type(clientId, 'new-cid');
+    await userEvent.click(screen.getByTestId('sso-provider-save'));
+    await screen.findByTestId('sso-provider-error');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('sso-display-name')).toHaveValue(
+        'Renamed elsewhere'
+      )
+    );
+    expect(screen.getByTestId('sso-client-id')).toHaveValue('new-cid');
+
+    API.updateOidcProvider.mockResolvedValue(provider());
+    await userEvent.click(screen.getByTestId('sso-provider-save'));
+    await waitFor(() =>
+      expect(API.updateOidcProvider).toHaveBeenCalledTimes(2)
+    );
+    const { client_auth_method: _method, ...rest } =
+      API.updateOidcProvider.mock.calls[1][1];
+    expect(rest).toEqual({ client_id: 'new-cid' });
+  });
+
+  it('the password toggle switches password sign-in off through the settings endpoint', async () => {
+    API.updateAuthSettings.mockResolvedValue({
+      public_base_url: 'https://mino.example.com',
+      password_login_enabled: false,
+    });
     wrap(<SsoSettingsForm />);
     const toggle = await screen.findByTestId('sso-password-toggle');
-    expect(toggle).toBeDisabled();
+    expect(toggle).not.toBeDisabled();
     expect(toggle).toBeChecked();
-    expect(API.updateAuthSettings).not.toHaveBeenCalled();
+    await userEvent.click(toggle);
+    expect(API.updateAuthSettings).toHaveBeenCalledWith({
+      password_login_enabled: false,
+    });
+    await waitFor(() => expect(toggle).not.toBeChecked());
+  });
+
+  it('shows the lockout guard reasons as fixed copy and leaves the toggle on', async () => {
+    API.updateAuthSettings.mockRejectedValue(
+      Object.assign(new Error('409'), {
+        status: 409,
+        body: {
+          code: 'lockout_guard',
+          reasons: ['not_sso_session', 'not_admin_at_sign_in'],
+          detail: 'server text',
+        },
+      })
+    );
+    wrap(<SsoSettingsForm />);
+    const toggle = await screen.findByTestId('sso-password-toggle');
+    await userEvent.click(toggle);
+    const error = await screen.findByTestId('sso-password-error');
+    expect(error).toHaveTextContent(/not signed in through single sign-on/i);
+    expect(error).toHaveTextContent(/did not sign you in as an administrator/i);
+    expect(error).not.toHaveTextContent('server text');
+    expect(toggle).toBeChecked();
+  });
+
+  it('links the recovery procedure next to the password toggle', async () => {
+    wrap(<SsoSettingsForm />);
+    const link = await screen.findByTestId('sso-recovery-link');
+    expect(link).toHaveAttribute(
+      'href',
+      expect.stringMatching(/docs\/sso-recovery\.md$/)
+    );
+  });
+
+  it('shows a banner while the break-glass override is on', async () => {
+    API.getAuthConfig.mockResolvedValue({
+      providers: [],
+      password_login_enabled: true,
+      password_login_forced: true,
+    });
+    wrap(<SsoSettingsForm />);
+    expect(await screen.findByTestId('sso-password-forced')).toHaveTextContent(
+      /MINO_PASSWORD_LOGIN_FORCE/
+    );
+  });
+
+  it('shows no override banner when the override is off', async () => {
+    API.getAuthConfig.mockResolvedValue({
+      providers: [],
+      password_login_enabled: true,
+      password_login_forced: false,
+    });
+    wrap(<SsoSettingsForm />);
+    await screen.findByTestId('sso-password-toggle');
+    expect(screen.queryByTestId('sso-password-forced')).toBeNull();
   });
 
   it('shows fixed copy for a refused public base URL, never the server text', async () => {
