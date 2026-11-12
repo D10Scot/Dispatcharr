@@ -1,0 +1,59 @@
+# Example OpenTelemetry Collector configuration for Mino (docs/observability.md).
+# Image: otel/opentelemetry-collector-contrib:0.165.0
+#   @sha256:e40d61f10c9a617cca1ffd1be4d7e2b3a4b0f0001798ff07e58cabe82e618cea
+# (contrib distribution: the prometheus receiver is not in the core one).
+#
+# Mino processes push OTLP/HTTP to :4318. The relay also serves /metrics.
+# Never ingest the relay's metrics by BOTH paths into one backend, or every
+# relay series is doubled (docs/observability.md section 4). Default here: push.
+# To scrape the relay instead, set OTEL_METRICS_EXPORTER=none on the relay
+# service only (it still pushes traces and logs), uncomment the prometheus
+# receiver and the "metrics/scrape" pipeline below, and keep the "metrics"
+# pipeline for the Python processes' metrics.
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+  # prometheus:
+  #   config:
+  #     scrape_configs:
+  #       - job_name: mino-relay
+  #         scrape_interval: 15s
+  #         static_configs:
+  #           - targets: ["mino:5658"]   # the relay's port; never the nginx port
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 80
+  batch: {}
+
+exporters:
+  debug:
+    verbosity: basic
+  # Replace debug with your own backend. Keep credentials out of this file:
+  # use the collector's ${env:NAME} expansion and a secret.
+  # otlphttp/backend:
+  #   endpoint: https://otlp.example.invalid
+  #   headers:
+  #     authorization: "Bearer ${env:BACKEND_TOKEN}"
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+    # metrics/scrape:
+    #   receivers: [prometheus]
+    #   processors: [memory_limiter, batch]
+    #   exporters: [debug]

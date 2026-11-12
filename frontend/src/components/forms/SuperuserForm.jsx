@@ -41,7 +41,7 @@ function SetupHelpModal({ opened, onClose, clientIp }) {
     >
       <Stack spacing="md">
         <Text size="sm">
-          Web setup is limited to local networks by default. Dispatcharr
+          Web setup is limited to local networks by default. Mino
           currently sees your connection as <Code>{ip}</Code>.
         </Text>
         <Text size="sm">
@@ -144,13 +144,13 @@ function SuperuserForm() {
         <Stack align="center" spacing="lg">
           <Image
             src={logo}
-            alt="Dispatcharr Logo"
+            alt="Mino Logo"
             width={120}
             height={120}
             fit="contain"
           />
           <Title order={2} align="center">
-            Dispatcharr
+            Mino
           </Title>
           <Text size="sm" color="dimmed" align="center">
             {setupAllowed

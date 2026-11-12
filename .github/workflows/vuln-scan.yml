@@ -32,6 +32,8 @@ on:
       - 'pyproject.toml'
       - 'frontend/package-lock.json'
       - 'e2e/package-lock.json'
+      - 'relay/go.mod'
+      - 'relay/go.sum'
       - '.github/workflows/vuln-scan.yml'
   pull_request:
     # Deliberately NOT docker/DispatcharrBase or docker/Dockerfile: the
@@ -47,6 +49,8 @@ on:
       - 'pyproject.toml'
       - 'frontend/package-lock.json'
       - 'e2e/package-lock.json'
+      - 'relay/go.mod'
+      - 'relay/go.sum'
       - '.github/workflows/vuln-scan.yml'
   # zizmor flags workflow_run as "almost always used insecurely" because the
   # common misuse is checking out and building the triggering run's PR head
@@ -103,7 +107,7 @@ jobs:
           # google/osv-scanner v2.5.1
           docker run --rm -v "$PWD:/repo" -w /repo \
             ghcr.io/google/osv-scanner@sha256:8108ae94eadea5a02c9bec6e646909d5b790b44bd62d7f5b7f0b1d6d0ffc7734 \
-            scan source --lockfile=/repo/uv.lock --lockfile=/repo/frontend/package-lock.json --lockfile=/repo/e2e/package-lock.json \
+            scan source --lockfile=/repo/uv.lock --lockfile=/repo/frontend/package-lock.json --lockfile=/repo/e2e/package-lock.json --lockfile=/repo/relay/go.mod \
             --format table || true
 
       - name: OSV-Scanner (blocking — CVSS >= 7.0, i.e. HIGH/CRITICAL)
@@ -111,7 +115,7 @@ jobs:
           # google/osv-scanner v2.5.1
           docker run --rm -v "$PWD:/repo" -w /repo \
             ghcr.io/google/osv-scanner@sha256:8108ae94eadea5a02c9bec6e646909d5b790b44bd62d7f5b7f0b1d6d0ffc7734 \
-            scan source --lockfile=/repo/uv.lock --lockfile=/repo/frontend/package-lock.json --lockfile=/repo/e2e/package-lock.json \
+            scan source --lockfile=/repo/uv.lock --lockfile=/repo/frontend/package-lock.json --lockfile=/repo/e2e/package-lock.json --lockfile=/repo/relay/go.mod \
             --format json --output-file=osv-results.json || true
           python3 -c "
           import json, sys
@@ -260,3 +264,33 @@ jobs:
           docker run --rm -v "$RUNNER_TEMP/grype.yaml:/grype.yaml:ro" \
             anchore/grype@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253 \
             "$IMAGE_REF" --config /grype.yaml --fail-on high --only-fixed -o table
+
+  # ADR 0011: the relay's Go modules, scanned from source on every PR that
+  # touches relay/go.mod or relay/go.sum. The trivy and grype jobs above see
+  # the same modules only inside the PUBLISHED image (/usr/local/bin/relay-go's
+  # embedded build info), after merge; this is the pre-merge half. Same
+  # digest-pinned scanner images and the same CRITICAL/HIGH-with-a-fix
+  # blocking policy as the image jobs.
+  go-modules:
+    name: Trivy and Grype (relay Go modules)
+    if: github.event_name != 'workflow_run'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+
+      - name: Trivy (blocking — CRITICAL/HIGH, fixable only)
+        run: |
+          # aquasecurity/trivy v0.74.0
+          docker run --rm -v "$PWD/relay:/relay:ro" \
+            aquasec/trivy@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969 \
+            fs --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 --format table --scanners vuln --timeout 8m \
+            /relay
+
+      - name: Grype (blocking — CRITICAL/HIGH, fixable only)
+        run: |
+          # anchore/grype v0.117.0
+          docker run --rm -v "$PWD/relay:/relay:ro" \
+            anchore/grype@sha256:ddf9e9f204049f3a4a0955ef70873cabab6a31432125ad4f20a490b54950a253 \
+            dir:/relay --fail-on high --only-fixed -o table

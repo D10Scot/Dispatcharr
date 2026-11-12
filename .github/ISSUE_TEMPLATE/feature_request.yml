@@ -1,5 +1,5 @@
 name: Feature request
-description: I want to suggest a new feature for Dispatcharr
+description: I want to suggest a new feature for Mino
 title: "[Feature]: "
 labels: ["Triage"]
 type: "Feature"
@@ -9,7 +9,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thank you for helping to make Dispatcharr better!
+        Thank you for helping to make Mino better!
   - type: textarea
     id: describe-problem
     attributes:

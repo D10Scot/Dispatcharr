@@ -20,6 +20,36 @@ linters:
     - noctx          # every outbound request carries a deadline (§ The contract's timeouts)
     - revive
     - unconvert
+    - depguard       # ADR 0011: OTel stays in relay/telemetry; no driver anywhere
+  settings:
+    depguard:
+      rules:
+        otel-confined:
+          files:
+            - $all
+            - "!**/relay/telemetry/**"
+            - "!**/relay/main.go"
+          deny:
+            - pkg: go.opentelemetry.io
+              desc: OTel stays in relay/telemetry; relay/main.go is exempt only to wire Init and Shutdown (observability spec D2, ADR 0011)
+            - pkg: github.com/prometheus
+              desc: the Prometheus client stays in relay/telemetry; relay/main.go is exempt only to wire Init and Shutdown (observability spec D2, ADR 0011)
+        no-drivers:
+          files:
+            - $all
+          deny:
+            - pkg: database/sql$
+              desc: ADR 0011 -- the relay links no database driver
+            - pkg: github.com/lib/pq
+              desc: ADR 0011 -- the relay links no database driver
+            - pkg: github.com/jackc
+              desc: ADR 0011 -- the relay links no database driver
+            - pkg: github.com/go-sql-driver
+              desc: ADR 0011 -- the relay links no database driver
+            - pkg: github.com/redis
+              desc: ADR 0011 -- the relay links no Redis client
+            - pkg: github.com/gomodule/redigo
+              desc: ADR 0011 -- the relay links no Redis client
   exclusions:
     generated: lax
     rules:

@@ -122,6 +122,11 @@ type ControlPlaneConfig struct {
 	// null, which is "no locked ffmpeg profile installed".
 	FFmpegProfile *ProfileConfig
 
+	// ChannelPK, when set, is the answer's channel_pk: the channel's numeric
+	// id, which the relay labels its telemetry by (observability D7, O3). Nil
+	// leaves the key out, the shape of a control plane older than O3.
+	ChannelPK *int
+
 	// UserAgent overrides the source's user_agent. Empty means
 	// "relaytest/1.0", the fixture's usual value; BlankUserAgent sends "".
 	UserAgent      string
@@ -616,6 +621,9 @@ func (c *ControlPlane) nextSourceAnswer(cfg ControlPlaneConfig, channelID string
 		"error":          nil,
 		"proxy_settings": settings,
 		"source":         nil,
+	}
+	if cfg.ChannelPK != nil {
+		answer["channel_pk"] = *cfg.ChannelPK
 	}
 	c.mu.Lock()
 	liveProfiles, overridden := c.profiles, c.hasProfs

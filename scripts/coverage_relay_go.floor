@@ -262,9 +262,9 @@ missing=705
 percent=90.24
 measured=2026-09-29
 runs=12
-packages=40d4ba02d7d3
-package_count=12
-gomod=92baf312d30d
+packages=837a5e4fdc67
+package_count=14
+gomod=a10c0ed0e263
 raise_from=691
 raise_listed=14
 # PROVENANCE (Phase 4a-1d, R21/R34/R80 -- measured in CI at 9c5ba13b on
@@ -291,3 +291,10 @@ raise_listed=14
 # (uncovered in all 12 rounds, by construction: nothing tests main). relay/
 # session/silence.go is 0 uncovered in every round. Additions: 652 statements
 # (638 net linked, plus the 14 of main.go's block), 97.9% covered.
+# PROVENANCE (observability O4, migration/relay-observability, 2026-11-12).
+# A SHAPE-ONLY re-baseline: main.go now links relay/telemetry and relay/procstat
+# (O2 added both unlinked), so packages= and package_count= (12 -> 14) move and
+# MISSING IS UNCHANGED at 705. One local --measure on darwin read 672 over 7,463
+# linked statements (91.00%); a local figure sets nothing, and CI's draw on this
+# branch decides whether R27's raise is needed at all. If a CI draw exceeds 705,
+# the R21/R27 census and a declared raise follow before merge.

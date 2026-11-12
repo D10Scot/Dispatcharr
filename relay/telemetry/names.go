@@ -1,0 +1,135 @@
+package telemetry
+
+// Span names: a closed set (D9). The redacting exporter replaces any other
+// name with the instrumentation scope's.
+const (
+	SpanTune         = "relay.tune"
+	SpanAuthorize    = "relay.authorize"
+	SpanNextSource   = "relay.next_source"
+	SpanFailover     = "relay.failover"
+	SpanStreamSwitch = "relay.stream_switch"
+)
+
+// Span attribute keys (§ Span catalogue). Nothing else is exported.
+const (
+	AttrChannelID    = "mino.channel_id"
+	AttrOutputFormat = "mino.output_format"
+	AttrTuneJoined   = "mino.tune.joined"
+	AttrOutcome      = "mino.outcome"
+	AttrReason       = "mino.next_source.reason"
+	AttrTrigger      = "mino.failover.trigger"
+	AttrRoute        = "http.route"
+	AttrStatusCode   = "http.response.status_code"
+	attrExcType      = "exception.type"
+)
+
+// mino.outcome values. Each span uses a subset; the exporter accepts the union.
+const (
+	OutcomeStreaming = "streaming"
+	OutcomeRedirect  = "redirect"
+	OutcomeRefused   = "refused"
+	OutcomeFailed    = "failed"
+	OutcomeDraining  = "draining"
+	OutcomeAbandoned = "abandoned"
+
+	OutcomeAllowed     = "allowed"
+	OutcomeDenied      = "denied"
+	OutcomeUnavailable = "unavailable"
+
+	OutcomeSource   = "source"
+	OutcomeNoSource = "no_source"
+	OutcomeBlocked  = "blocked"
+
+	OutcomeSwitched    = "switched"
+	OutcomeNoAlternate = "no_alternate"
+	OutcomeUnresolved  = "unresolved"
+	OutcomeSameURL     = "same_url"
+	OutcomeNoResolver  = "no_resolver"
+
+	OutcomeApplied   = "applied"
+	OutcomeUnchanged = "unchanged"
+)
+
+// mino.next_source.reason values.
+const (
+	ReasonTune     = "tune"
+	ReasonFailover = "failover"
+	ReasonResume   = "resume"
+)
+
+// Trigger values (M4 and relay.failover).
+const (
+	TriggerHealthMonitor    = "health_monitor"
+	TriggerMaxRetries       = "max_retries_exceeded"
+	TriggerBufferingTimeout = "buffering_timeout"
+)
+
+// Output formats (M2, M3, relay.tune).
+const (
+	FormatMPEGTS = "mpegts"
+	FormatFMP4   = "fmp4"
+	FormatHLS    = "hls"
+)
+
+// HeaderRelayTraceparent carries the authorize hop's trace context across
+// nginx (D11). Extract it only from a trusted request.
+const HeaderRelayTraceparent = "X-Relay-Traceparent"
+
+// RoutePatterns are the relay's mux patterns as httpapi.New registers them: the
+// CLOSED set http.route may take. A route is bound by construction (D9): the
+// two XC patterns carry the password in the path, so a charset rule would pass
+// a request path and only a member of this set is exported. A test holds the
+// set equal to the registrations in relay/httpapi/server.go, so a new route
+// that is not added here fails it.
+var RoutePatterns = []string{
+	"GET /healthz",
+	"GET /readyz",
+	"GET /metrics",
+	"GET /proxy/ts/stream/{channelID}",
+	"GET /live/{username}/{password}/{channelID}",
+	"GET /{username}/{password}/{channelID}",
+	"GET /hls/{token}/{file}",
+	"GET /hls/{token}/{rendition}/{file}",
+	"DELETE /hls/{token}",
+	"GET /proxy/relay/channels",
+	"GET /proxy/relay/channels/{channelID}",
+	"DELETE /proxy/relay/channels/{channelID}",
+	"DELETE /proxy/relay/channels/{channelID}/clients/{clientID}",
+	"POST /proxy/relay/channels/{channelID}/advance",
+}
+
+var (
+	routes      = setOf(RoutePatterns...)
+	metricNames = setOf(nameChannels, nameClients, nameClientSent, nameFailovers, nameHLSSessions, nameRewindUsage, nameRewindLimit, nameProcessCPU, nameProcessMemory)
+	spanNames   = setOf(SpanTune, SpanAuthorize, SpanNextSource, SpanFailover, SpanStreamSwitch)
+	outcomes    = setOf(
+		OutcomeStreaming, OutcomeRedirect, OutcomeRefused, OutcomeFailed, OutcomeDraining, OutcomeAbandoned,
+		OutcomeAllowed, OutcomeDenied, OutcomeUnavailable,
+		OutcomeSource, OutcomeNoSource, OutcomeBlocked,
+		OutcomeSwitched, OutcomeNoAlternate, OutcomeUnresolved, OutcomeSameURL, OutcomeNoResolver,
+		OutcomeApplied, OutcomeUnchanged,
+	)
+	failoverOutcomes = setOf(OutcomeSwitched, OutcomeNoAlternate, OutcomeUnresolved, OutcomeSameURL, OutcomeNoResolver)
+	reasons          = setOf(ReasonTune, ReasonFailover, ReasonResume)
+	triggers         = setOf(TriggerHealthMonitor, TriggerMaxRetries, TriggerBufferingTimeout)
+	formats          = setOf(FormatMPEGTS, FormatFMP4, FormatHLS)
+	kinds            = setOf("source", "output", "fmp4", "hls")
+	channelStates    = setOf(channelStateList...)
+)
+
+// channelStateList is M1's closed label set, in a fixed order: every
+// channel.State value. M1 observes each of them on every collection, zero
+// when no channel is in it, so an idle relay still exports the family and a
+// state's series goes to 0 rather than going stale when its last channel
+// leaves it.
+var channelStateList = []string{"initializing", "connecting", "waiting_for_clients", "active", "buffering", "error", "stopping", "stopped"}
+
+func setOf(vs ...string) map[string]struct{} {
+	m := make(map[string]struct{}, len(vs))
+	for _, v := range vs {
+		m[v] = struct{}{}
+	}
+	return m
+}
+
+func in(set map[string]struct{}, v string) bool { _, ok := set[v]; return ok }

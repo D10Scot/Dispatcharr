@@ -120,10 +120,10 @@ describe('SuperuserForm', () => {
   // ── Rendering ──────────────────────────────────────────────────────────────
 
   describe('rendering', () => {
-    it('renders the Dispatcharr title', async () => {
+    it('renders the Mino title', async () => {
       setupMocks();
       render(<SuperuserForm />);
-      expect(screen.getByText('Dispatcharr')).toBeInTheDocument();
+      expect(screen.getByText('Mino')).toBeInTheDocument();
     });
 
     it('renders the welcome message', async () => {
@@ -139,7 +139,7 @@ describe('SuperuserForm', () => {
     it('renders the logo image', async () => {
       setupMocks();
       render(<SuperuserForm />);
-      expect(screen.getByAltText('Dispatcharr Logo')).toBeInTheDocument();
+      expect(screen.getByAltText('Mino Logo')).toBeInTheDocument();
     });
 
     it('renders Username input', async () => {
