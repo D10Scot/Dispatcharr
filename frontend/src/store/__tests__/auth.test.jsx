@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import useAuthStore from '../auth';
+import useAuthStore, { REFRESH_ATTEMPTS } from '../auth';
 import useSettingsStore from '../settings';
 import useChannelsStore from '../channels';
 import usePlaylistsStore from '../playlists';
@@ -520,6 +520,108 @@ describe('useAuthStore', () => {
       expect(result.current.superuserExists).toBe(false);
       expect(result.current.setupAllowed).toBe(false);
       expect(result.current.setupClientIp).toBe('203.0.113.50');
+    });
+  });
+
+  describe('getRefreshToken when the admin-floor lock is busy', () => {
+    const busy = (retryAfter = '2') => {
+      const error = new Error('HTTP error! Status: 503');
+      error.status = 503;
+      error.body = { code: 'admin_floor_busy' };
+      error.response = {
+        headers: {
+          get: (name) => (name === 'Retry-After' ? retryAfter : null),
+        },
+      };
+      return error;
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      // Reset, not just clear: a queued Once value must not leak between these tests.
+      API.refreshToken.mockReset();
+      API.logout.mockReset();
+      localStorageMock.getItem.mockReturnValue('refresh-token');
+      API.logout.mockResolvedValue();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('retries after Retry-After and keeps the session on success', async () => {
+      const token = createMockToken();
+      API.refreshToken
+        .mockRejectedValueOnce(busy('2'))
+        .mockResolvedValueOnce({ access: token });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(API.refreshToken).toHaveBeenCalledTimes(2);
+
+      await expect(pending).resolves.toBe(token);
+      expect(API.logout).not.toHaveBeenCalled();
+      expect(localStorageMock.removeItem).not.toHaveBeenCalledWith(
+        'refreshToken'
+      );
+      expect(localStorageMock.setItem).toHaveBeenCalledWith(
+        'accessToken',
+        token
+      );
+    });
+
+    it('waits one second when Retry-After is missing', async () => {
+      const token = createMockToken();
+      API.refreshToken
+        .mockRejectedValueOnce(busy(null))
+        .mockResolvedValueOnce({ access: token });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toBe(token);
+    });
+
+    it('logs out as before once the attempts are spent', async () => {
+      API.refreshToken.mockRejectedValue(busy('1'));
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(10000);
+
+      await expect(pending).resolves.toBe(false);
+      expect(API.refreshToken).toHaveBeenCalledTimes(REFRESH_ATTEMPTS);
+      expect(REFRESH_ATTEMPTS).toBe(3);
+      expect(API.logout).toHaveBeenCalledTimes(1);
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith('refreshToken');
+    });
+
+    it('logs out at once on a 401, with no retry', async () => {
+      const error = new Error('HTTP error! Status: 401');
+      error.status = 401;
+      error.body = { code: 'token_not_valid' };
+      API.refreshToken.mockRejectedValue(error);
+
+      await expect(useAuthStore.getState().getRefreshToken()).resolves.toBe(
+        false
+      );
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      expect(API.logout).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('does not retry a 503 with another code', async () => {
+      const error = busy('1');
+      error.body = { code: 'something_else' };
+      API.refreshToken.mockRejectedValue(error);
+
+      await expect(useAuthStore.getState().getRefreshToken()).resolves.toBe(
+        false
+      );
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      expect(API.logout).toHaveBeenCalledTimes(1);
     });
   });
 
