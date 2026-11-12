@@ -104,6 +104,13 @@ def init_beat_telemetry(**_kwargs):
     from dispatcharr.observability.bootstrap import init
 
     init("mino-worker", "celery-beat")
+    # M12 to M14 are beat-only (spec D16): one process per deployment.
+    try:
+        from dispatcharr.observability.worker_metrics import register_beat_gauges
+
+        register_beat_gauges()
+    except Exception:
+        logger.warning("registering the beat gauges failed", exc_info=True)
 
 
 @worker_process_shutdown.connect(weak=False)
@@ -136,6 +143,9 @@ app.conf.task_routes = {
 @task_prerun.connect
 def reset_db_connection_before_task(**kwargs):
     """Discard stale DB connections before each task (Celery workers are long-lived)."""
+    from dispatcharr.observability import worker_metrics
+
+    worker_metrics.task_started(kwargs.get("task_id"))
     from django.db import close_old_connections
 
     try:
@@ -152,6 +162,10 @@ def cleanup_task_memory(**kwargs):
 
     # Get task name from kwargs
     task_name = kwargs.get('task').name if kwargs.get('task') else ''
+
+    from dispatcharr.observability import worker_metrics
+
+    worker_metrics.task_finished(kwargs.get("task_id"), task_name, kwargs.get("state"))
 
     # Return all DB connections to the pool in a clean state
     try:
