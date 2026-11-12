@@ -773,7 +773,7 @@ REDACT_TEXT_TABLE = (
     # an encoded "/", so it cannot be a host), and with an empty host
     (f"word://movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4", "word://movie/***/***/1.mp4"),
     (f"word://%2F{Q_USER}%2F{Q_PASS}%2F1.ts", "word:///***/***/1.ts"),
-    (f"word:///%6dovie/{Q_USER}/{Q_PASS}/1.mp4", "word:/movie/***/***/1.mp4"),
+    (f"word:///%6dovie/{Q_USER}/{Q_PASS}/1.mp4", "word:///movie/***/***/1.mp4"),
     # given up (round 4, class c): spelled exactly like http://h/a/5, a URL
     # whose host is the first segment; masked at 1f7eb88e only
     (f"path://{Q_USER}/{Q_PASS}/1.ts", f"path://{Q_USER}/{Q_PASS}/1.ts"),
@@ -806,6 +806,20 @@ REDACT_TEXT_TABLE = (
     # read as a path
     ("http://live/a/b", "http://live/***/***"),
     ("http://h/a%2Fb/5", "http://h/***/***/5"),
+    # review round 5, B: the userinfo stays masked when the host is read as
+    # a path
+    (f"http://{Q_USER}:{Q_PASS}@h%2Flive/a/b/c", "http://***@h/live/***/***/c"),
+    (f"rtsp://{Q_USER}:{Q_PASS}@cam%2Flive/ch/main/av", "rtsp://***@cam/live/***/***/av"),
+    (f"http://{Q_USER}:{Q_PASS}@h%2Fmovie%2Fa%2Fb", "http://***@h/movie/***/***"),
+    (f"http://{Q_USER}:{Q_PASS}@%2Flive/a/b", "http://***@/live/***/***"),
+    # review round 5, C: a decoded "?" or "#" stays path text; the real query
+    # and fragment are masked as they are
+    (f"http://h/%6dovie/a/b/c%3Fd?token={Q_PASS}", "http://h/movie/***/***/c?d?token=***"),
+    (f"http://h/%6dovie/a/b/c%3Fd?username={Q_USER}&password={Q_PASS}",
+     "http://h/movie/***/***/c?d?username=***&password=***"),
+    (f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}", "http://h/movie/***/***/c#d?password=***"),
+    (f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}", "http://h/movie/***/***/c#d#token=***"),
+    (f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}", "http://h/live/***/***/1?.ts?password=***"),
 )
 
 
@@ -835,6 +849,93 @@ class RedactTextTableTests(SimpleTestCase):
                 self.assertNotIn(Q_USER, out, f"{Q_USER} survived in {out!r}")
                 self.assertNotIn(Q_PASS, out, f"{Q_PASS} survived in {out!r}")
                 self.assertEqual(out, expected)
+
+
+def _url_grid():
+    """Absolute URLs built from components, each credential a distinct sentinel.
+
+    Yields (url, sentinels): every sentinel the URL carries, so a survivor can
+    be named. Deterministic; a few thousand inputs.
+    """
+    schemes = ("http", "https", "rtsp", "word")
+    userinfos = (
+        ("", ()),
+        ("s-ui-user:s-ui-pass@", ("s-ui-user", "s-ui-pass")),
+        ("s-ui-user%3Ax:s-ui-pass%40y@", ("s-ui-user", "s-ui-pass")),
+    )
+    hosts = (
+        "h", "h.example:8080", "[::1]", "live", "Movie", "timeshift", "%6cive",
+        "h%2Flive", "cam%2Fmovie", "%2Flive", "h%2Fx", "",
+    )
+    paths = (
+        ("/live/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+        ("/%6cive/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+        ("/live%2Fs-p-user%2Fs-p-pass%2F1.ts", ("s-p-user", "s-p-pass")),
+        ("/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+        ("/s-p-user/s-p-pass/%31.ts", ("s-p-user", "s-p-pass")),
+        ("/timeshift/s-p-user/s-p-pass/60/x/5.ts", ("s-p-user", "s-p-pass")),
+        ("/%6dovie/a/b/c%3Fd", ()),
+        ("/%6dovie/a/b/c%23d", ()),
+        ("/%6cive/a/b/1%3F.ts", ()),
+        ("/%6dovie/a/b/c%40d", ()),
+        ("/%6dovie/a/b/c%2F%2Fd", ()),
+        ("/a/b/c", ()),
+        ("/a/b/5", ()),
+        ("", ()),
+    )
+    tails = (
+        ("", ()),
+        ("?token=s-q-token", ("s-q-token",)),
+        ("?username=s-q-user&password=s-q-pass", ("s-q-user", "s-q-pass")),
+        ("?password=s-q-pass#token=s-f-token", ("s-q-pass", "s-f-token")),
+        ("#token=s-f-token", ("s-f-token",)),
+        ("?a=1", ()),
+    )
+    for scheme in schemes:
+        for userinfo, ui_sentinels in userinfos:
+            for host in hosts:
+                for path, p_sentinels in paths:
+                    for tail, t_sentinels in tails:
+                        url = f"{scheme}://{userinfo}{host}{path}{tail}"
+                        yield url, ui_sentinels + p_sentinels + t_sentinels
+
+
+class NeverLessThanRedactUrlTests(SimpleTestCase):
+    """Review round 5: redact_text never leaves a credential redact_url masks.
+
+    The oracle is ``redact_url`` from the project package, on the same token, which
+    this PR does not change. Every extra reading in this module may only add
+    masks to it, never trade one of its masks for another.
+    """
+
+    QUOTED = (
+        # review round 5, B and C, verbatim
+        f"http://{Q_USER}:{Q_PASS}@h%2Flive/a/b/c",
+        f"rtsp://{Q_USER}:{Q_PASS}@cam%2Flive/ch/main/av",
+        f"http://{Q_USER}:{Q_PASS}@h%2Fmovie%2Fa%2Fb",
+        f"http://{Q_USER}:{Q_PASS}@%2Flive/a/b",
+        f"http://h/%6dovie/a/b/c%3Fd?token={Q_PASS}",
+        f"http://h/%6dovie/a/b/c%3Fd?username={Q_USER}&password={Q_PASS}",
+        f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}",
+        f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}",
+        f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}",
+    )
+
+    def test_no_credential_redact_url_masks_survives(self):
+        cases = list(_url_grid()) + [(url, (Q_USER, Q_PASS)) for url in self.QUOTED]
+        self.assertGreater(len(cases), 2000)
+        survivors = []
+        for url, sentinels in cases:
+            baseline = redact_url(url)
+            out = redact_text(url)
+            for sentinel in sentinels:
+                if sentinel not in baseline and sentinel in out:
+                    survivors.append(f"{sentinel} in {out!r} (redact_url: {baseline!r})")
+        self.assertFalse(
+            survivors,
+            f"{len(survivors)} credential(s) of {len(cases)} inputs survive that redact_url masks; "
+            f"first: {survivors[:5]}",
+        )
 
 
 class PlacementTests(_SinkAssertions, SimpleTestCase):
