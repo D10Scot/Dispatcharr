@@ -519,6 +519,46 @@ func TestUntrustedTraceContextIsIgnored(t *testing.T) {
 	}
 }
 
+// 4b. A trusted traceparent is inherited for every flags byte OTel Go accepts
+// for version 00 (00-03), and dropped above that. Django's authorize view
+// sends 03: sampled plus the W3C Level 2 random-trace-id bit.
+func TestTrustedTraceparentFlags(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		flags       byte
+		inherits    bool
+		wantSampled bool
+		wantFlags   byte
+	}{
+		{"flags 01 (sampled)", 0x01, true, true, 0x01},
+		{"flags 03 (sampled plus random-trace-id), as Django sends", 0x03, true, true, 0x03},
+		{"flags 04 is out of range, so the relay starts a root", 0x04, false, true, 0x01},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := telemetrytest.Install(t)
+			r := tracedRig(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Rate: 4}, nil)
+			h := trustedHeader(traceUUID, false)
+			h.Set(telemetry.HeaderRelayTraceparent, telemetrytest.TraceparentFlags(parentTrace, parentSpan, tc.flags))
+			response := r.tune(t, "/proxy/ts/stream/"+traceUUID, h)
+			readAtLeast(response.Body, buffer.TSPacketSize, 3*time.Second)
+			_ = response.Body.Close()
+			span := tuneSpan(t, rec)
+			if inherited := span.TraceID == parentTrace && span.ParentSpanID == parentSpan; inherited != tc.inherits {
+				t.Errorf("relay.tune is under %q in trace %s: inheritance of the trusted traceparent = %v, want %v", span.ParentSpanID, span.TraceID, inherited, tc.inherits)
+			}
+			if !tc.inherits && (span.ParentSpanID != "" || span.TraceID == parentTrace) {
+				t.Errorf("relay.tune is under %q in trace %s, want a root span", span.ParentSpanID, span.TraceID)
+			}
+			if span.Sampled != tc.wantSampled {
+				t.Errorf("relay.tune sampled = %v, want %v", span.Sampled, tc.wantSampled)
+			}
+			if span.TraceFlags != tc.wantFlags {
+				t.Errorf("relay.tune trace flags = %#02x, want %#02x", span.TraceFlags, tc.wantFlags)
+			}
+		})
+	}
+}
+
 // advanceWithTraceparent is internalCall with a traceparent naming Q.
 func (r *rig) advanceWithTraceparent(t *testing.T, path string, body []byte, signed bool) int {
 	t.Helper()
