@@ -453,6 +453,12 @@ NAME_CASES = (
     ("inline dict, one redacted one raw", 'logger.info("%(url)s %(search_pattern)s", {"url": redact_url(u), "search_pattern": p})', True),
     ("inline dict, both redacted", 'logger.info("%(url)s %(search_pattern)s", {"url": redact_url(u), "search_pattern": redact_text(p)})', False),
     ("inline dict, key not selected", 'logger.info("%(name)s", {"name": n, "url": redact_url(u)})', False),
+    # DOCUMENTED CONSERVATIVE FALSE POSITIVE (see the checker's KNOWN GAPS): a
+    # keyword-supplied .format field is not traced to its redacted value. Pinned
+    # so a change in this behaviour is deliberate; the safe form passes the
+    # redacted value positionally.
+    ("format keyword field, redacted value (known false positive)", 'logger.info("{search_pattern}".format(search_pattern=redact_text(p)))', True),
+    ("format positional field, redacted value", 'logger.info("{}".format(redact_text(p)))', False),
     ("inline dict spread", 'logger.info("%(url)s", {**row})', True),
     ("eager inline dict, redacted", 'logger.info("%(url)s" % {"url": redact_url(u)})', False),
     ("eager inline dict, raw", 'logger.info("%(url)s" % {"url": u})', True),
@@ -489,13 +495,18 @@ class WidenedNameRuleTests(SimpleTestCase):
         for label, source, reported in NAME_CASES:
             with self.subTest(label):
                 result = self.run_case(source)
+                detail = (
+                    f"{label}: {source}\nreturncode={result.returncode}\n"
+                    f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+                )
                 if reported:
-                    self.assertEqual(result.returncode, 1, f"{label} not reported: {source}")
-                    self.assertEqual(len(result.stdout.splitlines()), 1, result.stdout)
-                else:
+                    self.assertEqual(result.returncode, 1, f"not reported\n{detail}")
                     self.assertEqual(
-                        result.returncode, 0, f"{label} wrongly reported: {result.stdout}"
+                        len(result.stdout.splitlines()), 1, f"expected one finding\n{detail}"
                     )
+                else:
+                    self.assertEqual(result.returncode, 0, f"wrongly reported\n{detail}")
+                    self.assertEqual(result.stderr, "", f"unexpected stderr\n{detail}")
 
     def test_a_marker_with_a_reason_clears_a_bare_name(self):
         result = self.run_case(
@@ -509,6 +520,7 @@ class WidenedNameRuleTests(SimpleTestCase):
         )
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("needs a reason", result.stdout)
+        self.assertEqual(result.stderr, "")
 
     def test_the_source_tree_is_clean_under_the_widened_rule(self):
         # A live ratchet over every backend source file, not a fixture.
@@ -540,6 +552,8 @@ class WidenedNameRuleTests(SimpleTestCase):
             with self.subTest(label):
                 result = self.run_case(source)
                 self.assertEqual(result.returncode, 1, f"{label} cleared the call")
+                self.assertIn("case.py:", result.stdout, f"{label}: no finding line")
+                self.assertEqual(result.stderr, "", f"{label}: the checker crashed")
 
     def test_a_marker_in_a_real_comment_on_any_spanned_line_clears_a_call(self):
         result = self.run_case(
@@ -552,6 +566,8 @@ class WidenedNameRuleTests(SimpleTestCase):
             '# credential-logging: ignore - demo reason\n    logger.info("%s", url)'
         )
         self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("case.py:", result.stdout)
+        self.assertEqual(result.stderr, "")
 
     def test_one_marker_cannot_clear_two_calls_on_one_line(self):
         result = self.run_case(
@@ -560,6 +576,7 @@ class WidenedNameRuleTests(SimpleTestCase):
         )
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("ambiguous", result.stdout)
+        self.assertEqual(result.stderr, "")
 
     def test_one_marker_cannot_clear_a_nested_logging_call(self):
         result = self.run_case(
@@ -568,6 +585,7 @@ class WidenedNameRuleTests(SimpleTestCase):
         )
         self.assertEqual(result.returncode, 1, result.stdout)
         self.assertIn("ambiguous", result.stdout)
+        self.assertEqual(result.stderr, "")
 
     def test_a_marker_on_its_own_single_call_line_still_clears(self):
         result = self.run_case(

@@ -33,6 +33,8 @@ class EpgPatternLoggingTests(SimpleTestCase):
                 date_pattern=r"(?<month>y)|fakesecret",
             )
         assert_logged(self, logs.records, "Title pattern loaded")
+        assert_logged(self, logs.records, "Time pattern converted")
+        assert_logged(self, logs.records, "Date pattern converted")
         assert_no_secret(self, logs.records)
 
     def test_invalid_patterns_are_not_logged(self):
@@ -41,5 +43,6 @@ class EpgPatternLoggingTests(SimpleTestCase):
                 props = {"title_pattern": r"(?<title>.+)", field: r"(fakeuser/fakepass"}
                 with capture(epg.logger) as logs:
                     self.call(**props)
-                assert_logged(self, logs.records, "regex pattern after conversion")
+                kind = field.split("_")[0].capitalize()
+                assert_logged(self, logs.records, f"Invalid {kind.lower()} regex pattern after conversion")
                 assert_no_secret(self, logs.records)

@@ -847,7 +847,14 @@ class FilterPatternLoggingTests(TestCase):
                     "BBC News", URL, "Live TV", compiled("url", self.PATTERN, True),
                 )
         self.assertFalse(passed)
-        self.assertTrue(trace.called, "the trace line must still be emitted")
+        self.assertEqual(
+            [call.args[0] % call.args[1:] for call in trace.call_args_list],
+            ["Checking a url filter"],
+        )
+        self.assertTrue(
+            any("matches a url filter" in r.getMessage() for r in logs.records),
+            "the match DEBUG line must still be emitted",
+        )
         assert_no_secret(self, logs.records)
         self.assertNotIn("olduser", repr(trace.call_args_list))
         self.assertNotIn("oldpass", repr(trace.call_args_list))
@@ -879,4 +886,8 @@ class FilterPatternLoggingTests(TestCase):
         with capture(m3u_logger) as logs:
             self.assertIsNone(bounded.search(URL))
         self.assertTrue(bounded.tripped)
+        self.assertTrue(
+            any("regex timed out" in r.getMessage() for r in logs.records),
+            "the timeout warning must still be emitted",
+        )
         assert_no_secret(self, logs.records)

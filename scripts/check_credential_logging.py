@@ -133,6 +133,12 @@ KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
     exception type names, and core/tests/test_credential_logging_url_sites.py
     pins that through its public methods; nothing mechanical stops the next
     `str(e)`. Exception-text detection is deliberately not attempted here.
+  * A known CONSERVATIVE FALSE POSITIVE: a named .format field is flagged even
+    when its keyword value is redacted,
+    `"{search_pattern}".format(search_pattern=redact_text(p))`. The rule does
+    not trace a field to its value. Pass the redacted value positionally
+    (`"{}".format(redact_text(p))`) or log lazily, or use a reasoned marker.
+    No call in the tree has this shape.
   * An ignore marker clears the WHOLE call, every argument in it, not only the
     one the reason names, and only when exactly one logging call spans the
     marker's line (two calls on a line, or one inside another, make it

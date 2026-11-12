@@ -108,6 +108,7 @@ class XtreamClientLoggingTests(SimpleTestCase):
                 "player_api.php?username=fakeuser&password=fakepass", dict(self.PARAMS)
             )
         self.assertEqual(result, [])
+        assert_logged(self, logs.records, "XC API Request: http://prov.example.com/player_api.php")
         assert_no_secret(self, logs.records)
 
     def test_failure_details_name_no_url_secret_or_param_value(self):
@@ -120,23 +121,27 @@ class XtreamClientLoggingTests(SimpleTestCase):
                 client._make_request(
                     "player_api.php?username=fakeuser&password=fakepass", dict(self.PARAMS)
                 )
+        assert_logged(self, logs.records, "XC API Request failed: requests.exceptions.ConnectionError")
+        assert_logged(self, logs.records, "Request details: URL=")
         assert_no_secret(self, logs.records)
 
     ENDPOINT = "player_api.php?username=fakeuser&password=fakepass"
     CRED_URL = "http://prov.example.com/player_api.php?username=fakeuser&password=fakepass"
 
-    def run_failing(self, expected, **session_get):
+    def run_failing(self, expected, event, **session_get):
         client = self.make_client()
         client.session.get = MagicMock(**session_get)
         with capture(xtream_codes.logger) as logs:
             with self.assertRaises(expected):
                 client._make_request(self.ENDPOINT, dict(self.PARAMS))
+        assert_logged(self, logs.records, event)
         assert_no_secret(self, logs.records)
 
     def test_request_exception_text_with_the_full_url_is_not_logged(self):
         # requests quotes the full request URL, query string included.
         self.run_failing(
             requests.ConnectionError,
+            "XC API Request failed: requests.exceptions.ConnectionError",
             side_effect=requests.ConnectionError(
                 f"HTTPConnectionPool: Max retries exceeded with url: {self.CRED_URL}"
             ),
@@ -147,19 +152,29 @@ class XtreamClientLoggingTests(SimpleTestCase):
         response.raise_for_status.side_effect = requests.HTTPError(
             f"403 Client Error: Forbidden for url: {self.CRED_URL}"
         )
-        self.run_failing(requests.HTTPError, return_value=response)
+        self.run_failing(
+            requests.HTTPError,
+            "XC API Request failed: requests.exceptions.HTTPError",
+            return_value=response,
+        )
 
     def test_empty_blocked_and_invalid_json_responses_log_no_url_secret(self):
         empty = MagicMock(content=b"", text="")
         blocked = MagicMock(content=b"blocked", text="blocked")
         bad_json = MagicMock(content=b"<html>", text="<html>")
         bad_json.json.side_effect = requests.exceptions.JSONDecodeError("bad", "<html>", 0)
-        for label, response in (("empty", empty), ("blocked", blocked), ("json", bad_json)):
+        for label, response, event in (
+            ("empty", empty, "returned empty response from http://prov.example.com/player_api.php"),
+            ("blocked", blocked, "request blocked by server from http://prov.example.com/player_api.php"),
+            ("json", bad_json, "returned invalid JSON from http://prov.example.com/player_api.php"),
+        ):
             with self.subTest(label):
-                self.run_failing(ValueError, return_value=response)
+                self.run_failing(ValueError, event, return_value=response)
 
     def test_unexpected_exception_text_and_traceback_log_no_secret(self):
-        self.run_failing(KeyError, side_effect=KeyError(self.CRED_URL))
+        self.run_failing(
+            KeyError, "XC API Unexpected error: KeyError", side_effect=KeyError(self.CRED_URL)
+        )
 
     def test_the_raised_error_text_is_unchanged(self):
         # Logging only: callers still receive the same message.
@@ -201,17 +216,32 @@ class XtreamPublicMethodLoggingTests(SimpleTestCase):
         client.server_info = dict(self.AUTH_OK)
         return client
 
+    # (method, takes an id, success event, handler event). "{n}" is the count
+    # of returned items, "{id}" the provider id as the log shows it.
     FETCHERS = (
-        ("get_live_categories", ()),
-        ("get_live_category_streams", ("5",)),
-        ("get_all_live_streams", ()),
-        ("get_vod_categories", ()),
-        ("get_vod_streams", ("5",)),
-        ("get_vod_info", ("5",)),
-        ("get_series_categories", ()),
-        ("get_series", ("5",)),
-        ("get_series_info", ("5",)),
+        ("get_live_categories", False, "Successfully retrieved {n} live categories",
+         "Failed to get live categories: {exc}"),
+        ("get_live_category_streams", True, "Successfully retrieved {n} streams for category {id}",
+         "Failed to get streams for category {id}: {exc}"),
+        ("get_all_live_streams", False, "Successfully retrieved {n} total live streams",
+         "Failed to get all live streams: {exc}"),
+        ("get_vod_categories", False, "Successfully retrieved {n} VOD categories",
+         "Failed to get VOD categories: {exc}"),
+        ("get_vod_streams", True, "Successfully retrieved {n} VOD streams for category {id}",
+         "Failed to get VOD streams for category {id}: {exc}"),
+        ("get_vod_info", True, "Successfully retrieved VOD info for vod_id {id}",
+         "Failed to get VOD info for vod_id {id}: {exc}"),
+        ("get_series_categories", False, "Successfully retrieved {n} series categories",
+         "Failed to get series categories: {exc}"),
+        ("get_series", True, "Successfully retrieved {n} series for category {id}",
+         "Failed to get series for category {id}: {exc}"),
+        ("get_series_info", True, "Successfully retrieved series info for series_id {id}",
+         "Failed to get series info for series_id {id}: {exc}"),
     )
+    DICT_FETCHERS = ("get_vod_info", "get_series_info")
+
+    def call(self, client, name, takes_id, provider_id):
+        return getattr(client, name)(provider_id) if takes_id else getattr(client, name)()
 
     def test_authenticate_success_logs_no_username_or_response(self):
         client = self.make_client()
@@ -219,6 +249,7 @@ class XtreamPublicMethodLoggingTests(SimpleTestCase):
         with capture(xtream_codes.logger) as logs:
             info = client.authenticate()
         self.assertEqual(info, self.AUTH_OK)
+        assert_logged(self, logs.records, "XC Authentication successful")
         assert_no_secret(self, logs.records)
 
     def test_authenticate_failures_log_no_response_body(self):
@@ -244,25 +275,28 @@ class XtreamPublicMethodLoggingTests(SimpleTestCase):
                     str(caught.exception),
                     r"^(XC API Error|Authentication failed|XC API returned invalid JSON)",
                 )
+                assert_logged(self, logs.records, "XC Authentication failed: ValueError")
                 assert_no_secret(self, logs.records)
 
     def test_every_fetcher_logs_no_body_on_an_unexpected_shape(self):
-        for name, args in self.FETCHERS:
+        for name, takes_id, _success, handler in self.FETCHERS:
             with self.subTest(name):
                 client = self.authed(self.make_client())
-                shape = {"detail": self.BODY}
-                if name in ("get_vod_info", "get_series_info"):
-                    shape = self.BODY  # a str where a dict is expected
-                client.session.get = MagicMock(return_value=self.response(shape))
+                # a str where a dict or a list is expected
+                client.session.get = MagicMock(return_value=self.response(self.BODY))
+                if name not in self.DICT_FETCHERS:
+                    client.session.get.return_value = self.response({"detail": self.BODY})
                 with capture(xtream_codes.logger) as logs:
                     with self.assertRaises(ValueError) as caught:
-                        getattr(client, name)(*args)
+                        self.call(client, name, takes_id, "5")
                 self.assertTrue(str(caught.exception).startswith("Invalid "), caught.exception)
-                assert_logged(self, logs.records, "unexpected response shape")
+                shown = "str" if name in self.DICT_FETCHERS else "dict"
+                assert_logged(self, logs.records, f"unexpected response shape: {shown}")
+                assert_logged(self, logs.records, handler.format(id="5", exc="ValueError"))
                 assert_no_secret(self, logs.records)
 
     def test_every_fetcher_logs_no_exception_text_or_traceback_message(self):
-        for name, args in self.FETCHERS:
+        for name, takes_id, _success, handler in self.FETCHERS:
             with self.subTest(name):
                 client = self.authed(self.make_client())
                 client.session.get = MagicMock(
@@ -272,30 +306,37 @@ class XtreamPublicMethodLoggingTests(SimpleTestCase):
                 )
                 with capture(xtream_codes.logger) as logs:
                     with self.assertRaises(requests.ConnectionError):
-                        getattr(client, name)(*args)
+                        self.call(client, name, takes_id, "5")
+                # The fetcher's own handler ran (not only _make_request's).
+                assert_logged(self, logs.records, handler.format(id="5", exc="ConnectionError"))
+                assert_logged(self, logs.records, "Traceback frames:")
                 assert_no_secret(self, logs.records)
 
-    def test_every_fetcher_logs_no_provider_id_text(self):
-        for name, args in self.FETCHERS:
-            if not args:
+    def test_every_fetcher_logs_a_placeholder_for_a_provider_id_and_returns_its_payload(self):
+        for name, takes_id, success, _handler in self.FETCHERS:
+            if not takes_id:
                 continue
             with self.subTest(name):
                 client = self.authed(self.make_client())
-                empty = {} if name in ("get_vod_info", "get_series_info") else []
-                client.session.get = MagicMock(return_value=self.response(empty))
+                payload = {"info": {"k": 1}} if name in self.DICT_FETCHERS else [{"i": 1}, {"i": 2}]
+                client.session.get = MagicMock(return_value=self.response(payload))
                 with capture(xtream_codes.logger) as logs:
-                    getattr(client, name)("fakesecret-id")
+                    result = self.call(client, name, takes_id, "fakesecret-id")
+                self.assertEqual(result, payload)
+                assert_logged(self, logs.records, success.format(n=2, id="<id>"))
                 assert_no_secret(self, logs.records)
 
-    def test_success_returns_and_logs_counts(self):
-        client = self.authed(self.make_client())
-        client.session.get = MagicMock(
-            return_value=self.response([{"category_name": "fakesecret"}])
-        )
-        with capture(xtream_codes.logger) as logs:
-            result = client.get_live_categories()
-        self.assertEqual(result, [{"category_name": "fakesecret"}])
-        assert_no_secret(self, logs.records)
+    def test_every_fetcher_logs_its_success_count_and_returns_its_payload(self):
+        for name, takes_id, success, _handler in self.FETCHERS:
+            with self.subTest(name):
+                client = self.authed(self.make_client())
+                payload = {"info": {"k": 1}} if name in self.DICT_FETCHERS else [{"n": "fakesecret"}, {"n": "x"}]
+                client.session.get = MagicMock(return_value=self.response(payload))
+                with capture(xtream_codes.logger) as logs:
+                    result = self.call(client, name, takes_id, "5")
+                self.assertEqual(result, payload)
+                assert_logged(self, logs.records, success.format(n=2, id="5"))
+                assert_no_secret(self, logs.records)
 
     def test_traceback_frames_carry_no_source_line_or_chained_message(self):
         # The raising frame's own SOURCE contains a credential-bearing literal;
