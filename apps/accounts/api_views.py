@@ -1,7 +1,10 @@
 from django.contrib.auth import authenticate, login, logout
 import logging
 from django.contrib.auth.models import Group, Permission
-from django.http import JsonResponse, HttpResponse
+from django.conf import settings
+from django.db import transaction
+from django.http import Http404, JsonResponse, HttpResponse
+from rest_framework.exceptions import APIException
 from django.views.decorators.csrf import csrf_exempt
 from rest_framework.decorators import api_view, permission_classes, action
 from rest_framework.response import Response
@@ -20,6 +23,8 @@ from dispatcharr.utils import (
 )
 
 from .models import User
+from . import serializers as account_serializers
+from .admin_floor import admin_floor_lock
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.exceptions import InvalidToken
@@ -245,6 +250,15 @@ class AuthViewSet(viewsets.ViewSet):
         return Response({"message": "Logout successful"})
 
 
+class CodedBadRequest(APIException):
+    """A 400 whose body is ``{"code": <code>}``."""
+
+    status_code = status.HTTP_400_BAD_REQUEST
+
+    def __init__(self, code):
+        super().__init__(detail={"code": code})
+
+
 # 🔹 2) User Management APIs
 class UserViewSet(viewsets.ModelViewSet):
     """Handles CRUD operations for Users"""
@@ -257,6 +271,47 @@ class UserViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
         return [IsAdmin()]
+
+    def perform_update(self, serializer):
+        if serializer.validated_data.get("is_active") is not False:
+            return super().perform_update(serializer)
+        self._deactivate(serializer)
+
+    def _deactivate(self, serializer):
+        """A PATCH or PUT that sets is_active to false (spec 5.8, 4.4 floor protocol)."""
+        if settings.RUNTIME_SQLITE:
+            raise CodedBadRequest("requires_postgresql")
+
+        # channel_profiles is written after the transaction: writing the user's through
+        # rows while holding the user row is the reverse of the order a user delete takes.
+        data = serializer.validated_data
+        profiles_sent = "channel_profiles" in data
+        profiles = data.pop("channel_profiles", None)
+
+        with transaction.atomic():
+            admin_floor_lock()
+            # Guards run on the row reloaded under the lock, never on serializer.instance,
+            # which the view loaded before it queued for the mutex.
+            try:
+                target = User.objects.select_for_update().get(pk=serializer.instance.pk)
+            except User.DoesNotExist:
+                raise Http404
+            if target.pk == self.request.user.pk:
+                raise CodedBadRequest("cannot_deactivate_self")
+            if (
+                target.is_active
+                and target.user_level >= User.UserLevel.ADMIN
+                and not User.objects.filter(
+                    is_active=True, user_level__gte=User.UserLevel.ADMIN
+                )
+                .exclude(pk=target.pk)
+                .exists()
+            ):
+                raise CodedBadRequest("last_active_admin")
+            serializer.save()
+
+        if profiles_sent:
+            account_serializers.apply_channel_profiles(serializer.instance, profiles)
 
     @extend_schema(
         description="Retrieve a list of users",

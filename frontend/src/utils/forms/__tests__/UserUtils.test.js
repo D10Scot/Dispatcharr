@@ -360,6 +360,39 @@ describe('UserUtils', () => {
     it('handles null existingUser gracefully', () => {
       expect(() => formValuesToPayload(makeValues(), null)).not.toThrow();
     });
+
+    it('untouched active user omits is_active', () => {
+      const result = formValuesToPayload(makeValues({ is_active: true }), {
+        is_active: true,
+      });
+      expect('is_active' in result).toBe(false);
+    });
+
+    it('untouched inactive user omits is_active', () => {
+      const result = formValuesToPayload(makeValues({ is_active: false }), {
+        is_active: false,
+      });
+      expect('is_active' in result).toBe(false);
+    });
+
+    it('activating sends is_active true', () => {
+      const result = formValuesToPayload(makeValues({ is_active: true }), {
+        is_active: false,
+      });
+      expect(result.is_active).toBe(true);
+    });
+
+    it('deactivating sends is_active false', () => {
+      const result = formValuesToPayload(makeValues({ is_active: false }), {
+        is_active: true,
+      });
+      expect(result.is_active).toBe(false);
+    });
+
+    it('create keeps is_active', () => {
+      const result = formValuesToPayload(makeValues({ is_active: true }), null);
+      expect(result.is_active).toBe(true);
+    });
   });
 
   // ─── getFormInitialValues ─────────────────────────────────────────────────────
@@ -369,6 +402,7 @@ describe('UserUtils', () => {
       const result = getFormInitialValues();
       expect(result).toEqual({
         username: '',
+        is_active: true,
         first_name: '',
         last_name: '',
         email: '',
