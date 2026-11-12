@@ -1,6 +1,6 @@
 # `e2e-upstream` contract
 
-**Version:** 1.4.0
+**Version:** 1.5.0
 
 **An unlisted behaviour is not a guarantee.** If it isn't named below, a
 consumer test must not depend on it, however consistently it happens to
@@ -113,9 +113,12 @@ depend on. Each links to the README section that documents the mechanism.
   `client_secret_post` with `invalid_client`, spends a code on its first
   presentation, and answers an unregistered `redirect_uri` itself rather than
   redirecting to it. An honest login yields an RS256 ID token that verifies
-  against the published JWKS, whose entries carry no `alg`. Each of the seven
+  against the published JWKS, whose entries carry no `alg`. Each of the eight
   faults in the README's "Fake OpenID provider" section changes exactly what
-  that section says it changes. See the README's "Fake OpenID provider".
+  that section says it changes. `alg-none` and `bad-signature` (1.5.0) name the
+  published key's `kid`, so a relying party's key lookup succeeds and only its
+  algorithm or signature check can refuse them; `unknown-kid` names a `kid` the
+  JWKS never lists. See the README's "Fake OpenID provider".
 
 ## Non-guarantees
 
@@ -283,9 +286,10 @@ consumer yet. Their planned consumers are Phase 4a's HLS work
 themselves with `scripts/make-asset.sh <out> <name>`, and the `streaming` and
 `frontend` project specs of 4a-1b, 4a-1c, 4a-1d and 4a-2.
 
-The fake OpenID provider's (1.4.0) only consumer is the `sso` Playwright
-project, `e2e/tests/sso/`, which registers one client per provider it creates
-and queues one login per sign-in.
+The fake OpenID provider's (1.4.0) only consumers are the `sso` and
+`sso-faults` Playwright projects, `e2e/tests/sso/`, which register one client
+per provider they create and queue one login per sign-in; `sso-faults`
+(`e2e/tests/sso/faults/`) queues one fault per case.
 
 `e2e-upstream`'s own `test/*.test.ts` (vitest) is not a consumer in this
 sense — it is the thing that keeps this document honest (see "Enforcement").
@@ -334,6 +338,16 @@ scenario served before, and the echo gains a key rather than changing one.
 OpenID provider under `/oidc` for the SSO e2e tests (SSO spec PR S5): new
 routes and one new optional environment variable, `UPSTREAM_CONTROL_ORIGIN`,
 which only those routes read. No existing route, field or fault changes.
+
+**This landing is 1.5.0, a minor bump from 1.4.0.** It adds the
+`bad-signature` fault and gives the `alg-none` token the published key's
+`kid`, which it lacked. The second changes an existing fault's token, so it
+was weighed against the major rule: it removes nothing a consumer could rely
+on (the token is still unsigned, `alg: none`, and still refused by any
+correct relying party), and the only consumer, `sso-faults`, expects a
+refusal either way. What it changes is which check of the relying party's the
+fault reaches: before, a missing `kid` stopped it at key lookup; now only the
+algorithm check can.
 
 ## Enforcement
 

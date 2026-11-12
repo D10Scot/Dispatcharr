@@ -300,9 +300,18 @@ describe('fake OIDC provider: refusals', () => {
 });
 
 describe('fake OIDC provider: faults', () => {
-  it('names exactly the seven faults', () => {
+  it('names exactly the eight faults', () => {
     expect([...OIDC_FAULTS].sort()).toEqual(
-      ['alg-none', 'bad-nonce', 'expired', 'missing-iss-param', 'unknown-kid', 'wrong-aud', 'wrong-iss'].sort()
+      [
+        'alg-none',
+        'bad-nonce',
+        'bad-signature',
+        'expired',
+        'missing-iss-param',
+        'unknown-kid',
+        'wrong-aud',
+        'wrong-iss',
+      ].sort()
     );
   });
 
@@ -326,10 +335,33 @@ describe('fake OIDC provider: faults', () => {
     expect(payload.exp).toBeLessThan(Date.now() / 1000);
   });
 
-  it('alg-none issues an unsigned token', async () => {
+  it('alg-none issues an unsigned token under the published kid', async () => {
     const { header, signature } = await login('alg-none');
     expect(header.alg).toBe('none');
     expect(signature).toBe('');
+    // The published kid, so a relying party's key lookup succeeds and only its
+    // algorithm check can refuse the token.
+    const { keys } = await readJson(await fetch(`${base}/oidc/jwks`));
+    expect(keys.map((k: { kid: string }) => k.kid)).toEqual([header.kid]);
+  });
+
+  it('bad-signature signs honest claims under the published kid with a key that does not verify', async () => {
+    const { idToken, header, payload } = await login('bad-signature');
+    expect(header.alg).toBe('RS256');
+    const { keys } = await readJson(await fetch(`${base}/oidc/jwks`));
+    expect(keys.map((k: { kid: string }) => k.kid)).toEqual([header.kid]);
+    // Every claim is honest, so the signature is the only thing wrong with it.
+    expect(payload).toMatchObject({ iss: 'http://e2e-upstream:8080/oidc', aud: CLIENT_ID, nonce: 'nonce-1' });
+    expect(payload.exp).toBeGreaterThan(Date.now() / 1000);
+    const [h, p, s] = idToken.split('.');
+    expect(s.length, 'a real RS256 signature, not an empty or truncated one').toBe(342);
+    const ok = verify(
+      'sha256',
+      Buffer.from(`${h}.${p}`),
+      createPublicKey({ key: keys[0], format: 'jwk' }),
+      Buffer.from(s, 'base64url')
+    );
+    expect(ok, 'the signature does not verify against the published key').toBe(false);
   });
 
   it('unknown-kid signs with a key the JWKS never publishes', async () => {
