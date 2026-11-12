@@ -24,6 +24,6 @@
 // Store under /hls/ (relay/httpapi's HLS handlers), so it is inside the Go
 // coverage gate's denominator (rulings R27, R34).
 //
-// Everything is in process memory (ADR 0006): no Redis, no Postgres, and the
-// standard library only (scripts/check_go_stdlib_only.sh).
+// Everything is in process memory (ADR 0006): no Redis, no Postgres, and no
+// third-party module (ADR 0011 confines the relay's to relay/telemetry).
 package hls

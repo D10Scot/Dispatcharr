@@ -7,7 +7,7 @@
 # Prerequisites:
 #   - Docker Desktop (or Docker Engine) running
 #   - Internet access (pulls postgres:16, postgres:17, redis:latest,
-#     and the Dispatcharr release image for upgrade tests)
+#     and the upstream Dispatcharr release image for upgrade tests)
 #   - ~10-15 minutes for a full run (PG upgrade scenarios dominate)
 #
 # Usage:
@@ -1699,7 +1699,7 @@ test_pg_major_upgrade() {
     track_container "$name"
 
     # Create a PG 16 data cluster using the official postgres:16 image.
-    # This simulates an older Dispatcharr installation that used PG 16.
+    # This simulates an older Mino installation that used PG 16.
     # The postgres user in the official image has UID 999.
     log_info "Creating PG 16 data cluster..."
     if ! docker run --rm -v "${vol}:/data" --entrypoint bash postgres:16 -c '

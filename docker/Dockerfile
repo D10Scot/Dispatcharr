@@ -29,18 +29,20 @@ RUN    npm run build && \
 # invocation; a plain FROM would run the arm64 leg's compilation under QEMU
 # emulation, minutes per build, for a binary Go cross-compiles natively in
 # about a second.
-FROM --platform=$BUILDPLATFORM golang:1.27.3-trixie@sha256:c65ecfe613b539ac74c62a4c3b2c27e8f8a6076384c8f27e8a3c0f3be17cc385 AS relay-builder
+FROM --platform=$BUILDPLATFORM golang:1.27.4-trixie@sha256:b54b2639de8c1bfe538ec5ffc45f29b1932235ac5f6d63c059853646677112d9 AS relay-builder
 
 ARG TARGETOS
 ARG TARGETARCH
 
 WORKDIR /src
-# One COPY, deliberately. The usual "copy go.mod first, download, then copy
-# the source" split exists to cache `go mod download` across source changes;
-# a stdlib-only module downloads nothing, so the split would add a layer
-# that caches an empty step and a comment claiming a benefit it does not
-# deliver. Reinstate it in the same commit as the first dependency, if there
-# ever is one.
+# go.mod and go.sum first, then `go mod download`, then the source: the
+# module download is cached across source-only changes. Reinstated by the
+# observability spec's O2, the commit that gave the relay its first
+# dependencies (ADR 0011); until then the module was stdlib-only and the
+# split cached an empty step. `go mod download` verifies every module
+# against go.sum, so a tampered proxy response fails the build here.
+COPY ./relay/go.mod ./relay/go.sum ./
+RUN go mod download
 COPY ./relay ./
 
 # CGO_ENABLED=0 makes the binary static, so it runs on the final image

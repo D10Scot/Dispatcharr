@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build and run a local Dispatcharr AIO container for E2E tests.
+# Build and run a local Mino AIO container for E2E tests.
 #   ./scripts/e2e_up.sh             start (reuse existing container if present)
 #   ./scripts/e2e_up.sh --reset     destroy container + volume, then start fresh
 #   ./scripts/e2e_up.sh --recreate  destroy the container, keep the volume, start fresh
@@ -307,7 +307,7 @@ for n in $PRIOR_NETWORKS; do
   docker network inspect "$n" >/dev/null 2>&1 && docker network connect "$n" "$UPSTREAM_NAME" >/dev/null 2>&1 || true
 done
 
-# Wait for the provider before starting Dispatcharr. Dispatcharr does not
+# Wait for the provider before starting Mino. Mino does not
 # contact it at boot, so the ordering is not strictly required — but it
 # removes the ordering hazard: without this, a test that fails because the
 # provider was still starting would be indistinguishable from one that fails

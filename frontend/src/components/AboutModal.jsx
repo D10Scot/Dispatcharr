@@ -10,8 +10,8 @@ import {
   Text,
   Tooltip,
 } from '@mantine/core';
-import { BookOpen, Heart, Users } from 'lucide-react';
-import { DiscordIcon, GitHubIcon } from './icons.jsx';
+import { Users } from 'lucide-react';
+import { GitHubIcon } from './icons.jsx';
 import logo from '../images/logo.png';
 import useSettingsStore from '../store/settings';
 
@@ -23,16 +23,16 @@ const AboutModal = ({ isOpen, onClose }) => {
     <Modal
       opened={isOpen}
       onClose={onClose}
-      title="About Dispatcharr"
+      title="About Mino"
       centered
       size="md"
     >
       <Stack gap="lg">
         <Group justify="center" gap="md">
-          <img src={logo} alt="Dispatcharr" width={56} />
+          <img src={logo} alt="Mino" width={56} />
           <Stack gap={2}>
             <Text fw={700} size="xl">
-              Dispatcharr
+              Mino
             </Text>
             <Text size="sm" c="dimmed">
               {versionString}
@@ -42,37 +42,11 @@ const AboutModal = ({ isOpen, onClose }) => {
 
         <Divider />
 
-        <SimpleGrid cols={2} spacing="sm">
-          <Tooltip label="Visit the Dispatcharr documentation" position="top">
-            <Button
-              component="a"
-              href="https://dispatcharr.github.io/Dispatcharr-Docs/"
-              target="_blank"
-              rel="noopener noreferrer"
-              variant="default"
-              leftSection={<BookOpen size={15} />}
-              fullWidth
-            >
-              Documentation
-            </Button>
-          </Tooltip>
-          <Tooltip label="Join our Discord community" position="top">
-            <Button
-              component="a"
-              href="https://discord.gg/Sp45V5BcxU"
-              target="_blank"
-              rel="noopener noreferrer"
-              variant="default"
-              leftSection={<DiscordIcon size={15} />}
-              fullWidth
-            >
-              Discord
-            </Button>
-          </Tooltip>
+        <SimpleGrid cols={1} spacing="sm">
           <Tooltip label="View source on GitHub" position="top">
             <Button
               component="a"
-              href="https://github.com/Dispatcharr/Dispatcharr"
+              href="https://github.com/D10Scot/mino"
               target="_blank"
               rel="noopener noreferrer"
               variant="default"
@@ -80,23 +54,6 @@ const AboutModal = ({ isOpen, onClose }) => {
               fullWidth
             >
               GitHub
-            </Button>
-          </Tooltip>
-          <Tooltip
-            label="Support Dispatcharr on Open Collective"
-            position="top"
-          >
-            <Button
-              component="a"
-              href="https://opencollective.com/dispatcharr/contribute"
-              target="_blank"
-              rel="noopener noreferrer"
-              variant="default"
-              color="pink"
-              leftSection={<Heart size={15} />}
-              fullWidth
-            >
-              Donate
             </Button>
           </Tooltip>
         </SimpleGrid>
@@ -111,9 +68,17 @@ const AboutModal = ({ isOpen, onClose }) => {
             </Text>
           </Group>
           <Text size="sm" c="dimmed">
-            Dispatcharr is built by the community, for the community. Thank you
-            to every contributor, tester, and supporter who has helped make this
-            project what it is.
+            Mino is derived from{' '}
+            <a
+              href="https://github.com/Dispatcharr/Dispatcharr"
+              target="_blank"
+              rel="noopener noreferrer"
+              style={{ color: 'inherit' }}
+            >
+              Dispatcharr
+            </a>{' '}
+            (AGPL-3.0). Thank you to every contributor, tester, and supporter
+            who has helped make this project what it is.
           </Text>
         </Stack>
 
