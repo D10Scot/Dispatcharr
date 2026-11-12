@@ -264,7 +264,7 @@ measured=2026-09-29
 runs=12
 packages=40d4ba02d7d3
 package_count=12
-gomod=92baf312d30d
+gomod=584d92bc3d80
 raise_from=691
 raise_listed=14
 # PROVENANCE (Phase 4a-1d, R21/R34/R80 -- measured in CI at 9c5ba13b on

@@ -95,7 +95,7 @@ measure() {
   rm -rf "$dir"; mkdir -p "$dir"
 
   # The package list is derived FIRST and from `go list -deps .`, the same
-  # question scripts/check_go_stdlib_only.sh asks: what does the binary link?
+  # question scripts/check_go_deps.sh asks: what does the binary link?
   # Written before the tests run so a failing suite still leaves evidence of
   # what the scope was.
   ( cd "$MODULE_DIR" && go list -deps . ) \

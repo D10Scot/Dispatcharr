@@ -642,7 +642,8 @@ def _transform_url(original_url, m3u_profile):
         return original_url
 
     except Exception as e:
-        logger.error(f"Error transforming URL: {e}")
+        # Type only: a regex error's text can quote part of the profile's pattern.
+        logger.error("Error transforming URL: %s", type(e).__name__)
         return original_url
 
 @api_view(["GET"])

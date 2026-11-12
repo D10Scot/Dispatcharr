@@ -21,7 +21,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "credlint:", err) // credential-logging: ok - the checker's own diagnostics: go list output and type errors
 		os.Exit(2)
 	}
-	checker := NewChecker()
+	exports, err := ListExports(dir, args...)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "credlint:", err) // credential-logging: ok - the checker's own diagnostics: go list output
+		os.Exit(2)
+	}
+	checker := NewChecker(exports)
 	for _, p := range pkgs {
 		if err := checker.CheckPackage(p); err != nil {
 			fmt.Fprintf(os.Stderr, "credlint: %s: %v\n", p.ImportPath, err) // credential-logging: ok - a type-check error naming source positions

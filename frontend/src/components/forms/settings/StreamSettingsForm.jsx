@@ -283,7 +283,7 @@ const StreamSettingsForm = React.memo(({ active }) => {
             {`Are you sure you want to rehash all streams?
 
 This process may take a while depending on the number of streams.
-Do not shut down Dispatcharr until the rehashing is complete.
+Do not shut down Mino until the rehashing is complete.
 M3U refreshes will be blocked until this process finishes.
 
 Please ensure you have time to let this complete before proceeding.`}

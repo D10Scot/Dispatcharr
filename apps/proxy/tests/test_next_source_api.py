@@ -769,3 +769,81 @@ class HlsProfileOnTheContractTests(RelayApiTestCase):
         answer = self._next_source("00000000-0000-0000-0000-000000000000", expect=404)
         self.assertIn("hls_profile", answer)
         self.assertIsNone(answer["hls_profile"])
+
+
+class ChannelPkOnTheContractTests(RelayApiTestCase):
+    """next-source's `channel_pk` (observability spec D7, O3): the channel's
+    numeric primary key on every answer, null for a previewed Stream and the
+    404. The ledger tests in test_tune_path_query_ledger.py are the oracle for
+    "no new query"."""
+
+    def _next_source(self, identifier, payload=None, expect=200):
+        response = self._post(self.next_source_path(identifier), payload or {})
+        self.assertEqual(response.status_code, expect)
+        return response.json()
+
+    def test_a_channel_tune_answers_the_channels_numeric_id(self):
+        answer = self._next_source(self.channel.uuid)
+        self.assertIsNotNone(answer["source"])
+        self.assertEqual(answer["channel_pk"], self.channel.pk)
+
+    def test_a_failover_answer_carries_the_same_id(self):
+        answer = self._next_source(
+            self.channel.uuid,
+            {
+                "reason": "failover",
+                "exclude_stream_ids": [self.stream_a.id],
+                "current_stream_id": self.stream_a.id,
+            },
+        )
+        self.assertEqual(answer["source"]["stream_id"], self.stream_b.id)
+        self.assertEqual(answer["channel_pk"], self.channel.pk)
+
+    def test_an_exhausted_failover_still_carries_the_id(self):
+        answer = self._next_source(
+            self.channel.uuid,
+            {
+                "reason": "failover",
+                "exclude_stream_ids": [self.stream_a.id, self.stream_b.id],
+            },
+        )
+        self.assertIsNone(answer["source"])
+        self.assertEqual(answer["channel_pk"], self.channel.pk)
+
+    def test_a_target_stream_answer_carries_the_id(self):
+        answer = self._next_source(
+            self.channel.uuid, {"target_stream_id": self.stream_b.id}
+        )
+        self.assertEqual(answer["channel_pk"], self.channel.pk)
+
+    def test_a_target_stream_error_answer_carries_the_id(self):
+        # An orphan Stream gets a custom account on create, so the error arm
+        # is reached by the helper's own error dict instead.
+        with patch(
+            "apps.proxy.next_source.get_stream_info_for_switch",
+            return_value={"error": "No profiles available with connection capacity"},
+        ):
+            answer = self._next_source(
+                self.channel.uuid, {"target_stream_id": self.stream_b.id}
+            )
+        self.assertIsNone(answer["source"])
+        self.assertEqual(answer["error"], "No profiles available with connection capacity")
+        self.assertEqual(answer["channel_pk"], self.channel.pk)
+
+    def test_a_stream_preview_answers_null(self):
+        answer = self._next_source(self.stream_a.stream_hash)
+        self.assertIn("channel_pk", answer)
+        self.assertIsNone(answer["channel_pk"])
+
+    def test_the_404_answers_null(self):
+        answer = self._next_source("00000000-0000-0000-0000-000000000000", expect=404)
+        self.assertIn("channel_pk", answer)
+        self.assertIsNone(answer["channel_pk"])
+
+    def test_the_openapi_schema_carries_the_field(self):
+        from drf_spectacular.generators import SchemaGenerator
+
+        schema = SchemaGenerator().get_schema(request=None, public=True)
+        props = schema["components"]["schemas"]["NextSourceResponse"]["properties"]
+        self.assertIn("channel_pk", props)
+        self.assertTrue(props["channel_pk"].get("nullable"))

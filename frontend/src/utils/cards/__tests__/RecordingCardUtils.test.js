@@ -127,7 +127,7 @@ describe('RecordingCardUtils', () => {
       vi.stubEnv('DEV', false);
       const result = getPosterUrl(null, {}, '');
 
-      // Falls back to the imported default Dispatcharr logo asset
+      // Falls back to the imported default Mino logo asset
       expect(result).toBeTruthy();
       expect(result).toContain('logo');
     });
