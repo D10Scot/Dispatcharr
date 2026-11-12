@@ -42,23 +42,29 @@ const CertificateRow = ({ title, cert, testId, children }) => (
   </Group>
 );
 
+const METHOD_IN_USE = {
+  private_key_jwt: 'Sign-in currently uses the certificate.',
+  client_secret_post: 'Sign-in currently uses the client secret.',
+  client_secret_basic: 'Sign-in currently uses the client secret.',
+};
+
 // The credential a provider uses to authenticate to its IdP (spec 5.2, 5.7).
-// The secret is write-only: the input never receives the stored value, and an
-// untouched input is reported to the parent as ''. Only a certificate is ever
-// downloadable; there is no way to read a key.
+// The secret is write-only: the input never receives the stored value. Only a
+// certificate is ever downloadable; there is no way to read a key. Everything
+// shown comes from `view` (credentialEdits.js's credentialView), so this block
+// holds no credential state of its own.
 const OidcCredentialBlock = ({
   provider, // null while the provider has not been saved yet
   kind,
-  credential,
+  view,
   onCredentialChange,
-  secret,
   onSecretChange,
-  authMethod,
   onAuthMethodChange,
-  secretExpiry,
   onSecretExpiryChange,
   onReload,
 }) => {
+  const { credential, secret, authMethod, secretExpiry } = view;
+  const inUse = provider ? METHOD_IN_USE[provider.client_auth_method] : null;
   const [busy, setBusy] = useState(false);
   const [lines, setLines] = useState([]);
   const [notice, setNotice] = useState(null);
@@ -137,9 +143,25 @@ const OidcCredentialBlock = ({
           />
         </Group>
       </Radio.Group>
+      {inUse && (
+        <Text size="xs" c="dimmed" data-testid="sso-credential-in-use">
+          {inUse}
+        </Text>
+      )}
 
       {credential === 'certificate' ? (
         <Stack gap="xs">
+          {(view.pendingSecret || view.pendingDate) && (
+            <Alert
+              color="blue"
+              variant="light"
+              data-testid="sso-secret-pending-notice"
+            >
+              {view.pendingSecret
+                ? 'The new client secret you entered will be saved when you press Save. It does not change the sign-in method. Choose Client secret to review or erase it.'
+                : 'Your change to the client secret expiry date will be saved when you press Save. Choose Client secret to review or undo it.'}
+            </Alert>
+          )}
           {!provider ? (
             <Text size="sm" c="dimmed">
               Save the provider first, then generate a certificate here.
@@ -217,6 +239,12 @@ const OidcCredentialBlock = ({
         </Stack>
       ) : (
         <Stack gap="xs">
+          {provider?.client_auth_method === 'private_key_jwt' && (
+            <Text size="xs" c="dimmed" data-testid="sso-switch-to-secret">
+              Saving with Client secret selected switches this provider from the
+              certificate to the client secret.
+            </Text>
+          )}
           <Select
             label="Authentication method"
             data={methodOptions}

@@ -1,6 +1,8 @@
 // Pure helpers for the single sign-on UI (spec 5.7). Nothing here touches the
 // network, the DOM or storage, so every function is testable on its own.
 
+import { credentialPayload } from './credentialEdits';
+
 export const OIDC_BASE = '/api/accounts/oidc';
 export const SSO_LANDING_PATH = '/login/sso';
 export const DEFAULT_ROUTE = '/channels';
@@ -271,19 +273,14 @@ export const providerToValues = (provider) => ({
 });
 
 /**
- * The body for POST/PATCH providers-admin. The client secret is write-only: it
- * is included ONLY when the administrator typed one; an untouched field never
- * sends `client_secret` (an empty string is refused by the server, and would
- * never mean "clear").
+ * The body for POST/PATCH providers-admin: the form values plus the credential
+ * keys `credentialPayload` derives from the credential state (see
+ * credentialEdits.js). The client secret is write-only: it is included ONLY
+ * when the administrator typed one; an untouched field never sends
+ * `client_secret` (an empty string is refused by the server, and would never
+ * mean "clear"). Without a credential state no credential key is sent.
  */
-export const buildProviderPayload = ({
-  values,
-  provider,
-  credential,
-  secret,
-  authMethod,
-  secretExpiry,
-}) => {
+export const buildProviderPayload = ({ values, provider, credentialState }) => {
   const payload = {
     display_name: values.display_name,
     slug: values.slug,
@@ -307,13 +304,8 @@ export const buildProviderPayload = ({
     payload.allow_private_network = values.allow_private_network;
     payload.id_token_alg = values.id_token_alg;
   }
-  if (credential === 'secret') {
-    payload.client_auth_method = authMethod;
-    if (secret !== '') payload.client_secret = secret;
-    const before = provider?.client_secret_expires_at ?? '';
-    if (secretExpiry !== (before || '') || secret !== '') {
-      payload.client_secret_expires_at = secretExpiry || null;
-    }
+  if (credentialState) {
+    Object.assign(payload, credentialPayload(credentialState, values.kind));
   }
   return payload;
 };

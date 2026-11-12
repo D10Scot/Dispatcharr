@@ -11,6 +11,7 @@ import {
   ssoStartUrl,
   testProblemMessage,
 } from '../ssoUtils';
+import { credentialReducer, initialCredentialState } from '../credentialEdits';
 
 describe('safeNextPath', () => {
   it.each(['/', '/guide', '/settings#single-sign-on', '/a?b=c'])(
@@ -120,21 +121,42 @@ describe('buildProviderPayload', () => {
     secretExpiry: '',
   };
 
-  it('omits client_secret when untouched and includes it when typed', () => {
-    expect(Object.hasOwn(buildProviderPayload(base), 'client_secret')).toBe(
-      false
-    );
-    expect(buildProviderPayload({ ...base, secret: 's' }).client_secret).toBe(
-      's'
-    );
+  // The credential keys come from the credential state (credentialEdits.js).
+  const withEdits = (...actions) => ({
+    ...base,
+    credentialState: actions.reduce(
+      credentialReducer,
+      initialCredentialState(null)
+    ),
   });
-  it('sends no credential fields for the certificate choice', () => {
-    const payload = buildProviderPayload({
-      ...base,
-      credential: 'certificate',
-      secret: 'ignored',
-    });
-    expect(Object.hasOwn(payload, 'client_secret')).toBe(false);
+
+  it('omits client_secret when untouched and includes it when typed', () => {
+    expect(
+      Object.hasOwn(
+        buildProviderPayload(
+          withEdits({ type: 'credential', value: 'secret' })
+        ),
+        'client_secret'
+      )
+    ).toBe(false);
+    expect(
+      buildProviderPayload(
+        withEdits(
+          { type: 'credential', value: 'secret' },
+          { type: 'secret', value: 's' }
+        )
+      ).client_secret
+    ).toBe('s');
+  });
+  it('the certificate choice sends no client_auth_method, and still sends a typed secret', () => {
+    const payload = buildProviderPayload(
+      withEdits(
+        { type: 'credential', value: 'secret' },
+        { type: 'secret', value: 'typed' },
+        { type: 'credential', value: 'certificate' }
+      )
+    );
+    expect(payload.client_secret).toBe('typed');
     expect(Object.hasOwn(payload, 'client_auth_method')).toBe(false);
   });
   it('sends only the fields of the chosen kind', () => {

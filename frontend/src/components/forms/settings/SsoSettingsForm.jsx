@@ -159,6 +159,16 @@ const SsoSettingsForm = () => {
           }}
           data-testid="sso-public-base-url"
         />
+        {/* Spec 5.5: every redirect URI is built from this address. */}
+        <Alert
+          color="yellow"
+          variant="light"
+          data-testid="sso-base-url-warning"
+        >
+          Changing this address changes the redirect URI of every provider.
+          Update the redirect URI in each identity provider's app registration
+          first, or single sign-on stops working until you do.
+        </Alert>
         <Group>
           <Button
             size="xs"

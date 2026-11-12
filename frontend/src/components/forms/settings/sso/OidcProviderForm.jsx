@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useReducer, useState } from 'react';
 import {
   ActionIcon,
   Alert,
@@ -26,6 +26,11 @@ import {
   providerToValues,
   testProblemMessage,
 } from '../../../../utils/sso/ssoUtils';
+import {
+  credentialReducer,
+  credentialView,
+  initialCredentialState,
+} from '../../../../utils/sso/credentialEdits';
 
 const OidcProviderForm = ({
   provider: initialProvider = null,
@@ -34,33 +39,21 @@ const OidcProviderForm = ({
   onSaved,
   onCancel,
 }) => {
-  const [provider, setProvider] = useState(initialProvider);
   const [values, setValues] = useState(
     initialProvider
       ? providerToValues(initialProvider)
       : emptyProviderValues(newKind)
   );
-  const [credential, setCredential] = useState(
-    initialProvider?.client_auth_method === 'private_key_jwt'
-      ? 'certificate'
-      : initialProvider
-        ? 'secret'
-        : 'certificate'
+  // The provider as the server last returned it, plus the administrator's
+  // explicit credential edits since then. What the credential block shows and
+  // what a save sends are both derived from this one state (credentialEdits.js).
+  const [credentialState, dispatchCredential] = useReducer(
+    credentialReducer,
+    initialProvider,
+    initialCredentialState
   );
-  const [secret, setSecret] = useState('');
-  const [authMethod, setAuthMethod] = useState(
-    initialProvider && initialProvider.client_auth_method !== 'private_key_jwt'
-      ? initialProvider.client_auth_method
-      : newKind === 'entra'
-        ? 'client_secret_post'
-        : 'client_secret_basic'
-  );
-  const [secretExpiry, setSecretExpiry] = useState(
-    initialProvider?.client_secret_expires_at ?? ''
-  );
-  // A new secret never inherits the old one's expiry date (spec 5.2): typing a
-  // secret clears the date unless the administrator has set one for it.
-  const [expiryTouched, setExpiryTouched] = useState(false);
+  const provider = credentialState.provider;
+  const credentialShown = credentialView(credentialState, values.kind);
   const [saving, setSaving] = useState(false);
   const [lines, setLines] = useState([]);
   const [testResult, setTestResult] = useState(null);
@@ -77,7 +70,7 @@ const OidcProviderForm = ({
     const fresh = Array.isArray(all)
       ? all.find((p) => p.id === provider?.id)
       : null;
-    if (fresh) setProvider(fresh);
+    if (fresh) dispatchCredential({ type: 'reloaded', provider: fresh });
   };
 
   const save = async (e) => {
@@ -88,17 +81,14 @@ const OidcProviderForm = ({
       const payload = buildProviderPayload({
         values,
         provider,
-        credential,
-        secret,
-        authMethod,
-        secretExpiry,
+        credentialState,
       });
       const saved = provider
         ? await API.updateOidcProvider(provider.id, payload)
         : await API.createOidcProvider(payload);
-      setSecret('');
-      setExpiryTouched(false);
-      setProvider(saved);
+      // Everything about the credential is re-derived from the answer: nothing
+      // typed survives a save, and the date shown is the date stored.
+      dispatchCredential({ type: 'saved', provider: saved });
       onSaved?.(saved);
     } catch (error) {
       setLines(adminErrorLines(error));
@@ -224,26 +214,19 @@ const OidcProviderForm = ({
         <OidcCredentialBlock
           provider={provider}
           kind={values.kind}
-          credential={credential}
-          onCredentialChange={setCredential}
-          secret={secret}
-          onSecretChange={(value) => {
-            setSecret(value);
-            // Untouched date: a typed secret starts without a date (spec 5.2); an
-            // emptied field gives the stored date of the secret still in use back.
-            if (!expiryTouched) {
-              setSecretExpiry(
-                value === '' ? (provider?.client_secret_expires_at ?? '') : ''
-              );
-            }
-          }}
-          authMethod={authMethod}
-          onAuthMethodChange={setAuthMethod}
-          secretExpiry={secretExpiry}
-          onSecretExpiryChange={(value) => {
-            setExpiryTouched(true);
-            setSecretExpiry(value);
-          }}
+          view={credentialShown}
+          onCredentialChange={(value) =>
+            dispatchCredential({ type: 'credential', value })
+          }
+          onSecretChange={(value) =>
+            dispatchCredential({ type: 'secret', value })
+          }
+          onAuthMethodChange={(value) =>
+            dispatchCredential({ type: 'authMethod', value })
+          }
+          onSecretExpiryChange={(value) =>
+            dispatchCredential({ type: 'date', value })
+          }
           onReload={reload}
         />
 

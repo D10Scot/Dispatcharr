@@ -466,4 +466,151 @@ describe('SsoSettingsForm', () => {
       }
     }
   );
+
+  // Fix round 3: the credential state is derived, so switching the radio and
+  // saving twice cannot drop a typed secret or wipe a stored date.
+  describe('fix round 3: radio switches and consecutive saves', () => {
+    it('a secret typed before switching to Certificate is shown as pending, sent, and the form then shows the stored state', async () => {
+      API.updateOidcProvider.mockResolvedValueOnce(
+        provider({ client_secret_expires_at: null })
+      );
+      await open(provider({ client_secret_expires_at: D }));
+
+      await typeSecret('fresh-secret');
+      await userEvent.click(screen.getByTestId('sso-credential-certificate'));
+      expect(
+        screen.getByTestId('sso-secret-pending-notice'),
+        'a typed secret must stay visible while the certificate view is open'
+      ).toHaveTextContent(/new client secret you entered will be saved/i);
+
+      await userEvent.click(screen.getByTestId('sso-provider-save'));
+      await waitFor(() =>
+        expect(API.updateOidcProvider).toHaveBeenCalledTimes(1)
+      );
+      const first = API.updateOidcProvider.mock.calls[0][1];
+      expect(
+        first.client_secret,
+        'a typed secret must not be dropped by a radio switch'
+      ).toBe('fresh-secret');
+      expect(first.client_secret_expires_at).toBeNull();
+      expect(Object.hasOwn(first, 'client_auth_method')).toBe(false);
+
+      // Re-derived from the answer: the method in use is the secret.
+      await waitFor(() =>
+        expect(screen.getByTestId('sso-client-secret')).toHaveValue('')
+      );
+      expect(screen.getByTestId('sso-secret-expiry')).toHaveValue('');
+    });
+
+    it('switching away and back, then saving twice, never sends a date the administrator did not change', async () => {
+      API.updateOidcProvider.mockResolvedValue(
+        provider({ client_secret_expires_at: D })
+      );
+      await open(provider({ client_secret_expires_at: D }));
+
+      await typeSecret('fresh-secret');
+      await eraseSecret();
+      await userEvent.click(screen.getByTestId('sso-credential-certificate'));
+      await userEvent.click(screen.getByTestId('sso-provider-save'));
+      await waitFor(() =>
+        expect(API.updateOidcProvider).toHaveBeenCalledTimes(1)
+      );
+      await userEvent.click(screen.getByTestId('sso-credential-secret'));
+      expect(
+        screen.getByTestId('sso-secret-expiry'),
+        'the date shown after a save is the stored date'
+      ).toHaveValue(D);
+      await userEvent.click(screen.getByTestId('sso-provider-save'));
+      await waitFor(() =>
+        expect(API.updateOidcProvider).toHaveBeenCalledTimes(2)
+      );
+
+      for (const [, payload] of API.updateOidcProvider.mock.calls) {
+        expect(Object.hasOwn(payload, 'client_secret')).toBe(false);
+        expect(
+          Object.hasOwn(payload, 'client_secret_expires_at'),
+          'a save with no date edit must not send the date key'
+        ).toBe(false);
+      }
+    });
+
+    it('after a save the date shown is the date the server stored', async () => {
+      API.updateOidcProvider.mockResolvedValue(
+        provider({ client_secret_expires_at: '2028-01-31' })
+      );
+      await open(provider({ client_secret_expires_at: D }));
+
+      await setDate(X);
+      await userEvent.click(screen.getByTestId('sso-provider-save'));
+
+      await waitFor(() =>
+        expect(
+          screen.getByTestId('sso-secret-expiry'),
+          'the form must show the stored date, not the one typed'
+        ).toHaveValue('2028-01-31')
+      );
+    });
+
+    it('a date change is shown as pending in the certificate view', async () => {
+      await open(provider({ client_secret_expires_at: D }));
+      await setDate(X);
+      await userEvent.click(screen.getByTestId('sso-credential-certificate'));
+      expect(screen.getByTestId('sso-secret-pending-notice')).toHaveTextContent(
+        /expiry date will be saved/i
+      );
+    });
+
+    it('a certificate action keeps a typed secret pending', async () => {
+      await open(provider({ client_secret_expires_at: D }));
+      API.generateOidcCertificate.mockResolvedValue({});
+      API.getOidcProviders.mockResolvedValue([
+        provider({
+          client_secret_expires_at: D,
+          client_certificate: {
+            active: null,
+            pending: { thumbprint_sha256: 'aa'.repeat(32), not_after: null },
+          },
+        }),
+      ]);
+      API.updateOidcProvider.mockResolvedValue(provider());
+
+      await typeSecret('fresh-secret');
+      await userEvent.click(screen.getByTestId('sso-credential-certificate'));
+      await userEvent.click(screen.getByTestId('sso-cert-generate'));
+      await screen.findByText(new RegExp('aa'.repeat(32)));
+      expect(
+        screen.getByTestId('sso-secret-pending-notice')
+      ).toBeInTheDocument();
+
+      await userEvent.click(screen.getByTestId('sso-provider-save'));
+      await waitFor(() => expect(API.updateOidcProvider).toHaveBeenCalled());
+      expect(API.updateOidcProvider.mock.calls[0][1].client_secret).toBe(
+        'fresh-secret'
+      );
+    });
+
+    it('names the sign-in method in use and what saving on Client secret does', async () => {
+      await open(provider({ client_auth_method: 'private_key_jwt' }));
+      expect(screen.getByTestId('sso-credential-in-use')).toHaveTextContent(
+        /uses the certificate/i
+      );
+      await userEvent.click(screen.getByTestId('sso-credential-secret'));
+      expect(screen.getByTestId('sso-switch-to-secret')).toHaveTextContent(
+        /switches this provider from the certificate to the client secret/i
+      );
+    });
+  });
+
+  it('warns next to the public base URL that each IdP registration must be updated first', async () => {
+    wrap(<SsoSettingsForm />);
+    const field = await screen.findByTestId('sso-public-base-url');
+    const warning = screen.getByTestId('sso-base-url-warning');
+    expect(warning).toHaveTextContent(
+      /update the redirect URI in each identity provider's app registration first/i
+    );
+    expect(
+      warning.parentElement.contains(field),
+      'the warning must sit beside the public base URL field'
+    ).toBe(true);
+  });
 });
