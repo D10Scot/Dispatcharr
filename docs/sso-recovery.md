@@ -16,10 +16,10 @@ Run every command through a login shell, exactly as written:
 docker exec [-it] <container> su - dispatch -c 'cd /app && python manage.py <command>'
 ```
 
-A plain `docker exec <container> python manage.py …` does not work. The server reads its
-secret key from an environment variable that the entrypoint exports only to login shells,
-so a command run without `su -` cannot read the settings it needs. `su - dispatch` also runs
-the command as the application user rather than root.
+Running `python manage.py` straight from `docker exec`, without `su -`, does not work. The
+server reads its secret key from an environment variable that the entrypoint exports only to
+login shells, so a command run without `su -` cannot read the settings it needs.
+`su - dispatch` also runs the command as the application user rather than root.
 
 Replace `<container>` with the container's name. `dispatch` is the default database user; if
 your deployment sets `POSTGRES_USER`, use that name instead. Commands that prompt for input
