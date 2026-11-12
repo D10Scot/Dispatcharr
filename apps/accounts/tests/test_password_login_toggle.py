@@ -133,10 +133,11 @@ class PasswordLoginGateTests(TestCase):
         # simplejwt binds ``authenticate`` at import (serializers.py, simplejwt 5.5.1), so the
         # patch target is that bound name, not django.contrib.auth's.
         target = "rest_framework_simplejwt.serializers.authenticate"
-        # Positive control: with password login on, this patch IS on the login path.
+        # Positive control: with password login on, this patch IS on the login path. It asks
+        # only that the patch was reached; how often is the oracle assertion's business.
         with mock.patch(target, return_value=None) as authenticate:
             self.assertEqual(obtain(password="wrong").status_code, 401)
-        self.assertEqual(authenticate.call_count, 1, "the patch is not on the login path")
+        self.assertGreaterEqual(authenticate.call_count, 1, "the patch is not on the login path")
 
         set_password_login(False)
         with mock.patch(target) as authenticate:
