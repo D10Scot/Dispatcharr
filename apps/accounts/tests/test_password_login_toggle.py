@@ -28,6 +28,7 @@ from rest_framework.test import APIClient
 
 from apps.accounts.models import OIDCProvider, User
 from apps.accounts.oidc import auth_settings, guard
+from apps.accounts.oidc import secrets as oidc_secrets
 from apps.accounts.oidc.serializers import OIDCProviderSerializer
 from core.models import AUTH_SETTINGS_KEY, CoreSettings, SystemEvent
 
@@ -767,6 +768,180 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
             (row.entra_tenant_id, row.issuer),
             (NEW_TENANT, f"https://login.microsoftonline.com/{NEW_TENANT}/v2.0"),
             "a locked PATCH wrote back the stale Entra columns validate() filled in",
+        )
+
+    def test_held_settings_patch_keeps_a_switch_on_made_meanwhile(self):
+        # The settings PATCH reads the auth_settings row under its lock. A PATCH
+        # {public_base_url} is held just before the lock while password login is off; another
+        # admin switches password login on. Released, the PATCH must write its base URL onto
+        # the row as it is now, not onto a copy read before the lock.
+        set_password_login(False)
+        new_base = "https://mino-held.example.com"
+        entered, release = self.hold_at_lock("held-settings")
+        client = self.admin_client
+        worker = Worker(
+            lambda: client.patch(SETTINGS, {"public_base_url": new_base}, format="json"),
+            "held-settings",
+        )
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the PATCH never reached the lock")
+            response = client.patch(SETTINGS, {"password_login_enabled": True}, format="json")
+            self.assertEqual(response.status_code, 200, response.content)
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(worker.error, repr(worker.error))
+        self.assertEqual(worker.result.status_code, 200, worker.result.content)
+        stored = CoreSettings.objects.get(key=AUTH_SETTINGS_KEY).value
+        self.assertEqual(
+            (stored.get("public_base_url"), stored.get("password_login_enabled")),
+            (new_base, True),
+            "a held settings PATCH wrote back a copy of auth_settings read before its lock "
+            "and lost the switch-on made meanwhile",
+        )
+
+    def test_locked_secret_rotation_clears_an_expiry_set_meanwhile(self):
+        # A new secret never inherits the old one's expiry. A locked PATCH {enabled: false,
+        # client_secret} is held after its view loaded Q (no expiry, so None is no change
+        # against it). Another admin sets an expiry on the old secret. Released, the new
+        # secret must be stored with no expiry: a sent client_secret owns the expiry column.
+        set_password_login(True)
+        entered, release = self.hold_at_lock("held-rotate")
+        client = self.admin_client
+        worker = Worker(
+            lambda: client.patch(
+                f"{PROVIDERS}{self.q.pk}/",
+                {"enabled": False, "client_secret": PLACEHOLDER_SECRET},
+                format="json",
+            ),
+            "held-rotate",
+        )
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the PATCH never reached the lock")
+            response = client.patch(
+                f"{PROVIDERS}{self.q.pk}/",
+                {"client_secret_expires_at": "2030-01-01"},
+                format="json",
+            )
+            self.assertEqual(response.status_code, 200, response.content)
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(worker.error, repr(worker.error))
+        self.assertEqual(worker.result.status_code, 200, worker.result.content)
+        row = OIDCProvider.objects.get(pk=self.q.pk)
+        self.assertEqual(oidc_secrets.decrypt(row.client_secret_encrypted), PLACEHOLDER_SECRET)
+        self.assertIsNone(
+            row.client_secret_expires_at,
+            "a locked secret rotation kept the expiry another admin set on the old secret",
+        )
+
+    def test_locked_patch_of_a_provider_deleted_meanwhile_is_not_found(self):
+        # A locked PATCH {enabled: false} of Q is held after its view loaded Q; another admin
+        # deletes Q. Released, the reload under the lock finds no row: 404 not_found.
+        set_password_login(True)
+        entered, release = self.hold_at_lock("held-gone")
+        client = self.admin_client
+        worker = Worker(self._disable(self.q), "held-gone")
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the PATCH never reached the lock")
+            self.assertEqual(client.delete(f"{PROVIDERS}{self.q.pk}/").status_code, 204)
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(
+            worker.error,
+            f"a locked PATCH of a provider deleted meanwhile raised: {worker.error!r}",
+        )
+        self.assertEqual(
+            (worker.result.status_code, worker.result.json()),
+            (404, {"code": "not_found"}),
+            "a locked PATCH of a provider deleted meanwhile was not answered not_found",
+        )
+
+    def test_locked_kind_change_to_entra_writes_the_derived_alg(self):
+        # A locked PATCH turning a generic provider into Entra is held after its view loaded
+        # the provider (alg PS256, so validate()'s PS256 is no change against it). Another
+        # admin sets the alg to RS256. Released, the row is Entra and must carry PS256: the
+        # derived columns follow the row's final kind, not the stale instance.
+        generic = make_provider(slug="gen", client_auth_method="client_secret_post")
+        set_password_login(True)
+        entered, release = self.hold_at_lock("held-kind")
+        client = self.admin_client
+        worker = Worker(
+            lambda: client.patch(
+                f"{PROVIDERS}{generic.pk}/",
+                {"kind": "entra", "entra_tenant_id": NEW_TENANT},
+                format="json",
+            ),
+            "held-kind",
+        )
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the PATCH never reached the lock")
+            response = client.patch(
+                f"{PROVIDERS}{generic.pk}/", {"client_assertion_alg": "RS256"}, format="json"
+            )
+            self.assertEqual(response.status_code, 200, response.content)
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(worker.error, repr(worker.error))
+        self.assertEqual(worker.result.status_code, 200, worker.result.content)
+        row = OIDCProvider.objects.get(pk=generic.pk)
+        self.assertEqual(
+            (row.kind, row.client_assertion_alg),
+            ("entra", "PS256"),
+            "a locked kind change to Entra left a derived column (client_assertion_alg) "
+            "that disagrees with the row's final kind",
+        )
+
+    def test_locked_entra_patch_sending_issuer_follows_the_current_tenant(self):
+        # A locked PATCH {enabled: false, issuer} on an Entra provider is held after its view
+        # loaded the provider. Another admin changes the tenant (and with it the issuer).
+        # Released, the issuer it sent (re-derived from the stale tenant by validate()) must
+        # not be written: an Entra issuer is derived from the row's tenant, never from the
+        # request.
+        entra = make_entra(slug="entra", enabled=True)
+        stale_issuer = entra.issuer
+        set_password_login(True)
+        entered, release = self.hold_at_lock("held-issuer")
+        client = self.admin_client
+        worker = Worker(
+            lambda: client.patch(
+                f"{PROVIDERS}{entra.pk}/",
+                {"enabled": False, "issuer": stale_issuer},
+                format="json",
+            ),
+            "held-issuer",
+        )
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the PATCH never reached the lock")
+            response = client.patch(
+                f"{PROVIDERS}{entra.pk}/", {"entra_tenant_id": NEW_TENANT}, format="json"
+            )
+            self.assertEqual(response.status_code, 200, response.content)
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(worker.error, repr(worker.error))
+        self.assertEqual(worker.result.status_code, 200, worker.result.content)
+        row = OIDCProvider.objects.get(pk=entra.pk)
+        self.assertFalse(row.enabled)
+        self.assertEqual(
+            (row.entra_tenant_id, row.issuer),
+            (NEW_TENANT, f"https://login.microsoftonline.com/{NEW_TENANT}/v2.0"),
+            "a locked Entra PATCH wrote an issuer derived from the stale tenant over the "
+            "row's current tenant",
         )
 
     def test_concurrent_disables_of_last_two_providers_one_wins(self):

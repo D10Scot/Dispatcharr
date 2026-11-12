@@ -299,12 +299,11 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
         # The columns this request owns: what it changed against the instance it loaded, and
         # what it sent explicitly (a value re-sent equal to a stale instance still counts, such
         # as enabled=false). validate() fills the Entra columns from the pre-lock instance on
-        # every PATCH; unsent and unchanged, they are not this request's to write back.
+        # every PATCH; unsent and unchanged, they are not this request's to write back, and
+        # under the lock _rederive_entra() sets them from the row's final kind and tenant.
         sent = set(getattr(self, "initial_data", None) or ())
         if "client_secret" in sent:
             sent |= {"client_secret_encrypted", "client_secret_expires_at"}
-        if "entra_tenant_id" in sent:
-            sent.add("issuer")
         owned = set(changes) | (sent & set(data))
         # Spec 5.5: a write that sets enabled to false takes the auth_settings lock, as does a
         # slug or kind change (spec 3.6). Any other edit, enabling included, takes none.
@@ -321,6 +320,7 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
                 if current is None:
                     raise CodedError("not_found", status_code=404)
                 changes = {k: data[k] for k in owned if getattr(current, k) != data[k]}
+                self._rederive_entra(current, changes)
                 if current.enabled and changes.get("enabled") is False:
                     reasons = guard.evaluate(
                         password_login_enabled=values["password_login_enabled"],
@@ -342,6 +342,20 @@ class OIDCProviderSerializer(serializers.ModelSerializer):
                     fields=self._audit_names(changes),
                 )
         return OIDCProvider.objects.get(pk=instance.pk)
+
+    @staticmethod
+    def _rederive_entra(current, changes):
+        """On a row that ends up Entra, set the derived columns from the row's final kind and
+        tenant, never from the request or the instance loaded before the lock."""
+        if changes.get("kind", current.kind) != OIDCProvider.KIND_ENTRA:
+            return
+        tenant = changes.get("entra_tenant_id", current.entra_tenant_id)
+        derived = {"issuer": ENTRA_ISSUER.format(tenant=tenant), "client_assertion_alg": "PS256"}
+        for name, value in derived.items():
+            if getattr(current, name) != value:
+                changes[name] = value
+            else:
+                changes.pop(name, None)
 
     def _actor(self):
         request = self.context.get("request")
