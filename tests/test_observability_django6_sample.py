@@ -18,6 +18,7 @@ is allowed only with a validator.
 import json
 import os
 from pathlib import Path
+from unittest import skipUnless
 
 import psycopg
 import redis
@@ -186,6 +187,7 @@ class Django6SampleTests(TestCase):
                     )
         return keys
 
+    @skipUnless(connection.vendor == "postgresql", "opens a raw PostgreSQL connection with psycopg")
     def test_attribute_keys_match_the_recorded_sample(self):
         sample = self._scenarios()
         sample["metrics"] = self._metric_keys()
