@@ -1,0 +1,197 @@
+{
+  "celery_task_publish": {
+    "attribute_keys": [
+      "celery.action",
+      "celery.task_name",
+      "messaging.destination",
+      "messaging.destination_kind",
+      "messaging.message.id"
+    ],
+    "event_attribute_keys": [],
+    "event_names": [],
+    "kind": "PRODUCER",
+    "scope": "opentelemetry.instrumentation.celery",
+    "status": "UNSET",
+    "status_has_description": false
+  },
+  "celery_task_run_error": {
+    "attribute_keys": [
+      "celery.action",
+      "celery.delivery_info",
+      "celery.hostname",
+      "celery.state",
+      "celery.task_name",
+      "messaging.message.id"
+    ],
+    "event_attribute_keys": [
+      "exception.escaped",
+      "exception.message",
+      "exception.stacktrace",
+      "exception.type"
+    ],
+    "event_names": [
+      "exception"
+    ],
+    "kind": "CONSUMER",
+    "scope": "opentelemetry.instrumentation.celery",
+    "status": "ERROR",
+    "status_has_description": true
+  },
+  "django_request": {
+    "attribute_keys": [
+      "error.type",
+      "http.request.method",
+      "http.response.status_code",
+      "http.route",
+      "network.protocol.version",
+      "url.scheme"
+    ],
+    "event_attribute_keys": [],
+    "event_names": [],
+    "kind": "SERVER",
+    "scope": "opentelemetry.instrumentation.django",
+    "status": "ERROR",
+    "status_has_description": false
+  },
+  "django_unrouted_api_path": {
+    "attribute_keys": [
+      "http.request.method",
+      "http.response.status_code",
+      "http.route",
+      "network.protocol.version",
+      "url.scheme"
+    ],
+    "event_attribute_keys": [],
+    "event_names": [],
+    "kind": "SERVER",
+    "scope": "opentelemetry.instrumentation.django",
+    "status": "UNSET",
+    "status_has_description": false
+  },
+  "django_view_raises": {
+    "attribute_keys": [
+      "error.type",
+      "http.request.method",
+      "http.response.status_code",
+      "http.route",
+      "network.protocol.version",
+      "url.scheme"
+    ],
+    "event_attribute_keys": [
+      "exception.escaped",
+      "exception.message",
+      "exception.stacktrace",
+      "exception.type"
+    ],
+    "event_names": [
+      "exception"
+    ],
+    "kind": "SERVER",
+    "scope": "opentelemetry.instrumentation.django",
+    "status": "ERROR",
+    "status_has_description": true
+  },
+  "metrics": {
+    "http.server.request.duration": [
+      "error.type",
+      "http.request.method",
+      "http.response.status_code",
+      "http.route",
+      "network.protocol.version",
+      "url.scheme"
+    ]
+  },
+  "psycopg_query": {
+    "attribute_keys": [
+      "db.name",
+      "db.statement",
+      "db.system",
+      "db.user"
+    ],
+    "event_attribute_keys": [],
+    "event_names": [],
+    "kind": "CLIENT",
+    "scope": "opentelemetry.instrumentation.psycopg",
+    "status": "UNSET",
+    "status_has_description": false
+  },
+  "psycopg_query_error": {
+    "attribute_keys": [
+      "db.name",
+      "db.statement",
+      "db.system",
+      "db.user"
+    ],
+    "event_attribute_keys": [
+      "exception.escaped",
+      "exception.message",
+      "exception.stacktrace",
+      "exception.type"
+    ],
+    "event_names": [
+      "exception"
+    ],
+    "kind": "CLIENT",
+    "scope": "opentelemetry.instrumentation.psycopg",
+    "status": "ERROR",
+    "status_has_description": true
+  },
+  "redis_command": {
+    "attribute_keys": [
+      "db.redis.args_length",
+      "db.redis.database_index",
+      "db.statement",
+      "db.system",
+      "network.transport"
+    ],
+    "event_attribute_keys": [],
+    "event_names": [],
+    "kind": "CLIENT",
+    "scope": "opentelemetry.instrumentation.redis",
+    "status": "UNSET",
+    "status_has_description": false
+  },
+  "redis_command_error": {
+    "attribute_keys": [
+      "db.redis.args_length",
+      "db.redis.database_index",
+      "db.statement",
+      "db.system",
+      "network.transport"
+    ],
+    "event_attribute_keys": [
+      "exception.escaped",
+      "exception.message",
+      "exception.stacktrace",
+      "exception.type"
+    ],
+    "event_names": [
+      "exception"
+    ],
+    "kind": "CLIENT",
+    "scope": "opentelemetry.instrumentation.redis",
+    "status": "ERROR",
+    "status_has_description": true
+  },
+  "requests_call_error": {
+    "attribute_keys": [
+      "error.type",
+      "http.request.method",
+      "url.full",
+      "user_agent.original"
+    ],
+    "event_attribute_keys": [
+      "exception.escaped",
+      "exception.message",
+      "exception.stacktrace",
+      "exception.type"
+    ],
+    "event_names": [
+      "exception"
+    ],
+    "kind": "CLIENT",
+    "scope": "opentelemetry.instrumentation.requests",
+    "status": "ERROR",
+    "status_has_description": true
+  }
+}

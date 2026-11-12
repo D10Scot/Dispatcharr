@@ -68,6 +68,9 @@ HEADER_RELAY_NAME = "X-Relay-Name"
 # than uwsgi_passes to (spec § Stage 2d, NB1).
 HEADER_RELAY_OUTPUT_FORMAT = "X-Relay-Output-Format"
 HEADER_RELAY_CLIENT_IP = "X-Relay-Client-IP"
+# The authorize hop's W3C trace context, carried by nginx to the relay
+# (observability spec D11).
+HEADER_RELAY_TRACEPARENT = "X-Relay-Traceparent"
 # The real status of a denial nginx can only carry as 403. Read back by
 # `auth_request_set $authorize_status $upstream_http_x_authorize_status`
 # and turned into the client's status by `error_page 403 =

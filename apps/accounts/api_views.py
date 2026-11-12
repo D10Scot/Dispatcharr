@@ -316,7 +316,7 @@ class UserViewSet(viewsets.ModelViewSet):
 class GroupViewSet(viewsets.ModelViewSet):
     """CRUD for Django auth groups and their permissions.
 
-    Dispatcharr authorization uses ``user_level``, not these groups. The
+    Mino authorization uses ``user_level``, not these groups. The
     endpoint is kept for compatibility but restricted to admins so
     non-admins cannot invent auth groups or attach Django permissions.
     """

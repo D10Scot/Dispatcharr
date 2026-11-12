@@ -1,4 +1,4 @@
-title = "Dispatcharr gitleaks config"
+title = "Mino gitleaks config"
 
 # Keep every default rule; only add allowlist entries below for confirmed
 # false positives, each with a reason. Don't broaden this to silence real
@@ -34,4 +34,13 @@ targetRules = ["generic-api-key"]
 regexTarget = "secret"
 regexes = [
   '''^S3NT1NEL-pw-9d2f$''',
+]
+
+[[allowlists]]
+description = "OIDC SSO test sentinels: SENTINEL-ROTATED-31d7 and SENTINEL-ROTATED-9c1d are made-up client secrets the SSO S1 tests (apps/accounts/tests/test_oidc_audit.py, test_oidc_providers.py) send to the provider admin API and then assert never appear in a response, an audit payload or a log line (docs/superpowers/specs/2026-10-31-sso-oidc-design.md, S1). They are test literals and valid for nothing. They are allowlisted by exact value (regexTarget = secret) and only for the one rule that fires, never by path, so a real secret in either file is still caught by every rule. The entry lives on main because CI's gitleaks scans every ref with full history, so a branch carrying the literals fails the check for every run whose own config lacks it."
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = [
+  '''^SENTINEL-ROTATED-31d7$''',
+  '''^SENTINEL-ROTATED-9c1d$''',
 ]

@@ -1,5 +1,5 @@
 name: Bug Report
-description: I have an issue with Dispatcharr
+description: I have an issue with Mino
 title: "[Bug]: "
 labels: ["Triage"]
 type: "Bug"
@@ -31,8 +31,8 @@ body:
   - type: input
     id: dispatcharr-version
     attributes:
-      label: Dispatcharr Version
-      description: What version of Dispatcharr are you running?
+      label: Mino Version
+      description: What version of Mino are you running?
       placeholder: Located bottom left of main screen
     validations:
       required: true
@@ -57,7 +57,7 @@ body:
     id: client-info
     attributes:
       label: Client Information
-      description: What are you using the view the streams from Dispatcharr
+      description: What are you using the view the streams from Mino
       placeholder: Tell us what you see!
       value: "Device, App, Versions for both, etc..."
     validations:

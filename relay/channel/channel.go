@@ -34,6 +34,7 @@ import (
 
 	"github.com/D10Scot/Dispatcharr/relay/buffer"
 	"github.com/D10Scot/Dispatcharr/relay/redact"
+	"github.com/D10Scot/Dispatcharr/relay/telemetry"
 )
 
 // ErrDuplicateClient is returned by Attach when the channel already has a
@@ -85,6 +86,12 @@ type Channel struct {
 	tuning    Tuning
 	startedAt time.Time
 	now       func() time.Time
+
+	// pk is the channel's numeric id (Started.ChannelPK) and tuneRef the
+	// publishing tune's span context (Started.Tune). Both are fixed at
+	// publish and read without the lock.
+	pk      int
+	tuneRef telemetry.SpanRef
 
 	// budgetBytes is the ring's own byte budget, kept so an output pipeline's
 	// fragment buffer can be sized from the same number rather than from a
@@ -334,6 +341,12 @@ func (c *Channel) clientState() ([]string, time.Time) {
 	defer c.mu.RUnlock()
 	return c.clientIDsLocked(), c.idleSince
 }
+
+// PK is the channel's numeric id, zero when the tune's answer named none.
+func (c *Channel) PK() int { return c.pk }
+
+// TuneRef is the publishing tune's span context, for a link.
+func (c *Channel) TuneRef() telemetry.SpanRef { return c.tuneRef }
 
 // ClientSnapshot is every attached client, oldest connection first and ties
 // broken by id.
