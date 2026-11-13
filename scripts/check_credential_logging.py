@@ -148,10 +148,18 @@ KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
     bytes of a response body; both reduced to facts since, but the hazard is the
     marker's). Read the arguments next to a marker, and keep the reason about
     the whole call.
+  * A KNOWN CONSERVATIVE FALSE POSITIVE: the eager form with a credential-named
+    key is flagged even when its inline value is redacted,
+    `logger.info("%(password)s" % {"password": redact_text(p)})`, because the
+    credential rule reads the message text of the formatted argument. The lazy
+    form `logger.info("%(password)s", {"password": redact_text(p)})` is clear;
+    use it, or a reasoned marker. No call in the tree has this shape.
   * NAME_RE judges a literal lookup only in these shapes: `"{0.url}".format(o)`,
-    `"%(url)s" % o`, logging's lazy `logger.info("%(url)s", row)` (for an inline
-    dict literal the values selected by the template keys are judged and a
-    redact_* wrapper or a literal clears them; any other mapping is flagged;
+    `"%(url)s" % o`, logging's lazy `logger.info("%(url)s", row)` (for the
+    lazy form with an inline dict literal the values selected by the template
+    keys are judged and a redact_* wrapper or a literal clears them; the eager
+    `"%(url)s" % {...}` form clears a redacted `url`/pattern value the same way,
+    but not a credential key, see the next bullet; any other mapping is flagged;
     the template keys are judged by NAME_RE and CREDENTIAL_RE both, so
     `%(password)s` and `%(access_token)s` count),
     `getattr(o, "url")`, `d["url"]` and `d.get("url")`. Everything else is a
