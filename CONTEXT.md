@@ -5,17 +5,52 @@ test names, issue titles and commit messages.
 
 ## Mino
 
-The working name for the whole product, the server and the Apple app together. The fork has
-diverged far enough from upstream Dispatcharr that it will be renamed. Until that rename happens,
-existing code, images and identifiers keep saying "Dispatcharr". Every **new** externally visible
-identifier (a route, a header, a setting key, a Bonjour service type, an app bundle identifier) is named neutrally
-or for Mino, never for Dispatcharr, so that the rename does not have to break it.
+The name of the whole product: the server and the Apple app together. Mino is derived from
+Dispatcharr (AGPL-3.0) and no longer tracks it (`docs/adr/0010-the-product-is-renamed-mino-and-upstream-is-no-longer-tracked.md`).
+Where this glossary or any living document says "Dispatcharr" it means upstream, and only that.
+Decision records (ADRs, specs, plans, analyses, `CHANGELOG.md`) keep the old name as history. The
+rename is a sequence of PRs (`docs/superpowers/specs/2026-10-28-mino-rename-design.md`), so some
+identifiers below still say "Dispatcharr" until their own PR lands. Name every **new** externally
+visible identifier (a route, a header, a setting key, a Bonjour service type, an app bundle
+identifier) for Mino.
+
+## Internal names
+
+Identifiers that keep the old name on purpose, so that no one "finishes" the rename by changing one.
+Each is kept because persisted data, a third party or a path-matched guard depends on it. The spec
+(`docs/superpowers/specs/2026-10-28-mino-rename-design.md`, § Categories) holds the reasoning.
+
+- **The `dispatcharr` Python package** (`dispatcharr/`, `dispatcharr.settings`, `dispatcharr.wsgi`,
+  `celery -A dispatcharr`, `Celery("dispatcharr")`) and `pyproject.toml`'s `name`: ruling M5, C-10.
+- **Django app labels and table names** (`dispatcharr_channels`, `dispatcharr_connect`): migration
+  history and stored data depend on them (C-9).
+- **Database name and role defaults** (`dispatcharr` / `dispatch`): persisted (C-16).
+- **The venv path `/dispatcharrpy`** and the build file names (`docker/DispatcharrBase`,
+  `docker/init/03-init-dispatcharr.sh`, `docker/dispatcharr_api_params*.conf`): internal paths that
+  workflow path filters and hooks match by literal path (R-3, C-6, C-11, C-14).
+- **Plugin manifest keys** (`min_dispatcharr_version`, `max_dispatcharr_version`) and upstream's plugin
+  registry, its signing key and the "Dispatcharr Official" row: a third-party contract and
+  upstream's own identity (C-3, C-15).
+- **The HDHomeRun `DeviceID`** (`dispatcharr-hdhr-<slug>`, `HDHRDevice.device_id`): Plex keys a tuner on
+  it, so a new id would lose the viewer's DVR setup. Only the friendly name is renamed (C-21).
+- **The Hypothesis profile `dispatcharr-ci`** (C-13), **browser storage keys** (C-19), the
+  `dispatcharr_stream_id` session-descriptor field, the `_dispatcharr_plugin_<key>` module prefix, the
+  `dispatcharr:ip_lookup_*` Redis keys, the `/tmp/dispatcharr_log_level` path, the volume key
+  `dispatcharr_data` and the helper names `dispatcharr_user_agent`, `dispatcharr_dvr_user_agent` and
+  `dispatcharr_http_headers` (C-18, C-21): persisted or in flight across an upgrade, or internal symbols
+  whose rename buys nothing.
+- **The local checkout path `~/git/Dispatcharr`**: the owner's machine, owner action H-9 (C-17).
+
+Names that are kept only until a later PR of the sequence renames them, and so are not internal
+names: the `DISPATCHARR_*` environment variables (E1, E2), the `X-Dispatcharr-*` headers and
+`/_dispatcharr/…` routes (W1), the image and repository identity `ghcr.io/d10scot/dispatcharr` and
+`D10Scot/Dispatcharr` (D1, D2), and the `dispatcharr-*` test containers, volumes and image tags (T1).
 
 ## Profiles — three different things
 
 Never write a bare "profile".
 
-- **Stream Profile** — how Dispatcharr talks to the *upstream* provider.
+- **Stream Profile** — how Mino talks to the *upstream* provider.
   Chooses an architecture, not a setting: Redirect, Proxy, or subprocess.
   Five locked rows ship, not three — `ffmpeg`, `streamlink` and `VLC` are
   three spellings of the subprocess architecture, alongside `Proxy` and
@@ -92,7 +127,7 @@ Two surviving mechanisms still use the words, for different things:
 ## Upstream provider
 
 The fake IPTV source the E2E suite controls, standing in for a real provider
-in tests. Distinct from an **M3U Account**, which is Dispatcharr's own record
+in tests. Distinct from an **M3U Account**, which is Mino's own record
 of a provider, and from a **Stream**, which is one playable URL — a single
 upstream provider serves a whole catalogue of streams.
 
@@ -105,7 +140,7 @@ path. Not a session; not a Playwright project.
 ## Fault
 
 A deliberate misbehaviour the upstream provider is switched into to drive a
-Dispatcharr failure path. Distinct from a bug: a fault is expected, and the
+Mino failure path. Distinct from a bug: a fault is expected, and the
 product is expected to survive it.
 
 ## Category
@@ -128,7 +163,7 @@ already says "timeshift".
 
 ## Live rewind window
 
-The recent past of a **live** channel that Dispatcharr itself keeps while the channel is being
+The recent past of a **live** channel that Mino itself keeps while the channel is being
 watched over HLS. A client can pause, rewind and fast-forward live TV back to live, up to a
 configured depth. It starts when the channel's first HLS viewer arrives, never before: there is
 nothing to rewind to from before anyone was watching. A channel watched only over MPEG-TS keeps no
@@ -136,7 +171,7 @@ window. There is one window per channel, shared by every client watching it. It 
 client by a short linger, so a viewer who zaps back keeps their rewind. It is read over HLS. A
 reader for MPEG-TS clients is a known extension, not something that exists.
 
-**Not catch-up.** Catch-up replays the *provider's* archive; the live rewind window is Dispatcharr's
+**Not catch-up.** Catch-up replays the *provider's* archive; the live rewind window is Mino's
 own recording of what it relayed. Never call it "timeshift" (catch-up's other name) or "DVR"
 (scheduled recordings).
 
@@ -196,7 +231,7 @@ vestigial — do not use them.
     switch to HLS for live.
   - **Phase 4b** — the **Apple app**: a first-party iOS and tvOS client,
     published on the App Store, that plays live channels over HLS from a
-    Dispatcharr server on the same network. Live TV only; VOD, catch-up and
+    Mino server on the same network. Live TV only; VOD, catch-up and
     recordings are out of its scope.
   - **Phase 4c** — paired-device auth: per-device, revocable, Mino-only
     credentials in place of Xtream ones, investigated after 4b's first

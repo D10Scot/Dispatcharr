@@ -1,6 +1,6 @@
-# Dispatcharr Plugin Repository Specification
+# Mino Plugin Repository Specification
 
-How to create and host a plugin repository that Dispatcharr can consume.
+How to create and host a plugin repository that Mino can consume.
 
 For writing plugins themselves, see [Plugins.md](Plugins.md).
 
@@ -8,18 +8,18 @@ For writing plugins themselves, see [Plugins.md](Plugins.md).
 
 ## Overview
 
-Dispatcharr discovers plugins from remote repositories using a two-level manifest system:
+Mino discovers plugins from remote repositories using a two-level manifest system:
 
 1. **Repo manifest** - a JSON file listing all plugins in the repo with basic metadata.
 2. **Per-plugin manifest** (optional) - a JSON file per plugin with full version history, checksums, and compatibility info.
 
-Users add a repo by its manifest URL. Dispatcharr fetches and caches the repo manifest periodically (default: every 6 hours, configurable). The UI displays all plugins from enabled repos in a browsable store.
+Users add a repo by its manifest URL. Mino fetches and caches the repo manifest periodically (default: every 6 hours, configurable). The UI displays all plugins from enabled repos in a browsable store.
 
 ---
 
 ## Repo Manifest
 
-The repo manifest is the entry point. Dispatcharr fetches this URL and caches the response.
+The repo manifest is the entry point. Mino fetches this URL and caches the response.
 
 ### Minimal Example (no signing)
 
@@ -78,7 +78,7 @@ This is the simplest valid repo manifest - one plugin with enough info to show i
 
 ### Accepted Formats
 
-Dispatcharr accepts two top-level shapes:
+Mino accepts two top-level shapes:
 
 **Wrapped (supports signing):**
 
@@ -103,7 +103,7 @@ The wrapped format is required for signing. If you don't need signing, the flat 
 
 ### Name Restrictions
 
-`registry_name` is required. Dispatcharr rejects repos that are missing it.
+`registry_name` is required. Mino rejects repos that are missing it.
 
 Third-party repos must not use names that could be confused with an official Dispatcharr repo. The following words are blocked in `registry_name` (case-insensitive):
 
@@ -147,7 +147,7 @@ If the name contains any of these, the repo will be rejected on add and skipped 
 | `manifest_url`            | No       | URL (or relative path) to the per-plugin manifest with full version history. See [Per-Plugin Manifest](#per-plugin-manifest).               |
 | `latest_url`              | No       | Direct download URL (or relative path) to the latest release zip.                                                                           |
 | `latest_sha256`           | No       | SHA256 checksum of the latest release zip (lowercase hex, 64 chars).                                                                        |
-| `latest_md5`              | No       | MD5 checksum of the latest release zip. Informational only - not validated by Dispatcharr.                                                  |
+| `latest_md5`              | No       | MD5 checksum of the latest release zip. Informational only - not validated by Mino.                                                  |
 | `latest_size`             | No       | Size of the latest release zip in kilobytes. Informational only.                                                                            |
 | `icon_url`                | No       | URL (or relative path) to a logo image (PNG recommended).                                                                                   |
 | `min_dispatcharr_version` | No       | Minimum Dispatcharr version required. Install is blocked if the running version is older.                                                   |
@@ -157,7 +157,7 @@ Extra fields in a plugin entry are passed through to the frontend as-is, so you 
 
 ### URL Resolution
 
-Relative URL fields are resolved against a base URL. Dispatcharr uses two separate base URLs (one for metadata assets and one for download assets) so you can serve them from different origins (e.g., manifests and icons on GitHub Pages, release zips on a CDN).
+Relative URL fields are resolved against a base URL. Mino uses two separate base URLs (one for metadata assets and one for download assets) so you can serve them from different origins (e.g., manifests and icons on GitHub Pages, release zips on a CDN).
 
 **Resolution priority:**
 
@@ -210,7 +210,7 @@ You can also combine `root_url` with one specific field. The specific field over
 }
 ```
 
-**Icon fallback:** If `icon_url` is missing, Dispatcharr tries two fallbacks in order:
+**Icon fallback:** If `icon_url` is missing, Mino tries two fallbacks in order:
 
 1. **Manifest-directory fallback**: if a base URL is set (`root_url`, `metadata_base_url`, etc.) and `manifest_url` is present, the logo is assumed to live in the same directory as the per-plugin manifest:
    ```
@@ -218,7 +218,7 @@ You can also combine `root_url` with one specific field. The specific field over
    ```
    For example, if `manifest_url` resolves to `https://example.com/plugins/my_plugin/manifest.json`, the fallback icon URL is `https://example.com/plugins/my_plugin/logo.png`.
 
-2. **GitHub fallback**: if `registry_url` is a GitHub URL, Dispatcharr converts it to a raw content URL:
+2. **GitHub fallback**: if `registry_url` is a GitHub URL, Mino converts it to a raw content URL:
    ```
    {registry_url => raw.githubusercontent.com}/refs/heads/main/plugins/{slug}/logo.png
    ```
@@ -269,7 +269,7 @@ Use the wrapped format if you want to GPG-sign the per-plugin manifest.
 {
   "slug": "weather_display",
   "name": "Weather Display",
-  "description": "Shows weather information on the Dispatcharr dashboard",
+  "description": "Shows weather information on the Mino dashboard",
   "author": "Acme Labs",
   "license": "MIT",
   "latest_version": "1.2.5",
@@ -339,7 +339,7 @@ Use the wrapped format if you want to GPG-sign the per-plugin manifest.
 | `version`                 | **Yes**  | Version string (`1.2.3` or `v1.2.3`).                                                                                                                                                                                                                                                                                                                                                                                              |
 | `url`                     | **Yes**  | Download URL for the zip. Relative URLs are resolved against the repo's `root_url`.                                                                                                                                                                                                                                                                                                                                                |
 | `checksum_sha256`         | No       | SHA256 hex checksum. **Strongly recommended.** Validated on install - mismatch blocks the install.                                                                                                                                                                                                                                                                                                                                 |
-| `prerelease`              | No       | Boolean. When `true`, marks this version as a pre-release (alpha, beta, RC, etc.). If the installed version is a prerelease, Dispatcharr will not suggest updating to the latest stable version - the user must install a new version manually. The latest version in the root manifest is always assumed to be stable, so this field only needs to appear in the per-plugin manifest. Omit or set to `false` for stable releases. |
+| `prerelease`              | No       | Boolean. When `true`, marks this version as a pre-release (alpha, beta, RC, etc.). If the installed version is a prerelease, Mino will not suggest updating to the latest stable version - the user must install a new version manually. The latest version in the root manifest is always assumed to be stable, so this field only needs to appear in the per-plugin manifest. Omit or set to `false` for stable releases. |
 | `build_timestamp`         | No       | ISO 8601 build timestamp. Shown as "Built" in the version detail.                                                                                                                                                                                                                                                                                                                                                                  |
 | `commit_sha`              | No       | Full Git commit SHA. Used to build a commit link if `registry_url` is set.                                                                                                                                                                                                                                                                                                                                                         |
 | `commit_sha_short`        | No       | Abbreviated commit SHA. Displayed in the version detail table as a clickable link.                                                                                                                                                                                                                                                                                                                                                 |
@@ -364,14 +364,14 @@ This is the simplest path for third-party repos that only publish one version at
 
 ## Signing
 
-Signing your repo manifest lets Dispatcharr verify it hasn't been tampered with. Signing is **optional** - unsigned repos work fine but show an "unverified" badge in the UI.
+Signing your repo manifest lets Mino verify it hasn't been tampered with. Signing is **optional** - unsigned repos work fine but show an "unverified" badge in the UI.
 
 ### How It Works
 
 1. You generate a GPG keypair.
 2. You sign the manifest JSON and include the detached signature in the response.
-3. When adding the repo in Dispatcharr, the user pastes your public key.
-4. Dispatcharr verifies the signature on every manifest fetch.
+3. When adding the repo in Mino, the user pastes your public key.
+4. Mino verifies the signature on every manifest fetch.
 
 ### Key Format
 
@@ -461,7 +461,7 @@ jq --arg sig "$(cat manifest.sig)" '.signature = $sig' manifest.json > signed_ma
 
 ### Third-Party Key Management
 
-When a user adds your repo URL, they can paste your public key. Dispatcharr stores the key per-repo and uses it for verification. Users can update the key at any time from the repo management UI.
+When a user adds your repo URL, they can paste your public key. Mino stores the key per-repo and uses it for verification. Users can update the key at any time from the repo management UI.
 
 If you don't provide a key and the repo is not the official Dispatcharr repo, signature verification is skipped (result: `null`).
 
@@ -523,7 +523,7 @@ The plugin is installed **disabled** by default. The user can enable it from the
 
 ## Update Detection
 
-Dispatcharr detects updates by comparing `installed_version` (stored in the database) against `latest_version` from the repo manifest. This uses repo-level fields only - per-plugin manifests are not needed for update detection.
+Mino detects updates by comparing `installed_version` (stored in the database) against `latest_version` from the repo manifest. This uses repo-level fields only - per-plugin manifests are not needed for update detection.
 
 A plugin shows "Update Available" when:
 
@@ -549,7 +549,7 @@ Use `root_url` pointing to your releases branch/path so version URLs stay relati
 
 ### Static File Server
 
-Any web server that serves JSON works. Dispatcharr fetches manifests server-side, so CORS is not needed.
+Any web server that serves JSON works. Mino fetches manifests server-side, so CORS is not needed.
 
 ### GitHub Releases
 

@@ -1,8 +1,8 @@
 # Security Policy
 
-This is a personal fork of [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr)
-maintained by [@D10Scot](https://github.com/D10Scot). It tracks upstream's `dev`
-branch on `main` and adds fork-specific work; see [CLAUDE.md](CLAUDE.md) for the
+Mino is a personal project derived from [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr)
+maintained by [@D10Scot](https://github.com/D10Scot). It no longer tracks
+upstream and carries its own work on `main`; see [CLAUDE.md](CLAUDE.md) for the
 current focus.
 
 ## Reporting a vulnerability
@@ -16,9 +16,9 @@ for this repository. That opens a private advisory only the maintainer can see
 until a fix is ready.
 
 If the vulnerability is in upstream Dispatcharr itself rather than something
-this fork introduced, please report it to
+Mino introduced, please report it to
 [Dispatcharr/Dispatcharr](https://github.com/Dispatcharr/Dispatcharr/security)
-instead, so the fix reaches everyone running upstream, not just this fork.
+instead, so the fix reaches everyone running upstream, not just Mino.
 
 **Response SLA:** best-effort acknowledgment within 7 days. This is a
 single-maintainer fork, not a funded security team — there is no guaranteed

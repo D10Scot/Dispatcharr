@@ -1,6 +1,6 @@
-# Contributing to Dispatcharr
+# Contributing to Mino
 
-Thank you for your interest in contributing. Dispatcharr is a complex, production-oriented platform and we hold contributions to a high standard. Please read this guide in full before opening a pull request — it will save everyone time.
+Thank you for your interest in contributing. Mino is a complex, production-oriented platform and we hold contributions to a high standard. Please read this guide in full before opening a pull request — it will save everyone time.
 
 ---
 
@@ -243,7 +243,7 @@ To save your time and ours, the following types of PRs will be closed without ex
 By submitting a pull request to this repository, you agree to the following terms:
 
 - You authored the contribution and have the right to submit it.
-- You grant the Dispatcharr project a perpetual, worldwide, irrevocable, royalty-free license to use, reproduce, modify, distribute, sublicense, and relicense your contribution as part of this project, under any license the project maintainers choose, now or in the future.
+- You grant the Mino project a perpetual, worldwide, irrevocable, royalty-free license to use, reproduce, modify, distribute, sublicense, and relicense your contribution as part of this project, under any license the project maintainers choose, now or in the future.
 - You retain your own copyright in your contribution — this is a license grant, not a transfer of ownership.
 
 This ensures you always retain the right to use your own contribution elsewhere, while the project isn't blocked from making licensing decisions by the need to track down every past contributor.
@@ -254,4 +254,4 @@ By checking the CLA checkbox in the pull request checklist, you confirm that you
 
 ## Questions
 
-If you are unsure whether a contribution is a good fit, join the [Discord](https://discord.gg/Sp45V5BcxU) and start a conversation, or comment on the relevant issue. We would rather have a five-minute conversation upfront than a 30-comment review thread on a PR that ultimately doesn't get merged.
+If you are unsure whether a contribution is a good fit, open or comment on the relevant issue. We would rather have a five-minute conversation upfront than a 30-comment review thread on a PR that ultimately doesn't get merged.
