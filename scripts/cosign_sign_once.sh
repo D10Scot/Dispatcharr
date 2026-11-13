@@ -42,8 +42,10 @@ for ((attempt = 1; attempt <= RETRIES + 1; attempt++)); do
     echo "cosign sign failed for a reason other than a duplicate Rekor entry." >&2
     exit 1
   fi
-  echo "Rekor 409 (attempt ${attempt}): re-signing with a fresh ephemeral key."
-  sleep "$SLEEP"
+  if [ "$attempt" -le "$RETRIES" ]; then
+    echo "Rekor 409 (attempt ${attempt}): re-signing with a fresh ephemeral key."
+    sleep "$SLEEP"
+  fi
 done
 
 if [ "$signed" -ne 1 ]; then
