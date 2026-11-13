@@ -36,6 +36,7 @@ func eofProbe(path string, spawned *atomic.Int32) func(int) (string, []string) {
 // A first chunk later than the quick probe's whole bound is waited for, and
 // the output becomes ready.
 func TestAProbeWaitsForTheSourcesFirstChunk(t *testing.T) {
+	t.Parallel()
 	h := coldHarness(t)
 	probe := file(t, "probe.json", []byte(probeVideoOnly))
 	video := file(t, "v.mp4", videoStream(0, 2, 50))
@@ -62,6 +63,7 @@ func TestAProbeWaitsForTheSourcesFirstChunk(t *testing.T) {
 // A source that never sends a byte fails the output once SourceStartWait has
 // passed, and never before it, with no probe spawned.
 func TestASourceThatSendsNothingFailsTheOutputAfterTheStartWait(t *testing.T) {
+	t.Parallel()
 	h := coldHarness(t)
 	probe := file(t, "probe.json", []byte(probeVideoOnly))
 	var spawned atomic.Int32
@@ -93,6 +95,7 @@ func TestASourceThatSendsNothingFailsTheOutputAfterTheStartWait(t *testing.T) {
 // A ring that closes before its first chunk is a stop, as one that closes
 // under a probe is (R40): the channel is ending.
 func TestARingThatClosesBeforeItsFirstChunkIsAStop(t *testing.T) {
+	t.Parallel()
 	h := coldHarness(t)
 	probe := file(t, "probe.json", []byte(probeVideoOnly))
 	var spawned atomic.Int32
@@ -113,6 +116,7 @@ func TestARingThatClosesBeforeItsFirstChunkIsAStop(t *testing.T) {
 // A stop while the pipeline waits for its first chunk ends it at once, as a
 // stop, however long SourceStartWait is.
 func TestAStopWhileWaitingForTheFirstChunkIsAStop(t *testing.T) {
+	t.Parallel()
 	h := coldHarness(t)
 	probe := file(t, "probe.json", []byte(probeVideoOnly))
 	var spawned atomic.Int32

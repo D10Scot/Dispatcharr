@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -28,6 +29,14 @@ func TestStandIn(_ *testing.T) {
 		return
 	}
 	os.Exit(relaytest.RunStandIn(relaytest.StandInArgs()))
+}
+
+// standInCommand is relaytest.StandInCommand with RELAY_STANDIN=1 set for the
+// child alone through env(1), so the tests need no process-wide t.Setenv and
+// can run in parallel.
+func standInCommand(args ...string) (string, []string) {
+	command, argv := relaytest.StandInCommand(args...)
+	return "/usr/bin/env", append([]string{relaytest.StandInEnv + "=1", command}, argv...)
 }
 
 // logBuffer is a logger a test can read back.
@@ -105,7 +114,6 @@ func (h *standInHarness) start(probeJSON string, det *Detector, encoder func(Spa
 // startWith is start with a last word on the Config.
 func (h *standInHarness) startWith(probeJSON string, configure func(*Config), encoder func(Spawn) []string) *Pipeline {
 	h.t.Helper()
-	h.t.Setenv(relaytest.StandInEnv, "1")
 	probe := file(h.t, "probe.json", []byte(probeJSON))
 	cfg := Config{
 		ChannelID:  "test",
@@ -116,13 +124,13 @@ func (h *standInHarness) startWith(probeJSON string, configure func(*Config), en
 		ExitGrace:  300 * time.Millisecond,
 		Log:        h.logs.logger(),
 		ProbeCommand: func(int) (string, []string) {
-			return relaytest.StandInCommand("--fd-file", relaytest.FDFileArg(1, probe))
+			return standInCommand("--fd-file", relaytest.FDFileArg(1, probe))
 		},
 		Command: func(s Spawn) (string, []string) {
 			h.mu.Lock()
 			h.spawns = append(h.spawns, s)
 			h.mu.Unlock()
-			return relaytest.StandInCommand(append([]string{"--spawn-log", h.spawnLog}, encoder(s)...)...)
+			return standInCommand(append([]string{"--spawn-log", h.spawnLog}, encoder(s)...)...)
 		},
 	}
 	configure(&cfg)
@@ -164,6 +172,7 @@ func (h *standInHarness) engines() []Engine {
 // the same engine; in software a second early exit fails the channel's HLS
 // output (ErrFailed), logged at ERROR with the last stderr lines.
 func TestAGenerationThatDiesBeforeItsFirstSegmentIsRetriedOnceThenFails(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	initOnly := file(t, "v.mp4", videoInit(0))
 	p := h.start(probeVideoOnly, nil, func(Spawn) []string {
@@ -190,6 +199,7 @@ func TestAGenerationThatDiesBeforeItsFirstSegmentIsRetriedOnceThenFails(t *testi
 // channel's HLS output fails, and Quick Sync is NOT written off for the
 // process.
 func TestASourceCausedEarlyFailureDoesNotWriteQuickSyncOff(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	det := &Detector{Command: lookPath(t, "true"), Device: device(t)}
 	p := h.start(probeVideoOnly, det, func(Spawn) []string {
@@ -211,6 +221,7 @@ func TestASourceCausedEarlyFailureDoesNotWriteQuickSyncOff(t *testing.T) {
 // retry SUCCEEDS and a re-run of the detection encode FAILS; with the
 // detection still passing it stays usable.
 func TestQuickSyncIsWrittenOffOnlyWhenSoftwareSucceedsAndRedetectionFails(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		// redetectFails makes the re-run of the detection fail; stopDuring
@@ -278,6 +289,7 @@ func TestQuickSyncIsWrittenOffOnlyWhenSoftwareSucceedsAndRedetectionFails(t *tes
 // D10: a generation still running after its input closed is killed after
 // the exit grace, and the pipeline still ends.
 func TestAGenerationThatIgnoresItsInputClosingIsKilledAfterTheGrace(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	stream := file(t, "v.mp4", videoStream(0, 2, 50))
 	p := h.start(probeVideoOnly, nil, func(Spawn) []string {
@@ -317,6 +329,7 @@ func exitAfterInputClosed(t *testing.T, logs string) time.Duration {
 // A process that dies mid-fragment: every whole fragment is segmented and
 // the partial one is not.
 func TestEOFMidFragmentSegmentsOnlyTheWholeFragments(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	whole := videoStream(0, 6, 50) // six 2 s fragments
 	truncated := file(t, "v.mp4", whole[:len(whole)-5])
@@ -341,6 +354,7 @@ func TestEOFMidFragmentSegmentsOnlyTheWholeFragments(t *testing.T) {
 // segment is restarted at the ring's head as at a source boundary, with a
 // discontinuity; a third such death within 60 s is a total failure.
 func TestDeathsAfterTheFirstSegmentRestartUntilTheThirdWithinAMinute(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	// A live channel's ring advances: each restart at the head probes the
 	// chunks after it, and waits for them (issue #560).
@@ -373,6 +387,7 @@ func TestDeathsAfterTheFirstSegmentRestartUntilTheThirdWithinAMinute(t *testing.
 // D9: a generation-0 probe with no video fails the HLS attach, and a probe
 // that fails fails the output.
 func TestAProbeWithNoVideoOrNoAnswerFails(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	p := h.start(probeAudioOnly, nil, func(Spawn) []string { return nil })
 	if err := p.Ready(context.Background()); !errors.Is(err, ErrNoVideo) {
@@ -399,6 +414,7 @@ func TestAProbeWithNoVideoOrNoAnswerFails(t *testing.T) {
 // An encoder output that is not fragmented MP4 ends the generation: the
 // process is killed rather than left writing into a pipe nobody reads.
 func TestAnOutputThatIsNotFragmentedMP4EndsTheGeneration(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	garbage := file(t, "v.mp4", cat(box("ftyp", nil), fragSpec{seq: 1, trackID: 1, durations: []uint32{1}}.build()))
 	p := h.start(probeVideoOnly, nil, func(Spawn) []string {
@@ -415,6 +431,7 @@ func TestAnOutputThatIsNotFragmentedMP4EndsTheGeneration(t *testing.T) {
 // fragments whose start falls in its video segment's span, and a relay-
 // synthesised silent rendition matches its video segment to within one frame.
 func TestSegmentsAreAlignedAcrossRenditions(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	video := file(t, "v.mp4", videoStream(860, 4, 50)) // starts 0.86 s into the output
 	audio := file(t, "a.mp4", audioStream(40))         // 8 s of 200 ms fragments from 0
@@ -462,6 +479,7 @@ func TestSegmentsAreAlignedAcrossRenditions(t *testing.T) {
 // writes the AAC rendition from its canned frame, each silent segment as long
 // as its video segment to within one audio frame.
 func TestASilentRenditionIsWrittenByTheRelay(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	video := file(t, "v.mp4", videoStream(0, 5, 50))
 	p := h.start(probeVideoOnly, nil, func(s Spawn) []string {
@@ -499,6 +517,7 @@ func TestASilentRenditionIsWrittenByTheRelay(t *testing.T) {
 // Stop ends a running generation at once, killing it; the pipeline ends
 // without an error.
 func TestStopEndsTheGeneration(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	stream := file(t, "v.mp4", videoStream(0, 2, 50))
 	p := h.start(probeVideoOnly, nil, func(Spawn) []string {
@@ -527,6 +546,7 @@ func TestStopEndsTheGeneration(t *testing.T) {
 }
 
 func TestStartNeedsASourceAndMultivariantNeedsReady(t *testing.T) {
+	t.Parallel()
 	if _, err := Start(context.Background(), Config{}); err == nil {
 		t.Fatalf("Start accepted no source")
 	}
@@ -548,6 +568,7 @@ func TestStartNeedsASourceAndMultivariantNeedsReady(t *testing.T) {
 // rendition is not published: an empty fragment there stalled AVPlayer's
 // E-AC-3 path on the iOS 27 Simulator (measured while planning 4a-1a).
 func TestATailWithNoAudioIsNotPublished(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	video := file(t, "v.mp4", videoStream(0, 3, 50)) // 6 s of video
 	audio := file(t, "a.mp4", audioStream(20))       // 4 s of audio
@@ -571,6 +592,7 @@ func TestATailWithNoAudioIsNotPublished(t *testing.T) {
 // published after AudioWait with an empty fragment of the audio track at the
 // span's start, so the video never stalls behind a stopped audio output.
 func TestAStoppedAudioOutputDoesNotStallTheVideo(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	video := file(t, "v.mp4", videoStream(0, 4, 50)) // 8 s of video
 	audio := file(t, "a.mp4", audioStream(10))       // 2 s of audio, then nothing
@@ -610,6 +632,7 @@ func TestAStoppedAudioOutputDoesNotStallTheVideo(t *testing.T) {
 // on the 5 s line opens on a non-sync sample, so 3+4+5 make one; and the
 // next sync fragment, at 6 s, is where the grid picks up again.
 func TestSegmentsAccumulateToTheGridAndCutOnlyAtASyncSample(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	second := make([]uint32, 25) // one second of 25 fps frames at 12800 Hz
 	for i := range second {
@@ -653,6 +676,7 @@ func TestSegmentsAccumulateToTheGridAndCutOnlyAtASyncSample(t *testing.T) {
 // keeps advancing is a stalled encoder, killed and counted as a death; the
 // third within a minute fails the output.
 func TestAStalledEncoderIsKilledAsADeath(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	oneFragment := file(t, "v.mp4", videoStream(0, 1, 50))
 	p := h.startWith(probeVideoOnly, func(c *Config) { c.StallTimeout = 300 * time.Millisecond }, func(Spawn) []string {
@@ -682,6 +706,7 @@ func TestAStalledEncoderIsKilledAsADeath(t *testing.T) {
 // R33's "while its input is advancing": an encoder starved by an upstream in
 // dead air is not stalled, and the watchdog leaves it alone.
 func TestAStarvedEncoderIsNotKilled(t *testing.T) {
+	t.Parallel()
 	// Two shapes of "not advancing". An idle ring from the start never arms
 	// the clock. A STUTTERING ring -- a chunk, then longer than half the
 	// timeout of dead air, again and again -- arms it on every chunk, and
@@ -694,33 +719,36 @@ func TestAStarvedEncoderIsNotKilled(t *testing.T) {
 	// reset or not by a scheduling hair (round 4, 2 of 10 runs in the
 	// production image).
 	for _, stutter := range []bool{false, true} {
-		h := newHarness(t)
-		oneFragment := file(t, "v.mp4", videoStream(0, 1, 50))
-		stall := 300 * time.Millisecond
-		if stutter {
-			stall = time.Second
-		}
-		p := h.startWith(probeVideoOnly, func(c *Config) { c.StallTimeout = stall }, func(Spawn) []string {
-			return []string{"--fd-file", relaytest.FDFileArg(1, oneFragment), "--ignore-stdin-eof"}
-		})
-		if err := p.Ready(context.Background()); err != nil {
-			t.Fatalf("stutter=%t: Ready: %v", stutter, err)
-		}
-		if stutter {
-			for i := 0; i < 6; i++ {
-				h.src.write(t, chunkOf('s'))
-				time.Sleep(850 * time.Millisecond)
+		t.Run(fmt.Sprintf("stutter=%t", stutter), func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			oneFragment := file(t, "v.mp4", videoStream(0, 1, 50))
+			stall := 300 * time.Millisecond
+			if stutter {
+				stall = time.Second
 			}
-		}
-		select {
-		case <-p.Done():
-			t.Fatalf("stutter=%t: the pipeline ended with the ring idle or stuttering: %v\n%s", stutter, p.Err(), h.logs.String())
-		case <-time.After(1500 * time.Millisecond):
-		}
-		if strings.Contains(h.logs.String(), "stalled encoder") {
-			t.Fatalf("stutter=%t: an encoder starved of input was killed as stalled:\n%s", stutter, h.logs.String())
-		}
-		p.Stop()
+			p := h.startWith(probeVideoOnly, func(c *Config) { c.StallTimeout = stall }, func(Spawn) []string {
+				return []string{"--fd-file", relaytest.FDFileArg(1, oneFragment), "--ignore-stdin-eof"}
+			})
+			if err := p.Ready(context.Background()); err != nil {
+				t.Fatalf("stutter=%t: Ready: %v", stutter, err)
+			}
+			if stutter {
+				for i := 0; i < 6; i++ {
+					h.src.write(t, chunkOf('s'))
+					time.Sleep(850 * time.Millisecond)
+				}
+			}
+			select {
+			case <-p.Done():
+				t.Fatalf("stutter=%t: the pipeline ended with the ring idle or stuttering: %v\n%s", stutter, p.Err(), h.logs.String())
+			case <-time.After(1500 * time.Millisecond):
+			}
+			if strings.Contains(h.logs.String(), "stalled encoder") {
+				t.Fatalf("stutter=%t: an encoder starved of input was killed as stalled:\n%s", stutter, h.logs.String())
+			}
+			p.Stop()
+		})
 	}
 }
 
@@ -728,12 +756,12 @@ func TestAStarvedEncoderIsNotKilled(t *testing.T) {
 // packets and drops before its generation could be probed is skipped -- the
 // pipeline moves to the next boundary -- rather than failing the output.
 func TestAConnectionTooShortToProbeIsSkipped(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.src.mark()
 	h.src.write(t, chunkOf('b'))
 	h.src.mark()
 	h.src.write(t, chunkOf('c'))
-	h.t.Setenv(relaytest.StandInEnv, "1")
 	withVideo := file(t, "probe-video.json", []byte(probeVideoOnly))
 	withoutVideo := file(t, "probe-audio.json", []byte(probeAudioOnly))
 	video := file(t, "v.mp4", videoStream(0, 2, 50))
@@ -743,7 +771,7 @@ func TestAConnectionTooShortToProbeIsSkipped(t *testing.T) {
 			if gen == 1 {
 				json = withoutVideo
 			}
-			return relaytest.StandInCommand("--fd-file", relaytest.FDFileArg(1, json), "--wait-stdin-eof")
+			return standInCommand("--fd-file", relaytest.FDFileArg(1, json), "--wait-stdin-eof")
 		}
 	}, func(Spawn) []string {
 		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--wait-stdin-eof"}
@@ -770,10 +798,10 @@ func TestAConnectionTooShortToProbeIsSkipped(t *testing.T) {
 // connection's tail is too short to probe, generation 0 moves to that
 // boundary instead of answering ErrNoVideo, and keeps its number.
 func TestGenerationZeroSkipsAConnectionTooShortToProbe(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.src.mark()
 	h.src.write(t, chunkOf('b'))
-	h.t.Setenv(relaytest.StandInEnv, "1")
 	withVideo := file(t, "probe-video.json", []byte(probeVideoOnly))
 	withoutVideo := file(t, "probe-audio.json", []byte(probeAudioOnly))
 	video := file(t, "v.mp4", videoStream(0, 2, 50))
@@ -788,7 +816,7 @@ func TestGenerationZeroSkipsAConnectionTooShortToProbe(t *testing.T) {
 			if probes == 1 {
 				json = withoutVideo
 			}
-			return relaytest.StandInCommand("--fd-file", relaytest.FDFileArg(1, json), "--wait-stdin-eof")
+			return standInCommand("--fd-file", relaytest.FDFileArg(1, json), "--wait-stdin-eof")
 		}
 	}, func(Spawn) []string {
 		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--wait-stdin-eof"}
@@ -812,6 +840,7 @@ func TestGenerationZeroSkipsAConnectionTooShortToProbe(t *testing.T) {
 // stops; it does not end as ErrFailed, which 4a-1b turns into a 502 for every
 // new HLS entry until the next source boundary.
 func TestAStopDuringTheSilenceWaitIsAStopNotAFailure(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	sil := &SilenceCache{entries: map[cannedKey]*Canned{{RenditionAAC, 2}: cannedAAC(t)}}
 	if err := sil.run.lock(context.Background()); err != nil {
@@ -843,6 +872,7 @@ func TestAStopDuringTheSilenceWaitIsAStopNotAFailure(t *testing.T) {
 // silence to wait for when every rendition is encoded, and reaches the
 // encoder spawn with its context ended. That is a stop, not ErrFailed.
 func TestAStopDuringTheDetectionWaitIsAStopNotAFailure(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	det := &Detector{Command: lookPath(t, "true"), Device: device(t), Log: h.logs.logger()}
 	if err := det.run.lock(context.Background()); err != nil {
@@ -870,18 +900,18 @@ func TestAStopDuringTheDetectionWaitIsAStopNotAFailure(t *testing.T) {
 // Ruling R40: when the channel's ring closes under a probe that then fails,
 // the channel is ending; the pipeline stops, it does not fail.
 func TestARingThatClosesDuringAProbeIsAStop(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
-	h.t.Setenv(relaytest.StandInEnv, "1")
 	withVideo := file(t, "probe-video.json", []byte(probeVideoOnly))
 	video := file(t, "v.mp4", videoStream(0, 2, 50))
 	p := h.startWith(probeVideoOnly, func(c *Config) {
 		c.ProbeCommand = func(gen int) (string, []string) {
 			if gen == 0 {
-				return relaytest.StandInCommand("--fd-file", relaytest.FDFileArg(1, withVideo))
+				return standInCommand("--fd-file", relaytest.FDFileArg(1, withVideo))
 			}
 			// What ffprobe does on a closed, near-empty pipe: no streams,
 			// a non-zero exit once its input ends.
-			return relaytest.StandInCommand("--fd-file", relaytest.FDFileArg(1, file(t, "empty.json", nil)), "--wait-stdin-eof", "--exit-code", "1")
+			return standInCommand("--fd-file", relaytest.FDFileArg(1, file(t, "empty.json", nil)), "--wait-stdin-eof", "--exit-code", "1")
 		}
 	}, func(Spawn) []string {
 		return []string{"--fd-file", relaytest.FDFileArg(1, video), "--wait-stdin-eof"}
@@ -906,6 +936,7 @@ func TestARingThatClosesDuringAProbeIsAStop(t *testing.T) {
 // not only generation 0. Here generation 0 ends at a boundary having written
 // none, and generation 1 serves.
 func TestReadyFiresOnTheFirstGenerationWithEveryInit(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	h.src.mark()
 	h.src.write(t, chunkOf('b'))
@@ -937,6 +968,7 @@ func TestReadyFiresOnTheFirstGenerationWithEveryInit(t *testing.T) {
 // -- the interleaving that advertised CODECS="avc1.64002a," -- so Ready must
 // wait for the aac reader's own noteInit.
 func TestReadyWaitsForEveryCodecNotOnlyEveryStoredInit(t *testing.T) {
+	t.Parallel()
 	out, err := Decide(Probe{Video: video(640, 360, Rational{25, 1}, FieldProgressive)})
 	if err != nil {
 		t.Fatal(err)
@@ -969,6 +1001,7 @@ func TestReadyWaitsForEveryCodecNotOnlyEveryStoredInit(t *testing.T) {
 // it ends (relay/ffmpeg's Cancel): the pipes close, the readers return, and
 // Stop does not have to give up on its bounded wait.
 func TestAStopKillsAnEncoderThatIgnoresStdinEOF(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	video := file(t, "v.mp4", videoStream(0, 1, 50))
 	p := h.start(probeVideoOnly, nil, func(Spawn) []string {
@@ -1003,6 +1036,7 @@ func TestAStopKillsAnEncoderThatIgnoresStdinEOF(t *testing.T) {
 // the ordinary way -- stdin EOF ends the encoder, whose exit closes every
 // pipe, the silent one included -- with no kill and no watchdog.
 func TestASilentAudioPipeDoesNotWedgeTheGeneration(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	video := file(t, "v.mp4", videoStream(0, 4, 50)) // 8 s of video
 	audio := file(t, "a.mp4", audioStream(10))       // 2 s of audio, then a pipe held open and silent
@@ -1041,6 +1075,7 @@ func TestASilentAudioPipeDoesNotWedgeTheGeneration(t *testing.T) {
 // fragment is at tfdt 1, so segment 2 starts at 51201 video ticks: 192003.75
 // audio ticks.
 func TestAnEmptyAudioFragmentNeverStartsBeforeItsSpan(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	second := make([]uint32, 25)
 	for i := range second {
@@ -1109,6 +1144,7 @@ func delayedEncoder(stream, delay string) func(*Config) {
 // lookahead and a GOP before it writes anything; killing it at the plain
 // timeout (measured: a cold 1080i attempt at 10 s) throws away a healthy tune.
 func TestASlowFirstFragmentIsNotKilledAsAStall(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	stream := file(t, "v.mp4", videoStream(0, 2, 50))
 	feedRing(t, h)
@@ -1133,6 +1169,7 @@ func TestASlowFirstFragmentIsNotKilledAsAStall(t *testing.T) {
 // And the allowance is finite: an encoder that writes nothing past it is still
 // killed, and not before it.
 func TestAnEncoderThatWritesNothingPastTheStartupAllowanceIsKilled(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	feedRing(t, h)
 	var spawnedAt atomic.Int64 // the first attempt's spawn, in unix nanoseconds
@@ -1165,6 +1202,7 @@ func TestAnEncoderThatWritesNothingPastTheStartupAllowanceIsKilled(t *testing.T)
 // Phase 4a-3: a pipeline given a rewind store and a depth writes its segments
 // under its own run directory and removes the directory when it stops.
 func TestAPipelineWithADepthKeepsItsWindowOnDiskAndRemovesItOnStop(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	video := file(t, "v.mp4", videoStream(0, 5, 50))
 	rw := NewRewind(RewindConfig{Root: t.TempDir(), BootID: "boot", Log: h.logs.logger()})
@@ -1200,6 +1238,7 @@ func TestAPipelineWithADepthKeepsItsWindowOnDiskAndRemovesItOnStop(t *testing.T)
 }
 
 func TestIsReadyOnlyOnceTheInitsExist(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	video := file(t, "v.mp4", videoStream(0, 2, 50))
 	gate := make(chan struct{})
@@ -1231,6 +1270,7 @@ func TestIsReadyOnlyOnceTheInitsExist(t *testing.T) {
 // The pipeline forwards its channel's linger to the store's window, which the
 // disk cap's eviction order reads.
 func TestAPipelineForwardsItsLingerToItsWindow(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t)
 	rw := NewRewind(RewindConfig{Root: t.TempDir(), BootID: "boot", Log: h.logs.logger()})
 	t.Cleanup(rw.Close)

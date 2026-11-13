@@ -32,6 +32,7 @@ func copyProbe(mutate func(*Probe)) Probe {
 // Spec § Automatic generation: the copy rule at generation 0, on one probe.
 // Every failure names the row, the reason it expected and the reason it got.
 func TestTheAutomaticCopyDecision(t *testing.T) {
+	t.Parallel()
 	rows := []struct {
 		n      int
 		name   string
@@ -79,6 +80,7 @@ func TestTheAutomaticCopyDecision(t *testing.T) {
 // RFC 8216 § 4.3.3.1 rounds EXTINF, so the target is max(2, ceil(K - 0.1 s)):
 // a 2.002 s GOP keeps a target of 2 where ceil(K) would give 3 (R61).
 func TestTheAutomaticTargetDuration(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		k    time.Duration
 		want int
@@ -107,6 +109,7 @@ func TestTheAutomaticTargetDuration(t *testing.T) {
 // The output here is from copied h264 1280x720 at 50/1 with a 4 Mb/s window,
 // Target 2 and Level 42; each row changes one thing.
 func TestALaterGenerationCopiesOnlyAgainstTheFixedOutput(t *testing.T) {
+	t.Parallel()
 	gen0 := copyProbe(func(p *Probe) {
 		p.Video.Width, p.Video.Height, p.Video.FrameRate = 1280, 720, Rational{50, 1}
 		p.BitRate = 4_000_000
@@ -162,6 +165,7 @@ func TestALaterGenerationCopiesOnlyAgainstTheFixedOutput(t *testing.T) {
 // DecideFor for a copy: the source's own geometry and rate, its family, the
 // target from K, the level and the declared bandwidth from the probe.
 func TestDecideForACopiedGenerationZero(t *testing.T) {
+	t.Parallel()
 	p := copyProbe(func(p *Probe) {
 		p.Video.Codec, p.Video.Profile, p.Video.Level = "hevc", "Main", 93
 		p.Video.Width, p.Video.Height, p.Video.FrameRate = 1279, 719, Rational{30000, 1001}
@@ -195,6 +199,7 @@ func TestDecideForACopiedGenerationZero(t *testing.T) {
 // Transcode is unchanged: DecideFor is Decide with a target of 2 and the
 // table's own rates, and never copies.
 func TestDecideForKeepsTranscodeUnchanged(t *testing.T) {
+	t.Parallel()
 	probes := []Probe{
 		copyProbe(nil),
 		{Video: video(1920, 1080, Rational{25, 1}, FieldInterlaced), Audio: []Audio{aud("0x301", "aac", 2), aud("0x302", "ac3", 6)}},
@@ -220,6 +225,7 @@ func TestDecideForKeepsTranscodeUnchanged(t *testing.T) {
 }
 
 func TestTheAutomaticAudioFills(t *testing.T) {
+	t.Parallel()
 	out, _ := DecideFor(copyProbe(nil), ModeAutomatic)
 	audio := func(a ...Audio) Probe { return copyProbe(func(p *Probe) { p.Audio = a }) }
 	rows := []struct {
@@ -251,6 +257,7 @@ func TestTheAutomaticAudioFills(t *testing.T) {
 }
 
 func TestPlanAutomaticChoosesTheEngineAndTheFamily(t *testing.T) {
+	t.Parallel()
 	out, _ := DecideFor(copyProbe(nil), ModeAutomatic)
 	copyPlan := PlanAutomatic(out, copyProbe(nil), EngineQSV, 0, false)
 	if !copyPlan.VideoCopy || copyPlan.Engine != EngineCopy || copyPlan.Deinterlace {
@@ -271,6 +278,7 @@ func TestPlanAutomaticChoosesTheEngineAndTheFamily(t *testing.T) {
 // filter, `-c:v copy`, hvc1 for HEVC only, the video output's own movflags,
 // and an AAC copy through the bitstream filter.
 func TestTheCopyArgv(t *testing.T) {
+	t.Parallel()
 	hevc := copyProbe(func(p *Probe) { p.Video.Codec, p.Video.Profile = "hevc", "Main" })
 	out, _ := DecideFor(hevc, ModeAutomatic)
 	plan := PlanAutomatic(out, hevc, EngineQSV, 0, false)
@@ -301,6 +309,7 @@ func TestTheCopyArgv(t *testing.T) {
 // encoded with. The QSV literal is unrun on hardware (Q1); the software one
 // was measured on ffmpeg 9.0.1.
 func TestTheHEVCFamilyArgv(t *testing.T) {
+	t.Parallel()
 	hevc := copyProbe(func(p *Probe) { p.Video.Codec, p.Video.Profile = "hevc", "Main" })
 	out, _ := DecideFor(hevc, ModeAutomatic)
 	mpeg2 := copyProbe(func(p *Probe) { p.Video.Codec, p.Video.Profile = "mpeg2video", "Main" })
@@ -328,6 +337,7 @@ func TestTheHEVCFamilyArgv(t *testing.T) {
 // the higher of its level and the declared one, an HEVC string keeps every
 // field but a level raised to the declared one, and anything else is left.
 func TestTheDeclaredVideoCodecIsTheFamilyCeiling(t *testing.T) {
+	t.Parallel()
 	h264, hevc := Output{Level: 42}, Output{Level: 123}
 	for _, c := range []struct {
 		codec string
@@ -363,6 +373,7 @@ func TestTheDeclaredVideoCodecIsTheFamilyCeiling(t *testing.T) {
 // hevc_qsv has its own one-frame detection and is written off on its own
 // evidence: a stand-in Command records which encoder each detection named.
 func TestHEVCDetectionIsItsOwnAnswer(t *testing.T) {
+	t.Parallel()
 	record := filepath.Join(t.TempDir(), "encoders")
 	d := &Detector{
 		Device:  device(t),
