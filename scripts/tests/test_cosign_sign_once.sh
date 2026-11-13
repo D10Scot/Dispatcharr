@@ -35,7 +35,7 @@ run() {
   [ "$(PATH="$SAFE_PATH" command -v cosign)" = "$BIN/cosign" ] || { echo "ABORT: cosign does not resolve to the fake"; exit 2; }
   out="$(env -i PATH="$SAFE_PATH" HOME="$TMP" FAKE_LOG="$TMP/log" FAKE_VERIFY="$TMP/verify" \
         FAKE_SIGN_RC="$src" FAKE_SIGN_MSG="$smsg" VERIFY_RETRIES=3 VERIFY_SLEEP=0 \
-        IMAGE_REF=ghcr.io/o/r@sha256:abc GITHUB_REPOSITORY=D10Scot/Dispatcharr.x bash "$SCRIPT" 2>&1)"; rc=$?
+        IMAGE_REF=ghcr.io/o/r@sha256:abc GITHUB_REPOSITORY=acme/widget.x bash "$SCRIPT" 2>&1)"; rc=$?
   nsign=$(grep -c '^sign' "$TMP/log" || true)
   if [ "$rc" -ne "$want" ] || [[ "$out" != *"$sub"* ]] || [ "$nsign" -ne "$wsign" ] \
      || { [ -n "$idsub" ] && ! grep -Fq -- "$idsub" "$TMP/log"; } \
@@ -48,7 +48,7 @@ run() {
 
 CONFLICT='Error: [POST /api/v1/log/entries][409] createLogEntryConflict {"code":409,"message":"an equivalent entry already exists in the transparency log with UUID x"}'
 
-run "already signed: verify passes, no sign"   0 '0\n' 0 ''          "not signing again" 0 'D10Scot/Dispatcharr\.x/'
+run "already signed: verify passes, no sign"   0 '0\n' 0 ''          "not signing again" 0 'acme/widget\.x/'
 run "unsigned: signs"                          0 '1\n' 0 'signed'   ""                  1
 run "409 and signature appears on re-verify"   0 '1\n1\n0\n' 1 "$CONFLICT" "treating the 409 as success" 1
 run "409 and no signature ever: fails"         1 '1\n' 1 "$CONFLICT" "no signature from this repository verifies" 1
