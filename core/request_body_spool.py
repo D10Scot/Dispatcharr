@@ -33,8 +33,8 @@ Daphne and Celery never see the variable.
 
 Behaviour
 ---------
-* Only a request whose ``CONTENT_LENGTH`` is ASCII digits with a positive
-  value is spooled, exactly the requests uWSGI's post-buffering acted on. A request
+* Only a request whose ``CONTENT_LENGTH`` is at most 18 ASCII digits with a
+  positive value is spooled, exactly the requests uWSGI's post-buffering acted on. A request
   with no, an empty or an unparseable ``CONTENT_LENGTH`` (a chunked body
   reaching the direct ``http`` listener) is passed through untouched, as
   post-buffering passed it through.
@@ -63,6 +63,9 @@ import os
 import tempfile
 
 SPOOL_ENV = "MINO_WSGI_SPOOL_REQUEST_BODY"
+# Longest Content-Length accepted: 18 digits stays inside a signed 64-bit
+# value, and it keeps int() well under Python's 4300-digit conversion limit.
+MAX_LENGTH_DIGITS = 18
 MEMORY_THRESHOLD = 4096
 READ_CHUNK = 65536
 
@@ -72,8 +75,11 @@ logger = logging.getLogger(__name__)
 def _declared_length(environ):
     raw = environ.get("CONTENT_LENGTH") or ""
     # ASCII digits only: int() would also take "5_0", " 50" and non-ASCII
-    # digits, none of which is a Content-Length.
+    # digits, none of which is a Content-Length. Longer than 18 digits is
+    # malformed too, and over 4300 int() itself raises.
     if not (isinstance(raw, str) and raw.isascii() and raw.isdigit()):
+        return 0
+    if len(raw) > MAX_LENGTH_DIGITS:
         return 0
     return int(raw)
 

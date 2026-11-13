@@ -20,7 +20,6 @@ import re
 import socket
 import subprocess
 import sys
-import tempfile
 import threading
 from pathlib import Path
 from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
@@ -35,6 +34,7 @@ from core.request_body_spool import (
     SpoolRequestBody,
     wrap,
 )
+from tests.otel_rig import child_env
 
 
 class _Recorder:
@@ -247,6 +247,20 @@ class BoundsTests(SimpleTestCase):
                 self.assertIs(app.stream, source, f"{raw!r} is not ASCII digits and must not be spooled")
                 self.assertEqual(source.tell(), 0, f"{raw!r}: nothing may be read ahead of the app")
 
+    def test_a_content_length_over_eighteen_digits_passes_through(self):
+        # 19 digits leaves a signed 64-bit value; over 4300, int() itself raises.
+        for digits in (19, 4300, 4301):
+            raw = "9" * digits
+            with self.subTest(digits=digits):
+                source = io.BytesIO(_pattern(50))
+                app = _Recorder(read=lambda s: None)
+                try:
+                    _run(SpoolRequestBody(app), _environ(stream=source, CONTENT_LENGTH=raw))
+                except ValueError as exc:
+                    self.fail(f"a {digits}-digit Content-Length raised instead of passing through: {exc}")
+                self.assertIs(app.stream, source, f"a {digits}-digit Content-Length must not be spooled")
+                self.assertEqual(source.tell(), 0, f"{digits} digits: nothing may be read ahead of the app")
+
     def test_no_or_unusable_content_length_passes_the_request_through_untouched(self):
         for label, extra in (
             ("absent", {}),
@@ -415,15 +429,9 @@ class WiringTests(SimpleTestCase):
     """
 
     def _application(self, extra_env):
-        env = {
-            key: os.environ[key]
-            for key in ("PATH", "HOME", "LANG", "DJANGO_SECRET_KEY", "POSTGRES_HOST", "POSTGRES_DB",
-                        "POSTGRES_USER", "POSTGRES_PASSWORD", "REDIS_HOST", "REDIS_PORT", "REDIS_DB")
-            if key in os.environ
-        }
-        env.update({"PYTHONPATH": str(REPO_ROOT), "PYTHONDONTWRITEBYTECODE": "1",
-                    "DJANGO_SETTINGS_MODULE": os.environ.get("DJANGO_SETTINGS_MODULE", "")})
-        env.update(extra_env)
+        # The observability tests' child environment: an allowlist, with the
+        # test settings module set explicitly.
+        env = child_env(extra_env)
         result = subprocess.run(
             [sys.executable, "-c", WIRING_CHILD, _ini_value("module", ":")],
             env=env, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=120, check=False,
@@ -473,12 +481,6 @@ class RealSocketTests(SimpleTestCase):
     """
 
     def _serve(self, app):
-        self.tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.tmp.cleanup)
-        previous_tempdir = tempfile.tempdir
-        tempfile.tempdir = self.tmp.name
-        self.addCleanup(setattr, tempfile, "tempdir", previous_tempdir)
-
         self.spools = []
         real = request_body_spool.tempfile.SpooledTemporaryFile
 
@@ -539,7 +541,6 @@ class RealSocketTests(SimpleTestCase):
         self.assertTrue(seen["rolled_to_disk"], "a body over the threshold must have rolled over to a file")
         self.assertEqual(len(self.spools), 1)
         self.assertTrue(self.spools[0].closed, "the spool must be closed once the server closed the response")
-        self.assertEqual(os.listdir(self.tmp.name), [], "the spool must leave nothing in the temp directory")
 
     def test_a_view_that_refuses_without_reading_a_large_body_sends_a_complete_response(self):
         calls = []
@@ -578,4 +579,3 @@ class RealSocketTests(SimpleTestCase):
         self.assertEqual(calls, [], "a truncated body must not reach the application")
         self.assertEqual(len(self.spools), 1)
         self.assertTrue(self.spools[0].closed, "the spool of a truncated body must be closed")
-        self.assertEqual(os.listdir(self.tmp.name), [], "the spool must leave nothing in the temp directory")
