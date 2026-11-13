@@ -617,15 +617,26 @@ class FailureBehaviour(FactoryTestCase):
 
 def record_message(msg, args):
     """The message ``_scrub_record`` leaves on a record built from ``msg`` and ``args``."""
-    record = logging.LogRecord("t", logging.WARNING, __file__, 1, msg, args, None)
+    # A mapping goes in as logging receives it from logger.info(msg, mapping): a 1-tuple it unwraps.
+    packed = (args,) if isinstance(args, dict) else args
+    record = logging.LogRecord("t", logging.WARNING, __file__, 1, msg, packed, None)
     log_scrub._scrub_record(record)
     return record.getMessage()
 
 
-def without_rescan(msg, args):
-    """A deliberately wrong record step: renders the whole-read arguments and does not scan again."""
-    whole = log_scrub._whole_path_args(args)
-    return scrub_text(msg % args) if whole is None else msg % whole
+def round_two_step(msg, args):
+    """A deliberately wrong record step, the design review round 2 rejected.
+
+    It renders each whole-read argument already masked, then scans the new
+    render. The masked argument no longer carries the evidence the message
+    scan used for text glued before or after it, so that text is exposed.
+    """
+    masks = log_scrub._whole_masks(args) or {}
+    if isinstance(args, dict):
+        whole = {k: log_scrub._render_masks(v, masks[k]) if k in masks else v for k, v in args.items()}
+    else:
+        whole = tuple(log_scrub._render_masks(v, masks[i]) if i in masks else v for i, v in enumerate(args))
+    return scrub_text(msg % whole)
 
 
 _SENTINEL_RE = re.compile(r"qz\d+zq")
@@ -640,23 +651,59 @@ def check_masks_only_add(new_message, msg, args):
     assert not exposed, f"{exposed} masked by the message scan but exposed in {new!r} (old {old!r})"
 
 
+# What a template may glue directly after a placeholder: nothing, punctuation, or text.
+GLUE_AFTER = ["", " ", "&", "[", "]", "=", "?", "/", ":", ",", "&sid=", "x", "#", ") "]
+# Conversions a template may use for an argument: plain, repr, precision, width, left-justified width.
+CONVERSIONS = ["s", "s", "s", "r", ".5s", "12s", "-12s"]
+
+
 @st.composite
 def spaced_records(draw):
-    """A template and 1-4 arguments: spaced slash paths, plain tokens; unique sentinels throughout."""
+    """A template, 1-4 arguments and a whole-read budget; unique sentinels throughout.
+
+    Arguments are spaced slash paths, plain tokens, or long spaceless paths. The
+    text after each placeholder is drawn from GLUE_AFTER and T4's tokens, so an
+    argument is often glued to what follows it; conversions include %r, a
+    precision and widths; templates are positional or mapping-style. The budget
+    is the real one or a small one, so the over-budget replacement is exercised
+    without generating 16,384-character arguments.
+    """
     count = draw(st.integers(1, 4))
     args = []
     for _ in range(count):
+        shape = draw(st.sampled_from(["spaced", "spaced", "plain", "long"]))
+        if shape == "long":
+            args.append("/" + "/".join(draw(st.lists(tokens(max_pieces=4), min_size=1, max_size=4))))
+            continue
         parts = draw(st.lists(tokens(max_pieces=8), min_size=1, max_size=4))
-        lead = draw(st.sampled_from(["/", "/movie/", "/live/u/", ""]))
+        lead = draw(st.sampled_from(["/", "/movie/", "/live/u/", ""])) if shape == "spaced" else ""
         args.append(lead + " ".join(parts))
-    glue = draw(st.lists(tokens(max_pieces=6), min_size=count + 1, max_size=count + 1))
-    msg = "".join(g.replace("%", "%%") + " %s " for g in glue[:-1]) + glue[-1].replace("%", "%%")
+    mapping = draw(st.booleans())
+    pieces = []
+    for i in range(count):
+        before = draw(tokens(max_pieces=6)).replace("%", "%%") if i == 0 else ""
+        key = f"({'k%d' % i})" if mapping else ""
+        conv = draw(st.sampled_from(CONVERSIONS))
+        after = draw(st.sampled_from(GLUE_AFTER + [None]))
+        after = draw(tokens(max_pieces=4)) if after is None else after
+        pieces.append(f"{before}%{key}{conv}{after.replace('%', '%%')}")
+    msg = "".join(pieces)
+    budget = draw(st.sampled_from([log_scrub.WHOLE_READ_BUDGET, 25, 8]))
     counter = iter(range(10_000))
 
     def unique(text):
         return re.sub(SENT, lambda _m: f"qz{next(counter)}zq", text)
 
-    return unique(msg), tuple(unique(a) for a in args)
+    msg = unique(msg)
+    args = [unique(a) for a in args]
+    packed = {f"k{i}": a for i, a in enumerate(args)} if mapping else tuple(args)
+    return msg, packed, budget
+
+
+def check_case(new_message, case):
+    msg, args, budget = case
+    with mock.patch.object(log_scrub, "WHOLE_READ_BUDGET", budget):
+        check_masks_only_add(new_message, msg, args)
 
 
 class WholePathArguments(FactoryTestCase):
@@ -706,8 +753,10 @@ class WholePathArguments(FactoryTestCase):
         self.assertEqual(stream.getvalue(), "Unauthorized: /series/***\n", self.LEAK)
 
     def test_an_argument_over_the_cap_is_withheld_not_read(self):
+        # The raw render is over the message cap, so it is cut as scrub_text cuts it;
+        # what is kept of the argument is masked after its leading "/".
         record = self.scrubbed("%s: %s", ("Not Found", "/movie/" + "a b" * CAP))
-        self.assertEqual(record.getMessage(), "Not Found: /***")
+        self.assertEqual(record.getMessage(), f"Not Found: /*** [log scrubber: truncated from {11 + 7 + 3 * CAP} characters]")
 
     def test_control_a_slash_leading_argument_without_spaces_is_untouched(self):
         msg, args = "%s: %s", ("Not Found", "/api/channels/streams/")
@@ -732,7 +781,7 @@ class WholePathArguments(FactoryTestCase):
         )
         out = record.getMessage()
         for sentinel in ("sentinel-tp", "sentinel-pw", "sentinel-pw2"):
-            self.assertNotIn(sentinel, out, "the whole-read render was not scanned again: masks did not only add")
+            self.assertNotIn(sentinel, out, "the message scan's own masks are not in the union: masks did not only add")
         for sentinel in ("cd", "xyz"):
             self.assertNotIn(sentinel, out, self.LEAK)
         self.assertEqual(
@@ -741,12 +790,12 @@ class WholePathArguments(FactoryTestCase):
 
     @given(spaced_records())
     def test_the_whole_read_never_exposes_what_the_message_scan_masked(self, case):
-        check_masks_only_add(record_message, *case)
+        check_case(record_message, case)
 
-    def test_control_the_generated_records_catch_a_scrubber_that_skips_the_rescan(self):
+    def test_control_the_generated_records_catch_the_round_two_step(self):
         def violates(case):
             try:
-                check_masks_only_add(without_rescan, *case)
+                check_case(round_two_step, case)
             except AssertionError:
                 return True
             return False
@@ -754,12 +803,11 @@ class WholePathArguments(FactoryTestCase):
         # Raises NoSuchExample if the strategy never produces a case the wrong step fails.
         find(spaced_records(), violates, settings=hyp_settings(max_examples=2000, derandomize=True, database=None))
 
-    def test_control_a_scrubber_that_skips_the_rescan_is_caught(self):
-        msg = "%s from %s"
-        args = ("/movie/ab cd/xyz/1.mp4", "http://uu:qz0zq@h.invalid/get.php?password=qz1zq")
+    def test_control_the_round_two_step_is_caught(self):
+        msg, args = "%s[%s]", ("/x y /uu/pp/1.ts", "qz0zq")
         check_masks_only_add(record_message, msg, args)
         with self.assertRaises(AssertionError):
-            check_masks_only_add(without_rescan, msg, args)
+            check_masks_only_add(round_two_step, msg, args)
 
     # -- which arguments are read whole (review round 1, finding 2) ------------------
 
@@ -792,16 +840,21 @@ class WholePathArguments(FactoryTestCase):
         ):
             with self.subTest(label):
                 read = []
-                real = log_scrub.scrub_token
+                real = log_scrub._read_whole
 
                 def counting(tok):
                     read.append(len(tok))
                     return real(tok)
 
-                with mock.patch.object(log_scrub, "scrub_token", counting):
+                with mock.patch.object(log_scrub, "_read_whole", counting):
                     out = self.scrubbed(msg, args).getMessage()
                 self.assertLessEqual(sum(read), log_scrub.WHOLE_READ_BUDGET, "the whole-read budget was not charged")
-                self.assertEqual(out.split(), ["/movie/***"] * fits + ["/***"] * (50 - fits))
+                # The raw render is over the message cap, so it is cut as scrub_text cuts it.
+                words = out.split()
+                body = words[: words.index("[log")]
+                self.assertEqual(body[:fits], ["/movie/***"] * fits)
+                self.assertGreater(len(body), fits, "no argument past the budget is in the kept text")
+                self.assertEqual(set(body[fits:]), {"/***"})
                 self.assertNotIn("cd", out)
 
     # -- the over-masks the whole read adds (spec 4.3's table, T5) -------------------
@@ -817,14 +870,57 @@ class WholePathArguments(FactoryTestCase):
             with self.subTest(arg):
                 self.assertEqual(self.scrubbed("%s", (arg,)).getMessage(), expected)
 
-    def test_a_changed_str_subclass_renders_its_scrubbed_value(self):
+    def test_a_str_subclass_whose_render_differs_is_withheld(self):
         class Shown(str):
             def __str__(self):
                 return "hidden"
 
-        self.assertEqual(self.scrubbed("%s", (Shown("/movie/ab cd/xyz/1.mp4"),)).getMessage(), "/movie/***")
+        # Its render ("hidden") is not its value, so the argument cannot be placed: fail closed.
+        self.assertEqual(
+            self.scrubbed("%s", (Shown("/movie/ab cd/xyz/1.mp4"),)).getMessage(),
+            "<log message withheld: a path argument the scrubber cannot place (_Unplaceable)>",
+        )
         # Unchanged, it keeps its own __str__ and the record keeps its args.
         args = (Shown("/api/x"),)
         record = self.scrubbed("%s", args)
         self.assertEqual(record.getMessage(), "hidden")
         self.assertIs(record.args, args)
+
+    # -- text glued before or after a whole-read argument (review round 2) ----------
+
+    GLUE = "text glued to a whole-read argument was exposed: the message scan's masks of the raw render are not in the union"
+
+    def test_glued_text_is_masked_as_the_message_scan_masks_it(self):
+        for msg, args, expected in (
+            ("%s&sid=%s", ("/ab cd/sentinel-pw/1.ts?password=x", "sentinel-sid"), "/***"),
+            (
+                "%s%s",
+                ("/opt/My Tools/run http://h.invalid/uu/pp/1.ts", "?sid=sentinel-sid"),
+                "/opt/My Tools/run http://h.invalid/***",
+            ),
+            ("%s:%s", ("/data/My Files/2024 /live/uu/pp", "sentinel-next"), "/***"),
+            ("%s[%s]", ("/x y /uu/pp/1.ts", "sentinel-next"), "/x y /***"),
+            # glued BEFORE: the root rule needs the argument's leading "1"
+            ("/sentinel-u/sentinel-p%s", ("/1 y/z/3",), "/***"),
+        ):
+            with self.subTest(msg=msg, args=args):
+                out = self.scrubbed(msg, args).getMessage()
+                self.assertNotIn("sentinel", out, self.GLUE)
+                self.assertEqual(out, expected)
+
+    def test_a_conversion_that_cannot_be_placed_is_withheld(self):
+        withheld = "<log message withheld: a path argument the scrubber cannot place (_Unplaceable)>"
+        for msg in ("%r", "%.5s", "%30s|", "%-30s|", "%*s"):
+            with self.subTest(msg):
+                args = (30, "/movie/ab cd/xyz/1.mp4") if "*" in msg else ("/movie/ab cd/xyz/1.mp4",)
+                out = self.scrubbed(msg, args).getMessage()
+                self.assertEqual(out, withheld, "a whole-read argument in an unplaceable conversion was emitted")
+
+    def test_a_mapping_rendered_whole_is_not_read(self):
+        # A nested container (spec 7 item 3): main's behaviour, not withheld.
+        out = self.scrubbed("x: %s", ({"a": "/movie/ab cd/xyz/1.mp4"},)).getMessage()
+        self.assertEqual(out, "x: {'a': '/movie/*** cd/xyz/1.mp4'}")
+
+    def test_a_repeated_key_is_masked_at_every_occurrence(self):
+        out = self.scrubbed("%(a)s %(a)s|%(b)s", ({"a": "/movie/ab cd/xyz/1.mp4", "b": "ok"},)).getMessage()
+        self.assertEqual(out, "/movie/*** /movie/***|ok")
