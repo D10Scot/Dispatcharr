@@ -376,6 +376,10 @@ def _argument_spans(record, message, masks):
     marked span must hold that argument's own text. Anything else raises
     ``_Unplaceable``.
     """
+    # Defence in depth for a message that already holds a mark: the stripped
+    # render never holds one, so the equality check below refuses the same
+    # records; refused here first so a later edit to that check cannot misplace
+    # a mask. Past _MAX_MARKED (6,399) masked arguments there are no marks left.
     if len(masks) > _MAX_MARKED or _MARK_RE.search(message):
         raise _Unplaceable
     starts = {chr(_START + i): key for i, key in enumerate(masks)}
@@ -404,11 +408,13 @@ def _argument_spans(record, message, masks):
     parts.append(rendered[pos:])
     if open_key is not None or "".join(parts) != message:
         raise _Unplaceable
-    # Defensive, and unreachable while the equality check above holds: each marked
+    # Unreachable only when every argument renders the same text twice: each marked
     # value is built by str concatenation, so its rendered span is its own text,
     # and every conversion that could alter it (repr, ascii, precision, padding)
-    # also changes the stripped render. Kept so a placement is never trusted on
-    # the equality alone.
+    # also changes the stripped render. An argument whose __str__ renders plain
+    # text the first time and the same text with private-use characters the
+    # second passes the equality with a span holding its text, not the path's;
+    # this check refuses it, so a placement is never trusted on the equality alone.
     for start, end, key in spans:
         if message[start:end] != args[key]:
             raise _Unplaceable

@@ -924,3 +924,77 @@ class WholePathArguments(FactoryTestCase):
     def test_a_repeated_key_is_masked_at_every_occurrence(self):
         out = self.scrubbed("%(a)s %(a)s|%(b)s", ({"a": "/movie/ab cd/xyz/1.mp4", "b": "ok"},)).getMessage()
         self.assertEqual(out, "/movie/*** /movie/***|ok")
+
+    # -- review round 3: the placement checks and the mapping boundary --------------
+
+    WITHHELD = "<log message withheld: a path argument the scrubber cannot place (_Unplaceable)>"
+
+    def test_a_message_already_holding_a_placement_mark_is_withheld(self):
+        # A private-use character in the rendered message would be read as a
+        # placement mark. The up-front refusal is defence in depth: the mark
+        # parser, the stripped-render equality (the stripped render never holds
+        # a mark, the message does) and the span-content check also refuse
+        # these, so the test reddens only when all of them are removed.
+        for msg, args in (
+            # a well-paired mark in the message: only equality and span content see it
+            ("%s: %s", ("\ue000x\uf8ff", "/movie/ab cd/xyz/1.mp4")),
+            ("%s: %s", ("Not Found\ue000", "/movie/ab cd/xyz/1.mp4")),
+            ("%s \ue000", ("/movie/ab cd/xyz/1.mp4",)),
+            ("%s \uf8ff", ("/movie/ab cd/xyz/1.mp4",)),
+        ):
+            with self.subTest(msg=msg, args=args):
+                out = self.scrubbed(msg, args).getMessage()
+                self.assertEqual(out, self.WITHHELD, "a message holding a placement mark was placed")
+
+    def test_an_argument_that_renders_differently_the_second_time_is_withheld(self):
+        class Shifting:
+            # First render plain; the marked render carries private-use characters
+            # whose stripped text matches, so only the span-content check sees
+            # that the marked span holds this object's text, not the path's.
+            def __init__(self):
+                self.calls = 0
+
+            def __str__(self):
+                self.calls += 1
+                return "hello world" if self.calls == 1 else "h\ue000ello wo\uf8ffrld"
+
+        out = self.scrubbed("%(x)s", ({"a": "/u s/p/1", "x": Shifting()},)).getMessage()
+        self.assertEqual(out, self.WITHHELD, "a marked span holding another argument's text was masked as the path")
+
+    def test_a_width_that_does_not_change_the_render_is_placed(self):
+        # Only a conversion that changes the render withholds (spec 4.2 item 1).
+        for msg in ("%5s|", "%.40s|", "%-5s|"):
+            with self.subTest(msg):
+                self.assertEqual(self.scrubbed(msg, ("/movie/ab cd/xyz/1.mp4",)).getMessage(), "/movie/***|")
+
+    def test_a_mapping_rendered_whole_scrubs_exactly_as_the_message_scan(self):
+        # Spec 7 item 3: a dict rendered whole is a nested container, masked per
+        # token only, as on main; the spaced credential's tail survives there.
+        for msg, mapping in (
+            ("%s", {"a": "/movie/ab cd/xyz/1.mp4"}),
+            ("x: %s", {"a": "/movie/ab cd/xyz/1.mp4", "b": "/x/ab cd/e f/1"}),
+            ("%r", {"a": "/movie/ab cd/xyz/1.mp4"}),
+        ):
+            with self.subTest(msg=msg):
+                out = self.scrubbed(msg, (mapping,)).getMessage()
+                self.assertEqual(out, log_scrub.scrub_text(msg % (mapping,)))
+        # The literal origin/main's scrubber (cf40b42e) prints for the first case.
+        self.assertEqual(
+            self.scrubbed("%s", ({"a": "/movie/ab cd/xyz/1.mp4"},)).getMessage(),
+            "{'a': '/movie/*** cd/xyz/1.mp4'}",
+        )
+
+    def test_a_template_containing_a_mapping_key_marker_is_read(self):
+        # The test is "%(" in the template, so an escaped "%%(" reads the mapping;
+        # its render is the mapping's repr, which cannot be placed: withheld.
+        out = self.scrubbed("%s %%(", ({"a": "/movie/ab cd/xyz/1.mp4"},)).getMessage()
+        self.assertEqual(out, self.WITHHELD)
+
+    def test_a_mapping_that_computes_missing_keys_is_withheld(self):
+        class Defaulting(dict):
+            def __missing__(self, key):
+                return "default"
+
+        # The marked render uses a plain dict, so the computed key raises: fail closed.
+        out = self.scrubbed("%(a)s %(zz)s", (Defaulting(a="/movie/ab cd/xyz/1.mp4"),)).getMessage()
+        self.assertEqual(out, "<log message withheld: scrubber failed (KeyError)>")
