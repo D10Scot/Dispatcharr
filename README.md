@@ -9,7 +9,7 @@
 ## 📖 What is Mino?
 
 Mino is an **open-source powerhouse** for managing IPTV streams, EPG data, and VOD content with elegance and control.\
-Born from necessity and built with passion, it started as a personal project by **[OkinawaBoss](https://github.com/OkinawaBoss)** and evolved with contributions from legends like **[dekzter](https://github.com/dekzter)**, **[SergeantPanda](https://github.com/SergeantPanda)** and **[Seth](https://github.com/sethwv)**.
+Mino is derived from Dispatcharr, which was born from necessity and built with passion. It started as a personal project by **[OkinawaBoss](https://github.com/OkinawaBoss)** and evolved with contributions from legends like **[dekzter](https://github.com/dekzter)**, **[SergeantPanda](https://github.com/SergeantPanda)** and **[Seth](https://github.com/sethwv)**.
 
 > Think of Mino as the \*arr family's IPTV cousin — simple, smart, and designed for streamers who want reliability and flexibility.
 
@@ -169,6 +169,8 @@ Have a question? Want to suggest a feature? Just want to say hi?\
 Mino is licensed under **GNU AGPL v3.0**: For full license details, see [LICENSE](https://www.gnu.org/licenses/agpl-3.0.html).
 
 Mino is derived from [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) (AGPL-3.0).
+
+Dispatcharr is a trademark of the Dispatcharr project. Use of the Dispatcharr name or logo requires permission from the maintainers.
 
 ---
 

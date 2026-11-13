@@ -1,7 +1,7 @@
 # Security Policy
 
-Mino is a personal project derived from [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr)
-maintained by [@D10Scot](https://github.com/D10Scot). It no longer tracks
+Mino, maintained by [@D10Scot](https://github.com/D10Scot), is a personal project
+derived from [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr). It no longer tracks
 upstream and carries its own work on `main`; see [CLAUDE.md](CLAUDE.md) for the
 current focus.
 

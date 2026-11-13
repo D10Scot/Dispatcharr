@@ -7,7 +7,7 @@ test names, issue titles and commit messages.
 
 The name of the whole product: the server and the Apple app together. Mino is derived from
 Dispatcharr (AGPL-3.0) and no longer tracks it (`docs/adr/0010-the-product-is-renamed-mino-and-upstream-is-no-longer-tracked.md`).
-Where this glossary or any living document says "Dispatcharr" it means upstream, and only that.
+Where this glossary says "Dispatcharr" it means upstream, apart from the identifiers listed under Internal names.
 Decision records (ADRs, specs, plans, analyses, `CHANGELOG.md`) keep the old name as history. The
 rename is a sequence of PRs (`docs/superpowers/specs/2026-10-28-mino-rename-design.md`), so some
 identifiers below still say "Dispatcharr" until their own PR lands. Name every **new** externally
@@ -17,34 +17,70 @@ identifier) for Mino.
 ## Internal names
 
 Identifiers that keep the old name on purpose, so that no one "finishes" the rename by changing one.
-Each is kept because persisted data, a third party or a path-matched guard depends on it. The spec
-(`docs/superpowers/specs/2026-10-28-mino-rename-design.md`, § Categories) holds the reasoning.
+Each is kept because persisted data, a third party or a path-matched guard depends on it, or because
+renaming it buys no reader anything. The spec (`docs/superpowers/specs/2026-10-28-mino-rename-design.md`,
+§ Categories; the section is named in brackets) holds the reasoning.
 
-- **The `dispatcharr` Python package** (`dispatcharr/`, `dispatcharr.settings`, `dispatcharr.wsgi`,
-  `celery -A dispatcharr`, `Celery("dispatcharr")`) and `pyproject.toml`'s `name`: ruling M5, C-10.
-- **Django app labels and table names** (`dispatcharr_channels`, `dispatcharr_connect`): migration
-  history and stored data depend on them (C-9).
-- **Database name and role defaults** (`dispatcharr` / `dispatch`): persisted (C-16).
-- **The venv path `/dispatcharrpy`** and the build file names (`docker/DispatcharrBase`,
-  `docker/init/03-init-dispatcharr.sh`, `docker/dispatcharr_api_params*.conf`): internal paths that
-  workflow path filters and hooks match by literal path (R-3, C-6, C-11, C-14).
-- **Plugin manifest keys** (`min_dispatcharr_version`, `max_dispatcharr_version`) and upstream's plugin
-  registry, its signing key and the "Dispatcharr Official" row: a third-party contract and
-  upstream's own identity (C-3, C-15).
-- **The HDHomeRun `DeviceID`** (`dispatcharr-hdhr-<slug>`, `HDHRDevice.device_id`): Plex keys a tuner on
-  it, so a new id would lose the viewer's DVR setup. Only the friendly name is renamed (C-21).
-- **The Hypothesis profile `dispatcharr-ci`** (C-13), **browser storage keys** (C-19), the
-  `dispatcharr_stream_id` session-descriptor field, the `_dispatcharr_plugin_<key>` module prefix, the
-  `dispatcharr:ip_lookup_*` Redis keys, the `/tmp/dispatcharr_log_level` path, the volume key
-  `dispatcharr_data` and the helper names `dispatcharr_user_agent`, `dispatcharr_dvr_user_agent` and
-  `dispatcharr_http_headers` (C-18, C-21): persisted or in flight across an upgrade, or internal symbols
-  whose rename buys nothing.
-- **The local checkout path `~/git/Dispatcharr`**: the owner's machine, owner action H-9 (C-17).
+- **The `dispatcharr` Python package** (ruling M5, C-10): `dispatcharr/`, `dispatcharr.settings`,
+  `dispatcharr.wsgi`, `dispatcharr.asgi`, `celery -A dispatcharr` and `Celery("dispatcharr")`, and the
+  `ENGINE` path `dispatcharr.db.backends.postgresql_psycopg3`. A missed path filter fails silently and a
+  plugin that imports the package breaks at load; no user sees the package name.
+- **`pyproject.toml`'s `name`, and the `name` in `e2e/package.json` and `e2e-upstream/package.json`**
+  (C-21): internal, and renaming them churns the lockfiles for no reader.
+- **Django app labels and table names** (`dispatcharr_channels`, `dispatcharr_connect`, C-9):
+  migration history, content types and stored data depend on them, and a relabel touches the one
+  irreplaceable asset to change a string no user sees.
+- **Database name and role defaults** (`dispatcharr` / `dispatch`, C-16): changing the default would
+  start an upgraded container against a new, empty database next to the real one.
+- **Internal file and path names** (C-6, kept by R-3 so that no path-matched guard can lose its
+  subject):
+  - `docker/dispatcharr_api_params*.conf` and their `/etc/nginx/` install paths;
+  - `/usr/share/dispatcharr/nginx.conf.template`, `/etc/profile.d/dispatcharr.sh` and
+    `/run/dispatcharr-role`;
+  - `/dispatcharrpy`: renaming it means a base-image rebuild and about 30 living references, for no
+    reader;
+  - `docker/DispatcharrBase` (the `paths:` filter in `base-image.yml`) and
+    `docker/init/03-init-dispatcharr.sh`;
+  - the migration `apps/channels/migrations/0034_remove_stream_dispatcharr_stream_id_idx_and_more.py`
+    and the index names it removes, `dispatcharr_stream_id_idx` and `dispatcharr_stream_chno_idx`
+    (history, C-6 and C-21);
+  - `.idea/DispatcharrSM.iml`.
+- **Plugin manifest keys** (`min_dispatcharr_version`, `max_dispatcharr_version`, C-15) and upstream's
+  plugin registry, its signing key and the "Dispatcharr Official" row (C-3): a third-party contract and
+  upstream's own identity.
+- **The HDHomeRun `DeviceID`** (`dispatcharr-hdhr-<slug>`, `HDHRDevice.device_id`, C-21): Plex keys a
+  tuner on it, so a new id would lose the viewer's DVR setup. Only the friendly name is renamed.
+- **The Hypothesis profile `dispatcharr-ci`** (C-13): a test-internal label registered in every
+  `@given` module.
+- **Browser storage keys** (`dispatcharr_sidebar_open`, `dispatcharr_remembered_username`,
+  `dispatcharr_saved_password`, `dispatcharr-player-prefs`, C-19): invisible to users, and renaming
+  them resets every browser's preferences.
+- **`dispatcharr_stream_id`** (C-21): a field in Redis session descriptors that an in-flight catch-up
+  session must still read across an upgrade.
+- **Internal Python symbols** (C-18, C-21): the helpers `dispatcharr_user_agent`,
+  `dispatcharr_dvr_user_agent` and `dispatcharr_http_headers`, the local `DISPATCHARR_HEADERS` in
+  `core/tasks.py`, the `_dispatcharr_plugin_<key>` module prefix and `_dispatcharr_pool_created_at`.
+- **Internal transient names** (C-21): the Redis cache keys `dispatcharr:ip_lookup_*` and the path
+  `/tmp/dispatcharr_log_level`.
+- **The sample compose volume key `dispatcharr_data`** (C-21): changing a volume key in a compose file
+  creates a new, empty volume.
+- **Existing backup archives** `dispatcharr-backup-*.zip` (C-20): read alongside `mino-backup-*` for as
+  long as they exist, because they are the owner's records.
+- **The local checkout path `~/git/Dispatcharr`** (C-17): the owner's machine, owner action H-9.
 
 Names that are kept only until a later PR of the sequence renames them, and so are not internal
-names: the `DISPATCHARR_*` environment variables (E1, E2), the `X-Dispatcharr-*` headers and
-`/_dispatcharr/…` routes (W1), the image and repository identity `ghcr.io/d10scot/dispatcharr` and
-`D10Scot/Dispatcharr` (D1, D2), and the `dispatcharr-*` test containers, volumes and image tags (T1).
+names:
+
+- the `DISPATCHARR_*` environment variables (E1, E2);
+- the `X-Dispatcharr-*` headers and `/_dispatcharr/…` routes (W1);
+- the Go module path `github.com/D10Scot/Dispatcharr/relay` (G1);
+- the image and repository identity `ghcr.io/d10scot/dispatcharr` and `D10Scot/Dispatcharr` (the owner's
+  repository rename and D2; D1 only makes CI independent of the name), and the sample compose
+  `container_name: dispatcharr*` (D2);
+- the `Dispatcharr/<version>` and `Dispatcharr-DVR/…` User-Agent strings (U1);
+- `dispatcharr-backup-*` as the name new archives are written under, and the `dispatcharr-backup-` and
+  `dispatcharr-restore-` temp-dir prefixes (P1);
+- the `dispatcharr-*` test containers, volumes and image tags, and `/tmp/dispatcharr-coverage*` (T1).
 
 ## Profiles — three different things
 

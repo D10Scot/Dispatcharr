@@ -183,7 +183,7 @@ Before opening your PR, verify each of the following yourself:
 - [ ] Tests are included for new functionality
 - [ ] Existing tests still pass
 - [ ] No debug artifacts are left in the code
-- [ ] My PR targets the `dev` branch (or the branch specified in the issue)
+- [ ] My PR targets the `main` branch (or the branch specified in the issue)
 
 ### PR Description
 
@@ -202,7 +202,7 @@ Maintainers review PRs as time allows. To keep the process moving:
 
 - Respond to review comments promptly. Stale PRs (no activity for 30 days) may be closed.
 - Do not force-push to a branch under review without flagging it in a comment.
-- Keep your branch up to date with `dev` by rebasing, not merging `dev` into your branch.
+- Keep your branch up to date by merging `main` into it, never by rebasing; PRs are squash-merged.
 
 ---
 

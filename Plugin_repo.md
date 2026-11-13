@@ -150,8 +150,8 @@ If the name contains any of these, the repo will be rejected on add and skipped 
 | `latest_md5`              | No       | MD5 checksum of the latest release zip. Informational only - not validated by Mino.                                                  |
 | `latest_size`             | No       | Size of the latest release zip in kilobytes. Informational only.                                                                            |
 | `icon_url`                | No       | URL (or relative path) to a logo image (PNG recommended).                                                                                   |
-| `min_dispatcharr_version` | No       | Minimum Dispatcharr version required. Install is blocked if the running version is older.                                                   |
-| `max_dispatcharr_version` | No       | Maximum Dispatcharr version supported. Install is blocked if the running version is newer.                                                  |
+| `min_dispatcharr_version` | No       | Minimum Mino version required. Install is blocked if the running version is older.                                                   |
+| `max_dispatcharr_version` | No       | Maximum Mino version supported. Install is blocked if the running version is newer.                                                  |
 
 Extra fields in a plugin entry are passed through to the frontend as-is, so you can include custom metadata (e.g. `homepage`, `tags`) without breaking anything.
 
@@ -344,8 +344,8 @@ Use the wrapped format if you want to GPG-sign the per-plugin manifest.
 | `commit_sha`              | No       | Full Git commit SHA. Used to build a commit link if `registry_url` is set.                                                                                                                                                                                                                                                                                                                                                         |
 | `commit_sha_short`        | No       | Abbreviated commit SHA. Displayed in the version detail table as a clickable link.                                                                                                                                                                                                                                                                                                                                                 |
 | `size`                    | No       | Size of this version's zip in kilobytes. Informational only.                                                                                                                                                                                                                                                                                                                                                                       |
-| `min_dispatcharr_version` | No       | Minimum compatible Dispatcharr version.                                                                                                                                                                                                                                                                                                                                                                                            |
-| `max_dispatcharr_version` | No       | Maximum compatible Dispatcharr version.                                                                                                                                                                                                                                                                                                                                                                                            |
+| `min_dispatcharr_version` | No       | Minimum compatible Mino version.                                                                                                                                                                                                                                                                                                                                                                                            |
+| `max_dispatcharr_version` | No       | Maximum compatible Mino version.                                                                                                                                                                                                                                                                                                                                                                                            |
 
 Relative `url` values in versions are resolved the same way as repo-level URLs: `{root_url}/{url}`.
 
@@ -510,7 +510,7 @@ my_plugin-1.0.0.zip
 
 When a user installs a plugin from the store:
 
-1. **Version compatibility check** - if `min_dispatcharr_version` or `max_dispatcharr_version` is set, the running Dispatcharr version is compared. Install is blocked if out of range.
+1. **Version compatibility check** - if `min_dispatcharr_version` or `max_dispatcharr_version` is set, the running Mino version is compared. Install is blocked if out of range.
 2. **Download** - the zip is streamed from `download_url` (max 200 MB).
 3. **SHA256 integrity check** - if `sha256` was provided, the download is hashed and compared. Mismatch blocks the install.
 4. **Extraction** - the zip is extracted to a temp directory, validated, then moved to `/data/plugins/{plugin_key}/`. If the plugin already exists, the old version is backed up and restored on failure (atomic rollback).

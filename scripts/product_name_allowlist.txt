@@ -35,11 +35,11 @@
 2	.idea/misc.xml
 2	.idea/modules.xml
 73	CLAUDE.md
-39	CONTEXT.md
+63	CONTEXT.md
 4	CONTRIBUTING.md
-36	Plugin_repo.md
+31	Plugin_repo.md
 1	Plugins.md
-13	README.md
+17	README.md
 12	SECURITY.md
 2	apps/accounts/admin.py
 1	apps/accounts/api_views.py
