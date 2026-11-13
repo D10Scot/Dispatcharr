@@ -160,7 +160,8 @@ def _root_tail(tok, authority_starts):
     return -1
 
 
-def scrub_token(tok):
+def _token_masks(tok):
+    """The ranges ``scrub_token`` masks in ``tok``: kept userinfo spans, then the tail to the end."""
     spans, path_starts = _authority_spans(tok)
     tails = [t for t in (_key_tail(tok), _prefix_tail(tok), _root_tail(tok, path_starts)) if t != -1]
     tail = min(tails) if tails else len(tok)
@@ -172,19 +173,45 @@ def scrub_token(tok):
             tail = a
             continue
         kept.append((a, b))
-    if not kept and tail == len(tok):
-        return tok
-    out, pos = [], 0
-    for a, b in kept:
-        if a < pos:  # overlapping spans cannot occur (authorities are disjoint), defensive
-            continue
-        out.append(tok[pos:a])
+    if tail < len(tok):
+        kept.append((tail, len(tok)))
+    return kept
+
+
+def _render_masks(text, ranges):
+    """``text`` with each maximal union of ``ranges`` (overlapping or touching) replaced by one mask.
+
+    An empty range inserts a mask. Ranges are offsets into ``text`` itself.
+    """
+    out, pos, merged = [], 0, []
+    for a, b in sorted(ranges):
+        if merged and a <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], b)
+        else:
+            merged.append([a, b])
+    for a, b in merged:
+        out.append(text[pos:a])
         out.append(MASK)
         pos = b
-    out.append(tok[pos:tail])
-    if tail < len(tok):
-        out.append(MASK)
+    out.append(text[pos:])
     return "".join(out)
+
+
+def scrub_token(tok):
+    ranges = _token_masks(tok)
+    return _render_masks(tok, ranges) if ranges else tok
+
+
+def _scan_ranges(text):
+    """Every range ``_scan`` masks in ``text``, as offsets into ``text``."""
+    if "/" not in text and "=" not in text:
+        return []
+    ranges = []
+    for m in _TOKEN_RE.finditer(text):
+        tok = m.group()
+        if "/" in tok or "=" in tok:
+            ranges += [(m.start() + a, m.start() + b) for a, b in _token_masks(tok)]
+    return ranges
 
 
 def _scan(text):
@@ -208,13 +235,21 @@ def _scan(text):
 _SPACE_RE = re.compile(r"\s")  # the same predicate as _TOKEN_RE's \S
 
 
-def _cut_head(text, n_original):
+def _head_cut(text):
+    """Where ``_cut_head`` cuts ``text``: the last whitespace at or before the limit, else 0."""
     limit = CAP - RESERVE
     cut = -1
     for m in _SPACE_RE.finditer(text, 0, limit + 1):
         cut = m.start()
-    kept = text[:cut] if cut > 0 else ""
-    return kept + f" [log scrubber: truncated from {n_original} characters]"
+    return cut if cut > 0 else 0
+
+
+def _head_marker(n_original):
+    return f" [log scrubber: truncated from {n_original} characters]"
+
+
+def _cut_head(text, n_original):
+    return text[: _head_cut(text)] + _head_marker(n_original)
 
 
 def scrub_text(text):
@@ -267,6 +302,162 @@ def _format_exception(exc_info):
     return text
 
 
+# The whole-read step's total budget per record: the characters it may examine,
+# summed over every argument it reads (the whitespace search and the token
+# rule are each linear in the argument). Past it an argument is not read at all.
+WHOLE_READ_BUDGET = CAP
+
+
+def _read_whole(arg):
+    """The masks of ``arg`` read as ONE token, or None when it holds no whitespace.
+
+    The whitespace check is not an optimisation: a spaceless argument read whole
+    can mask MORE than the message scan, which reads it glued to the template's
+    text (``"a%s"`` with ``/u/p/1`` renders ``a/u/p/1``, where the root rule does
+    not start). Skipping spaceless arguments keeps every record that holds no
+    spaced path argument exactly as it was.
+    """
+    if not _SPACE_RE.search(arg):
+        return None
+    return _token_masks(arg) or None
+
+
+def _whole_masks(args):
+    """``{key: ranges within the argument}`` for each argument the whole read masks, or None.
+
+    Django logs ``request.path`` decoded, so an Xtream credential holding a
+    space (``/movie/my user/pass/1.mp4``) is one path segment in the argument
+    but two tokens in the rendered message. A string argument that starts with
+    ``/`` is therefore read as one token. One budget covers the record: an
+    argument longer than what is left is not read and is masked after its
+    leading ``/`` (fail closed, whitespace or not). A mapping's top-level values
+    are read when it is a ``dict`` passed as the sole argument, whether the
+    template names its keys (``%(key)s``) or renders it whole (``%s``); rendered
+    whole, its repr escapes the placement marks, so a masked value cannot be
+    placed and the message is withheld.
+    """
+    if isinstance(args, tuple):
+        items = enumerate(args)
+    elif isinstance(args, dict):
+        items = args.items()
+    else:
+        return None
+    budget = WHOLE_READ_BUDGET
+    masks = {}
+    for key, arg in items:
+        if not isinstance(arg, str) or not arg.startswith("/"):
+            continue
+        if len(arg) > budget:
+            masks[key] = [(1, len(arg))]
+            continue
+        budget -= len(arg)
+        ranges = _read_whole(arg)
+        if ranges:
+            masks[key] = ranges
+    return masks or None
+
+
+class _Unplaceable(Exception):
+    """A whole-read argument the record step cannot place in the rendered message."""
+
+
+# Placement marks: one start mark per masked argument, one shared end mark. They
+# are private-use characters, so repr() escapes them: a conversion that reprs,
+# truncates or pads an argument changes the render and is caught as a mismatch.
+_START = 0xE000
+_END = "\uf8ff"
+_MARK_RE = re.compile("[\ue000-\uf8ff]")
+_MAX_MARKED = 0xF8FF - _START
+
+
+def _argument_spans(record, message, masks):
+    """``(start, end, key)`` of every rendered occurrence of a masked argument in ``message``.
+
+    The record is rendered again with each masked argument between its marks;
+    with the marks removed the render must equal ``message`` exactly, and each
+    marked span must hold that argument's own text. Anything else raises
+    ``_Unplaceable``.
+    """
+    # Defence in depth for a message that already holds a mark: the stripped
+    # render never holds one, so the equality check below refuses the same
+    # records; refused here first so a later edit to that check cannot misplace
+    # a mask. Past _MAX_MARKED (6,399) masked arguments there are no marks left.
+    if len(masks) > _MAX_MARKED or _MARK_RE.search(message):
+        raise _Unplaceable
+    starts = {chr(_START + i): key for i, key in enumerate(masks)}
+    marks = {key: mark for mark, key in starts.items()}
+    args = record.args
+    if isinstance(args, tuple):
+        marked = tuple(marks[i] + v + _END if i in masks else v for i, v in enumerate(args))
+    else:
+        marked = {k: marks[k] + v + _END if k in masks else v for k, v in args.items()}
+    rendered = str(record.msg) % marked
+    parts, spans, length, pos, open_key, open_at = [], [], 0, 0, None, 0
+    for m in _MARK_RE.finditer(rendered):
+        parts.append(rendered[pos : m.start()])
+        length += m.start() - pos
+        pos = m.end()
+        mark = m.group()
+        if mark == _END:
+            if open_key is None:
+                raise _Unplaceable
+            spans.append((open_at, length, open_key))
+            open_key = None
+        else:
+            if open_key is not None or mark not in starts:
+                raise _Unplaceable
+            open_key, open_at = starts[mark], length
+    parts.append(rendered[pos:])
+    if open_key is not None or "".join(parts) != message:
+        raise _Unplaceable
+    # Unreachable only when every argument renders the same text twice: each marked
+    # value is built by str concatenation, so its rendered span is its own text,
+    # and every conversion that could alter it (repr, ascii, precision, padding)
+    # also changes the stripped render. An argument whose __str__ renders plain
+    # text the first time and the same text with private-use characters the
+    # second passes the equality with a span holding its text, not the path's;
+    # this check refuses it, so a placement is never trusted on the equality alone.
+    for start, end, key in spans:
+        if message[start:end] != args[key]:
+            raise _Unplaceable
+    return spans
+
+
+def _scrub_with_whole_reads(record, message):
+    """The scrubbed message, or None when no argument is read whole.
+
+    The output is ``message`` itself, the raw render, with ONE union of masks
+    applied once: every mask the message scan makes on the raw render (the
+    same ``_token_masks`` that ``scrub_text`` applies, on the same text) plus
+    every whole-read mask, placed at its argument's span. Because the message
+    scan's own masks are in the union, the result is never less masked than
+    ``scrub_text(message)``, by construction, wherever the template or another
+    argument glues text before or after a whole-read argument. The caps are
+    applied exactly as ``scrub_text`` applies them.
+    """
+    args = record.args
+    if not args:
+        return None
+    masks = _whole_masks(args)
+    if masks is None:
+        return None
+    spans = _argument_spans(record, message, masks)
+    if not spans:
+        return None  # no masked argument is rendered
+    n = len(message)
+    cut = _head_cut(message) if n > CAP else n
+    src = message if cut == n else message[:cut] + _head_marker(n)
+    ranges = _scan_ranges(src)
+    for start, _end, key in spans:
+        for a, b in masks[key]:
+            if start + a < cut:
+                ranges.append((start + a, min(start + b, cut)))
+    out = _render_masks(src, ranges)
+    if len(out) > CAP:
+        out = _cut_head(out, n)
+    return out
+
+
 def _scrub_message(record):
     try:
         message = record.getMessage()
@@ -275,7 +466,12 @@ def _scrub_message(record):
         record.args = ()
         return
     try:
-        scrubbed = scrub_text(message)
+        whole = _scrub_with_whole_reads(record, message)
+        scrubbed = scrub_text(message) if whole is None else whole
+    except _Unplaceable as exc:
+        record.msg = _message_placeholder("a path argument the scrubber cannot place", exc)
+        record.args = ()
+        return
     except Exception as exc:  # noqa: BLE001
         record.msg = _message_placeholder("scrubber failed", exc)
         record.args = ()
