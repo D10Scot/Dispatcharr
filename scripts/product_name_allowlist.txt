@@ -147,7 +147,7 @@
 1	apps/output/views.py
 13	apps/plugins/api_views.py
 4	apps/plugins/apps.py
-2	apps/plugins/loader.py
+3	apps/plugins/loader.py
 2	apps/plugins/migrations/0002_pluginrepo.py
 2	apps/plugins/migrations/0003_update_official_repo_url.py
 1	apps/plugins/models.py
@@ -233,6 +233,7 @@
 1	dispatcharr/db/backends/postgresql_psycopg3/base.py
 2	dispatcharr/db/backends/postgresql_psycopg3/pool.py
 1	dispatcharr/gevent_patch.py
+1	dispatcharr/log_scrub.py
 10	dispatcharr/observability/bootstrap.py
 5	dispatcharr/observability/logs.py
 1	dispatcharr/observability/metrics.py
@@ -587,10 +588,15 @@
 2	tests/test_boot_db_cleanup.py
 6	tests/test_celery_otel_init.py
 6	tests/test_celery_plugin_discovery.py
+4	tests/test_celery_suppress_filter.py
 24	tests/test_check_product_name.py
 4	tests/test_ci_test_routing.py
 8	tests/test_credential_logging_guard.py
 9	tests/test_geventpool_conn_lifetime.py
+10	tests/test_log_scrub.py
+3	tests/test_log_scrub_classes.py
+28	tests/test_log_scrub_install.py
+1	tests/test_log_scrub_sinks.py
 1	tests/test_m3u_profile_test_logging.py
 1	tests/test_migrations_apply_on_sqlite.py
 4	tests/test_observability_bootstrap.py
@@ -607,6 +613,7 @@
 4	tests/test_runtime_sqlite_marker.py
 3	tests/test_tls_cert_path_validation.py
 1	tests/test_unmatched_api_paths_404.py
+4	tests/test_url_redaction_leaf.py
 3	tests/test_urls_xc_three_segment.py
 6	tests/test_uwsgi_inis_are_lazy.py
 2	tests/test_wait_for_redis.py

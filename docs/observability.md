@@ -304,6 +304,42 @@ process start-up files.
   still carry exception text a call site interpolates, such as Celery's failure and retry messages.
   Do not send logs to a backend you would not send your stdout to.
 
+### The log scrubber (Python processes)
+
+Every Python process (the two uWSGI processes, Celery, beat, Daphne, `manage.py`) installs a log
+record factory when it imports the Django project package (`log_scrub.py`, in that package). It runs when
+a record is created, so it protects the text format, JSON and OTLP alike, and a handler added later
+needs no configuration to benefit. It is **best effort, not a proof**.
+
+- **What it masks.** Per whitespace-delimited token: URL userinfo (`http://user:pass@host` becomes
+  `http://***@host`); and, from the first credential position to the **end of the token**, the value
+  after a `username`, `password`, `token` or `api_key` assignment (any case, raw or percent-encoded
+  name, in a query, a fragment or a bare assignment), the segments after `live/`, `movie/`,
+  `series/` or `timeshift/`, and the path of a `/<user>/<pass>/<digits>` route. The OIDC parameter
+  names (`code`, `state`, `id_token`, `client_secret`, and the other members of
+  `SENSITIVE_QUERY_KEYS`) are masked where they follow `?`, `&` or `#`, by name equality; `id_token`, `access_token` and `refresh_token` are covered by the `token` rule anywhere. A bare `client_secret=abc` or `state=x` in free text is not masked. It also masks the same
+  carriers in a traceback and in `stack_info`, which is where a `requests` exception carries the
+  provider URL.
+- **It over-masks on purpose.** `Not Found: /api/channels/5/` prints as `Not Found: /***`,
+  `get.php?username=u&page=2` as `get.php?username=***`, `csrf_token=abc` as `csrf_token=***`, and a
+  call site's own `redact_url` output `.../live/***/***/1.ts` as `.../live/***`. Text it does not
+  match is left byte-identical.
+- **Limits.** The scan reads at most 16,384 characters of a message and 65,536 of a traceback (the
+  tail is kept); longer text is cut at whitespace with a `[log scrubber: truncated from N
+  characters]` marker. If the scrubber itself fails, the record is still emitted with the text
+  replaced by a placeholder naming only the exception type.
+- **What it cannot catch:** opaque path tokens in non-Xtream URLs, credentials under other
+  parameter names (`user=`, `pass=`, `key=`), scheme-less `user:pass@host`, a credential split by
+  whitespace (`/live/user/my pass/1.ts`), `key: value`, JSON and dict forms, the relative
+  `user/pass/123.ts` route with no leading slash, a bare query string or form body whose first
+  parameter is an equality key (`code=S&state=T` leaks the code), bare secrets, handlers
+  that serialise exception objects or `extra=` themselves, plugin code that replaces the record
+  factory (the scrubber re-installs itself after plugin discovery), `print` calls, and every line
+  that never passes through Python `logging`: the uWSGI and nginx request logs, and the text
+  persisted in `last_message` columns or sent over the WebSocket, which are separate follow-ups.
+- **Celery.** Its noise filter now drops only records at INFO or below, so a rewritten error can
+  never be suppressed.
+
 ### Known quirks
 
 - **Text format with OTLP logs on.** In the relay, with `MINO_LOG_FORMAT=text`, lines written

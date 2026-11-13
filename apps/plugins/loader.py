@@ -70,6 +70,29 @@ class PluginManager:
         use_cache: bool = False,
         release_connections: bool = True,
     ) -> Dict[str, LoadedPlugin]:
+        # Plugins are trusted in-process code and may replace the logging record factory.
+        # Whatever way discovery exits (the cached early return, the normal return, an
+        # exception), put the log scrubber back outermost. The inner try/finally below stays.
+        try:
+            return self._discover_plugins_entry(
+                sync_db=sync_db,
+                force_reload=force_reload,
+                use_cache=use_cache,
+                release_connections=release_connections,
+            )
+        finally:
+            from dispatcharr.log_scrub import ensure_installed
+
+            ensure_installed()
+
+    def _discover_plugins_entry(
+        self,
+        *,
+        sync_db: bool,
+        force_reload: bool,
+        use_cache: bool,
+        release_connections: bool,
+    ) -> Dict[str, LoadedPlugin]:
         # Only an explicit caller force_reload broadcasts via the shared token.
         # Reacting to a newer token must reload locally without re-touching it;
         # otherwise every consumer becomes a producer and multi-worker setups

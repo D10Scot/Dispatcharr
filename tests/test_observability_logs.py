@@ -11,6 +11,7 @@ from django.test import SimpleTestCase
 from opentelemetry.sdk.trace import TracerProvider
 
 from dispatcharr.observability import config, logs
+from tests.log_scrub_rig import unscrubbed_logging
 
 # A literal copy of the seed's LOGGING (dispatcharr/settings.py at 149678aa,
 # before this change), with the one environment-dependent value parameterised.
@@ -168,7 +169,8 @@ class JsonFormatterTests(SimpleTestCase):
         self.assertNotIn(secret, json.dumps(line))
 
     def test_the_body_is_scrubbed_and_extras_are_not_serialised(self):
-        self.log.info("fetched http://u:pw@prov.tv/live/a/b/1.ts", extra={"secret": "S3NT1NEL-pw-9d2f"})
+        with unscrubbed_logging():  # redact_text alone, not the central scrubber (spec 9.2)
+            self.log.info("fetched http://u:pw@prov.tv/live/a/b/1.ts", extra={"secret": "S3NT1NEL-pw-9d2f"})
         (line,) = self._lines()
         self.assertNotIn("prov.tv", line["msg"])
         self.assertNotIn("secret", line)

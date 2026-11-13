@@ -41,6 +41,7 @@ from opentelemetry.trace import Link, SpanKind
 from dispatcharr.observability import logs
 from dispatcharr.observability import redaction
 from dispatcharr.observability.metrics import M11_NAME, SCOPE_NAME
+from tests.log_scrub_rig import unscrubbed_logging
 from tests.otel_rig import SENTINEL, SENTINEL_UUID, Failures, Rig, reset_semconv
 
 HLS_TOKEN = "v1." + "A" * 22 + "." + "B" * 43
@@ -506,7 +507,10 @@ class LogFieldAndBodyTests(TestCase):
             f"Task tests.observability.retries[{SENTINEL_UUID}] retry: Retry in 1s: "
             f"ConnectionError('http://u:pw@prov.tv/live/a/b/1 {HLS_TOKEN}')"
         )
-        self.log.warning(body)
+        # The D9 layer alone must remove these classes: the central log scrubber would already have
+        # masked the userinfo, so capture the raw body (spec 9.2).
+        with unscrubbed_logging():
+            self.log.warning(body)
         (record,) = self._exported()
         for secret in ("pw@prov.tv", SENTINEL_UUID, HLS_TOKEN):
             self.assertNotIn(secret, record.body)
@@ -530,7 +534,8 @@ class LogFieldAndBodyTests(TestCase):
                 self.assertNotEqual(out, body)
                 for secret in secrets:
                     self.assertNotIn(secret, out)
-                self.log.info(body)
+                with unscrubbed_logging():  # the D9 layer alone, not the central scrubber (spec 9.2)
+                    self.log.info(body)
         exported = [r.body for r in self._exported()]
         self.assertEqual(len(exported), len(cases))
         for body, (_, secrets) in zip(exported, cases.values()):

@@ -20,6 +20,7 @@ from django.test import SimpleTestCase
 
 from apps.proxy import next_source
 from apps.proxy.vod_proxy import views as vod_views
+from tests.log_scrub_rig import unscrubbed_logging
 
 SEARCH = "olduser/oldpass"
 REPLACE = "newuser/newpass"
@@ -52,7 +53,10 @@ def capture(*loggers):
         lg.setLevel(logging.DEBUG)
         lg.addHandler(handler)
     try:
-        yield handler
+        # The central log scrubber would mask the very strings these tests assert are absent,
+        # so a regressed call site would still pass. Capture the raw call site instead.
+        with unscrubbed_logging():
+            yield handler
     finally:
         for lg, level in saved:
             lg.removeHandler(handler)
