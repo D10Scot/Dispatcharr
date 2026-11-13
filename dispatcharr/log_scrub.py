@@ -267,6 +267,36 @@ def _format_exception(exc_info):
     return text
 
 
+def _whole_path(arg):
+    """A string argument that is itself a path holding whitespace, read as ONE token.
+
+    Django logs ``request.path`` decoded, so an Xtream credential holding a space
+    (``/movie/my user/pass/1.mp4``) is one path segment in the argument but two
+    tokens in the rendered message, and the per-token rule would mask only the
+    first. Reading the argument whole masks from the credential position to its
+    end. An argument over the cap is not read at all: it becomes ``/***``.
+    Anything else is returned as the same object.
+    """
+    if not isinstance(arg, str) or not arg.startswith("/"):
+        return arg
+    if len(arg) > CAP:
+        return "/" + MASK
+    if not _SPACE_RE.search(arg):
+        return arg
+    return scrub_token(arg)
+
+
+def _whole_path_args(args):
+    """``args`` with ``_whole_path`` applied to each argument, or None when none changed."""
+    if isinstance(args, tuple):
+        out = tuple(_whole_path(a) for a in args)
+        return out if any(x is not y for x, y in zip(out, args)) else None
+    if isinstance(args, dict):
+        out = {k: _whole_path(v) for k, v in args.items()}
+        return out if any(out[k] is not args[k] for k in args) else None
+    return None
+
+
 def _scrub_message(record):
     try:
         message = record.getMessage()
@@ -275,7 +305,10 @@ def _scrub_message(record):
         record.args = ()
         return
     try:
-        scrubbed = scrub_text(message)
+        whole = _whole_path_args(record.args) if record.args else None
+        # Rendered as getMessage renders, from the whole-read arguments; the
+        # message scan below still runs over it, so masks only add.
+        scrubbed = scrub_text(message if whole is None else str(record.msg) % whole)
     except Exception as exc:  # noqa: BLE001
         record.msg = _message_placeholder("scrubber failed", exc)
         record.args = ()

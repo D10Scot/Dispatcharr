@@ -394,7 +394,14 @@ Stated plainly; none of these is closed here.
 1. **Opaque credentials in a non-Xtream URL path** (`https://cdn.example.invalid/tok/<opaque>/index.m3u8`), and any provider whose credential path prefix is not `live|movie|series|timeshift`.
 2. **Non-standard query keys** (`user=`, `pass=`, `u=`, `p=`, `key=`, `auth=`, `sig=`). Only names containing `password`, `username`, `token` or `api_key` are masked anywhere, and the equality keys after `?`, `&` or `#` (Q4). A key written with a separator other than `=` (`password: x`, `password = x`) is also missed. A bare OIDC-style assignment in free text (`client_secret=abc`, `state=x`) is not masked: the equality keys count only after `?`, `&` or `#` (§ 4.3). `scripts/check_credential_logging.py` is the guard for that call-site class. **A bare query string or form body whose FIRST parameter is an equality key is not masked** (`code=S&state=T` leaks the code and masks the state; `QUERY_STRING='code=S&state=T'` the same): the key is not preceded by `?`, `&` or `#`. `redact_url` misses it too, because the string parses as a path. Optional hardening, not taken: also accept an equality key at the start of a token that contains `&`.
 3. **Scheme-less userinfo with no `//`** (`user:pass@example.invalid/…`). `redact_url` misses it too, because `urlsplit` reads `user` as a scheme. Also missed:
-   - a credential split across whitespace (`/live/user/my pass/1.ts` masks `my` only);
+   - a credential split across whitespace, except in a string argument that is itself a path. Since the
+     whole-path-argument fix, `_scrub_message` reads an argument that starts with `/` and holds whitespace as ONE
+     token before rendering (Django's `"%s: %s", reason, request.path`, which logs the path decoded), so
+     `/movie/my user/pass/1.mp4` prints as `/movie/***`; an argument over the 16,384-character cap is withheld as
+     `/***` unread. Still missed: such a path written into the format string itself or glued into a larger
+     argument (`logger.info(f"GET {path}")`, `"got %s" % path`), a spaced value after a key anywhere but in
+     such an argument (`password=my pass` in free text masks `my` only), a spaced path in a traceback or stack, and a path argument
+     that does not start with `/` (`live/user/my pass/1.ts`, a URL with an unencoded space);
    - the relative root route with no leading slash (`user/pass/123.ts`; the oracle masks it, § 5 (a) excludes it);
    - `key: value`, JSON and dict forms (`"password": "x"`);
    - a bare password;

@@ -613,3 +613,66 @@ class FailureBehaviour(FactoryTestCase):
         self.assertGreater(len(out), CAP)
         self.assertTrue(out.rstrip("\n").endswith("tail-marker"), out[-80:])
         self.assertNotIn("[log scrubber: truncated", out)
+
+
+class WholePathArguments(FactoryTestCase):
+    """A string argument that is a path holding whitespace is read as one token.
+
+    Django logs ``request.path`` decoded (``"%s: %s", reason, request.path``), so
+    an Xtream credential holding a space is one path segment there but two
+    tokens in the rendered message; the per-token rule alone masked the first
+    token only and logged the rest of the credential.
+    """
+
+    LEAK = "a credential holding a space survived: the path argument was not read whole"
+
+    def scrubbed(self, msg, args):
+        record = logging.LogRecord("django.request", logging.WARNING, __file__, 1, msg, args, None)
+        log_scrub._scrub_record(record)
+        return record
+
+    def test_spaced_username_and_password_in_a_prefix_route(self):
+        path = "/movie/xcuser sentinel-sp3/xcuser sentinel-sp3/1.mp4"
+        record = self.scrubbed("%s: %s", ("Unauthorized", path))
+        out = record.getMessage()
+        self.assertNotIn("sentinel-sp3", out, self.LEAK)
+        self.assertNotIn("xcuser", out, self.LEAK)
+        self.assertEqual(out, "Unauthorized: /movie/***")
+        self.assertEqual(record.args, ())
+
+    def test_short_password_after_a_spaced_username(self):
+        record = self.scrubbed("%s: %s", ("Unauthorized", "/movie/ab cd/xyz/1.mp4"))
+        out = record.getMessage()
+        for piece in ("cd", "xyz"):
+            self.assertNotIn(piece, out, self.LEAK)
+        self.assertEqual(out, "Unauthorized: /movie/***")
+
+    def test_spaced_username_in_the_bare_root_route(self):
+        record = self.scrubbed("%s: %s", ("Not Implemented", "/xc user/sentinel-pw/1.ts"))
+        self.assertEqual(record.getMessage(), "Not Implemented: /***", self.LEAK)
+
+    def test_mapping_arguments(self):
+        record = self.scrubbed("%(reason)s: %(path)s", {"reason": "Not Found", "path": "/live/ab cd/xyz/1.ts"})
+        self.assertEqual(record.getMessage(), "Not Found: /live/***", self.LEAK)
+
+    def test_through_the_installed_factory(self):
+        self.assert_scrubber_installed()
+        logger, stream = self.capture("whole.path.factory")
+        logger.warning("%s: %s", "Unauthorized", "/series/ab cd/xyz/1.mkv")
+        self.assertEqual(stream.getvalue(), "Unauthorized: /series/***\n", self.LEAK)
+
+    def test_an_argument_over_the_cap_is_withheld_not_read(self):
+        record = self.scrubbed("%s: %s", ("Not Found", "/movie/" + "a b" * CAP))
+        self.assertEqual(record.getMessage(), "Not Found: /***")
+
+    def test_control_a_slash_leading_argument_without_spaces_is_untouched(self):
+        msg, args = "%s: %s", ("Not Found", "/api/channels/streams/")
+        record = self.scrubbed(msg, args)
+        self.assertIs(record.msg, msg)
+        self.assertIs(record.args, args)
+
+    def test_control_a_benign_spaced_path_argument_is_untouched(self):
+        msg, args = "%s: %s", ("Saved", "/data/My Recordings/show.ts")
+        record = self.scrubbed(msg, args)
+        self.assertIs(record.msg, msg)
+        self.assertIs(record.args, args)
