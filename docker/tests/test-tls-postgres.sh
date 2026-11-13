@@ -1008,8 +1008,8 @@ if [ "$SKIP_BUILD" = false ]; then
     echo -e "\n${BOLD}Building test image...${NC}"
     # With GITHUB_REPOSITORY set, build on this repository's own
     # <owner>/<name>:base, so a repository rename does not leave the suite on
-    # the old name's base. Otherwise keep the long-standing default
-    # (d10scot/dispatcharr).
+    # the old name's base. Otherwise pass only the owner, as before, and
+    # take docker/Dockerfile's default name.
     build_args=(--build-arg REPO_OWNER=d10scot)
     if [ -n "${GITHUB_REPOSITORY:-}" ]; then
         build_args=(

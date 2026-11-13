@@ -482,6 +482,9 @@ jobs:
             exit 1
           fi
 
+          if [ "$resolved_repo" != "${image_repos[0]}" ]; then
+            echo "::notice::Upgrade baseline came from the legacy image name ${resolved_repo}, not ${image_repos[0]}. Expected only for the first PRs after the repository rename; if it persists, check that ${image_repos[0]} is public."
+          fi
           echo "Baseline resolved to ${resolved_repo}:${resolved} after checking ${checked} commit(s) back from ${start}."
           echo "DISPATCHARR_E2E_BASELINE_IMAGE=${resolved_repo}:${resolved}" >> "$GITHUB_ENV"
 
