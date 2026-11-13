@@ -132,7 +132,7 @@ gh attestation verify oci://ghcr.io/d10scot/dispatcharr:latest \
   --owner D10Scot
 ```
 
-Signing goes through `scripts/cosign_sign_once.sh` (#682): it verifies first and skips a digest this repository's `ci`, `docker-build`, `base-image` or `release` workflow already signed, because a merge that does not change the image rebuilds an identical digest and Rekor answers a second signer with a 409 `an equivalent entry already exists`. It still signs with the transparency log on. It accepts that exact 409 only when a signature then verifies, and fails on every other error.
+Signing goes through `scripts/cosign_sign_once.sh` (#682). `cosign sign` can time out posting its Rekor entry after the entry landed, and its retry is then answered `409 an equivalent entry already exists` by the job's own entry, before any signature is pushed. On exactly that 409 the script signs again (a new ephemeral key cannot conflict), at most twice more, with the transparency log on, and finishes with a `cosign verify` pinned to the job's own workflow identity. Any other error fails at once.
 
 ## Registry & distribution
 

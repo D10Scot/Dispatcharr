@@ -329,9 +329,9 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Sign image (keyless)
-        # Skips a digest this repository's workflows already signed and
-        # tolerates Rekor's duplicate-entry 409 only once that signature
-        # verifies (#682); see scripts/cosign_sign_once.sh.
+        # Re-signs when cosign's Rekor upload times out and its own retry gets
+        # a 409 against the job's own entry (#682), then verifies against this
+        # job's identity; see scripts/cosign_sign_once.sh.
         env:
           IMAGE: ${{ steps.resolved.outputs.image }}
           DIGEST: ${{ steps.resolved.outputs.digest }}

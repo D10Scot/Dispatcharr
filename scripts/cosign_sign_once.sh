@@ -1,64 +1,61 @@
 #!/usr/bin/env bash
-# Keyless-sign an image digest unless this repository's workflows already have.
+# Keyless-sign an image digest, surviving Rekor's self-conflict 409 (#682).
 #
-# Why (#682): a merge that does not change the image rebuilds a byte-identical
-# digest, and ci.yml and docker-build.yml both sign the same digest on every
-# push to main. Rekor answers the second signer
+# Cause: `cosign sign` POSTs its entry to Rekor, the client can time out (about
+# 30 s) after the entry landed, and its automatic retry of the same request is
+# answered
 #   [POST /api/v1/log/entries][409] createLogEntryConflict ... an equivalent
 #   entry already exists
-# and `cosign sign` exits 1 although the digest is signed. This script:
-#   1. verifies first and skips when a signature from one of this repo's four
-#      signing workflows already exists;
-#   2. otherwise signs, with the transparency log on (never --tlog-upload=false);
-#   3. on exactly that 409, treats it as success ONLY if a verify then finds the
-#      signature (retried, because the other signer uploads to Rekor before it
-#      pushes to the registry). A 409 with no verifiable signature fails.
-# Any other signing error fails at once.
+# by the job's OWN entry. cosign then exits 1 before pushing the signature, so
+# the digest stays unsigned. (run 43465281821: entry certificate and run-URL
+# extension were the failing run itself, 30.7 s after "Signing artifact...".)
 #
-# Usage: IMAGE_REF=<image>@<digest> GITHUB_REPOSITORY=<owner/repo> \
+# Fix: on exactly that 409, run `cosign sign` again. A new invocation mints a
+# fresh ephemeral key and certificate, so it cannot conflict; the orphan entry
+# is harmless. The transparency log stays on (never --tlog-upload=false), any
+# other error fails at once, and after a successful sign one `cosign verify`
+# against this job's own exact identity proves the signature is in the registry.
+#
+# Usage: IMAGE_REF=<image>@<digest> GITHUB_WORKFLOW_REF=<owner/repo/path@ref> \
 #          scripts/cosign_sign_once.sh
-# Test knobs: VERIFY_RETRIES (default 6), VERIFY_SLEEP seconds (default 10).
+# Test knobs: SIGN_RETRIES re-runs after the first 409 (default 2),
+#             SIGN_SLEEP seconds between attempts (default 5).
 set -euo pipefail
 
 : "${IMAGE_REF:?IMAGE_REF (image@sha256:digest) is required}"
-: "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY (owner/repo) is required}"
-RETRIES="${VERIFY_RETRIES:-6}"
-SLEEP="${VERIFY_SLEEP:-10}"
+: "${GITHUB_WORKFLOW_REF:?GITHUB_WORKFLOW_REF (owner/repo/.github/workflows/x.yml@ref) is required}"
+RETRIES="${SIGN_RETRIES:-2}"
+SLEEP="${SIGN_SLEEP:-5}"
 ISSUER="https://token.actions.githubusercontent.com"
+IDENTITY="https://github.com/${GITHUB_WORKFLOW_REF}"
 
-# Every workflow that signs an image of this repository, on a branch or a tag.
-repo_re="$(printf '%s' "$GITHUB_REPOSITORY" | sed 's/[][\.^$*+?(){}|]/\\&/g')"
-IDENTITY_RE="^https://github\\.com/${repo_re}/\\.github/workflows/(ci|docker-build|base-image|release)\\.yml@refs/(heads|tags)/.+\$"
+out="$(mktemp)"
+trap 'rm -f "$out"' EXIT
 
-verified() {
-  cosign verify "$IMAGE_REF" \
-    --certificate-identity-regexp="$IDENTITY_RE" \
-    --certificate-oidc-issuer="$ISSUER" >/dev/null 2>&1
-}
+signed=0
+for ((attempt = 1; attempt <= RETRIES + 1; attempt++)); do
+  if cosign sign --yes "$IMAGE_REF" 2>&1 | tee "$out"; then
+    signed=1
+    break
+  fi
+  if ! grep -Fq '[409]' "$out" || ! grep -Fq 'an equivalent entry already exists' "$out"; then
+    echo "cosign sign failed for a reason other than a duplicate Rekor entry." >&2
+    exit 1
+  fi
+  echo "Rekor 409 (attempt ${attempt}): re-signing with a fresh ephemeral key."
+  sleep "$SLEEP"
+done
 
-if verified; then
-  echo "${IMAGE_REF} already carries a signature from this repository's workflows; not signing again."
-  exit 0
-fi
-
-sign_out="$(mktemp)"
-trap 'rm -f "$sign_out"' EXIT
-if cosign sign --yes "$IMAGE_REF" 2>&1 | tee "$sign_out"; then
-  exit 0
-fi
-
-if ! grep -Fq '[409]' "$sign_out" || ! grep -Fq 'an equivalent entry already exists' "$sign_out"; then
-  echo "cosign sign failed for a reason other than a duplicate Rekor entry." >&2
+if [ "$signed" -ne 1 ]; then
+  echo "cosign sign hit Rekor's duplicate-entry 409 on all $((RETRIES + 1)) attempts." >&2
   exit 1
 fi
 
-echo "Rekor already holds an equivalent entry; waiting for its signature to be verifiable."
-for ((i = 1; i <= RETRIES; i++)); do
-  if verified; then
-    echo "Signature present after ${i} check(s); treating the 409 as success."
-    exit 0
-  fi
-  sleep "$SLEEP"
-done
-echo "Rekor reported a duplicate entry but no signature from this repository verifies on ${IMAGE_REF}." >&2
-exit 1
+if ! cosign verify "$IMAGE_REF" \
+  --certificate-identity "$IDENTITY" \
+  --certificate-oidc-issuer "$ISSUER" >/dev/null 2>"$out"; then
+  echo "Signed, but verification against ${IDENTITY} failed:" >&2
+  cat "$out" >&2
+  exit 1
+fi
+echo "Signature verified for ${IDENTITY}."
