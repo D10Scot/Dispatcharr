@@ -30,6 +30,25 @@ const isTokenExpired = (expirationTime) => {
   return now >= expirationTime;
 };
 
+// A refresh refused because another request held the admin-floor lock (503
+// admin_floor_busy) is retried after its Retry-After delay rather than signing the
+// user out: the refresh token was not used up. At most REFRESH_ATTEMPTS attempts in
+// all; then the usual failure path.
+export const REFRESH_ATTEMPTS = 3;
+const MAX_RETRY_AFTER_SECONDS = 10;
+
+const isAdminFloorBusy = (error) =>
+  error?.status === 503 && error?.body?.code === 'admin_floor_busy';
+
+const retryAfterMs = (error) => {
+  const seconds = Number.parseInt(
+    error?.response?.headers?.get?.('Retry-After'),
+    10
+  );
+  if (!Number.isFinite(seconds) || seconds < 0) return 1000;
+  return Math.min(seconds, MAX_RETRY_AFTER_SECONDS) * 1000;
+};
+
 const useAuthStore = create((set, get) => ({
   isAuthenticated: false,
   isInitialized: false,
@@ -303,23 +322,37 @@ const useAuthStore = create((set, get) => ({
     const refreshToken = localStorage.getItem('refreshToken');
     if (!refreshToken) return false;
 
-    try {
-      const data = await API.refreshToken(refreshToken);
-      if (data?.access) {
-        set({
-          accessToken: data.access,
-          tokenExpiration: decodeToken(data.access),
-        });
-        localStorage.setItem('accessToken', data.access);
-        localStorage.setItem('tokenExpiration', decodeToken(data.access));
+    for (let attempt = 1; ; attempt++) {
+      try {
+        const data = await API.refreshToken(refreshToken);
+        if (data?.access) {
+          set({
+            accessToken: data.access,
+            tokenExpiration: decodeToken(data.access),
+          });
+          localStorage.setItem('accessToken', data.access);
+          localStorage.setItem('tokenExpiration', decodeToken(data.access));
 
-        return data.access;
+          return data.access;
+        }
+        return false;
+      } catch (error) {
+        if (isAdminFloorBusy(error) && attempt < REFRESH_ATTEMPTS) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, retryAfterMs(error))
+          );
+          // A logout or a new sign-in during the wait replaced the session this
+          // retry started from: abandon it, leaving the current session (or its
+          // absence) untouched.
+          if (localStorage.getItem('refreshToken') !== refreshToken) {
+            return false;
+          }
+          continue;
+        }
+        console.error('Token refresh failed:', error);
+        await get().logout();
+        return false;
       }
-      return false;
-    } catch (error) {
-      console.error('Token refresh failed:', error);
-      await get().logout();
-      return false;
     }
   },
 

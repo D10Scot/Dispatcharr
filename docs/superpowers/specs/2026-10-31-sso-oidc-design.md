@@ -489,6 +489,12 @@ Three families of rows are involved, and each has one order: **advisory → iden
 
 **Tests.** T30 pins the helper under S0's deactivation guard. T31 pins the bootstrap (S1) and the three SSO paths (S2).
 
+**Addendum (2026-11-12, added by PR #661; the text above is unchanged).** The wait for the advisory lock is bounded at 5 s (`apps/accounts/admin_floor.py`, `LOCK_WAIT_SECONDS`): `admin_floor_lock()` sets `lock_timeout` for the lock alone and restores the previous value once it is granted, so later row locks wait as before. A caller not granted the lock in time writes nothing (its transaction rolls back) and answers:
+
+- the Users API deactivation (§ 5.8): **503 `{"code": "admin_floor_busy"}`** with `Retry-After: 1`;
+- token refresh (§ 5.4): the same 503 with `Retry-After: 1`, never a 401, and the refresh token is not used up;
+- the SSO callback login and link (§ 4.2): the existing **`provisioning_failed`** redirect.
+
 ## 5. Runtime configuration
 
 ### 5.1 Storage (D7)
@@ -602,6 +608,8 @@ When `password_login_enabled` is false and the break-glass is not active:
   **A stale `oidc_level`, stated plainly.** The token's `oidc_level` records the sign-in and is never updated. After a mapping edit that demotes a user, their next refresh lowers `user_level`, and `IsAdmin` then refuses them everywhere, the guard included. Until that refresh, for at most the 30-minute access-token tail, they are still an Admin with `oidc_level` 10 and could pass the § 5.5 guard. The mapping edit that causes this is itself made by an admin, the window is the same one in which that user can still do anything else an Admin can, and break-glass recovers the outcome. Ruling B1 accepts this in exchange for dropping the version proof.
 
   Why this is sound without the IdP: it re-applies a changed local mapping to what the IdP asserted at the last login. It cannot see a role the IdP has since withdrawn; that still waits for the next login, or for deactivation (§ 4.3).
+
+  **Addendum (2026-11-12, added by PR #661; the text above is unchanged).** Step 1's `admin_floor_lock()` waits at most 5 s (§ 4.4's addendum). When it is not granted, refresh answers **503 `{"code": "admin_floor_busy"}`** with `Retry-After: 1`, writes nothing and leaves the refresh token usable. The web client retries such a refresh after `Retry-After` (1 s when absent or unreadable, at most 10 s), three attempts in all, and abandons the retry if the stored session changed while it waited; any other refusal signs out as before.
 
 ### 5.4a Sessions on the streaming surfaces (D19)
 
