@@ -464,7 +464,10 @@ class StreamFromProviderStatusMappingTests(TestCase):
             raw, [],
             f"raw control bytes {raw!r} reached the 'no TS sync' warning: {msg!r}",
         )
-        self.assertIn("\\x1b", msg, "ESC not repr-escaped in the warning")
+        # The body is no longer echoed at all (repr-escaped or not): the warning
+        # carries its length and a fixed classification only.
+        self.assertIn("body=other", msg, "body classification missing from the warning")
+        self.assertNotIn("Warning", msg, "body text reached the 'no TS sync' warning")
 
     @patch.object(views, "_open_upstream")
     def test_416_range_not_satisfiable_passes_through(self, mocked_open):
