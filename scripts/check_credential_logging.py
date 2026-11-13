@@ -62,8 +62,8 @@ clear a call; it is reported like any other finding, with a line saying so. An
 exemption nobody has to justify is not reviewable, which is the only thing that
 makes this hatch safe to have.
 
-KNOWN GAPS IN THE PATTERN. It is inherited verbatim from the advisory grep this
-check replaced, and widening it is a deliberate change, not a drive-by — a
+KNOWN GAPS IN THE PATTERN. It began as the advisory grep this check replaced
+(since widened with the OIDC credential names), and widening it is a deliberate change, not a drive-by — a
 wider pattern would flag pre-existing calls across the whole tree and redden
 unrelated pull requests. Three gaps are known and were found by reading:
 
@@ -145,12 +145,23 @@ KNOWN LIMITS OF THE CHECK ITSELF, as opposed to its pattern:
     ambiguous and it clears neither). A marker justified by one redacted argument also
     covers an unredacted neighbour on that call; apps/timeshift/views.py has
     two such markers (a redacted URL beside a raw Content-Type and the first
-    bytes of a response body). Read the arguments next to a marker, and keep
-    the reason about the whole call.
+    bytes of a response body; both reduced to facts since, but the hazard is the
+    marker's). Read the arguments next to a marker, and keep the reason about
+    the whole call.
+  * A KNOWN CONSERVATIVE FALSE POSITIVE: the eager form with a credential-named
+    key is flagged even when its inline value is redacted,
+    `logger.info("%(password)s" % {"password": redact_text(p)})`, because the
+    credential rule reads the message text of the formatted argument. The lazy
+    form `logger.info("%(password)s", {"password": redact_text(p)})` is clear;
+    use it, or a reasoned marker. No call in the tree has this shape.
   * NAME_RE judges a literal lookup only in these shapes: `"{0.url}".format(o)`,
-    `"%(url)s" % o`, logging's lazy `logger.info("%(url)s", row)` (for an inline
-    dict literal the values selected by the template keys are judged and a
-    redact_* wrapper or a literal clears them; any other mapping is flagged),
+    `"%(url)s" % o`, logging's lazy `logger.info("%(url)s", row)` (for the
+    lazy form with an inline dict literal the values selected by the template
+    keys are judged and a redact_* wrapper or a literal clears them; the eager
+    `"%(url)s" % {...}` form clears a redacted `url`/pattern value the same way,
+    but not a credential key, see the next bullet; any other mapping is flagged;
+    the template keys are judged by NAME_RE and CREDENTIAL_RE both, so
+    `%(password)s` and `%(access_token)s` count),
     `getattr(o, "url")`, `d["url"]` and `d.get("url")`. Everything else is a
     gap, stated plainly: `format_map` (`"{url}".format_map(row)`), a starred
     lookup argument (`getattr(*(o, "url"))`), a nested format-spec field
@@ -174,8 +185,9 @@ import tokenize
 
 LOG_LEVELS = frozenset({"info", "debug", "warning", "error", "exception", "trace"})
 
-# Expressions that can carry a provider credential. Inherited verbatim from the
-# advisory grep in .claude/hooks/run-affected-tests.sh — see KNOWN GAPS above.
+# Expressions that can carry a provider credential. Began as the advisory grep in
+# .claude/hooks/run-affected-tests.sh and has been widened since (the OIDC names
+# below) — see KNOWN GAPS above.
 CREDENTIAL_RE = re.compile(
     r"request\.headers|request\.META|get_full_path|\bpassword\b"
     r"|api_key|\btoken\b|_url\b|url\}"
@@ -339,8 +351,36 @@ def _inline_mapping(node):
     )
 
 
+def _key_flagged(key):
+    """Whether a mapping key names a URL, a pattern or a credential (either rule)."""
+    return bool(NAME_RE.search(key) or CREDENTIAL_RE.search(key))
+
+
+def _safe_selected_entry(key, value, template_keys):
+    """An inline-dict entry the template selects, by a flagged key, with a safe value."""
+    return (
+        key.value in template_keys
+        and _key_flagged(key.value)
+        and (_is_redact_call(value) or _is_literal(value))
+    )
+
+
+def _without_safe_entries(mapping, template_keys):
+    """`mapping` (an inline dict) minus the entries `_safe_selected_entry` clears.
+
+    Those entries carry a flagged key as literal text, which the credential rule
+    would otherwise read as if it were logged; what is left is judged as usual.
+    """
+    kept = [
+        (key, value)
+        for key, value in zip(mapping.keys, mapping.values)
+        if not _safe_selected_entry(key, value, template_keys)
+    ]
+    return ast.Dict(keys=[k for k, _ in kept], values=[v for _, v in kept])
+
+
 def _unsafe_selected_keys(template_keys, mapping):
-    """Template keys that name a URL/pattern whose inline value is not safe.
+    """Template keys that name a URL, pattern or credential whose inline value is not safe.
 
     Only for an inline dict literal. A selected value is safe when it is a
     redact_* call or a literal; anything else keeps the conservative flag.
@@ -350,7 +390,7 @@ def _unsafe_selected_keys(template_keys, mapping):
         key.value
         for key, value in zip(mapping.keys, mapping.values)
         if key.value in template_keys
-        and NAME_RE.search(key.value)
+        and _key_flagged(key.value)
         and not (_is_redact_call(value) or _is_literal(value))
     ]
 
@@ -437,9 +477,15 @@ def _unredacted_arguments(call):
     if len(call.args) > 1 and _is_str_constant(call.args[0]):
         keys = _percent_keys(call.args[0].value)
         mapping = call.args[1]
-        if NAME_RE.search(" ".join(keys)):
+        if any(_key_flagged(key) for key in keys):
             if not _inline_mapping(mapping) or _unsafe_selected_keys(keys, mapping):
                 yield mapping
+            else:
+                # Every flagged key is cleared by a safe value: judge the rest of the dict.
+                arguments = [
+                    _without_safe_entries(mapping, keys) if a is mapping else a
+                    for a in arguments
+                ]
     for argument in arguments:
         if _is_literal(argument):
             continue

@@ -36,7 +36,7 @@ from apps.m3u.connection_pool import (
     reserve_profile_slot,
 )
 from apps.m3u.models import M3UAccount, M3UAccountProfile
-from apps.m3u.tasks import get_transformed_credentials
+from apps.m3u.tasks import _safe_content_type, get_transformed_credentials
 from apps.proxy.config_helper import ConfigHelper
 from apps.proxy.constants import ChannelMetadataField, ChannelState
 from apps.proxy.vod_proxy import held_records
@@ -3360,11 +3360,12 @@ def _stream_from_provider(
         last_url = getattr(response, "url", None) or url
         cascade_label = "cdn" if cached_final else (orig_idx if orig_idx is not None else "?")
         if debug:
-            logger.debug(  # credential-logging: ignore - already redacted by
-                # the local _redact_url() helper (below), not redact_url().
+            logger.debug(  # credential-logging: ignore - the URL goes through the
+                # local _redact_url() helper (below), not redact_url(); the
+                # Content-Type is reduced to a fixed allowlisted media type.
                 "Timeshift cascade[%s]: status=%d type=%s url=%s",
                 cascade_label, response.status_code,
-                response.headers.get("Content-Type", "?"),
+                _safe_content_type(response.headers.get("Content-Type")),
                 _redact_url(url),
             )
         if response.status_code == 416:
@@ -3393,16 +3394,16 @@ def _stream_from_provider(
                 winning_index = orig_idx
                 used_cached_final = cached_final
                 break
-            # repr(), not a lossy decode: an error page can carry NUL/ESC/BEL,
-            # which made the whole log (and a test run's output) binary (#183).
-            snippet = repr(peek[:120]) if peek else "(empty)"
-            logger.warning(  # credential-logging: ignore - already redacted by
-                # the local _redact_url() helper (below), not redact_url().
+            # Facts about the body, never its bytes: an error page can quote
+            # the request URL, login included, and can carry NUL/ESC/BEL (#183).
+            logger.warning(  # credential-logging: ignore - the URL goes through the
+                # local _redact_url() helper (below), not redact_url(); the body
+                # is reduced to its length and a fixed classification.
                 "Timeshift upstream returned %d but no TS sync in first %d "
-                "bytes (likely PHP error): %s, url=%s",
+                "bytes (likely PHP error): body=%s, url=%s",
                 response.status_code,
                 len(peek) if peek else 0,
-                snippet,
+                _classify_peek(peek),
                 _redact_url(url),
             )
             response.close()
@@ -3733,6 +3734,27 @@ def _stream_from_provider(
     for header_name, header_value in client_length_headers.items():
         response[header_name] = header_value
     return _finalize_timeshift_response(response)
+
+
+def _classify_peek(peek):
+    """A fixed label for the first bytes of an upstream body; never the bytes.
+
+    Logging only. One of ``empty``, ``ts-sync``, ``m3u``, ``html``, ``json``,
+    ``xml`` or ``other``, chosen from the first non-space byte(s).
+    """
+    if not peek:
+        return "empty"
+    if peek[:1] == b"\x47":
+        return "ts-sync"
+    head = peek.lstrip()[:7]
+    if head.upper() == b"#EXTM3U":
+        return "m3u"
+    first = head[:1]
+    if first == b"<":
+        return "html" if head[:2].lower() in (b"<h", b"<!") else "xml"
+    if first in (b"{", b"["):
+        return "json"
+    return "other"
 
 
 def _redact_url(url):

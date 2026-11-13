@@ -466,6 +466,19 @@ NAME_CASES = (
     ("eager non-inline mapping", 'logger.info("%(url)s" % row)', True),
     ("escaped percent is text", 'logger.info("%%(url)s %s" % name)', False),
     ("percent mapping key applied", 'logger.info("%(url)s" % row)', True),
+    # Template keys are judged by the credential rule as well as the name rule.
+    ("lazy mapping, credential key access_token", 'logger.info("%(access_token)s", row)', True),
+    ("lazy mapping, credential key password", 'logger.info("%(password)s", row)', True),
+    ("lazy inline dict, credential key, raw value", 'logger.info("%(password)s", {"password": p})', True),
+    ("lazy inline dict, credential key, redacted value", 'logger.info("%(password)s", {"password": redact_text(p)})', False),
+    ("lazy inline dict, credential key redacted, neighbour raw", 'logger.info("%(password)s %(name)s", {"password": redact_text(p), "name": request.headers})', True),
+    ("lazy mapping, escaped credential key", 'logger.info("%%(password)s", row)', False),
+    ("eager mapping, credential key", 'logger.info("%(access_token)s" % row)', True),
+    ("eager inline dict, credential key, raw value", 'logger.info("%(password)s" % {"password": p})', True),
+    # DOCUMENTED CONSERVATIVE FALSE POSITIVE (see the checker's KNOWN LIMITS): the
+    # eager form reads the credential key from the message text, so a redacted
+    # value does not clear it. The lazy twin above is clear. Pinned so a change is deliberate.
+    ("eager inline dict, credential key, redacted value (known false positive)", 'logger.info("%(password)s" % {"password": redact_text(p)})', True),
     ("getattr literal", 'logger.info("%s", getattr(obj, "url"))', True),
     ("getattr literal pattern", 'logger.info("%s", getattr(obj, "search_pattern", None))', True),
     ("getattr redacted", 'logger.info("%s", redact_url(getattr(obj, "url")))', False),
