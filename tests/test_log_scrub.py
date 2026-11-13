@@ -15,7 +15,7 @@ import time
 from unittest import mock
 
 from django.test import SimpleTestCase
-from hypothesis import example, given, settings as hyp_settings, strategies as st
+from hypothesis import example, find, given, settings as hyp_settings, strategies as st
 
 from dispatcharr import log_scrub
 from dispatcharr import utils as dispatcharr_utils
@@ -615,6 +615,50 @@ class FailureBehaviour(FactoryTestCase):
         self.assertNotIn("[log scrubber: truncated", out)
 
 
+def record_message(msg, args):
+    """The message ``_scrub_record`` leaves on a record built from ``msg`` and ``args``."""
+    record = logging.LogRecord("t", logging.WARNING, __file__, 1, msg, args, None)
+    log_scrub._scrub_record(record)
+    return record.getMessage()
+
+
+def without_rescan(msg, args):
+    """A deliberately wrong record step: renders the whole-read arguments and does not scan again."""
+    whole = log_scrub._whole_path_args(args)
+    return scrub_text(msg % args) if whole is None else msg % whole
+
+
+_SENTINEL_RE = re.compile(r"qz\d+zq")
+
+
+def check_masks_only_add(new_message, msg, args):
+    """No sentinel the plain message scan masks may appear in ``new_message``'s output."""
+    rendered = msg % args
+    old = scrub_text(rendered)
+    new = new_message(msg, args)
+    exposed = [s for s in _SENTINEL_RE.findall(rendered) if s not in old and s in new]
+    assert not exposed, f"{exposed} masked by the message scan but exposed in {new!r} (old {old!r})"
+
+
+@st.composite
+def spaced_records(draw):
+    """A template and 1-4 arguments: spaced slash paths, plain tokens; unique sentinels throughout."""
+    count = draw(st.integers(1, 4))
+    args = []
+    for _ in range(count):
+        parts = draw(st.lists(tokens(max_pieces=8), min_size=1, max_size=4))
+        lead = draw(st.sampled_from(["/", "/movie/", "/live/u/", ""]))
+        args.append(lead + " ".join(parts))
+    glue = draw(st.lists(tokens(max_pieces=6), min_size=count + 1, max_size=count + 1))
+    msg = "".join(g.replace("%", "%%") + " %s " for g in glue[:-1]) + glue[-1].replace("%", "%%")
+    counter = iter(range(10_000))
+
+    def unique(text):
+        return re.sub(SENT, lambda _m: f"qz{next(counter)}zq", text)
+
+    return unique(msg), tuple(unique(a) for a in args)
+
+
 class WholePathArguments(FactoryTestCase):
     """A string argument that is a path holding whitespace is read as one token.
 
@@ -675,4 +719,112 @@ class WholePathArguments(FactoryTestCase):
         msg, args = "%s: %s", ("Saved", "/data/My Recordings/show.ts")
         record = self.scrubbed(msg, args)
         self.assertIs(record.msg, msg)
+        self.assertIs(record.args, args)
+
+    # -- masks only add (review round 1, finding 1) ---------------------------------
+
+    def test_a_second_carrier_in_another_argument_and_in_the_template_is_still_masked(self):
+        # The whole-read render is scanned again; without that rescan the other
+        # argument's userinfo and password, and the template's, would print raw.
+        record = self.scrubbed(
+            "%s from %s via http://tu:sentinel-tp@h.invalid/x",
+            ("/movie/ab cd/xyz/1.mp4", "http://uu:sentinel-pw@h.invalid/get.php?password=sentinel-pw2"),
+        )
+        out = record.getMessage()
+        for sentinel in ("sentinel-tp", "sentinel-pw", "sentinel-pw2"):
+            self.assertNotIn(sentinel, out, "the whole-read render was not scanned again: masks did not only add")
+        for sentinel in ("cd", "xyz"):
+            self.assertNotIn(sentinel, out, self.LEAK)
+        self.assertEqual(
+            out, "/movie/*** from http://***@h.invalid/get.php?password=*** via http://***@h.invalid/x"
+        )
+
+    @given(spaced_records())
+    def test_the_whole_read_never_exposes_what_the_message_scan_masked(self, case):
+        check_masks_only_add(record_message, *case)
+
+    def test_control_the_generated_records_catch_a_scrubber_that_skips_the_rescan(self):
+        def violates(case):
+            try:
+                check_masks_only_add(without_rescan, *case)
+            except AssertionError:
+                return True
+            return False
+
+        # Raises NoSuchExample if the strategy never produces a case the wrong step fails.
+        find(spaced_records(), violates, settings=hyp_settings(max_examples=2000, derandomize=True, database=None))
+
+    def test_control_a_scrubber_that_skips_the_rescan_is_caught(self):
+        msg = "%s from %s"
+        args = ("/movie/ab cd/xyz/1.mp4", "http://uu:qz0zq@h.invalid/get.php?password=qz1zq")
+        check_masks_only_add(record_message, msg, args)
+        with self.assertRaises(AssertionError):
+            check_masks_only_add(without_rescan, msg, args)
+
+    # -- which arguments are read whole (review round 1, finding 2) ------------------
+
+    def test_control_a_spaced_argument_not_starting_with_a_slash_keeps_its_tail(self):
+        args = ("fetch http://h.invalid/live/uu/pp/1.ts failed after 3 tries",)
+        record = self.scrubbed("%s", args)
+        self.assertEqual(
+            record.getMessage(), "fetch http://h.invalid/live/*** failed after 3 tries",
+            "an argument not starting with '/' was read whole",
+        )
+
+    def test_control_a_spaceless_path_glued_to_the_template_is_untouched(self):
+        # Not an equivalent mutant: read whole, "/a/b/1" is the root route and
+        # becomes "/***"; glued to "chunk" in the message the root rule does not
+        # start inside the token, so the record is unchanged, as on main.
+        msg, args = "chunk%s", ("/a/b/1",)
+        record = self.scrubbed(msg, args)
+        self.assertIs(record.msg, msg, "a spaceless path argument was read whole")
+        self.assertIs(record.args, args)
+
+    # -- the total budget (review round 1, finding 3) ---------------------------------
+
+    def test_the_whole_read_examines_at_most_the_budget_per_record(self):
+        width = 1000
+        path = "/movie/ab cd/" + "x" * (width - len("/movie/ab cd/"))
+        fits = log_scrub.WHOLE_READ_BUDGET // width
+        for label, msg, args in (
+            ("tuple", "%s " * 50, (path,) * 50),
+            ("mapping", " ".join(f"%(k{i})s" for i in range(50)), {f"k{i}": path for i in range(50)}),
+        ):
+            with self.subTest(label):
+                read = []
+                real = log_scrub.scrub_token
+
+                def counting(tok):
+                    read.append(len(tok))
+                    return real(tok)
+
+                with mock.patch.object(log_scrub, "scrub_token", counting):
+                    out = self.scrubbed(msg, args).getMessage()
+                self.assertLessEqual(sum(read), log_scrub.WHOLE_READ_BUDGET, "the whole-read budget was not charged")
+                self.assertEqual(out.split(), ["/movie/***"] * fits + ["/***"] * (50 - fits))
+                self.assertNotIn("cd", out)
+
+    # -- the over-masks the whole read adds (spec 4.3's table, T5) -------------------
+
+    def test_accepted_whole_read_over_masks_exact(self):
+        for arg, expected in (
+            ("/data/My Recordings/2024 show.ts", "/***"),
+            (
+                "/usr/bin/ffmpeg -i http://h.invalid/live/uu/pp/1.ts -c copy /data/out file.ts",
+                "/usr/bin/ffmpeg -i http://h.invalid/live/***",
+            ),
+        ):
+            with self.subTest(arg):
+                self.assertEqual(self.scrubbed("%s", (arg,)).getMessage(), expected)
+
+    def test_a_changed_str_subclass_renders_its_scrubbed_value(self):
+        class Shown(str):
+            def __str__(self):
+                return "hidden"
+
+        self.assertEqual(self.scrubbed("%s", (Shown("/movie/ab cd/xyz/1.mp4"),)).getMessage(), "/movie/***")
+        # Unchanged, it keeps its own __str__ and the record keeps its args.
+        args = (Shown("/api/x"),)
+        record = self.scrubbed("%s", args)
+        self.assertEqual(record.getMessage(), "hidden")
         self.assertIs(record.args, args)
