@@ -16,10 +16,10 @@ Closes #
 
 Please check every item before marking this PR as ready for review. Unchecked items will be flagged during review.
 
-- [ ] I have read the [CONTRIBUTING.md](../blob/dev/CONTRIBUTING.md) in full
-- [ ] I agree to the [Contributor License Agreement](../blob/dev/CONTRIBUTING.md#contributor-license-agreement)
+- [ ] I have read the [CONTRIBUTING.md](../blob/main/CONTRIBUTING.md) in full
+- [ ] I agree to the [Contributor License Agreement](../blob/main/CONTRIBUTING.md#contributor-license-agreement)
 - [ ] I understand — line by line — every change in this PR and can explain it if asked
-- [ ] This PR targets the `dev` branch
+- [ ] This PR targets the `main` branch
 - [ ] Backend: migrations are included if any models were changed
 - [ ] Backend: new API endpoints appear correctly in the OpenAPI schema
 - [ ] Frontend: ESLint and Prettier pass cleanly (`npm run lint`, `npm run format`)

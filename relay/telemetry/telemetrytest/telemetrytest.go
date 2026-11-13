@@ -38,6 +38,9 @@ type Span struct {
 	Status      string // "unset", "error" or "ok"
 	Description string
 	Ended       bool
+	// TraceFlags is the span context's whole flags byte, so a test can see a
+	// W3C Level 2 bit (0x02) survive.
+	TraceFlags byte
 }
 
 // Point is one metric data point.
@@ -184,6 +187,7 @@ func (r *Recorder) Spans() []Span {
 			Attrs:        map[string]any{},
 			Status:       "unset",
 			Ended:        ended[s.SpanContext().SpanID().String()],
+			TraceFlags:   byte(s.SpanContext().TraceFlags()),
 		}
 		if p := s.Parent(); p.IsValid() {
 			sp.ParentSpanID = p.SpanID().String()
@@ -309,7 +313,13 @@ func (r *Recorder) Sum(name string) float64 {
 func (r *Recorder) TuneCompletions() int { return int(r.T.Completions()) }
 
 // Traceparent builds a W3C traceparent header value for a sampled span.
-func Traceparent(traceID, spanID string) string { return "00-" + traceID + "-" + spanID + "-01" }
+func Traceparent(traceID, spanID string) string { return TraceparentFlags(traceID, spanID, 0x01) }
+
+// TraceparentFlags is Traceparent with the trace-flags byte named: Django's
+// authorize view sends 0x03 (sampled plus the W3C Level 2 random-trace-id bit).
+func TraceparentFlags(traceID, spanID string, flags byte) string {
+	return fmt.Sprintf("00-%s-%s-%02x", traceID, spanID, flags)
+}
 
 // NewProcRegistry returns an empty registry over src for WithProcRegistry.
 func NewProcRegistry(src procstat.Source) *procstat.Registry { return procstat.NewRegistry(src) }

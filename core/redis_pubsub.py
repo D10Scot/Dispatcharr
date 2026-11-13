@@ -89,7 +89,7 @@ class RedisPubSubManager:
 
             if self.pubsub:
                 self.pubsub.psubscribe(pattern)
-                logger.info(f"Subscribed to pattern: {pattern}")
+                logger.info(f"Subscribed to a pattern ({len(self.pattern_subscriptions)} active)")
 
     def publish(self, channel, message):
         """

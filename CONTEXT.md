@@ -5,17 +5,88 @@ test names, issue titles and commit messages.
 
 ## Mino
 
-The working name for the whole product, the server and the Apple app together. The fork has
-diverged far enough from upstream Dispatcharr that it will be renamed. Until that rename happens,
-existing code, images and identifiers keep saying "Dispatcharr". Every **new** externally visible
-identifier (a route, a header, a setting key, a Bonjour service type, an app bundle identifier) is named neutrally
-or for Mino, never for Dispatcharr, so that the rename does not have to break it.
+The name of the whole product: the server and the Apple app together. Mino is derived from
+Dispatcharr (AGPL-3.0) and no longer tracks it (`docs/adr/0010-the-product-is-renamed-mino-and-upstream-is-no-longer-tracked.md`).
+Where this glossary says "Dispatcharr" it means upstream, apart from the identifiers listed under Internal names.
+Decision records (ADRs, specs, plans, analyses, `CHANGELOG.md`) keep the old name as history. The
+rename is a sequence of PRs (`docs/superpowers/specs/2026-10-28-mino-rename-design.md`), so some
+identifiers below still say "Dispatcharr" until their own PR lands. Name every **new** externally
+visible identifier (a route, a header, a setting key, a Bonjour service type, an app bundle
+identifier) for Mino.
+
+## Internal names
+
+Identifiers that keep the old name on purpose, so that no one "finishes" the rename by changing one.
+Each is kept because persisted data, a third party or a path-matched guard depends on it, or because
+renaming it buys no reader anything. The spec (`docs/superpowers/specs/2026-10-28-mino-rename-design.md`,
+§ Categories; the section is named in brackets) holds the reasoning.
+
+- **The `dispatcharr` Python package** (ruling M5, C-10): `dispatcharr/`, `dispatcharr.settings`,
+  `dispatcharr.wsgi`, `dispatcharr.asgi`, `celery -A dispatcharr` and `Celery("dispatcharr")`, and the
+  `ENGINE` path `dispatcharr.db.backends.postgresql_psycopg3`. A missed path filter fails silently and a
+  plugin that imports the package breaks at load; no user sees the package name.
+- **`pyproject.toml`'s `name`, and the `name` in `e2e/package.json` and `e2e-upstream/package.json`**
+  (C-21): internal, and renaming them churns the lockfiles for no reader.
+- **Django app labels and table names** (`dispatcharr_channels`, `dispatcharr_connect`, C-9):
+  migration history, content types and stored data depend on them, and a relabel touches the one
+  irreplaceable asset to change a string no user sees.
+- **Database name and role defaults** (`dispatcharr` / `dispatch`, C-16): changing the default would
+  start an upgraded container against a new, empty database next to the real one.
+- **Internal file and path names** (C-6, kept by R-3 so that no path-matched guard can lose its
+  subject):
+  - `docker/dispatcharr_api_params*.conf` and their `/etc/nginx/` install paths;
+  - `/usr/share/dispatcharr/nginx.conf.template`, `/etc/profile.d/dispatcharr.sh` and
+    `/run/dispatcharr-role`;
+  - `/dispatcharrpy`: renaming it means a base-image rebuild and about 30 living references, for no
+    reader;
+  - `docker/DispatcharrBase` (the `paths:` filter in `base-image.yml`) and
+    `docker/init/03-init-dispatcharr.sh`;
+  - the migration `apps/channels/migrations/0034_remove_stream_dispatcharr_stream_id_idx_and_more.py`
+    and the index names it removes, `dispatcharr_stream_id_idx` and `dispatcharr_stream_chno_idx`
+    (history, C-6 and C-21);
+  - `.idea/DispatcharrSM.iml`.
+- **Plugin manifest keys** (`min_dispatcharr_version`, `max_dispatcharr_version`, C-15) and upstream's
+  plugin registry, its signing key and the "Dispatcharr Official" row (C-3): a third-party contract and
+  upstream's own identity.
+- **The HDHomeRun `DeviceID`** (`dispatcharr-hdhr-<slug>`, `HDHRDevice.device_id`, C-21): Plex keys a
+  tuner on it, so a new id would lose the viewer's DVR setup. Only the friendly name is renamed.
+- **The Hypothesis profile `dispatcharr-ci`** (C-13): a test-internal label registered in every
+  `@given` module.
+- **Browser storage keys** (`dispatcharr_sidebar_open`, `dispatcharr_remembered_username`,
+  `dispatcharr_saved_password`, `dispatcharr-player-prefs`, C-19): invisible to users, and renaming
+  them resets every browser's preferences.
+- **`dispatcharr_stream_id`** (C-21): a field in Redis session descriptors that an in-flight catch-up
+  session must still read across an upgrade.
+- **Internal Python symbols** (C-18, C-21): the helpers `dispatcharr_user_agent`,
+  `dispatcharr_dvr_user_agent` and `dispatcharr_http_headers`, the local `DISPATCHARR_HEADERS` in
+  `core/tasks.py`, the `_dispatcharr_plugin_<key>` module prefix and `_dispatcharr_pool_created_at`.
+- **Internal transient names** (C-21): the Redis cache keys `dispatcharr:ip_lookup_*` and the path
+  `/tmp/dispatcharr_log_level`.
+- **The sample compose volume key `dispatcharr_data`** (C-21): changing a volume key in a compose file
+  creates a new, empty volume.
+- **Existing backup archives** `dispatcharr-backup-*.zip` (C-20): read alongside `mino-backup-*` for as
+  long as they exist, because they are the owner's records.
+- **The local checkout path `~/git/Dispatcharr`** (C-17): the owner's machine, owner action H-9.
+
+Names that are kept only until a later PR of the sequence renames them, and so are not internal
+names:
+
+- the `DISPATCHARR_*` environment variables (E1, E2);
+- the `X-Dispatcharr-*` headers and `/_dispatcharr/…` routes (W1);
+- the Go module path `github.com/D10Scot/Dispatcharr/relay` (G1);
+- the image and repository identity `ghcr.io/d10scot/dispatcharr` and `D10Scot/Dispatcharr` (the owner's
+  repository rename and D2; D1 only makes CI independent of the name), and the sample compose
+  `container_name: dispatcharr*` (D2);
+- the `Dispatcharr/<version>` and `Dispatcharr-DVR/…` User-Agent strings (U1);
+- `dispatcharr-backup-*` as the name new archives are written under, and the `dispatcharr-backup-` and
+  `dispatcharr-restore-` temp-dir prefixes (P1);
+- the `dispatcharr-*` test containers, volumes and image tags, and `/tmp/dispatcharr-coverage*` (T1).
 
 ## Profiles — three different things
 
 Never write a bare "profile".
 
-- **Stream Profile** — how Dispatcharr talks to the *upstream* provider.
+- **Stream Profile** — how Mino talks to the *upstream* provider.
   Chooses an architecture, not a setting: Redirect, Proxy, or subprocess.
   Five locked rows ship, not three — `ffmpeg`, `streamlink` and `VLC` are
   three spellings of the subprocess architecture, alongside `Proxy` and
@@ -92,7 +163,7 @@ Two surviving mechanisms still use the words, for different things:
 ## Upstream provider
 
 The fake IPTV source the E2E suite controls, standing in for a real provider
-in tests. Distinct from an **M3U Account**, which is Dispatcharr's own record
+in tests. Distinct from an **M3U Account**, which is Mino's own record
 of a provider, and from a **Stream**, which is one playable URL — a single
 upstream provider serves a whole catalogue of streams.
 
@@ -105,7 +176,7 @@ path. Not a session; not a Playwright project.
 ## Fault
 
 A deliberate misbehaviour the upstream provider is switched into to drive a
-Dispatcharr failure path. Distinct from a bug: a fault is expected, and the
+Mino failure path. Distinct from a bug: a fault is expected, and the
 product is expected to survive it.
 
 ## Category
@@ -128,7 +199,7 @@ already says "timeshift".
 
 ## Live rewind window
 
-The recent past of a **live** channel that Dispatcharr itself keeps while the channel is being
+The recent past of a **live** channel that Mino itself keeps while the channel is being
 watched over HLS. A client can pause, rewind and fast-forward live TV back to live, up to a
 configured depth. It starts when the channel's first HLS viewer arrives, never before: there is
 nothing to rewind to from before anyone was watching. A channel watched only over MPEG-TS keeps no
@@ -136,7 +207,7 @@ window. There is one window per channel, shared by every client watching it. It 
 client by a short linger, so a viewer who zaps back keeps their rewind. It is read over HLS. A
 reader for MPEG-TS clients is a known extension, not something that exists.
 
-**Not catch-up.** Catch-up replays the *provider's* archive; the live rewind window is Dispatcharr's
+**Not catch-up.** Catch-up replays the *provider's* archive; the live rewind window is Mino's
 own recording of what it relayed. Never call it "timeshift" (catch-up's other name) or "DVR"
 (scheduled recordings).
 
@@ -196,7 +267,7 @@ vestigial — do not use them.
     switch to HLS for live.
   - **Phase 4b** — the **Apple app**: a first-party iOS and tvOS client,
     published on the App Store, that plays live channels over HLS from a
-    Dispatcharr server on the same network. Live TV only; VOD, catch-up and
+    Mino server on the same network. Live TV only; VOD, catch-up and
     recordings are out of its scope.
   - **Phase 4c** — paired-device auth: per-device, revocable, Mino-only
     credentials in place of Xtream ones, investigated after 4b's first
