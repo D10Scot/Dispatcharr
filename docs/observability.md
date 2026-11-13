@@ -38,13 +38,43 @@ relay records its own spans (section 6).
 OTLP is enabled in a process if and only if `OTEL_EXPORTER_OTLP_ENDPOINT` is set and non-empty and
 `OTEL_SDK_DISABLED` is not `true`. Only OTLP over HTTP with protobuf is supported.
 
-> **Before you enable OTLP in production, the K2 gevent soak is owed.** The spec requires one soak
-> before OTLP is turned on anywhere that matters: a uWSGI worker under the project's own
-> `gevent = 400`, polled for ten minutes with OTLP on, showing no hung worker. **That soak has not
-> been run.** O5 ran the gevent context-propagation test only. Upstream has open reports of
-> deadlocks in the Python metric reader under gevent (opentelemetry-python #4345, #5788). If a
-> worker hangs, set `OTEL_METRICS_EXPORTER=none` and report it. Until the soak is done, treat
-> OTLP on the Python processes as experimental. The relay is Go and is not affected.
+> **The K2 gevent soak has been run once, on a shared machine, and no worker hung.** The spec's
+> risk K2 asks for one soak before OTLP is turned on anywhere that matters: a uWSGI worker under
+> the project's own `gevent = 400`, polled for ten minutes with OTLP on, showing no hung worker.
+> Upstream has open reports of deadlocks in the Python metric reader under gevent
+> (opentelemetry-python #4345, #5788).
+>
+> The soak ran on 2026-11-13 against the image `ghcr.io/d10scot/dispatcharr@sha256:38bd0cc633ff8a39d7cdea0c2773065d4313cf3fa3babb1483e06a0d98f4f9bf`,
+> built from `cf40b42e` (SDK 1.45.2, instrumentations 0.66b2, gevent 26.7.0, uWSGI 2.0.31). It used the
+> all-in-one image with `docker/uwsgi.ini` unchanged: four workers and `gevent = 400`. Traces,
+> metrics and logs all went to an OpenTelemetry Collector 0.165.0 over OTLP/HTTP. The settings
+> were `OTEL_METRIC_EXPORT_INTERVAL=1000` (one export a second rather than one a minute), every
+> trace sampled, and `DISPATCHARR_API_MAX_REQUESTS` raised so that a recycle could not hide a
+> hang. The load was 100 concurrent clients through nginx, for 11 minutes, run twice. They
+> requested `/api/core/version/`, an authenticated `/api/core/settings/` and, for one request
+> in ten, a 404 that writes a log record.
+>
+> | | Run 1 | Run 2 |
+> |---|---|---|
+> | Requests (errors) | 1,153,361 (0) at 1,744/s | 543,052 (0) at 823/s |
+> | Collector accepted: spans, metric points, log records (refused) | 2,924,650, 18,721, 115,327 (0) | 1,377,644, 16,661, 54,273 (0) |
+> | 1 s poll: p50, p99, max | 0.046 s, 2.1 s, 6.5 s | 0.079 s, 3.6 s, 7.6 s |
+> | Longest gap between one worker's metric exports | 6.5 s | 19.8 s |
+>
+> In both runs the four workers had the same PIDs before and after, with no harakiri and no
+> respawn. Every worker exported metrics and served requests in every minute of the run, and the
+> collector's counters for all three signals rose in every 30-second scrape. At the end,
+> `py-spy dump` showed each worker idle in `Hub.run`, with no thread in the SDK.
+>
+> **The latency bound set beforehand was missed.** It was 5 seconds per poll and 10 seconds
+> between a worker's exports. The slow polls came while the host's load average was between 500
+> and 970 on 14 cores, from work outside the soak. `celery-beat`, which serves no requests,
+> slowed in step with the workers, and the Go relay's exports kept to time. The slow polls fit
+> CPU starvation and do not fit a lock, but this soak cannot rule out an SDK stall hidden inside
+> them. Repeat it on a quiet machine before OTLP goes on in production.
+>
+> Until then, treat OTLP on the Python processes as experimental. If a worker hangs, set
+> `OTEL_METRICS_EXPORTER=none` and report it. The relay is Go and is not affected.
 
 | Variable | Behaviour |
 |---|---|
