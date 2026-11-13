@@ -10,6 +10,7 @@ pass for the real one either.
 """
 import io
 import logging
+import re
 import time
 from unittest import mock
 
@@ -444,6 +445,33 @@ class CapsAndLinearTime(SimpleTestCase):
         self.assertTrue(out.startswith(" [log scrubber: truncated from 30000 characters]"), out[:80])
         self.assertLess(len(out), 100)
 
+    def test_a_token_straddling_the_tail_cut_is_withheld_whole(self):
+        # scrub_tail keeps the tail and cuts at the first whitespace at or after
+        # len - (TAIL_CAP - 64). A cut inside a token would leave "er:pass@host/..." with no "//".
+        carrier = f"http://{SENT}u:{SENT}p@h.invalid/x?password={SENT}s"
+        keep = TAIL_CAP - 64
+        pre = "w " * 500
+        for inside in range(1, len(carrier)):
+            after = (" w" * (keep + len(carrier)))[: inside + keep - len(carrier)]
+            text = pre + carrier + after
+            n = len(text)
+            cut = n - keep
+            self.assertEqual(cut, len(pre) + inside)  # the cut starts `inside` characters into the token
+            out = scrub_tail(text)
+            boundary = re.compile(r"\s").search(text, cut).start()
+            expected = f"[log scrubber: truncated from {n} characters]" + text[boundary:]
+            self.assertEqual(out, expected, f"inside={inside}")
+            self.assertNotIn(SENT, out)
+
+    def test_the_scan_never_reads_more_than_the_cap(self):
+        # D4: the input is cut BEFORE scanning, so the scanner never sees more than the cap.
+        for scrub, cap in ((scrub_text, CAP), (scrub_tail, TAIL_CAP)):
+            seen = []
+            with mock.patch.object(log_scrub, "_scan", side_effect=lambda text: (seen.append(len(text)), text)[1]):
+                scrub("word " * 120000)
+            self.assertTrue(seen)
+            self.assertLessEqual(max(seen), cap, scrub.__name__)
+
     def test_a_carrier_straddling_the_cut_is_absent(self):
         carrier = f"http://{SENT}u:{SENT}p@h.invalid/x?password={SENT}s"
         limit = CAP - 64
@@ -559,3 +587,29 @@ class FailureBehaviour(FactoryTestCase):
         self.assertIsNotNone(record.exc_text)
         self.assertNotIn(SENT, record.exc_text)
         self.assertIn("password=***", record.exc_text)
+
+    def test_a_traceback_between_the_two_caps_keeps_its_last_line(self):
+        # Longer than the message cap, shorter than the tail cap: only scrub_tail keeps the last
+        # line. Routing exc_text or stack_info through scrub_text would cut it to the head.
+        body = ("word " * 6000) + "\nValueError: tail-marker"
+        self.assertTrue(CAP < len(body) < TAIL_CAP)
+        for field in ("exc_text", "stack_info"):
+            with self.subTest(field):
+                self.presetting_factory(**{field: body})
+                logger, stream = self.capture(f"t7.between.{field}")
+                logger.info("failed")
+                out = stream.getvalue()
+                self.assertTrue(out.rstrip("\n").endswith("ValueError: tail-marker"), out[-80:])
+                self.assertNotIn("[log scrubber: truncated", out)
+                logging.setLogRecordFactory(self.entry_factory)
+
+    def test_a_rendered_traceback_between_the_two_caps_keeps_its_last_line(self):
+        logger, stream = self.capture("t7.rendered")
+        try:
+            raise ValueError(("word " * 6000) + "tail-marker")
+        except ValueError:
+            logger.exception("failed")
+        out = stream.getvalue()
+        self.assertGreater(len(out), CAP)
+        self.assertTrue(out.rstrip("\n").endswith("tail-marker"), out[-80:])
+        self.assertNotIn("[log scrubber: truncated", out)

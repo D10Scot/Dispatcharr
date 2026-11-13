@@ -594,6 +594,7 @@
 8	tests/test_credential_logging_guard.py
 9	tests/test_geventpool_conn_lifetime.py
 10	tests/test_log_scrub.py
+3	tests/test_log_scrub_classes.py
 28	tests/test_log_scrub_install.py
 1	tests/test_log_scrub_sinks.py
 1	tests/test_m3u_profile_test_logging.py
