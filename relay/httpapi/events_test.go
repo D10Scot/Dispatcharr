@@ -27,6 +27,7 @@ func eventsOf(t *testing.T, r *rig, typ string, n int) []relaytest.RecordedEvent
 // core/relay_events.py's _apply_stream_stats is written around that shape --
 // a relay that lifted without leaving would be a silent loss there.
 func TestATuneRaisesChannelStart(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-start", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -60,6 +61,7 @@ func TestATuneRaisesChannelStart(t *testing.T) {
 // Python's -- emit_event appears exactly once in output/fmp4/generator.py,
 // at :114 -- and it is reproduced, not evened out.
 func TestBothClientTypesConnectAndOnlyTheTSOneDisconnects(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--fmp4-fragments", "200", "--fmp4-interval", "0.02")))
 
@@ -116,6 +118,7 @@ func TestBothClientTypesConnectAndOnlyTheTSOneDisconnects(t *testing.T) {
 // Stopping a channel through the control route raises channel_stop, with the
 // runtime and the byte total _collect_channel_stop_event_data snapshots.
 func TestStoppingAChannelRaisesChannelStop(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-stopevent", "client-a")
 	packetRun(t, "the client", response.Body, 10)
@@ -160,6 +163,7 @@ func TestStoppingAChannelRaisesChannelStop(t *testing.T) {
 // counters" on its own, and one that recorded none would satisfy "the fMP4
 // client has none".
 func TestOnlyATSClientsDetailRowCarriesTheByteCounters(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, nil,
 		withRemux(standInRemux(t, "--fmp4-fragments", "200", "--fmp4-interval", "0.02")))
 

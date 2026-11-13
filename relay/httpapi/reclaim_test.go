@@ -85,6 +85,7 @@ func (r *rig) requestIndex(id, suffix string, start int) int {
 }
 
 func TestABlockedTuneReclaimsASilentHLSChannel(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := reclaimRig(t, f, relaytest.ControlPlaneConfig{Slots: map[int]int{1: 2}})
 
@@ -143,6 +144,7 @@ func TestABlockedTuneReclaimsASilentHLSChannel(t *testing.T) {
 }
 
 func TestABlockedTuneNeverReclaimsAWatchedChannel(t *testing.T) {
+	t.Parallel()
 	t.Run("ts-client", func(t *testing.T) {
 		f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 		r := reclaimRig(t, f, relaytest.ControlPlaneConfig{Slots: map[int]int{1: 1}})
@@ -191,6 +193,7 @@ func TestABlockedTuneNeverReclaimsAWatchedChannel(t *testing.T) {
 // pick and the re-check with the manager's lock held, so a test can land a
 // request in exactly that window. Nothing here is timing.
 func TestTheReclaimReCheckSeesARequestThatArrivedAfterThePick(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := reclaimRig(t, f, relaytest.ControlPlaneConfig{Slots: map[int]int{1: 1}})
 	a := r.session(t, "A", "cA")
@@ -228,6 +231,7 @@ func TestTheReclaimReCheckSeesARequestThatArrivedAfterThePick(t *testing.T) {
 }
 
 func TestABlockedTuneRetriesOnceWhenNothingIsReleasingOrReclaimable(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := reclaimRig(t, f, relaytest.ControlPlaneConfig{BlockFirst: 1})
 
@@ -242,6 +246,7 @@ func TestABlockedTuneRetriesOnceWhenNothingIsReleasingOrReclaimable(t *testing.T
 }
 
 func TestABlockedTuneWaitsForAReleaseInFlight(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := reclaimRig(t, f, relaytest.ControlPlaneConfig{Slots: map[int]int{1: 1}})
 	open := r.Control.HoldReleases()
@@ -283,6 +288,7 @@ func TestABlockedTuneWaitsForAReleaseInFlight(t *testing.T) {
 }
 
 func TestAnInFlightRequestHoldsAChannelAgainstReclaim(t *testing.T) {
+	t.Parallel()
 	t.Run("entry", func(t *testing.T) {
 		f := newHLSFixture(t, modeGatedInit, relaytest.HLSProbeJSON(true, true))
 		r := reclaimRig(t, f, relaytest.ControlPlaneConfig{})

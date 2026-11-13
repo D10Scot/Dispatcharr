@@ -141,6 +141,7 @@ func (r *rig) newestSequence(t *testing.T, s hlsSession) string {
 }
 
 func TestTuningFromReadsTheRewindSettings(t *testing.T) {
+	t.Parallel()
 	values := relaytest.EffectiveProxySettings()
 	values["rewind_window_minutes"] = 1.5
 	values["rewind_linger_seconds"] = 20
@@ -166,6 +167,7 @@ func TestTuningFromReadsTheRewindSettings(t *testing.T) {
 }
 
 func TestATuneSetsTheProcessDiskCap(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := rewindRig(t, f, relaytest.ControlPlaneConfig{}, map[string]any{"rewind_disk_cap_gb": 2}, hls.OSFS{})
 	if r.Rewind.Cap() != math.MaxInt64 {
@@ -181,6 +183,7 @@ func TestATuneSetsTheProcessDiskCap(t *testing.T) {
 // Row ⟨G⟩: a segment older than the store's in-memory 21 is served, and the
 // window's playlist lists it.
 func TestAnOldSegmentIsServedFromDisk(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeLong, relaytest.HLSProbeJSON(true, true))
 	r := rewindRig(t, f, relaytest.ControlPlaneConfig{}, nil, hls.OSFS{})
 	s := r.session(t, "A", "cA")
@@ -204,6 +207,7 @@ func TestAnOldSegmentIsServedFromDisk(t *testing.T) {
 
 // Row ⟨E⟩: the last session's leave lingers the channel with no client.
 func TestALeftSessionsChannelLingersWithNoClient(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := rewindRig(t, f, relaytest.ControlPlaneConfig{}, lingerSettings(nil), hls.OSFS{})
 	s := r.session(t, "A", "cA")
@@ -233,6 +237,7 @@ func TestALeftSessionsChannelLingersWithNoClient(t *testing.T) {
 
 // A resume during the linger re-attaches to the very pipeline that lingers.
 func TestAResumeDuringTheLingerKeepsTheWindow(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := rewindRig(t, f, relaytest.ControlPlaneConfig{}, lingerSettings(nil), hls.OSFS{})
 	s := r.session(t, "A", "cA")
@@ -289,6 +294,7 @@ func (r *rig) wantServed(t *testing.T, channelID, clientID string) {
 // Row ⟨F⟩ (R82): a viewer far behind live that stops without a leave holds its
 // slot for 2 x TARGETDURATION plus the grace after its last request.
 func TestABehindLiveSessionThatGoesSilentHoldsItsSlotForTheGrace(t *testing.T) {
+	t.Parallel()
 	r, a := slotSetup(t)
 	if status, _, _ := r.getHLS(t, a.path("video/0.m4s")); status != http.StatusOK {
 		t.Fatalf("the old segment answered %d", status)
@@ -316,6 +322,7 @@ func TestABehindLiveSessionThatGoesSilentHoldsItsSlotForTheGrace(t *testing.T) {
 
 // R25: an explicit leave has no grace.
 func TestABehindLiveSessionThatLeavesIsReclaimableAtOnce(t *testing.T) {
+	t.Parallel()
 	r, a := slotSetup(t)
 	if status, _, _ := r.getHLS(t, a.path("video/0.m4s")); status != http.StatusOK {
 		t.Fatalf("the old segment answered %d", status)
@@ -328,6 +335,7 @@ func TestABehindLiveSessionThatLeavesIsReclaimableAtOnce(t *testing.T) {
 
 // A viewer at the live edge is silent at 4a-1c's 2 x TARGETDURATION.
 func TestALiveEdgeSessionHasNoGrace(t *testing.T) {
+	t.Parallel()
 	r, a := slotSetup(t)
 	newest := r.newestSequence(t, a)
 	if status, _, _ := r.getHLS(t, a.path("video/"+newest+".m4s")); status != http.StatusOK {
@@ -343,6 +351,7 @@ func TestALiveEdgeSessionHasNoGrace(t *testing.T) {
 // The spec's break-check oracle, on the real session table: a lingering channel
 // that still has a TS client is never reclaimed.
 func TestALingeringChannelWithATSClientIsNeverReclaimed(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := rewindRig(t, f, relaytest.ControlPlaneConfig{Slots: map[int]int{1: 1}}, lingerSettings(nil), hls.OSFS{})
 
@@ -372,6 +381,7 @@ func TestALingeringChannelWithATSClientIsNeverReclaimed(t *testing.T) {
 
 // Row ⟨H⟩: a failing disk degrades the window and touches nothing else.
 func TestADiskFailureNeverFailsTheLiveOutput(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := rewindRig(t, f, relaytest.ControlPlaneConfig{}, nil, enoSpcFS{})
 	ts := r.tuneAs(t, "A", "cTS")
@@ -395,6 +405,7 @@ func TestADiskFailureNeverFailsTheLiveOutput(t *testing.T) {
 }
 
 func TestTheChannelPayloadsCarryTheRewindFields(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := rewindRig(t, f, relaytest.ControlPlaneConfig{}, lingerSettings(nil), hls.OSFS{})
 	s := r.session(t, "A", "cA")
@@ -427,6 +438,7 @@ func TestTheChannelPayloadsCarryTheRewindFields(t *testing.T) {
 // R84 holds with the session STOPPED rather than removed: an admin client stop
 // of the last session lingers its pipeline with no grace.
 func TestAnAdminClientStopOfTheLastSessionLingersTheChannel(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := rewindRig(t, f, relaytest.ControlPlaneConfig{}, lingerSettings(nil), hls.OSFS{})
 	s := r.session(t, "A", "cA")

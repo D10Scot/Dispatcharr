@@ -1,6 +1,7 @@
 package relaytest
 
 import (
+	"encoding/binary"
 	"fmt"
 	"io"
 	"os"
@@ -56,6 +57,12 @@ func runFDFileStandIn(o standInOptions) int {
 		defer close(eof)
 		_, _ = io.Copy(io.Discard, os.Stdin)
 	}()
+	if o.fdFragmentInterval > 0 {
+		if code := writeFDFilesPaced(o); code != 0 {
+			return code
+		}
+		return holdFDFileStandIn(o, eof)
+	}
 	for _, f := range o.fdFiles {
 		raw, err := os.ReadFile(f.path) // #nosec G304 -- a fixture path the test itself chose
 		if err != nil {
@@ -77,6 +84,11 @@ func runFDFileStandIn(o standInOptions) int {
 		// Not closed: an encoder holds its outputs open until it exits, so
 		// a reader's EOF is the process's end, exactly as with ffmpeg.
 	}
+	return holdFDFileStandIn(o, eof)
+}
+
+// holdFDFileStandIn is how the stand-in ends once its files are written.
+func holdFDFileStandIn(o standInOptions, eof <-chan struct{}) int {
 	switch {
 	case o.ignoreStdinEOF:
 		// A sleep loop rather than select{}, for RunStandIn's stated reason.
@@ -87,4 +99,54 @@ func runFDFileStandIn(o standInOptions) int {
 		<-eof
 	}
 	return o.exitCode
+}
+
+// writeFDFilesPaced writes every --fd-file at once, each box by box, pausing
+// after each mdat: one fragment per interval on every descriptor, as an
+// encoder produces them in real time. Written serially and unpaced, a long
+// stream reaches the relay as one burst of segments, which outruns the rewind
+// writer's bounded queue on a loaded machine.
+func writeFDFilesPaced(o standInOptions) int {
+	codes := make(chan int, len(o.fdFiles))
+	for _, f := range o.fdFiles {
+		go func() { codes <- writeFDFilePaced(f, o.fdFragmentInterval) }()
+	}
+	code := 0
+	for range o.fdFiles {
+		if c := <-codes; c != 0 {
+			code = c
+		}
+	}
+	return code
+}
+
+func writeFDFilePaced(f fdFile, interval time.Duration) int {
+	raw, err := os.ReadFile(f.path) // #nosec G304 -- a fixture path the test itself chose
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "stand-in: reading %s: %v\n", f.path, err) // credential-logging: ok - an *fs.PathError over a test fixture path
+		return 2
+	}
+	out := os.Stdout
+	if f.fd != 1 {
+		out = os.NewFile(uintptr(f.fd), fmt.Sprintf("fd%d", f.fd))
+	}
+	if out == nil {
+		fmt.Fprintf(os.Stderr, "stand-in: fd %d is not open\n", f.fd)
+		return 2
+	}
+	for len(raw) >= 8 {
+		size := int(binary.BigEndian.Uint32(raw[:4]))
+		if size < 8 || size > len(raw) {
+			size = len(raw)
+		}
+		if _, err := out.Write(raw[:size]); err != nil {
+			fmt.Fprintf(os.Stderr, "stand-in: writing fd %d: %v\n", f.fd, err) // credential-logging: ok - a pipe write error, no URL anywhere in it
+			return 2
+		}
+		if string(raw[4:8]) == "mdat" {
+			time.Sleep(interval)
+		}
+		raw = raw[size:]
+	}
+	return 0
 }

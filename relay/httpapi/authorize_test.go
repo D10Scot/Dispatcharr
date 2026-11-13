@@ -20,6 +20,7 @@ import (
 // forwarded headers, so identity-bearing material reaching Django as a header
 // is the authorization oracle § The contract's M-R3-1 fix exists to close.
 func TestAnUntrustedTuneAsksDjangoAndSendsTheQuestionInTheBody(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 
 	header := http.Header{}
@@ -86,6 +87,7 @@ func TestAnUntrustedTuneAsksDjangoAndSendsTheQuestionInTheBody(t *testing.T) {
 // The counterpart of the test above, and the pair is what shows the fallback
 // is a fallback rather than a second hop on every tune.
 func TestATrustedTuneMakesNoAuthorizeCall(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	response := r.tuneAs(t, "c-trusted", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -105,6 +107,7 @@ func TestATrustedTuneMakesNoAuthorizeCall(t *testing.T) {
 // BOTH ROWS, because a relay that hard-coded either value would pass a test
 // that checked one.
 func TestInternalTravelsFromTheClientsMarkerAndNotTheTransports(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		marker   string
@@ -143,6 +146,7 @@ func TestInternalTravelsFromTheClientsMarkerAndNotTheTransports(t *testing.T) {
 // otherwise reach a viewer as 403. A test that checked only 403 would pass
 // against the collapsed shape.
 func TestADenialReachesTheViewerWithItsOwnStatus(t *testing.T) {
+	t.Parallel()
 	// BOTH BRANCHES OF writeAuthorizeFailure, because they are two different
 	// lines: a denial that carried a JSON body is forwarded verbatim, and one
 	// that carried none answers with the status text. Break-check 10 patched
@@ -193,6 +197,7 @@ func TestADenialReachesTheViewerWithItsOwnStatus(t *testing.T) {
 // an operator looks for a permissions problem, where the real fault is that
 // Django is down. 502 is what the relay says about itself.
 func TestAnUnreachableControlPlaneIsA502AndNotADenial(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	r.Control.SetAuthorize(&relaytest.AuthorizeDecision{Status: http.StatusInternalServerError})
 
@@ -210,6 +215,7 @@ func TestAnUnreachableControlPlaneIsA502AndNotADenial(t *testing.T) {
 // would stream a channel Django did not authorize, which is exactly what
 // X-Relay-Channel exists to prevent on the trusted path.
 func TestTheDecisionsValuesAreUsedRatherThanThePathAndTheSocket(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{}, nil)
 	r.Control.SetAuthorize(&relaytest.AuthorizeDecision{
 		Channel:  "c-from-django",

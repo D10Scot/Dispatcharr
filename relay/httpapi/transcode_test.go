@@ -23,7 +23,8 @@ import (
 
 // TestStandIn is this package's trampoline (relaytest/standin.go).
 func TestStandIn(_ *testing.T) {
-	if os.Getenv(relaytest.StandInEnv) != "1" {
+	// The re-executed binary is the one carrying "-- <stand-in flags>".
+	if relaytest.StandInArgs() == nil {
 		return
 	}
 	os.Exit(relaytest.RunStandIn(relaytest.StandInArgs()))
@@ -40,7 +41,6 @@ func transcodeRig(t *testing.T, overrides map[string]any, standInArgs ...string)
 
 func transcodeRigWith(t *testing.T, cp relaytest.ControlPlaneConfig, overrides map[string]any, standInArgs ...string) *rig {
 	t.Helper()
-	t.Setenv(relaytest.StandInEnv, "1")
 	// The upstream is started first so its URL can be put in the argv,
 	// which is what Django does with {streamUrl}; fanRigWith starts its own
 	// and this one is the same object because newRig only creates one when
@@ -98,6 +98,7 @@ func listedChannel(t *testing.T, r *rig) map[string]any {
 // fetches the provider -- the relay itself never does -- and the client
 // receives the child's fd 1 as whole, in-order TS packets.
 func TestATranscodeTuneDeliversTheChildsOutput(t *testing.T) {
+	t.Parallel()
 	r := transcodeRig(t, nil)
 	response := r.tuneAs(t, "c-transcode", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -119,6 +120,7 @@ func TestATranscodeTuneDeliversTheChildsOutput(t *testing.T) {
 // source_fps and ffmpeg_speed as floats on this endpoint (row 14's list
 // side), the rest as strings.
 func TestTheListEndpointCarriesTheFfmpegDerivedFields(t *testing.T) {
+	t.Parallel()
 	speeds := relaytest.CorpusSpeeds("normal")
 	r := transcodeRig(t, nil, "--stderr-corpus", relaytest.CorpusPath("normal"), "--stderr-interval", "0")
 	response := r.tuneAs(t, "c-stats", "client-a")
@@ -166,6 +168,7 @@ func TestTheListEndpointCarriesTheFfmpegDerivedFields(t *testing.T) {
 // it. The expected value is read off the capture with a test-local pattern,
 // not through the parser under test.
 func TestTheDetailEndpointCarriesTheFFmpegOutputBitrate(t *testing.T) {
+	t.Parallel()
 	_, records := relaytest.SplitCorpus(relaytest.Corpus("normal"))
 	m := regexp.MustCompile(`bitrate=\s*([0-9.]+)kbits/s`).FindSubmatch(records[len(records)-1])
 	if m == nil {
@@ -213,6 +216,7 @@ func TestTheDetailEndpointCarriesTheFFmpegOutputBitrate(t *testing.T) {
 // that both architectures exist: against 2c-3's Proxy-only relay it could
 // not have failed.
 func TestTheProxyProfileStreamsWithNoFfmpegAndNoStats(t *testing.T) {
+	t.Parallel()
 	r := fanRig(t, relaytest.Config{Rate: 4}, map[string]any{"buffering_speed": 10.0, "buffering_timeout": 1})
 	response := r.tuneAs(t, "c-proxy", "client-a")
 	defer func() { _ = response.Body.Close() }()
@@ -235,6 +239,7 @@ func TestTheProxyProfileStreamsWithNoFfmpegAndNoStats(t *testing.T) {
 // that cannot be built (503); and in both cases NOTHING is spawned, which
 // the provider's request count proves.
 func TestAnAbsentOrNullArgvFailsTheTuneBeforeAnythingIsSpawned(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		cp   relaytest.ControlPlaneConfig
@@ -266,7 +271,7 @@ func TestAnAbsentOrNullArgvFailsTheTuneBeforeAnythingIsSpawned(t *testing.T) {
 // discriminator is the stats: only the transcode path can produce an
 // ffmpeg_speed, so its presence proves the child ran.
 func TestAProxyProfileWithAnHLSURLIsPlayedThroughTheFFmpegProfile(t *testing.T) {
-	t.Setenv(relaytest.StandInEnv, "1")
+	t.Parallel()
 	upstream := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, 0x100), Rate: 4})
 	t.Cleanup(upstream.Close)
 	hlsURL := strings.TrimSuffix(upstream.URL(), ".ts") + ".m3u8"
@@ -295,6 +300,7 @@ func TestAProxyProfileWithAnHLSURLIsPlayedThroughTheFFmpegProfile(t *testing.T) 
 // ...and with NO locked ffmpeg profile installed, the same tune is refused
 // 503 rather than handed to a reader that cannot follow a playlist.
 func TestAProxyProfileWithAnHLSURLAndNoFFmpegProfileIsRefused(t *testing.T) {
+	t.Parallel()
 	upstream := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(64, 0x100)})
 	t.Cleanup(upstream.Close)
 	cp := relaytest.ControlPlaneConfig{Kind: control.KindProxy, SourceURL: strings.TrimSuffix(upstream.URL(), ".ts") + ".m3u8", Settings: rigSettings(nil)}
@@ -320,6 +326,7 @@ func TestAProxyProfileWithAnHLSURLAndNoFFmpegProfileIsRefused(t *testing.T) {
 // the maximum and every record after the first is below it, so channel B
 // must.
 func TestABufferingThresholdChangeDoesNotReachARunningChannel(t *testing.T) {
+	t.Parallel()
 	speeds := relaytest.CorpusSpeeds("normal")
 	for i, v := range speeds {
 		if v <= 0.1 || (i > 0 && v >= 10.0) {
@@ -377,6 +384,7 @@ func TestABufferingThresholdChangeDoesNotReachARunningChannel(t *testing.T) {
 // the provider would see Go's own default instead, which review found the
 // first draft allowing.
 func TestABlankUserAgentFallsBackToTheWireDefault(t *testing.T) {
+	t.Parallel()
 	const wireDefault = "VLC/3.0.20 LibVLC/3.0.20"
 	t.Run("transcode", func(t *testing.T) {
 		cp := relaytest.NewControlPlane(relaytest.ControlPlaneConfig{
@@ -424,6 +432,7 @@ func TestABlankUserAgentFallsBackToTheWireDefault(t *testing.T) {
 // and the channel is in error still carrying the child's code through the
 // exhaustion error.
 func TestAChildThatExitsNonZeroEndsTheTune(t *testing.T) {
+	t.Parallel()
 	r := transcodeRig(t, nil, "--exit-after-bytes", "376000", "--exit-code", "2")
 	response := r.tuneAs(t, "c-exit", "client-a")
 	defer func() { _ = response.Body.Close() }()

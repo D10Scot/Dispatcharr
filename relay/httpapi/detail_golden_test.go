@@ -158,6 +158,7 @@ func decodeDetailGolden(t *testing.T) any {
 // the decode does not lose is the part that matters -- an absent key stays
 // absent, a null stays nil, a string stays a string.
 func TestTheDetailPayloadMatchesDjangosSerializer(t *testing.T) {
+	t.Parallel()
 	want := decodeDetailGolden(t)
 
 	encoded, err := json.Marshal(detailGoldenPayload())
@@ -182,6 +183,7 @@ func TestTheDetailPayloadMatchesDjangosSerializer(t *testing.T) {
 // about the other -- the row's own Notes say exactly that -- so this reads
 // both payloads in one test and would fail if either moved.
 func TestOwnerAndSourceFPSDifferBetweenTheTwoEndpoints(t *testing.T) {
+	t.Parallel()
 	detail, ok := decodeDetailGolden(t).(map[string]any)
 	if !ok {
 		t.Fatalf("the detail golden is not an object")
@@ -230,6 +232,7 @@ func TestOwnerAndSourceFPSDifferBetweenTheTwoEndpoints(t *testing.T) {
 // NEVER_WRITTEN empty: a golden rendered from a fixture that never set the
 // key cannot tell whether the serializer still declares it.
 func TestTheDetailPayloadCarriesTheFFmpegOutputBitrate(t *testing.T) {
+	t.Parallel()
 	golden, ok := decodeDetailGolden(t).(map[string]any)
 	if !ok {
 		t.Fatalf("the detail golden is not an object")
@@ -253,6 +256,7 @@ func TestTheDetailPayloadCarriesTheFFmpegOutputBitrate(t *testing.T) {
 // a distinct one, because width/height/video_bitrate exist on the detail
 // payload alone.
 func TestTheDetailPayloadOmitsTheDVRVideoFieldsWhenNothingSetThem(t *testing.T) {
+	t.Parallel()
 	payload := detailGoldenPayload()
 	payload.Width = ""
 	payload.Height = ""
@@ -299,6 +303,7 @@ func mustDecodeDetail(t *testing.T, payload any) map[string]any {
 //
 // The rewind window's three (Phase 4a-3) are optional in the same way.
 func TestTheDetailPayloadOmitsTheHLSFieldsWithoutAPipeline(t *testing.T) {
+	t.Parallel()
 	payload := detailGoldenPayload()
 	payload.HLSEncoder = ""
 	payload.HLSGeneration = nil

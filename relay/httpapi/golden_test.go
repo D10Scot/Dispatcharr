@@ -123,6 +123,7 @@ func goldenPayload() channelListPayload {
 // the part that matters: an absent key stays absent, a null stays nil, and a
 // string stays a string, so the presence contract is still fully pinned.
 func TestTheListPayloadMatchesDjangosSerializer(t *testing.T) {
+	t.Parallel()
 	want := decodeGolden(t)
 
 	encoded, err := json.Marshal(goldenPayload())
@@ -146,6 +147,7 @@ func TestTheListPayloadMatchesDjangosSerializer(t *testing.T) {
 // gaining one it must not have, is exactly the edit this catches and the
 // DeepEqual above reports only as "they differ".
 func TestEveryOptionalFieldIsAbsentRatherThanNull(t *testing.T) {
+	t.Parallel()
 	encoded, err := json.Marshal(goldenPayload())
 	if err != nil {
 		t.Fatalf("encoding the payload: %v", err)
@@ -242,6 +244,7 @@ func TestEveryOptionalFieldIsAbsentRatherThanNull(t *testing.T) {
 // channel. Without this, the two tests above pin a struct literal and nothing
 // pins that the handler builds it.
 func TestTheLiveEndpointProducesTheGoldensKeySet(t *testing.T) {
+	t.Parallel()
 	// A TRANSCODE tune, so the seven ffmpeg-derived keys the golden's
 	// populated channel carries are produced by a real stderr reader
 	// parsing a real capture -- a Proxy tune would render a payload seven

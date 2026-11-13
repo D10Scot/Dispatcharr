@@ -47,6 +47,7 @@ func (r *rig) tuneNoFollow(t *testing.T, path string, header http.Header) *http.
 // list endpoint to render, and the slot the tune reserved is released
 // before the answer.
 func TestARedirectProfileHandsTheClientTheProviderURLAndFetchesNothing(t *testing.T) {
+	t.Parallel()
 	r := redirectRig(t, relaytest.ControlPlaneConfig{}, relaytest.Config{})
 	response := r.tuneNoFollow(t, "/proxy/ts/stream/c-redirect", nil)
 	defer func() { _ = response.Body.Close() }()
@@ -77,6 +78,7 @@ func TestARedirectProfileHandsTheClientTheProviderURLAndFetchesNothing(t *testin
 // (views.py:483-514): HEAD then GET on the primary, both 404, then the
 // alternate validates and is the Location.
 func TestARedirectFallsThroughToACachedAlternateWhenTheProbeFails(t *testing.T) {
+	t.Parallel()
 	alternate := relaytest.NewUpstream(relaytest.Config{})
 	t.Cleanup(alternate.Close)
 	r := redirectRig(t, relaytest.ControlPlaneConfig{Alternates: []relaytest.AlternateConfig{{StreamID: 2, URL: alternate.URL()}}}, relaytest.Config{Status: 404})
@@ -97,6 +99,7 @@ func TestARedirectFallsThroughToACachedAlternateWhenTheProbeFails(t *testing.T) 
 // Every candidate failing validation is a 502 with views.py:545-547's JSON
 // body, and the slot is still released.
 func TestARedirectWhoseEveryCandidateFailsValidationIs502(t *testing.T) {
+	t.Parallel()
 	alternate := relaytest.NewUpstream(relaytest.Config{Status: 500})
 	t.Cleanup(alternate.Close)
 	r := redirectRig(t, relaytest.ControlPlaneConfig{Alternates: []relaytest.AlternateConfig{{StreamID: 2, URL: alternate.URL()}}}, relaytest.Config{Status: 404})
@@ -121,6 +124,7 @@ func TestARedirectWhoseEveryCandidateFailsValidationIs502(t *testing.T) {
 // served through the Proxy path -- a 200 with the provider's bytes -- so the
 // header is never re-sent to a provider by a 302.
 func TestAnInternalPrincipalOnARedirectChannelIsServedThroughProxy(t *testing.T) {
+	t.Parallel()
 	r := redirectRig(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Rate: 4})
 	response := r.tuneNoFollow(t, "/proxy/ts/stream/c-redirect-dvr", http.Header{
 		control.HeaderInternal: []string{control.InternalPrincipalToken(testSecret)},
@@ -150,6 +154,7 @@ func TestAnInternalPrincipalOnARedirectChannelIsServedThroughProxy(t *testing.T)
 // HttpResponseRedirect refuses the scheme, is answered with a hand-built 301
 // (views.py:533-538).
 func TestANonHTTPRedirectTargetIsNotProbedAndAnswers301(t *testing.T) {
+	t.Parallel()
 	r := redirectRig(t, relaytest.ControlPlaneConfig{SourceURL: "rtsp://provider.invalid:554/live/1"}, relaytest.Config{})
 	response := r.tuneNoFollow(t, "/proxy/ts/stream/c-redirect-rtsp", nil)
 	defer func() { _ = response.Body.Close() }()

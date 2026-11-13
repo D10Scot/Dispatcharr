@@ -69,9 +69,16 @@ const (
 	modeGatedSegments = "gatedsegments" // both inits, then the rest of the streams once the gate exists
 )
 
+// hlsSlots bounds how many HLS rigs run at once. Their pipelines cut segments
+// in real time and the rewind writer has a bounded queue, so an unbounded
+// parallel run starves it and the window degrades for a reason the tests are
+// not about.
+var hlsSlots = make(chan struct{}, 3)
+
 func newHLSFixture(t *testing.T, mode string, probe []byte) *hlsFixture {
 	t.Helper()
-	t.Setenv(relaytest.StandInEnv, "1")
+	hlsSlots <- struct{}{}
+	t.Cleanup(func() { <-hlsSlots })
 	f := &hlsFixture{t: t, dir: t.TempDir(), mode: mode, probe: probe, hooks: &hlsHooks{}}
 	f.probeLog = filepath.Join(f.dir, "probe-spawns")
 	f.encoderLog = filepath.Join(f.dir, "encoder-spawns")
@@ -130,7 +137,7 @@ func (f *hlsFixture) command(hls.Spawn) (string, []string) {
 			"--fd-file", relaytest.FDFileArg(3, f.path("afull.mp4")),
 			"--wait-stdin-eof")
 	case modeLong:
-		return relaytest.StandInCommand("--spawn-log", f.encoderLog,
+		return relaytest.StandInCommand("--spawn-log", f.encoderLog, "--fd-fragment-interval", "0.05",
 			"--fd-file", relaytest.FDFileArg(1, f.path("vlong.mp4")),
 			"--fd-file", relaytest.FDFileArg(3, f.path("along.mp4")),
 			"--wait-stdin-eof")
@@ -374,6 +381,7 @@ func channelGone(r *rig, id string) func() bool {
 // ---------------------------------------------------------------------------
 
 func TestAnHLSTuneAnswersAMultivariantPlaylistRatherThanBytes(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 
@@ -414,6 +422,7 @@ func TestAnHLSTuneAnswersAMultivariantPlaylistRatherThanBytes(t *testing.T) {
 }
 
 func TestAnXCM3U8URLForcesHLSOnBothRoots(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 
@@ -433,6 +442,7 @@ func TestAnXCM3U8URLForcesHLSOnBothRoots(t *testing.T) {
 }
 
 func TestAnEntryWhoseInitsNeverArriveIs503AndLeavesNoClient(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeNoInit, relaytest.HLSProbeJSON(true, true))
 	f.readyWait = 300 * time.Millisecond
 	r := hlsRig(t, f, nil)
@@ -448,6 +458,7 @@ func TestAnEntryWhoseInitsNeverArriveIs503AndLeavesNoClient(t *testing.T) {
 }
 
 func TestANoVideoProbeIs502AndTheTSClientIsUnaffected(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(false, true))
 	r := hlsRig(t, f, nil)
 
@@ -486,6 +497,7 @@ func TestANoVideoProbeIs502AndTheTSClientIsUnaffected(t *testing.T) {
 }
 
 func TestAMediaPlaylistWaitsForItsFirstSegmentAndCarriesItsHeaders(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	s := r.session(t, "c-playlist", "client-a")
@@ -536,6 +548,7 @@ func TestAMediaPlaylistWaitsForItsFirstSegmentAndCarriesItsHeaders(t *testing.T)
 // With inits and no segment, the first media playlist request waits its
 // PlaylistWait and then answers 503, rather than an empty playlist.
 func TestAMediaPlaylistWithNoSegmentYetIs503(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeInitOnly, relaytest.HLSProbeJSON(true, true))
 	f.playlistWait = 300 * time.Millisecond
 	r := hlsRig(t, f, nil)
@@ -548,6 +561,7 @@ func TestAMediaPlaylistWithNoSegmentYetIs503(t *testing.T) {
 }
 
 func TestTheHLSRoutesIgnoreTheTrustHeaders(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	s := r.session(t, "c-trust", "client-a")
@@ -563,6 +577,7 @@ func TestTheHLSRoutesIgnoreTheTrustHeaders(t *testing.T) {
 }
 
 func TestALeaveEndsTheSessionAtOnceAndIsIdempotent(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 
@@ -636,6 +651,7 @@ func TestALeaveEndsTheSessionAtOnceAndIsIdempotent(t *testing.T) {
 const adminStopBody = `{"error": "stopped by an administrator", "ended": "admin_stop"}`
 
 func TestAStoppedSessionIs410UntilForgottenAndADeleteIs204(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	a := r.session(t, "c-stopped", "client-a")
@@ -664,6 +680,7 @@ func TestAStoppedSessionIs410UntilForgottenAndADeleteIs204(t *testing.T) {
 }
 
 func TestAnAdminClientStopEndsAnHLSSession(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	s := r.session(t, "c-admin", "client-a")
@@ -694,6 +711,7 @@ func TestAnAdminClientStopEndsAnHLSSession(t *testing.T) {
 
 // Global constraint 2: the token and its sid are never logged, in any form.
 func TestARejectedTokensTextNeverReachesTheLog(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 
@@ -738,6 +756,7 @@ func TestARejectedTokensTextNeverReachesTheLog(t *testing.T) {
 // self-stop runs on a goroutine of its own, since the stop it leads to waits
 // on the very Done the run's defers close.
 func TestSelfStopRunEnded(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := fanRigWith(t, relaytest.ControlPlaneConfig{},
 		relaytest.Config{Rate: 1, StopAfterBytes: 1_200_000},
@@ -773,6 +792,7 @@ func TestSelfStopRunEnded(t *testing.T) {
 
 // Spec case (ii): the HLS output fails with no other client on the channel.
 func TestSelfStopHLSFailedWithNoOtherClient(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeFlaky, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	a := r.session(t, "c-hlsfail", "client-a")
@@ -791,6 +811,7 @@ func TestSelfStopHLSFailedWithNoOtherClient(t *testing.T) {
 
 // Spec case (iii): the same failure with a TS client on the channel.
 func TestSelfStopHLSFailedWithATSClient(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeFlaky, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-hlsfail-ts", "client-ts")
@@ -810,6 +831,7 @@ func TestSelfStopHLSFailedWithATSClient(t *testing.T) {
 }
 
 func TestAnAdminChannelStopEndsItsHLSSessions(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	r.session(t, "c-chstop", "client-a")
@@ -825,6 +847,7 @@ func TestAnAdminChannelStopEndsItsHLSSessions(t *testing.T) {
 
 // Row 44, the spec's failure-and-recovery test.
 func TestAFailedHLSOutputRefusesEntriesUntilTheNextBoundaryAndStartsNothingThere(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeFlaky, relaytest.HLSProbeJSON(true, true))
 	alternate := relaytest.NewUpstream(relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, 0x100), Rate: 4})
 	t.Cleanup(alternate.Close)
@@ -886,6 +909,7 @@ func TestAFailedHLSOutputRefusesEntriesUntilTheNextBoundaryAndStartsNothingThere
 
 // Row 41, the spec's first resume case.
 func TestAResumeNeverStartsAChannel(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-resume0", "client-ts") // holds the channel while the session departs
@@ -919,6 +943,7 @@ func TestAResumeNeverStartsAChannel(t *testing.T) {
 // Row 41, the spec's second case: the stop lands between the resume's two
 // attaches and its commit.
 func TestAResumeThatLosesTheRaceToAStopReleasesItsAttachment(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-resume1", "client-ts")
@@ -959,6 +984,7 @@ func TestAResumeThatLosesTheRaceToAStopReleasesItsAttachment(t *testing.T) {
 }
 
 func TestADepartedSessionResumesOnItsRunningPipeline(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-resume2", "client-ts")
@@ -1004,6 +1030,7 @@ func TestADepartedSessionResumesOnItsRunningPipeline(t *testing.T) {
 
 // R49: a resume needs its session's own running pipeline.
 func TestAResumeOnAStoppedPipelineIs410(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-resume3", "client-ts")
@@ -1031,6 +1058,7 @@ func TestAResumeOnAStoppedPipelineIs410(t *testing.T) {
 
 // Round 1, finding 2: an entry that joins a stopping channel is refused.
 func TestAnEntryThatJoinsAStoppingChannelIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	r.session(t, "c-joinstop", "client-a") // makes the pipeline ready
@@ -1059,6 +1087,7 @@ func TestAnEntryThatJoinsAStoppingChannelIsRefused(t *testing.T) {
 
 // D13: a Redirect-profile channel is served over HLS through the relay.
 func TestARedirectChannelIsServedOverHLSAsProxy(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := fanRigWith(t, relaytest.ControlPlaneConfig{Kind: control.KindRedirect}, relaytest.Config{Rate: 4}, nil, f.option())
 
@@ -1099,6 +1128,7 @@ func TestARedirectChannelIsServedOverHLSAsProxy(t *testing.T) {
 }
 
 func TestTheSweeperIsProcessWideAndOutlivesItsChannel(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	r.session(t, "c-sweeper", "client-a") // a lone viewer: no TS client keeps the channel
@@ -1126,6 +1156,7 @@ func TestTheSweeperIsProcessWideAndOutlivesItsChannel(t *testing.T) {
 // Nit 10 of round 1: a pipeline released at zero stops off the request
 // goroutine, so a slow encoder's exit grace never delays a zap.
 func TestAPipelineReleasedAtZeroStopsOffTheRequestGoroutine(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeStubborn, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-zero", "client-ts") // keeps the channel, so only the pipeline stops
@@ -1149,6 +1180,7 @@ func TestAPipelineReleasedAtZeroStopsOffTheRequestGoroutine(t *testing.T) {
 }
 
 func TestTheChannelPayloadCarriesTheHLSEncoderAndGeneration(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-payload", "client-ts")
@@ -1207,6 +1239,7 @@ const (
 // first fragment (R55). A 503 on the multivariant
 // fails an AVPlayer item outright. Held under nginx's 60 s read timeout.
 func TestTheEntryWaitsOutALegitimateColdStart(t *testing.T) {
+	t.Parallel()
 	cold := hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStallFactor*hls.StallTimeout
 	for name, got := range map[string]time.Duration{
 		"ReadyWait":    HLSDeps{}.readyWait(),
@@ -1227,6 +1260,7 @@ func TestTheEntryWaitsOutALegitimateColdStart(t *testing.T) {
 // tune locations. A media playlist is requested only after its multivariant,
 // once the source has started, so its wait does not carry the term.
 func TestTheEntryWaitAlsoCoversTheSourcesStart(t *testing.T) {
+	t.Parallel()
 	cold := hls.QuickProbe.Analyze + hls.FullProbe.Analyze + hls.StartupStall(hls.MaxTargetDuration)
 	got := HLSDeps{}.readyWait()
 	if floor := hls.SourceStartWait + cold; got < floor {
@@ -1267,6 +1301,7 @@ func (r *rig) enterAsync(ctx context.Context, t *testing.T, channelID, clientID 
 }
 
 func TestAnHLSTuneOnARelayWithNoSessionTableIs501AndLeavesNoClient(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := fanRigWith(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Rate: 4}, nil, f.option(), func(d *StreamDeps) { d.Sessions = nil })
 	status, _, _ := r.enter(t, "c-nosessions", "client-a")
@@ -1279,6 +1314,7 @@ func TestAnHLSTuneOnARelayWithNoSessionTableIs501AndLeavesNoClient(t *testing.T)
 // The viewer hangs up while its entry waits for the encoder: nothing of it
 // remains -- no session, no registry entry, no channel it alone held.
 func TestAnHLSEntryWhoseViewerGoesAwayLeavesNoSessionOrClient(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeNoInit, relaytest.HLSProbeJSON(true, true))
 	r := fanRigWith(t, relaytest.ControlPlaneConfig{}, relaytest.Config{Rate: 4}, nil, f.option(), withoutHooks())
 	ctx, cancel := context.WithCancel(t.Context())
@@ -1294,6 +1330,7 @@ func TestAnHLSEntryWhoseViewerGoesAwayLeavesNoSessionOrClient(t *testing.T) {
 // The channel is stopped while an entry waits for inits: the pipeline stops
 // with it, and the entry answers 503 rather than hanging out its wait.
 func TestAnEntryWaitingForInitsIs503WhenItsChannelIsStopped(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeNoInit, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	answer := r.enterAsync(t.Context(), t, "c-stopwait", "client-a")
@@ -1313,6 +1350,7 @@ func TestAnEntryWaitingForInitsIs503WhenItsChannelIsStopped(t *testing.T) {
 // announced itself it owes -- and raises -- its own client_disconnect, after
 // its client_connect.
 func TestAnEntryWhoseClientIsStoppedWhileItWaitsIs503AndOwesItsDisconnect(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeSlowInit, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	// A second entry holds the pipeline, so stopping the first's client does not
@@ -1363,6 +1401,7 @@ func TestAnEntryWhoseClientIsStoppedWhileItWaitsIs503AndOwesItsDisconnect(t *tes
 // never a resume: a resume could re-register the client id before the
 // departure had dropped it.
 func TestAGetOnASettlingDepartureIsBusyThenResumes(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-settle", "client-ts")
@@ -1403,6 +1442,7 @@ func TestAGetOnASettlingDepartureIsBusyThenResumes(t *testing.T) {
 // A resume whose client id is taken by another viewer is refused for now, and
 // the session stays resumable once the id is free.
 func TestAResumeWhoseClientIDIsTakenIs503AndTheSessionStaysResumable(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-dup", "client-ts")
@@ -1436,6 +1476,7 @@ func TestAResumeWhoseClientIDIsTakenIs503AndTheSessionStaysResumable(t *testing.
 // reasons a session records, and every 410 afterwards says so, on every
 // rendition and every request (R120).
 func TestAClientStopRecordsItsReasonAndEvery410SaysSo(t *testing.T) {
+	t.Parallel()
 	const streamLimitBody = `{"error": "stream limit", "ended": "stream_limit"}`
 	cases := []struct {
 		name, query, want string
@@ -1465,6 +1506,7 @@ func TestAClientStopRecordsItsReasonAndEvery410SaysSo(t *testing.T) {
 }
 
 func TestAnAdminChannelStopAnswersChannelStopped(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	s := r.session(t, "c-chstop", "client-a")
@@ -1480,6 +1522,7 @@ func TestAnAdminChannelStopAnswersChannelStopped(t *testing.T) {
 // and the next GET agrees. The hook marks the session itself, so the resume
 // reaches the refused commit rather than a failed re-attach.
 func TestAResumeThatLosesTheRaceToAPipelineFailureAnswersOutputFailed(t *testing.T) {
+	t.Parallel()
 	f := newHLSFixture(t, modeGood, relaytest.HLSProbeJSON(true, true))
 	r := hlsRig(t, f, nil)
 	ts := r.tuneAs(t, "c-resume-fail", "client-ts")
@@ -1518,6 +1561,7 @@ func TestAResumeThatLosesTheRaceToAPipelineFailureAnswersOutputFailed(t *testing
 // An empty or unknown reason answers as channel_stopped, the reason the table
 // records when nothing else was.
 func TestWriteEndedFallsBackToChannelStopped(t *testing.T) {
+	t.Parallel()
 	for _, reason := range []session.EndReason{"", "no-such-reason"} {
 		rec := httptest.NewRecorder()
 		writeEnded(rec, reason)
