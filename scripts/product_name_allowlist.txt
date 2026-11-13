@@ -147,7 +147,7 @@
 1	apps/output/views.py
 13	apps/plugins/api_views.py
 4	apps/plugins/apps.py
-2	apps/plugins/loader.py
+3	apps/plugins/loader.py
 2	apps/plugins/migrations/0002_pluginrepo.py
 2	apps/plugins/migrations/0003_update_official_repo_url.py
 1	apps/plugins/models.py

@@ -250,7 +250,10 @@ def setup_celery_logging(**kwargs):
             class SuppressFilter(logging.Filter):
                 def filter(self, record):
                     # Return False to completely suppress these specific patterns
-                    if (
+                    # Only INFO and below are noise. The log scrubber rewrites a record's msg to its
+                    # rendered text, so an ERROR whose argument merely contains "received" must not
+                    # be dropped by a substring test that used to see only the template.
+                    if record.levelno <= logging.INFO and (
                         "succeeded in" in getattr(record, 'msg', '') or
                         "Scheduler: Sending due task" in getattr(record, 'msg', '') or
                         "received" in getattr(record, 'msg', '') or
