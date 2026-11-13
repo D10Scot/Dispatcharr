@@ -28,12 +28,12 @@ from django.contrib.sessions.models import Session
 from django.core.cache import cache
 from django.db import OperationalError, connection
 from django.db.models import F
-from django.test import RequestFactory, override_settings
+from django.test import RequestFactory, SimpleTestCase, override_settings
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.tokens import aware_utcnow
 
 from apps.accounts.models import OIDCIdentity, OIDCProvider, User
-from apps.accounts.oidc import client_auth, discovery, flow, provisioning
+from apps.accounts.oidc import client_auth, discovery, flow, provisioning, validate
 from apps.accounts.oidc import secrets as oidc_secrets
 from apps.proxy.authorize import _drf_user
 from core.models import NETWORK_ACCESS_KEY, CoreSettings, SystemEvent
@@ -681,6 +681,49 @@ class SignatureTests(FlowTestCase):
         jwk["alg"] = "RS512"
         self.op.jwks_keys = [jwk]
         self.assertRefused()
+
+
+class SelectKeyFamilyTests(SimpleTestCase):
+    """``_select_key``'s own ``kty`` guard, with the layer after it patched out.
+
+    Through the whole flow a wrong-family key is refused twice: by this guard, and again by
+    ``PyJWK(jwk, algorithm=alg)``, which will not build an RSA algorithm from an EC key. With
+    the second layer standing, removing the guard leaves every flow test green, so these
+    tests replace ``PyJWK`` with a stand-in that accepts anything and assert the refusal
+    comes from the guard itself.
+    """
+
+    def select(self, jwk, alg):
+        with mock.patch.object(validate.jwt, "PyJWK", return_value="accepted-by-the-next-layer"):
+            return validate._select_key({"keys": [jwk]}, jwk.get("kid"), alg)
+
+    def assertGuardRefuses(self, jwk, alg):
+        try:
+            result = self.select(jwk, alg)
+        except validate.IdTokenInvalid:
+            return
+        self.fail(
+            f"_select_key returned {result!r} for a {jwk.get('kty')!r} JWK under {alg}: "
+            "its kty guard did not refuse a key of the wrong family"
+        )
+
+    def test_stand_in_accepts_a_matching_key(self):
+        # The control: the stand-in is what a matching key reaches, so a refusal below is
+        # the guard's and not the stand-in's.
+        self.assertEqual(
+            self.select(public_jwk(keys()["rsa"], "rsa1"), "RS256"), "accepted-by-the-next-layer"
+        )
+
+    def test_ec_key_refused_for_an_rsa_alg(self):
+        self.assertGuardRefuses(public_jwk(keys()["ec"], "ec1"), "RS256")
+
+    def test_rsa_key_refused_for_an_ec_alg(self):
+        self.assertGuardRefuses(public_jwk(keys()["rsa"], "rsa1"), "ES256")
+
+    def test_oct_key_without_a_secret_member_refused(self):
+        # An oct JWK carrying k is refused earlier, by the private-member check; one without
+        # it reaches the kty guard.
+        self.assertGuardRefuses({"kty": "oct", "kid": "oct1"}, "RS256")
 
 
 class IssuerSlashTests(FlowTestCase):

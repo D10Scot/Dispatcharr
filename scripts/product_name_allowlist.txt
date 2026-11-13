@@ -313,7 +313,7 @@
 1	e2e-upstream/test/xc-envelope.test.ts
 3	e2e-upstream/test/xc-router.test.ts
 68	e2e/COVERAGE.md
-48	e2e/README.md
+52	e2e/README.md
 1	e2e/fixtures/api.ts
 2	e2e/fixtures/auth.ts
 3	e2e/fixtures/index.ts
@@ -345,6 +345,7 @@
 3	e2e/tests/frontend/plugins.spec.ts
 2	e2e/tests/frontend/settings.spec.ts
 73	e2e/tests/guards/e2e-up-stacks.spec.ts
+1	e2e/tests/guards/sso-budget.spec.ts
 15	e2e/tests/guards/sso-scope.spec.ts
 3	e2e/tests/lifecycle/durable-state.ts
 8	e2e/tests/lifecycle/upgrade-migrations.spec.ts

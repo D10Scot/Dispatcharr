@@ -187,3 +187,92 @@ class XCAuthTests(TestCase):
             with self.subTest(endpoint=url_name):
                 response = self._get(url_name, self.xc_user.username, "wrong-password")
                 self.assertEqual(response.status_code, 401)
+
+    def test_a_deactivated_user_with_the_right_xc_password_answers_like_a_wrong_one(self):
+        """A deactivated user's XC credentials list nothing.
+
+        Same status, same bytes and same Content-Type as a wrong password on
+        all four endpoints, so the answer does not reveal whether the
+        deactivated account's password was right; reactivating restores 200.
+        """
+        self.xc_user.is_active = False
+        self.xc_user.save(update_fields=["is_active"])
+        for url_name in XC_ENDPOINTS:
+            with self.subTest(endpoint=url_name):
+                wrong_password = self._get(
+                    url_name, self.xc_user.username, "wrong-password"
+                )
+                deactivated = self._get(
+                    url_name, self.xc_user.username, "correct-horse-battery-staple"
+                )
+                # The canonical credential refusal (#84): an unknown
+                # username. Comparing against it too means a refusal that
+                # names the account's state -- even one given to every
+                # password alike -- is caught, not only one that tells the
+                # right password from a wrong one.
+                ghost_username = self._get(url_name, "no-such-xc-user", "whatever")
+                self.assertEqual(deactivated.status_code, 401)
+                for other in (wrong_password, ghost_username):
+                    self.assertEqual(deactivated.status_code, other.status_code)
+                    self.assertEqual(deactivated.content, other.content)
+                    self.assertEqual(deactivated["Content-Type"], other["Content-Type"])
+
+        self.xc_user.is_active = True
+        self.xc_user.save(update_fields=["is_active"])
+        for url_name in XC_ENDPOINTS:
+            with self.subTest(endpoint=url_name, reactivated=True):
+                response = self._get(
+                    url_name, self.xc_user.username, "correct-horse-battery-staple"
+                )
+                self.assertEqual(response.status_code, 200)
+
+    def test_a_deactivated_network_blocked_user_gets_401_not_403(self):
+        """The per-user network refusal fires only after the credentials
+        resolve; for a deactivated user they never do, so the right password
+        gets the wrong password's 401 and not the 403 that would confirm it.
+        """
+        blocked_user = User.objects.create_user(
+            username="xcauth-inactive-blocked",
+            password="not-the-xc-password",
+            user_level=10,
+            custom_properties={
+                "xc_password": "correct-horse-battery-staple",
+                "allowed_networks": {"XC_API": BLOCKING_CIDR},
+            },
+        )
+        blocked_user.is_active = False
+        blocked_user.save(update_fields=["is_active"])
+        for url_name in XC_ENDPOINTS:
+            with self.subTest(endpoint=url_name):
+                wrong_password = self._get(url_name, blocked_user.username, "wrong-password")
+                deactivated = self._get(
+                    url_name, blocked_user.username, "correct-horse-battery-staple"
+                )
+                ghost_username = self._get(url_name, "no-such-xc-user", "whatever")
+                self.assertEqual(deactivated.status_code, 401)
+                self.assertEqual(deactivated.content, wrong_password.content)
+                self.assertEqual(deactivated.content, ghost_username.content)
+
+    def test_a_deactivated_users_right_password_answers_like_an_active_users_wrong_one(self):
+        """The comparator is an ACTIVE account's wrong password.
+
+        A refusal that differs by account state -- the same answer for any
+        password to a deactivated account, but not the answer an active
+        account's wrong password gets -- must redden here.
+        """
+        deactivated_user = User.objects.create_user(
+            username="xcauth-deactivated",
+            password="not-the-xc-password",
+            user_level=10,
+            custom_properties={"xc_password": "fake-xc-pass-8"},
+        )
+        deactivated_user.is_active = False
+        deactivated_user.save(update_fields=["is_active"])
+        for url_name in XC_ENDPOINTS:
+            with self.subTest(endpoint=url_name):
+                active_wrong = self._get(url_name, self.xc_user.username, "wrong-password")
+                deactivated = self._get(url_name, deactivated_user.username, "fake-xc-pass-8")
+                self.assertEqual(deactivated.status_code, 401)
+                self.assertEqual(deactivated.status_code, active_wrong.status_code)
+                self.assertEqual(deactivated.content, active_wrong.content)
+                self.assertEqual(deactivated["Content-Type"], active_wrong["Content-Type"])

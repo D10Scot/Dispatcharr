@@ -41,8 +41,10 @@ export function publishedKey(): SigningKey {
 }
 
 /**
- * A key the JWKS never publishes, for the `unknown-kid` fault: a validly
- * signed token whose `kid` no refetch of the JWKS will ever find.
+ * A key the JWKS never publishes. The `unknown-kid` fault signs with it under its
+ * own `kid`, which no refetch of the JWKS will ever find; the `bad-signature`
+ * fault signs with it under the PUBLISHED `kid`, so the token names a key the
+ * relying party holds and its signature does not verify against that key.
  */
 export function rogueKey(): SigningKey {
   rogue ??= makeKey();
@@ -60,17 +62,26 @@ export function jwks(): { keys: Record<string, unknown>[] } {
   return { keys: [{ kty: jwk.kty, use: 'sig', kid: key.kid, n: jwk.n, e: jwk.e }] };
 }
 
-/** A compact RS256 JWS over `payload`, with `kid` in the header. */
-export function signRs256(payload: Record<string, unknown>, key: SigningKey): string {
-  const header = { alg: 'RS256', typ: 'JWT', kid: key.kid };
+/**
+ * A compact RS256 JWS over `payload`, signed with `key`'s private key. The
+ * header's `kid` is `key`'s own unless `kid` names another, which only the
+ * `bad-signature` fault does.
+ */
+export function signRs256(payload: Record<string, unknown>, key: SigningKey, kid: string = key.kid): string {
+  const header = { alg: 'RS256', typ: 'JWT', kid };
   const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}`;
   const signature = sign('sha256', Buffer.from(signingInput), key.privateKey);
   return `${signingInput}.${signature.toString('base64url')}`;
 }
 
-/** An unsecured JWT (`alg: none`, empty signature), for the `alg-none` fault. */
-export function unsigned(payload: Record<string, unknown>): string {
-  const header = { alg: 'none', typ: 'JWT' };
+/**
+ * An unsecured JWT (`alg: none`, empty signature), for the `alg-none` fault. It
+ * carries `kid`, the published key's, so a relying party that resolves the key
+ * first finds one and reaches its algorithm check rather than stopping at an
+ * absent `kid`.
+ */
+export function unsigned(payload: Record<string, unknown>, kid: string): string {
+  const header = { alg: 'none', typ: 'JWT', kid };
   return `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(payload))}.`;
 }
 
