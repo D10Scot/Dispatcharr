@@ -18,10 +18,11 @@ def get_user(validated_token):
         user = jwt_auth.get_user(validated_token)
         return user
     except User.DoesNotExist:
-        logger.warning(f"User from token does not exist. User ID: {validated_token.get('user_id', 'unknown')}")
+        user_id = validated_token.get('user_id', 'unknown')
+        logger.warning(f"User from token does not exist. User ID: {user_id}")  # credential-logging: ignore - "token" is message text only; the argument is a user id claim from an already validated token
         return AnonymousUser()
     except Exception as e:
-        logger.error(f"Error getting user from token: {str(e)}")
+        logger.error(f"Error getting user from token: {type(e).__name__}")  # credential-logging: ignore - "token" is message text only; the argument is the exception type name
         return AnonymousUser()
 
 class JWTAuthMiddleware(BaseMiddleware):
@@ -36,12 +37,12 @@ class JWTAuthMiddleware(BaseMiddleware):
                     validated_token = JWTAuthentication().get_validated_token(token)
                     scope["user"] = await get_user(validated_token)
                 except (InvalidToken, TokenError) as e:
-                    logger.warning(f"Invalid token: {str(e)}")
+                    logger.warning(f"Invalid token: {type(e).__name__}")  # credential-logging: ignore - "token" is message text only; the argument is the exception type name
                     scope["user"] = AnonymousUser()
             else:
                 scope["user"] = AnonymousUser()
         except Exception as e:
-            logger.error(f"Error in JWT authentication: {str(e)}")
+            logger.error(f"Error in JWT authentication: {type(e).__name__}")
             scope["user"] = AnonymousUser()
 
         return await super().__call__(scope, receive, send)

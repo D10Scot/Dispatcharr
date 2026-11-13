@@ -32,6 +32,7 @@ from django.test import TestCase, TransactionTestCase, override_settings
 from rest_framework.test import APIClient
 
 from apps.accounts.models import User
+from tests.log_scrub_rig import unscrubbed_logging
 
 from .oidc_support import SECRET_SENTINEL, make_provider, set_auth_settings
 
@@ -512,7 +513,10 @@ def capture_all_logs():
             installed.append((target, handler, target.level))
             target.addHandler(handler)
             target.setLevel(logging.DEBUG)
-        yield sink
+        # The central log scrubber would mask the very values these tests assert are absent
+        # (codes, tokens, a state after "?"), so capture the raw call sites (spec 9.2).
+        with unscrubbed_logging():
+            yield sink
     finally:
         for target, handler, level in installed:
             target.removeHandler(handler)

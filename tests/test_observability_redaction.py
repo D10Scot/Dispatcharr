@@ -15,6 +15,8 @@ a call that never carried the sentinel cannot make a test pass.
 """
 import logging
 import os
+import re
+import time
 import uuid
 from unittest import mock, skipUnless
 
@@ -24,8 +26,9 @@ import requests
 from celery import Celery
 from django.conf import settings
 from django.db import connection
-from django.test import Client, TestCase, override_settings
+from django.test import Client, SimpleTestCase, TestCase, override_settings
 from django.urls import path, resolve
+from hypothesis import find, given, settings as hyp_settings, strategies as st
 from opentelemetry import trace
 from opentelemetry.instrumentation.celery import CeleryInstrumentor
 from opentelemetry.instrumentation.django import DjangoInstrumentor
@@ -38,6 +41,7 @@ from opentelemetry.trace import Link, SpanKind
 from dispatcharr.observability import logs
 from dispatcharr.observability import redaction
 from dispatcharr.observability.metrics import M11_NAME, SCOPE_NAME
+from tests.log_scrub_rig import unscrubbed_logging
 from tests.otel_rig import SENTINEL, SENTINEL_UUID, Failures, Rig, reset_semconv
 
 HLS_TOKEN = "v1." + "A" * 22 + "." + "B" * 43
@@ -503,7 +507,10 @@ class LogFieldAndBodyTests(TestCase):
             f"Task tests.observability.retries[{SENTINEL_UUID}] retry: Retry in 1s: "
             f"ConnectionError('http://u:pw@prov.tv/live/a/b/1 {HLS_TOKEN}')"
         )
-        self.log.warning(body)
+        # The D9 layer alone must remove these classes: the central log scrubber would already have
+        # masked the userinfo, so capture the raw body (spec 9.2).
+        with unscrubbed_logging():
+            self.log.warning(body)
         (record,) = self._exported()
         for secret in ("pw@prov.tv", SENTINEL_UUID, HLS_TOKEN):
             self.assertNotIn(secret, record.body)
@@ -527,7 +534,8 @@ class LogFieldAndBodyTests(TestCase):
                 self.assertNotEqual(out, body)
                 for secret in secrets:
                     self.assertNotIn(secret, out)
-                self.log.info(body)
+                with unscrubbed_logging():  # the D9 layer alone, not the central scrubber (spec 9.2)
+                    self.log.info(body)
         exported = [r.body for r in self._exported()]
         self.assertEqual(len(exported), len(cases))
         for body, (_, secrets) in zip(exported, cases.values()):
@@ -625,3 +633,174 @@ class MetricBoundaryTests(TestCase):
         histogram.record(1.0, {"task": "apps.x.tasks.ok", "outcome": SENTINEL})
         exported, _ = self._points()
         self.assertNotIn(M11_NAME, exported)
+
+
+# ---------------------------------------------------------------------------
+# LS-2 / spec T8: redact_text scans in linear time, byte-identical to the
+# regexes it replaced. The three old expressions live here and nowhere else.
+# ---------------------------------------------------------------------------
+
+# Same registration as tests/test_redaction.py (byte-identical profile).
+hyp_settings.register_profile(
+    "dispatcharr-ci", max_examples=200, derandomize=True, deadline=None
+)
+hyp_settings.load_profile("dispatcharr-ci")
+
+_OLD_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s\"'<>]+")
+_OLD_KEY_VALUE_RE = re.compile(
+    r"(?i)\b([\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|credential|auth)[\w.-]*)"
+    r"(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&]+)"
+)
+_OLD_PATH_RE = re.compile(r"(?<![\w/:.-])/[^\s\"'<>,;)\]]*[A-Za-z0-9_%~-][^\s\"'<>,;)\]]*")
+
+
+def _old_urls(text):
+    return _OLD_URL_RE.sub(redaction.REDACTED, text)
+
+
+def _old_key_values(text):
+    return _OLD_KEY_VALUE_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{redaction.REDACTED}", text
+    )
+
+
+def _old_paths(text):
+    return _OLD_PATH_RE.sub(redaction.REDACTED, text)
+
+
+def _old_redact_text(text):
+    """The pre-LS-2 composition, in the pre-LS-2 order."""
+    if not isinstance(text, str) or not text:
+        return text
+    text = _old_urls(text)
+    text = redaction._UUID_ANYWHERE_RE.sub(redaction.REDACTED, text)
+    text = redaction._HLS_TOKEN_RE.sub(redaction.REDACTED, text)
+    text = redaction._LONG_HEX_RE.sub(redaction.REDACTED, text)
+    text = _old_key_values(text)
+    return _old_paths(text)
+
+
+_T8_FRAGMENTS = [
+    '"', "'", "=", ":", "/", "(", '"<>,;)]', " ", "\t", "\n", ".", "-", "_", "&", "?",
+    "token", "AUTH", "PassWord", "api-key", "api_key", "apikey", "ſecret", "Secret",
+    "credential", "pwd", "passwd", "x", "a", "1", "://", "http", "https", "ftp",
+    "1http", "x=", "é", "ß", "²",
+    # trigger-dense compounds, so 200 derandomized examples reach the edge cases
+    "1https://", "-ftp://", "9http://x", "token=", "x=token=", "/a/(", "(/",
+]
+_T8_STRINGS = (
+    st.lists(st.sampled_from(_T8_FRAGMENTS), min_size=1, max_size=16)
+    .map("".join)
+    .filter(lambda s: len(s) <= 64)
+)
+
+_T8_FIXED = [
+    "1https://example.invalid/x",
+    "x=token=pass",
+    'token="one two";x=token=three',
+    "token='auth=x'auth=y",
+    '.-AUTH.key: "v"',
+    "ſecret=x",
+    "éhttps://x",
+    "a/b(/c)",
+    "/é",
+    "/éa",
+    "https://u:p@h.invalid/a/b?token=abc&x=1 see /var/log/x.log",
+    'password="a b" /live/u/p/1.ts',
+    # one 64-character string per scanner
+    "a" * 60 + "://x",
+    "auth." * 10 + "k=v;" + "x" * 10,
+    "/(" * 32,
+    # a quoted value followed by the OTHER quote kind; a non-ASCII letter before a path
+    "token=\"a\" 'b",
+    "é/a",
+]
+
+_T8_SCANNERS = (
+    ("_scrub_urls", _old_urls),
+    ("_scrub_key_values", _old_key_values),
+    ("_scrub_paths", _old_paths),
+)
+
+
+def _t8_differences(text):
+    """Every way the new code disagrees with the oracle on ``text``."""
+    found = []
+    for name, old in _T8_SCANNERS:
+        new = getattr(redaction, name)(text)
+        if new != old(text):
+            found.append(f"{name}({text!r}) = {new!r}, oracle {old(text)!r}")
+    new = redaction.redact_text(text)
+    if new != _old_redact_text(text):
+        found.append(f"redact_text({text!r}) = {new!r}, oracle {_old_redact_text(text)!r}")
+    return found
+
+
+def _round_one_wrong_scrub_urls(text):
+    """The round-1 rewrite: a scheme must follow a non-scheme character."""
+    return re.sub(
+        r"(?<![A-Za-z0-9+.\-])[A-Za-z][A-Za-z0-9+.\-]*://[^\s\"'<>]+",
+        redaction.REDACTED,
+        text,
+    )
+
+
+class RedactTextLinearTests(SimpleTestCase):
+    """T8: the linear scanners equal the old regexes; long hostile input is fast."""
+
+    def test_fixed_examples_match_the_oracle(self):
+        for text in _T8_FIXED:
+            with self.subTest(text=text):
+                self.assertEqual(_t8_differences(text), [])
+
+    def test_the_named_examples_keep_their_known_output(self):
+        # Exact values, so an oracle and a scanner that drift together still fail.
+        R = redaction.REDACTED
+        self.assertEqual(redaction.redact_text("1https://example.invalid/x"), f"1{R}")
+        self.assertEqual(redaction._scrub_key_values("x=token=pass"), f"x=token={R}")
+
+    @given(_T8_STRINGS)
+    def test_bounded_differential(self, text):
+        self.assertEqual(_t8_differences(text), [])
+
+    def test_the_differential_can_fail(self):
+        # Positive control: the round-1 wrong rewrite must be caught, by the
+        # fixed example and by the generator.
+        with mock.patch.object(redaction, "_scrub_urls", _round_one_wrong_scrub_urls):
+            self.assertNotEqual(_t8_differences("1https://example.invalid/x"), [])
+            hit = find(
+                _T8_STRINGS,
+                lambda s: bool(_t8_differences(s)),
+                settings=hyp_settings(max_examples=5000, derandomize=True, deadline=None),
+            )
+            self.assertNotEqual(_t8_differences(hit), [])
+
+    def test_long_hostile_input_is_scanned_in_linear_time(self):
+        # Scanner-only: the oracle never sees these. The bound is the spec's
+        # 50 ms; the scanners measure 0.1 to 4 ms at these sizes and the old
+        # expressions take 0.2 s to 18 s, so the bound is >10x above linear and
+        # >4x below the cheapest quadratic. The best of three runs is used so a
+        # single GC pause or scheduler hiccup on a loaded runner cannot redden it.
+        hostile = {
+            # exercises _scrub_urls only because the long-hex pattern masks it first
+            "a * 32000": "a" * 32000,
+            "a. * 16000": "a." * 16000,
+            "auth * 8000": "auth" * 8000,
+            "token=\" * 4500": 'token="' * 4500,
+            "/( * 16000": "/(" * 16000,
+        }
+        for label, text in hostile.items():
+            best = None
+            for _ in range(3):
+                started = time.perf_counter()
+                redaction.redact_text(text)
+                elapsed = time.perf_counter() - started
+                best = elapsed if best is None else min(best, elapsed)
+            with self.subTest(shape=label):
+                self.assertLess(
+                    best,
+                    0.050,
+                    f"redact_text took {best * 1000:.1f} ms on {label}: "
+                    "a pattern is super-linear again",
+                )
+

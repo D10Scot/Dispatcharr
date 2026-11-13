@@ -13,6 +13,7 @@ from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory, SimpleTestCase, override_settings
 
 from apps.proxy import control_plane, internal_base_url
+from tests.log_scrub_rig import unscrubbed_logging
 from apps.proxy.internal_auth import (
     HEADER_INTERNAL,
     HEADER_INTERNAL_REQUEST,
@@ -193,7 +194,7 @@ class HostValidationTests(SimpleTestCase):
             {"DISPATCHARR_INTERNAL_API_BASE_URL": "http://user:pw@bad_host:9191"},
             clear=False,
         ):
-            with self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
+            with unscrubbed_logging(), self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
                 with self.assertRaises(ImproperlyConfigured) as ctx:
                     control_plane.get_control_plane_base_url()
         self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
@@ -224,7 +225,7 @@ class HostValidationTests(SimpleTestCase):
             {"DISPATCHARR_INTERNAL_API_BASE_URL": "user:pw@web:9191"},
             clear=False,
         ):
-            with self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
+            with unscrubbed_logging(), self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
                 with self.assertRaises(ImproperlyConfigured) as ctx:
                     control_plane.get_control_plane_base_url()
         self.assertIn("DISPATCHARR_INTERNAL_API_BASE_URL", str(ctx.exception))
@@ -243,7 +244,7 @@ class HostValidationTests(SimpleTestCase):
             clear=False,
         ):
             os.environ.pop("DISPATCHARR_INTERNAL_API_BASE_URL", None)
-            with self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
+            with unscrubbed_logging(), self.assertLogs("apps.proxy.internal_base_url", level="ERROR") as logs:
                 with self.assertRaises(ImproperlyConfigured) as ctx:
                     control_plane.get_control_plane_base_url()
         self.assertIn("DISPATCHARR_WEB_HOST", str(ctx.exception))

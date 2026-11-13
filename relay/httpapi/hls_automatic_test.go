@@ -131,14 +131,21 @@ func TestANullHLSProfileRunsTheBuiltInTranscodeUnderTheBuiltInKey(t *testing.T) 
 // departAfter drives the session clock one second at a time, sweeping after
 // each step, and returns the second at which client-ts alone is left (the
 // session's client was departed), or 0 when it never was within limit seconds.
+//
+// It sweeps the table itself and runs each departure to completion before
+// reading the registry (issue #648). The rig's sweeper runs a departure on a
+// goroutine of its own (session.Table.Run), so a tick, even a second one,
+// proves only that Sweep returned: the departure that releases the registry
+// entry may not have run yet, and the read then reports the departure a
+// second or more late. The rig's sweeper is idle meanwhile: it sweeps only
+// when a test sends it a tick, and this one sends none.
 func departAfter(t *testing.T, r *rig, channelID string, limit int) int {
 	t.Helper()
 	for second := 1; second <= limit; second++ {
 		r.SessionClock.Advance(time.Second)
-		// Two ticks: the second is accepted only once the sweeper has finished
-		// the first sweep, so the registry read below sees its departure.
-		r.tick(t)
-		r.tick(t)
+		for _, d := range r.Sessions.Sweep() {
+			d.Run()
+		}
 		if sameIDs(clientIDs(r.listedClients(t, channelID)), "client-ts") {
 			return second
 		}

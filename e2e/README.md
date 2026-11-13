@@ -1,6 +1,6 @@
 # E2E Tests
 
-Playwright against a real Dispatcharr AIO container.
+Playwright against a real Mino AIO container.
 
 ## Quick start
 
@@ -245,7 +245,7 @@ event does not exist after it. The provider answers `404 no scenario
 failed assertion, and is easy to read as noise.
 
 The consequence for anything written in `tests/lifecycle/`: **assert against
-Dispatcharr's own database through its own API, never by re-querying the
+Mino's own database through its own API, never by re-querying the
 provider.** `durable-state.ts` is built that way deliberately, and the
 extension anyone would naturally reach for — refresh the account again after
 the event and compare the catalogue — is the one thing that cannot work
@@ -367,14 +367,14 @@ first.
 Tests that ingest from or stream through the fake IPTV provider
 (`e2e-upstream/`, documented in `e2e-upstream/README.md`) need a **local
 two-container topology**: `dispatcharr-e2e` and `e2e-upstream` on the same
-user-defined Docker network, so Dispatcharr can resolve the provider by
+user-defined Docker network, so Mino can resolve the provider by
 container name. `./scripts/e2e_up.sh` builds and starts both, waits for the
-provider to answer, then starts Dispatcharr.
+provider to answer, then starts Mino.
 
 **The `E2E_BASE_URL` escape hatch above does not extend to these tests.**
-Pointing `E2E_BASE_URL` at a remote or already-running Dispatcharr instance
+Pointing `E2E_BASE_URL` at a remote or already-running Mino instance
 only replaces *that* container — it does nothing for the provider, and a
-remote Dispatcharr instance has no route to a provider container running on
+remote Mino instance has no route to a provider container running on
 your laptop. Any test that uses the `upstream` fixture needs the full local
 topology brought up by `scripts/e2e_up.sh`, not a bare `E2E_BASE_URL` run.
 
@@ -448,7 +448,7 @@ editing them.
 **The archive is not time-addressable.** The catch-up routes serve the same looping TS whatever
 `start` they are given. So every catch-up assertion about time reads the provider's scenario log
 (`upstream.log(scenario)` → `catchupRequests`, `e2e/tests/streaming/helpers.ts`) and never the
-bytes. **A catch-up test can prove the right moment was asked for. It cannot prove Dispatcharr
+bytes. **A catch-up test can prove the right moment was asked for. It cannot prove Mino
 seeks to it.** Say this in the test, next to the assertion — not only in a file header — because
 that is where the next reader will be when they draw the wrong conclusion.
 

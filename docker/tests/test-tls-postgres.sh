@@ -1006,7 +1006,18 @@ echo -e "${BOLD}╚════════════════════�
 # Build image
 if [ "$SKIP_BUILD" = false ]; then
     echo -e "\n${BOLD}Building test image...${NC}"
-    if ! docker build -t "$IMAGE_NAME" -f docker/Dockerfile --build-arg REPO_OWNER=d10scot . 2>&1 | tail -5; then
+    # With GITHUB_REPOSITORY set, build on this repository's own
+    # <owner>/<name>:base, so a repository rename does not leave the suite on
+    # the old name's base. Otherwise pass only the owner, as before, and
+    # take docker/Dockerfile's default name.
+    build_args=(--build-arg REPO_OWNER=d10scot)
+    if [ -n "${GITHUB_REPOSITORY:-}" ]; then
+        build_args=(
+            --build-arg REPO_OWNER="$(dirname "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+            --build-arg REPO_NAME="$(basename "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+        )
+    fi
+    if ! docker build -t "$IMAGE_NAME" -f docker/Dockerfile "${build_args[@]}" . 2>&1 | tail -5; then
         echo -e "${RED}Build failed${NC}"
         exit 1
     fi

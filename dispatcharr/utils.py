@@ -9,6 +9,11 @@ from django.core.exceptions import ValidationError
 from django.http import JsonResponse
 
 from core.models import CoreSettings
+from .url_redaction import (  # noqa: F401 - re-exported; the definitions moved
+    REDACTED,
+    SENSITIVE_QUERY_KEYS,
+    XTREAM_PATH_PREFIXES,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -56,30 +61,6 @@ _TRUSTED_PROXIES_NONE = frozenset({"", "none", "off", "false", "0"})
 # input.
 # --------------------------------------------------------------------------
 
-REDACTED = "***"
-
-# Query parameter names whose *values* are masked (compared case-insensitively,
-# after percent-decoding the name).
-SENSITIVE_QUERY_KEYS = frozenset(
-    {
-        "password",
-        "username",
-        "token",
-        "api_key",
-        # OIDC (SSO spec 3.3): an authorization code, the state that redeems it, and every
-        # token or client credential the flow handles.
-        "code",
-        "state",
-        "session_state",
-        "id_token",
-        "access_token",
-        "refresh_token",
-        "client_secret",
-        "client_assertion",
-        "code_verifier",
-    }
-)
-
 # Header names whose values are masked. Compared case-insensitively after
 # normalising ``_`` to ``-`` and dropping a leading ``http-``, so the same set
 # covers Django ``HttpHeaders`` ("Authorization") and raw ``request.META``
@@ -118,10 +99,6 @@ URL_VALUED_META_KEYS = frozenset(
     }
 )
 
-# Path segments after which the next two segments are the Xtream username and
-# password. Matched anywhere in the path, because a provider's server URL may
-# carry a sub-path before /live/ (see apps/m3u/tasks.py).
-XTREAM_PATH_PREFIXES = frozenset({"live", "movie", "series", "timeshift"})
 
 # The XC root route is `/<username>/<password>/<channel_id>` with no prefix to
 # key off (dispatcharr/urls.py `xc_stream_endpoint`). It is only recognised as

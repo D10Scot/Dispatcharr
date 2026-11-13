@@ -17,6 +17,7 @@ from apps.proxy.authorize import SURFACE_CATCHUP, AuthorizeDenied
 from apps.proxy.utils import check_user_stream_limits as _check_user_stream_limits
 from apps.proxy.utils import find_ts_sync as _find_ts_sync
 from dispatcharr.utils import REDACTED
+from tests.log_scrub_rig import unscrubbed_logging
 
 TEST_SESSION_ID = "testsession1"
 TEST_MEDIA_ID = "8_2026-06-08-17-00"
@@ -463,7 +464,10 @@ class StreamFromProviderStatusMappingTests(TestCase):
             raw, [],
             f"raw control bytes {raw!r} reached the 'no TS sync' warning: {msg!r}",
         )
-        self.assertIn("\\x1b", msg, "ESC not repr-escaped in the warning")
+        # The body is no longer echoed at all (repr-escaped or not): the warning
+        # carries its length and a fixed classification only.
+        self.assertIn("body=other", msg, "body classification missing from the warning")
+        self.assertNotIn("Warning", msg, "body text reached the 'no TS sync' warning")
 
     @patch.object(views, "_open_upstream")
     def test_416_range_not_satisfiable_passes_through(self, mocked_open):
@@ -651,7 +655,7 @@ class RedactUrlFailClosedTests(TestCase):
         # as here, InvalidSchema; both RequestException), and
         # _stream_from_provider's RequestException branch logs the URL.
         url = "myhost/timeshift/usr0/s3cret/120/2026-05-12:17-00/1.ts"
-        with self.assertLogs(views.logger, level="ERROR") as logs:
+        with unscrubbed_logging(), self.assertLogs(views.logger, level="ERROR") as logs:
             response = views._stream_from_provider(
                 candidate_urls=[url],
                 user_agent="test-agent",
