@@ -49,7 +49,10 @@ OTLP is enabled in a process if and only if `OTEL_EXPORTER_OTLP_ENDPOINT` is set
 > all-in-one image with `docker/uwsgi.ini` unchanged: four workers and `gevent = 400`. Traces,
 > metrics and logs all went to an OpenTelemetry Collector 0.165.0 over OTLP/HTTP. The settings
 > were `OTEL_METRIC_EXPORT_INTERVAL=1000` (one export a second rather than one a minute), every
-> trace sampled, and the API's `max-requests` raised so that a recycle could not hide a hang. The load was 100 concurrent clients through nginx, for 11 minutes, run twice. They
+> trace sampled, and the API's `max-requests` raised so that a recycle could not hide a hang.
+> The load was 100 concurrent clients through nginx, for 11 minutes, run twice. That is about 25
+> requests in flight per worker, not 400: uWSGI's default listen backlog of 100 capped the load,
+> and a pilot at 120 clients drew 9,071 502s from nginx. The clients
 > requested `/api/core/version/`, an authenticated `/api/core/settings/` and, for one request
 > in ten, a 404 that writes a log record.
 >
@@ -65,12 +68,20 @@ OTLP is enabled in a process if and only if `OTEL_EXPORTER_OTLP_ENDPOINT` is set
 > collector's counters for all three signals rose in every 30-second scrape. At the end,
 > `py-spy dump` showed each worker idle in `Hub.run`, with no thread in the SDK.
 >
-> **The latency bound set beforehand was missed.** It was 5 seconds per poll and 10 seconds
-> between a worker's exports. The slow polls came while the host's load average was between 500
-> and 970 on 14 cores, from work outside the soak. `celery-beat`, which serves no requests,
-> slowed in step with the workers, and the Go relay's exports kept to time. The slow polls fit
-> CPU starvation and do not fit a lock, but this soak cannot rule out an SDK stall hidden inside
-> them. Repeat it on a quiet machine before OTLP goes on in production.
+> **The latency bounds set beforehand were missed.** There were three:
+>
+> - every poll answers within 5 seconds: missed in both runs (6.5 s and 7.6 s);
+> - no gap between polls exceeds 6 seconds: missed in both runs (6.5 s and 7.6 s);
+> - no gap between one worker's metric exports exceeds 10 seconds: met in run 1 (6.5 s), missed
+>   in run 2 (19.8 s).
+>
+> The host was saturated by work outside the soak during both runs. Its load-average readings
+> were unreliable (macOS's figure wrapped near 1024) and are not quoted. The evidence for
+> saturation is how the slowdown spread. All four workers slowed evenly, and so did
+> `celery-beat`, which serves no requests. The Go relay's exports kept to time. That fits CPU
+> starvation and does not fit a lock, but this soak cannot rule out an SDK stall hidden inside
+> it. Repeat it on a quiet machine before OTLP goes on in production. Record CPU idle as well as
+> load, and raise uWSGI's `listen` so that each worker carries more greenlets.
 >
 > Until then, treat OTLP on the Python processes as experimental. If a worker hangs, set
 > `OTEL_METRICS_EXPORTER=none` and report it. The relay is Go and is not affected.
