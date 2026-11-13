@@ -1,8 +1,62 @@
 {
  "detail": null,
- "fetched_at": "2026-11-12T14:44:34+00:00",
+ "fetched_at": "2026-11-13T14:03:02+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-11-12T20:40:23Z",
+   "id": 669,
+   "label_events": [
+    {
+     "at": "2026-11-12T20:40:25Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "test(relay): pin that a trusted traceparent with trace flags 03 is inherited",
+   "updated_at": "2026-11-12T20:40:23Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-12T20:33:32Z",
+   "id": 667,
+   "label_events": [
+    {
+     "at": "2026-11-12T20:33:33Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "rename E1: relay/telemetry/logkeys.go variableNames() must follow the DISPATCHARR_* -> MINO_* rename",
+   "updated_at": "2026-11-12T20:33:32Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-12T15:56:40Z",
+   "id": 663,
+   "label_events": [
+    {
+     "at": "2026-11-12T15:56:41Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Pull request review hit engine rate limit (HTTP 429)",
+   "updated_at": "2026-11-13T13:16:52Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-11-12T14:36:06Z",
