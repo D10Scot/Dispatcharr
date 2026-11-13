@@ -130,11 +130,21 @@ jobs:
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
 
+      - name: Checkout (signing helper only)
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/cosign_sign_once.sh
+          sparse-checkout-cone-mode: false
+
       - name: Sign image (keyless)
+        # Skips a digest this repository's workflows already signed and
+        # tolerates Rekor's duplicate-entry 409 only once that signature
+        # verifies (#682); see scripts/cosign_sign_once.sh.
         env:
           IMAGE: ${{ steps.resolved.outputs.image }}
           DIGEST: ${{ steps.resolved.outputs.digest }}
-        run: cosign sign --yes "${IMAGE}@${DIGEST}"
+        run: IMAGE_REF="${IMAGE}@${DIGEST}" bash scripts/cosign_sign_once.sh
 
       - name: Generate SBOM
         env:

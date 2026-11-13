@@ -132,6 +132,8 @@ gh attestation verify oci://ghcr.io/d10scot/dispatcharr:latest \
   --owner D10Scot
 ```
 
+Signing goes through `scripts/cosign_sign_once.sh` (#682): it verifies first and skips a digest this repository's `ci`, `docker-build`, `base-image` or `release` workflow already signed, because a merge that does not change the image rebuilds an identical digest and Rekor answers a second signer with a 409 `an equivalent entry already exists`. It still signs with the transparency log on. It accepts that exact 409 only when a signature then verifies, and fails on every other error.
+
 ## Registry & distribution
 
 - **Canonical registry:** `ghcr.io/d10scot/dispatcharr`. This fork does not
