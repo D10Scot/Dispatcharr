@@ -20,6 +20,7 @@ Each test calls the real function with obviously fake secrets, captures every
 record at TRACE (level 5) and fails naming the leaked value.
 """
 
+import contextlib
 import logging
 from unittest.mock import MagicMock, patch
 
@@ -59,19 +60,29 @@ class capture:
     def __enter__(self):
         # The central log scrubber would mask the very strings these tests assert are absent,
         # so a regressed call site would still pass. Capture the raw call site instead.
-        self._rig = unscrubbed_logging()
-        self._rig.__enter__()
-        for lg in self.loggers:
-            self.saved.append((lg, lg.level, lg.propagate))
-            lg.setLevel(TRACE)
-            lg.addHandler(self.handler)
+        self._stack = contextlib.ExitStack()
+        self._stack.enter_context(unscrubbed_logging())
+        try:
+            for lg in self.loggers:
+                self.saved.append((lg, lg.level, lg.propagate))
+                lg.setLevel(TRACE)
+                lg.addHandler(self.handler)
+        except BaseException:
+            self._restore_loggers()
+            self._stack.close()
+            raise
         return self.handler
 
-    def __exit__(self, exc_type, exc, tb):
+    def _restore_loggers(self):
         for lg, level, propagate in self.saved:
             lg.removeHandler(self.handler)
             lg.setLevel(level)
-        self._rig.__exit__(exc_type, exc, tb)
+
+    def __exit__(self, exc_type, exc, tb):
+        try:
+            self._restore_loggers()
+        finally:
+            self._stack.__exit__(exc_type, exc, tb)
         if exc_type is None:
             assert self.handler.records, "no log record captured: the capture is vacuous"
         return False

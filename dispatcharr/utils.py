@@ -100,7 +100,6 @@ URL_VALUED_META_KEYS = frozenset(
 )
 
 
-
 # The XC root route is `/<username>/<password>/<channel_id>` with no prefix to
 # key off (dispatcharr/urls.py `xc_stream_endpoint`). It is only recognised as
 # credential-bearing when the path is exactly three segments and the last looks

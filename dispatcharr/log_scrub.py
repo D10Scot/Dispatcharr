@@ -339,6 +339,12 @@ def install():
     current = logging.getLogRecordFactory()
     if getattr(current, "__mino_log_scrubber__", False):
         return False
+    # TEST-ONLY. tests/log_scrub_rig.py's unscrubbed_logging() installs a pass-through factory
+    # carrying this attribute so that discover_plugins' ensure_installed() cannot re-arm the
+    # scrubber inside a block that deliberately runs without it. Nothing outside tests/ may
+    # set it (tests/test_log_scrub_install.py enforces that).
+    if getattr(current, "__mino_log_scrubber_test_bypass__", False):
+        return False
 
     def factory(*args, _previous=current, **kwargs):
         record = _previous(*args, **kwargs)  # a raise here propagates, as it does without the scrubber

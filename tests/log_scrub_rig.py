@@ -15,9 +15,18 @@ Contract (one context manager, no re-entry):
   ``F2 -> G -> F1`` the foreign ``G`` carries no marker yet still calls ``F1``),
   so anything but the bare stdlib factory is refused;
 * nesting is refused, not supported;
-* during the block the factory is that predecessor;
+* during the block the factory is a MARKED pass-through to that predecessor
+  (``__mino_log_scrubber_test_bypass__``). the scrubber module's ``install()``
+  recognises the marker and leaves it alone, because code under test can reach
+  ``PluginManager.discover_plugins`` (``log_system_event`` -> ``trigger_event``),
+  whose ``finally: ensure_installed()`` would otherwise re-install a scrubber and
+  silently hollow the rest of the block;
+* on normal exit the rig asserts that its pass-through is STILL the current
+  factory and fails the test loudly if anything replaced it;
 * on every exit, an exception inside the block included, the exact object
   found on entry is put back.
+
+The marker is TEST-ONLY: nothing outside ``tests/`` may set it.
 
 It changes a process-global: use it only in the test's own thread, never around
 code that starts threads or greenlets that log.
@@ -43,12 +52,24 @@ def unscrubbed_logging():
     if predecessor is not logging.LogRecord:
         raise AssertionError("predecessor is not the bare logging.LogRecord")
     _active = True
+
+    def bypass(*args, **kwargs):
+        return predecessor(*args, **kwargs)
+
+    bypass.__mino_log_scrubber_test_bypass__ = True
+    replaced = None
     try:
-        logging.setLogRecordFactory(predecessor)
+        logging.setLogRecordFactory(bypass)
         yield
+        replaced = logging.getLogRecordFactory() is not bypass  # normal exit only
     finally:
         logging.setLogRecordFactory(entry)
         _active = False
+    if replaced:
+        raise AssertionError(
+            "the log record factory was replaced inside unscrubbed_logging(): "
+            "the rest of the block ran through a different factory"
+        )
 
 
 class FactoryTestCase(SimpleTestCase):

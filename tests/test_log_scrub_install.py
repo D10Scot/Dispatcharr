@@ -221,6 +221,53 @@ class PluginDiscoveryTests(FactoryTestCase):
 class RigTests(FactoryTestCase):
     """The D11 rig's own contract."""
 
+    def assert_bypass_active(self):
+        current = logging.getLogRecordFactory()
+        self.assertTrue(getattr(current, "__mino_log_scrubber_test_bypass__", False), "rig bypass not current")
+        self.assertFalse(getattr(current, "__mino_log_scrubber__", False))
+
+    def test_ensure_installed_inside_the_block_does_not_re_arm_the_scrubber(self):
+        # discover_plugins' finally runs ensure_installed(); log_system_event reaches it.
+        self.assert_scrubber_installed()
+        logger, stream = self.capture("rig.rearm")
+        with unscrubbed_logging():
+            logger.info("a %s", CARRIER)
+            with self.assertNoLogs("dispatcharr.log_scrub", level="WARNING"):
+                self.assertFalse(log_scrub.ensure_installed())
+            logger.info("b %s", CARRIER)
+        self.assertEqual(stream.getvalue(), f"a {CARRIER}\nb {CARRIER}\n")  # exit assertion passed too
+
+    def test_a_foreign_replacement_inside_the_block_fails_the_exit_assertion(self):
+        self.assert_scrubber_installed()
+        entry = logging.getLogRecordFactory()
+
+        def foreign_factory(*args, **kwargs):
+            return logging.LogRecord(*args, **kwargs)
+
+        with self.assertRaisesRegex(AssertionError, "factory was replaced inside unscrubbed_logging"):
+            with unscrubbed_logging():
+                logging.setLogRecordFactory(foreign_factory)
+        self.assertIs(logging.getLogRecordFactory(), entry)  # the exact entry factory is back
+
+    def test_nothing_outside_the_tests_sets_the_bypass_marker(self):
+        name = "__mino_log_scrubber_test_bypass__"
+        offenders = []
+        for top in ("apps", "core", "dispatcharr", "scripts", "version.py", "manage.py"):
+            base = REPO_ROOT / top
+            files = [base] if base.is_file() else sorted(base.rglob("*.py"))
+            for path in files:
+                rel = path.relative_to(REPO_ROOT).as_posix()
+                if "/tests/" in f"/{rel}":
+                    continue
+                for number, line in enumerate(path.read_text().splitlines(), 1):
+                    if name not in line:
+                        continue
+                    reads_only = rel == "dispatcharr/log_scrub.py" and "getattr(" in line
+                    comment = line.lstrip().startswith("#")
+                    if not (reads_only or comment):
+                        offenders.append(f"{rel}:{number}: {line.strip()}")
+        self.assertEqual(offenders, [], "the test-only bypass marker is referenced outside tests/")
+
     def test_during_the_block_records_are_not_scrubbed_and_after_it_they_are(self):
         self.assert_scrubber_installed()
         logger, stream = self.capture("rig.during")
@@ -234,7 +281,7 @@ class RigTests(FactoryTestCase):
         entry = logging.getLogRecordFactory()
         with self.assertRaises(ZeroDivisionError):
             with unscrubbed_logging():
-                self.assertIs(logging.getLogRecordFactory(), logging.LogRecord)
+                self.assert_bypass_active()
                 1 / 0
         self.assertIs(logging.getLogRecordFactory(), entry)
         with unscrubbed_logging():  # the active flag was cleared too
@@ -247,7 +294,7 @@ class RigTests(FactoryTestCase):
             with self.assertRaisesRegex(RuntimeError, "not re-entrant"):
                 with unscrubbed_logging():
                     self.fail("the nested block must not run")
-            self.assertIs(logging.getLogRecordFactory(), logging.LogRecord)  # still the outer's
+            self.assert_bypass_active()  # still the outer's
         self.assertIs(logging.getLogRecordFactory(), entry)
 
     def test_entering_with_no_scrubber_installed_raises(self):
