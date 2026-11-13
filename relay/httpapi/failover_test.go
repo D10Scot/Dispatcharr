@@ -210,9 +210,9 @@ func TestARefusedFailoverNeverUsesTheCache(t *testing.T) {
 // call" (CLAUDE.md § Operationally) is two attempts of (ConnectTimeout,
 // ReadTimeout) plus the retry delay, spent before the cache is read. Here the
 // client's transport times out at 300 ms and the control plane answers after
-// 400 ms, so each attempt is a transport failure; the fake's own request log
-// shows the second attempt at least 400 ms after the first (timeout plus the
-// 100 ms retry delay), and the alternate is not contacted until after both.
+// 400 ms, so each attempt is a transport failure; the client's own deadlines
+// for the two attempts are at least 400 ms apart (timeout plus the 100 ms
+// retry delay), and the alternate is not contacted until after both.
 // A client that skipped the retry, or one that read the cache before its
 // first attempt failed, reddens this.
 func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
@@ -223,12 +223,11 @@ func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
 	slow := control.NewHTTPClient()
 	slow.Timeout = 300 * time.Millisecond
 	// The lower bound is read from the CLIENT's side (issue #679): the fake
-	// stamps a request when it ARRIVES, and the client's 300 ms timeout runs
-	// from the start of the attempt (control/nextsource.go post:
-	// httpClient.Timeout, then time.After(RetryDelay)), so the fake's gap is
-	// 400 ms plus the difference of the two attempts' dial and scheduling
-	// delays and fell as low as 337 ms under load. The entry to RoundTrip is
-	// taken in-process, a few microseconds after the timeout starts.
+	// stamps a request when it ARRIVES, so its gap is 400 ms plus the
+	// difference of the two attempts' dial and scheduling delays and fell as
+	// low as 337 ms under load. The transport records each attempt's context
+	// deadline instead: Client.Do sets it to its own start plus the 300 ms
+	// timeout.
 	rt := &roundTripStamps{next: http.DefaultTransport}
 	slow.Transport = rt
 	r := newRigWithClient(t, cp, relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, 0x100), StopAfterBytes: rigChunkBytes * 2}, slow)
@@ -244,16 +243,17 @@ func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
 		t.Fatalf("the control plane saw %d next-source calls, want 3: the tune and two failover attempts", len(calls))
 	}
 	first, second := calls[1].At, calls[2].At
-	starts := rt.starts()
-	if len(starts) < 3 {
-		t.Fatalf("the client made %d next-source round trips, want at least 3", len(starts))
+	deadlines := rt.deadlines()
+	if len(deadlines) < 3 {
+		t.Fatalf("the client made %d next-source round trips, want at least 3", len(deadlines))
 	}
-	// Timers never fire early and time.After starts after the first attempt
-	// failed, so two attempts are at least timeout + RetryDelay apart, less the
-	// in-process slack between starting the timeout and entering RoundTrip.
-	// Without the delay the gap is 300 ms and with a halved timeout 250 ms.
-	if gap := starts[2].Sub(starts[1]); gap < 390*time.Millisecond {
-		t.Fatalf("the second attempt started %s after the first, under the 300 ms timeout plus the 100 ms retry delay", gap)
+	// Attempt two's Do starts only after attempt one failed (its deadline at
+	// the earliest) and the RetryDelay wait that follows (control/nextsource.go
+	// :484-492, the Do at :529), and timers never fire early, so the deadlines
+	// are at least timeout-gap + RetryDelay apart exactly, with no slack.
+	// Without the delay the gap is 300 ms, with a halved timeout 250 ms.
+	if gap := deadlines[2].Sub(deadlines[1]); gap < 400*time.Millisecond {
+		t.Fatalf("the second attempt's deadline was %s after the first's, under the 300 ms timeout plus the 100 ms retry delay", gap)
 	}
 	if gap := second.Sub(first); gap > 3*time.Second {
 		t.Fatalf("the second attempt came %s after the first: the budget was not the client's", gap)
@@ -285,24 +285,28 @@ func TestTheSlotIsReleasedWithTheCurrentStreamWhenTheChannelEnds(t *testing.T) {
 	}
 }
 
-// roundTripStamps records when the client entered each next-source round trip.
+// roundTripStamps records the context deadline of each next-source attempt.
 type roundTripStamps struct {
 	next http.RoundTripper
 	mu   sync.Mutex
-	at   []time.Time
+	dl   []time.Time
 }
 
 func (r *roundTripStamps) RoundTrip(req *http.Request) (*http.Response, error) {
 	if strings.HasSuffix(req.URL.Path, "/next-source") {
+		d, ok := req.Context().Deadline()
+		if !ok {
+			return nil, errors.New("roundTripStamps: the attempt carries no deadline")
+		}
 		r.mu.Lock()
-		r.at = append(r.at, time.Now())
+		r.dl = append(r.dl, d)
 		r.mu.Unlock()
 	}
 	return r.next.RoundTrip(req)
 }
 
-func (r *roundTripStamps) starts() []time.Time {
+func (r *roundTripStamps) deadlines() []time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]time.Time(nil), r.at...)
+	return append([]time.Time(nil), r.dl...)
 }
