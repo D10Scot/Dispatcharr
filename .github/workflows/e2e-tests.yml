@@ -97,7 +97,7 @@ jobs:
           # `lifecycle-tests.yml`'s `upgrade-migrations` job does, and that job
           # already runs the project on every `migration/**` branch. Listing it
           # here too ran it without the baseline and failed every full run.
-          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","streaming-split","lifecycle","frontend","dvr","sso"]'
+          projects='["pristine","seeded","streaming","streaming-failover","streaming-greybox","streaming-split","lifecycle","frontend","dvr","sso","sso-faults"]'
           echo "projects=$projects" >> "$GITHUB_OUTPUT"
 
           if [ "$full" = "true" ] || [ "$EVENT_NAME" != "pull_request" ]; then
@@ -253,23 +253,43 @@ jobs:
       - name: Load the image
         run: docker load < /tmp/dispatcharr-e2e.tar.gz
 
-      # The `sso` project runs only against a scoped stack of its own (SSO
-      # spec PR S5; e2e/tests/sso/scope.ts refuses anything else), because
-      # turning password login off is instance-wide. Exported through
-      # GITHUB_ENV so the boot, the Playwright run and the two cleanup steps
-      # below all see the same names. Literals only: nothing here is read from
-      # the event. The provider stays the shared default, which
-      # scripts/e2e_up.sh's check_scope accepts beside a scoped stack.
-      # E2E_OIDC_ALLOW_HTTP=1 makes the script pass MINO_OIDC_ALLOW_HTTP=1, so
-      # Mino accepts the fake OP's plain-http issuer; no other project gets it.
-      - name: Scope the sso project's stack
-        if: matrix.project == 'sso'
+      # The `sso` and `sso-faults` projects run only against a scoped stack of
+      # their own (SSO spec PR S5; e2e/tests/sso/scope.ts refuses anything
+      # else), because turning password login off is instance-wide. Each row
+      # runs on its own runner, so the two stacks never share Mino's oidc
+      # throttle window; the names differ anyway, so a local reading of a CI
+      # log can tell them apart. Exported through GITHUB_ENV so the boot, the
+      # Playwright run and the two cleanup steps below all see the same names.
+      # Literals only: the project name reaches the script through `env`, never
+      # interpolated, and selects one of two fixed blocks. The provider stays the
+      # shared default, which scripts/e2e_up.sh's check_scope accepts beside a
+      # scoped stack. E2E_OIDC_ALLOW_HTTP=1 makes the script pass
+      # MINO_OIDC_ALLOW_HTTP=1, so Mino accepts the fake OP's plain-http issuer;
+      # no other project gets it.
+      - name: Scope the sso projects' stacks
+        if: matrix.project == 'sso' || matrix.project == 'sso-faults'
+        env:
+          PLAYWRIGHT_PROJECT: ${{ matrix.project }}
         run: |
+          case "$PLAYWRIGHT_PROJECT" in
+            sso)
+              stack=mino-e2e-sso
+              port=9291
+              ;;
+            sso-faults)
+              stack=mino-e2e-sso-faults
+              port=9292
+              ;;
+            *)
+              echo "no scoped stack for $PLAYWRIGHT_PROJECT" >&2
+              exit 1
+              ;;
+          esac
           {
-            echo "DISPATCHARR_E2E_CONTAINER=mino-e2e-sso"
-            echo "DISPATCHARR_E2E_VOLUME=mino-e2e-sso-data"
-            echo "DISPATCHARR_E2E_NETWORK=mino-e2e-sso-net"
-            echo "DISPATCHARR_E2E_PORT=9291"
+            echo "DISPATCHARR_E2E_CONTAINER=$stack"
+            echo "DISPATCHARR_E2E_VOLUME=$stack-data"
+            echo "DISPATCHARR_E2E_NETWORK=$stack-net"
+            echo "DISPATCHARR_E2E_PORT=$port"
             echo "E2E_OIDC_ALLOW_HTTP=1"
           } >> "$GITHUB_ENV"
 
@@ -285,7 +305,7 @@ jobs:
       # defaults to. Its defaults are exactly what this job used — container
       # dispatcharr-e2e, volume dispatcharr-e2e-data, image
       # dispatcharr-e2e:local, port 9191 — so nothing needs overriding, except
-      # for the sso project, whose own stack the step above scopes.
+      # for the sso and sso-faults projects, whose own stacks the step above scopes.
       #
       # The provider image is different: scripts/e2e_up.sh rebuilds it
       # unconditionally by default, which here would silently discard the
@@ -339,8 +359,9 @@ jobs:
       - name: Run E2E tests
         working-directory: ./e2e
         env:
-          # The sso project's scoped stack publishes 9291 (the step above).
-          E2E_BASE_URL: ${{ matrix.project == 'sso' && 'http://localhost:9291' || 'http://localhost:9191' }}
+          # The sso and sso-faults projects' scoped stacks publish 9291 and 9292
+          # (the step above).
+          E2E_BASE_URL: ${{ matrix.project == 'sso' && 'http://localhost:9291' || matrix.project == 'sso-faults' && 'http://localhost:9292' || 'http://localhost:9191' }}
           PLAYWRIGHT_PROJECT: ${{ matrix.project }}
         run: npx playwright test --project="$PLAYWRIGHT_PROJECT"
 

@@ -11,7 +11,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomBytes } from 'node:crypto';
-import type { Page } from '@playwright/test';
+import type { Page, Response } from '@playwright/test';
 import { expect } from '@playwright/test';
 import type { ApiClient } from '../../fixtures';
 import { UPSTREAM_CONTROL_BASE, UPSTREAM_INTERNAL_BASE } from '../../fixtures/upstream';
@@ -20,22 +20,44 @@ import type { TokenPair } from '../../setup/login';
 import { tokenPairOf } from '../../setup/login';
 import { ssoLoginButton } from './testids';
 
-/** Where `sso.setup.ts` keeps this project's admin pair. Never `tokens.json`. */
-export const SSO_TOKENS_FILE = path.join(AUTH_DIR, 'sso-tokens.json');
+/**
+ * Where a project's admin pair lives: one file per stack, so the `sso` and `sso-faults`
+ * projects, each on a scoped stack of its own, never read each other's pair. Keyed by the
+ * Playwright project name of the setup project that writes it or the spec project that
+ * reads it. Never `tokens.json`.
+ */
+const SSO_TOKEN_FILES: Record<string, string> = {
+  'sso-setup': 'sso-tokens.json',
+  sso: 'sso-tokens.json',
+  'sso-faults-setup': 'sso-faults-tokens.json',
+  'sso-faults': 'sso-faults-tokens.json',
+};
 
-/** The admin pair `sso.setup.ts` wrote. Throws naming the setup project if it is absent. */
-export function readSsoAdminPair(): TokenPair {
+/** The admin-pair file for `projectName`. Throws for a project that is not an SSO project. */
+export function ssoTokensFile(projectName: string): string {
+  const file = SSO_TOKEN_FILES[projectName];
+  if (!file) {
+    throw new Error(
+      `project '${projectName}' has no SSO admin-pair file: add it to SSO_TOKEN_FILES in tests/sso/helpers.ts`
+    );
+  }
+  return path.join(AUTH_DIR, file);
+}
+
+/** The admin pair the project's setup wrote. Throws naming the setup project if it is absent. */
+export function readSsoAdminPair(projectName: string): TokenPair {
+  const file = ssoTokensFile(projectName);
   let pair: TokenPair | undefined;
   try {
-    pair = tokenPairOf(JSON.parse(fs.readFileSync(SSO_TOKENS_FILE, 'utf8')));
+    pair = tokenPairOf(JSON.parse(fs.readFileSync(file, 'utf8')));
   } catch {
     pair = undefined;
   }
   if (!pair) {
     throw new Error(
-      `${SSO_TOKENS_FILE} holds no admin token pair. It is written by the sso-setup ` +
-        'project, which the sso project lists in dependencies: run the sso project, not a ' +
-        'single file with --no-deps.'
+      `${file} holds no admin token pair. It is written by the project's setup dependency ` +
+        `(sso-setup or sso-faults-setup): run the ${projectName} project, not a single file ` +
+        'with --no-deps.'
     );
   }
   return pair;
@@ -51,6 +73,7 @@ export type OidcFault =
   | 'expired'
   | 'alg-none'
   | 'unknown-kid'
+  | 'bad-signature'
   | 'missing-iss-param';
 
 /** The fake OP's control API, on the host-published origin. */
@@ -91,17 +114,24 @@ export function uniqueToken(): string {
   return randomBytes(5).toString('hex');
 }
 
+/** The fake OP's two issuers: the Entra-shaped one, and one that advertises RFC 9207 `iss`. */
+export type OpIssuerPath = '/oidc' | '/oidc/rfc9207';
+
 /**
  * Seed an enabled generic provider in Mino pointed at the fake OP, and register its
  * redirect URI with the OP. One per test: the OP's queue and log are per client.
  */
-export async function createSsoProvider(api: ApiClient, label: string): Promise<SsoProvider> {
+export async function createSsoProvider(
+  api: ApiClient,
+  label: string,
+  options: { issuerPath?: OpIssuerPath } = {}
+): Promise<SsoProvider> {
   const token = uniqueToken();
   const slug = `e2e-${label}-${token}`;
   const displayName = `E2E ${label} ${token}`;
   const clientId = `mino-e2e-${token}`;
   const clientSecret = randomBytes(24).toString('base64url');
-  const issuer = `${UPSTREAM_INTERNAL_BASE.replace(/\/+$/, '')}/oidc`;
+  const issuer = `${UPSTREAM_INTERNAL_BASE.replace(/\/+$/, '')}${options.issuerPath ?? '/oidc'}`;
 
   const created = await api.json<{ id: number; slug: string; redirect_uri: string | null }>(
     await api.post('/api/accounts/oidc/providers-admin/', {
@@ -165,20 +195,63 @@ export async function retireSsoProvider(api: ApiClient, provider: SsoProvider): 
   });
 }
 
-/** From the login page, click the provider's button; the fake OP auto-approves. */
+const THROTTLE_NOTE =
+  "Mino's oidc throttle, 20 a minute per client IP over start, link/start, callback and " +
+  'exchange (e2e/README.md, "The sso project")';
+
+/** Which leg of the flow a response is, by path. */
+function legOf(response: Response): 'start' | 'callback' | 'exchange' | undefined {
+  const { pathname } = new URL(response.url());
+  if (/^\/api\/accounts\/oidc\/[^/]+\/start\/$/.test(pathname)) return 'start';
+  if (/^\/api\/accounts\/oidc\/[^/]+\/callback\/$/.test(pathname)) return 'callback';
+  if (/^\/api\/accounts\/oidc\/exchange\/$/.test(pathname) && response.request().method() === 'POST') return 'exchange';
+  return undefined;
+}
+
+/** Fails naming the throttle if `response` is a 429: an observation, never a retry. */
+function expectNotThrottled(response: Response): void {
+  expect(
+    response.status(),
+    `${response.request().method()} ${new URL(response.url()).pathname} answered 429: ${THROTTLE_NOTE}`
+  ).not.toBe(429);
+}
+
+/**
+ * From the login page, click the provider's button; the fake OP auto-approves.
+ *
+ * A throttled leg shows raw JSON (start, callback) or turns into `exchange_failed`
+ * (exchange), and would otherwise surface as an opaque URL timeout, so each leg that
+ * happens is checked for a 429 as it arrives. Nothing is retried and nothing else about
+ * the responses is judged: the specs' own assertions decide the outcome.
+ */
 export async function signInThroughSso(page: Page, provider: SsoProvider): Promise<void> {
   await page.goto('/login');
   const button = page.getByTestId(ssoLoginButton(provider.slug));
   await expect(button, `the login page offers ${provider.displayName}`).toBeVisible();
-  const started = page.waitForResponse((r) => /^\/api\/accounts\/oidc\/[^/]+\/start\/$/.test(new URL(r.url()).pathname));
+  // Every waiter is registered before the click, so no leg can arrive unseen. A leg the
+  // flow never reaches resolves to null rather than rejecting unhandled.
+  const waitFor = (leg: 'start' | 'callback' | 'exchange') =>
+    page.waitForResponse((r) => legOf(r) === leg, { timeout: 30_000 }).catch(() => null);
+  const started = waitFor('start');
+  const calledBack = waitFor('callback');
+  const exchanged = waitFor('exchange');
   await button.click();
-  // A throttled start shows raw JSON and would otherwise surface as an opaque URL timeout.
+
   const start = await started;
-  expect(
-    start.status(),
-    `GET ${new URL(start.url()).pathname} answered 429: Mino's oidc throttle, 20 a minute per client IP ` +
-      'over start, link/start, callback and exchange (e2e/README.md, "The sso project")'
-  ).not.toBe(429);
+  if (!start) return;
+  expectNotThrottled(start);
+
+  const callback = await calledBack;
+  if (!callback) return;
+  expectNotThrottled(callback);
+
+  // Only a callback that hands off (`/login/sso#code=…`) leads to an exchange; a refusal
+  // redirects to `/login?sso_error=…` and the exchange waiter is left to lapse.
+  const location = callback.headers()['location'];
+  if (!location || new URL(location, callback.url()).pathname !== '/login/sso') return;
+  const exchange = await exchanged;
+  if (!exchange) return;
+  expectNotThrottled(exchange);
 }
 
 /** A user row as `GET /api/accounts/users/` returns it, the fields these specs read. */

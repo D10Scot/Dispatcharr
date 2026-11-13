@@ -121,22 +121,50 @@ describe('streamLoop', () => {
     // `closing` alone at the top of the loop, with no regard for
     // `afterBytes`, ends the stream on the very next iteration no matter
     // what threshold was requested — making afterBytes dead code.
+    //
+    // The disconnect is issued from the server side, inside the first
+    // `res.write()`, with afterBytes one chunk plus five packets. It used to
+    // be issued from the client after its first read, with afterBytes
+    // computed from that read's length; at this rate the server writes a
+    // chunk every couple of milliseconds, so under load it had already
+    // written a second whole chunk before the disconnect arrived, and the
+    // stream ended at two chunks (15040) instead of the 8460 the client
+    // computed. Bytes already written cannot be un-sent (connections.ts), so
+    // that was the test racing the server, not the cut-off missing. Issued
+    // at the first write, the disconnect always arrives with exactly one
+    // chunk written, mid-stream, and the cut must land inside the second.
     const connection = fakeConnection();
-    const url = await serve(1000, connection); // fast, so the test stays quick
-    const res = await fetch(url);
+    const asset = fakeAsset();
+    let afterBytes: number | undefined;
+    server = http.createServer((_req, res) => {
+      const write = res.write.bind(res) as (chunk: Buffer) => boolean;
+      (res as { write: (chunk: Buffer) => boolean }).write = (chunk: Buffer) => {
+        const accepted = write(chunk);
+        if (afterBytes === undefined) {
+          afterBytes = chunk.byteLength + TS_PACKET_SIZE * 5;
+          connection.disconnect({ clean: true, afterBytes });
+        }
+        return accepted;
+      };
+      void streamLoop(
+        res,
+        asset,
+        { scenarioRate: () => 1000, onConnection: () => {}, onClosed: () => {} },
+        connection
+      );
+    });
+    await new Promise<void>((resolve) => server!.listen(0, '127.0.0.1', resolve));
+    const res = await fetch(`http://127.0.0.1:${(server!.address() as AddressInfo).port}/`);
     const reader = res.body!.getReader();
 
-    const first = await reader.read();
-    const afterBytes = first.value!.byteLength + TS_PACKET_SIZE * 5;
-    connection.disconnect({ clean: true, afterBytes });
-
-    let total = first.value!.byteLength;
+    let total = 0;
     for (;;) {
       const { value, done } = await reader.read();
       if (done) break;
       total += value!.byteLength;
     }
 
+    expect(afterBytes).toBeDefined();
     expect(total).toBe(afterBytes);
   });
 

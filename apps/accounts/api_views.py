@@ -24,7 +24,7 @@ from dispatcharr.utils import (
 
 from .models import OIDCProvider, User
 from . import serializers as account_serializers
-from .admin_floor import admin_floor_lock
+from .admin_floor import AdminFloorBusy, admin_floor_lock
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
@@ -183,6 +183,11 @@ class OIDCAwareTokenRefreshSerializer(TokenRefreshSerializer):
         else:
             try:
                 oidc_refresh.check(token.payload)
+            except AdminFloorBusy:
+                # Never 401: that would sign the user out because another request held the
+                # lock. The token was not used up; the client retries the same one.
+                logger.warning("Token refresh answered 503: the admin-floor lock was busy")
+                raise AdminFloorBusyResponse() from None
             except oidc_refresh.LastAdminRefused as exc:
                 from core.utils import log_system_event
 
@@ -317,6 +322,20 @@ class AuthViewSet(viewsets.ViewSet):
         return Response({"message": "Logout successful"})
 
 
+class AdminFloorBusyResponse(APIException):
+    """503 ``{"code": "admin_floor_busy"}`` with ``Retry-After: 1``.
+
+    The admin-floor lock (``admin_floor.py``) was not granted within its bound. DRF's
+    exception handler turns ``wait`` into the ``Retry-After`` header.
+    """
+
+    status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+
+    def __init__(self):
+        super().__init__(detail={"code": "admin_floor_busy"})
+        self.wait = 1
+
+
 class CodedBadRequest(APIException):
     """A 400 whose body is ``{"code": <code>}``."""
 
@@ -355,27 +374,32 @@ class UserViewSet(viewsets.ModelViewSet):
         profiles_sent = "channel_profiles" in data
         profiles = data.pop("channel_profiles", None)
 
-        with transaction.atomic():
-            admin_floor_lock()
-            # Guards run on the row reloaded under the lock, never on serializer.instance,
-            # which the view loaded before it queued for the mutex.
-            try:
-                target = User.objects.select_for_update().get(pk=serializer.instance.pk)
-            except User.DoesNotExist:
-                raise Http404
-            if target.pk == self.request.user.pk:
-                raise CodedBadRequest("cannot_deactivate_self")
-            if (
-                target.is_active
-                and target.user_level >= User.UserLevel.ADMIN
-                and not User.objects.filter(
-                    is_active=True, user_level__gte=User.UserLevel.ADMIN
-                )
-                .exclude(pk=target.pk)
-                .exists()
-            ):
-                raise CodedBadRequest("last_active_admin")
-            serializer.save()
+        try:
+            with transaction.atomic():
+                admin_floor_lock()
+                # Guards run on the row reloaded under the lock, never on
+                # serializer.instance, which the view loaded before it queued for the mutex.
+                try:
+                    target = User.objects.select_for_update().get(pk=serializer.instance.pk)
+                except User.DoesNotExist:
+                    raise Http404
+                if target.pk == self.request.user.pk:
+                    raise CodedBadRequest("cannot_deactivate_self")
+                if (
+                    target.is_active
+                    and target.user_level >= User.UserLevel.ADMIN
+                    and not User.objects.filter(
+                        is_active=True, user_level__gte=User.UserLevel.ADMIN
+                    )
+                    .exclude(pk=target.pk)
+                    .exists()
+                ):
+                    raise CodedBadRequest("last_active_admin")
+                serializer.save()
+        except AdminFloorBusy:
+            # The transaction has rolled back: nothing was written.
+            logger.warning("User deactivation answered 503: the admin-floor lock was busy")
+            raise AdminFloorBusyResponse() from None
 
         if profiles_sent:
             account_serializers.apply_channel_profiles(serializer.instance, profiles)

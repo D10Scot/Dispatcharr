@@ -115,7 +115,7 @@ it is recreated (`--down`/`--recreate`).
 
 | Project | What it is for |
 |---|---|
-| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `streaming-split`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `sso` has its own bootstrap, `sso-setup`; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
+| `bootstrap` | Creates the superuser, pre-warms the `IntervalSchedule` row (see below) and writes auth state. Runs automatically as a dependency of `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`, `streaming-split`, `frontend` and `dvr` — every project that shares the default container. `guards` needs no container at all; `sso` and `sso-faults` have their own, `sso-setup` and `sso-faults-setup`; `pristine`, `lifecycle`, `lifecycle-upgrade`, `lifecycle-restore` and `lifecycle-scheduling` each need an instance bootstrap has not touched |
 | `guards` | Static analysis over this suite's own source, plus one behavioural check of `scripts/e2e_up.sh` against a stub `docker`. **No container, no browser, no fixtures** — it runs in a few seconds and needs nothing running. Home for every enforcement spec: the tag taxonomy, the grey-box capability allowlists, the `data-testid` contract, the instance-wide settings-write allowlist and the `pageErrors` check (which moved here from `tests/frontend/`), the `e2e-upstream` contract-version check, the Phase 2 parity matrix's format, and `e2e_up.sh`'s stack-scoping behaviour (`e2e-up-stacks.spec.ts`) |
 | `pristine` | Needs an instance with **no superuser**: first-run setup, and global `CoreSettings` changes |
 | `seeded` | The default. Shared instance, parallel workers, API-seeded data |
@@ -129,7 +129,8 @@ it is recreated (`--down`/`--recreate`).
 | `lifecycle-upgrade` | Boots a published baseline image, seeds, then replaces the container with the local build on the same volume. **Runs alone.** Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-restore` | Takes a backup, mutates the database, restores it. **Runs alone** and resets its container: `restore_backup` drops and rebuilds the `public` schema, replacing every row under anything else sharing the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
 | `lifecycle-scheduling` | Non-zero `refresh_interval` and `cron_expression`, and the django-celery-beat rows behind them. **Runs alone** and resets its container: a non-zero interval leaves an *enabled* hourly beat task re-refreshing that account for the life of the instance. Runs in `lifecycle-tests.yml`, not in `e2e-tests.yml`'s matrix |
-| `sso` | Sign-in through a fake OpenID provider (in `e2e-upstream`), the password-login toggle and its break-glass recovery. **Only against a scoped stack of its own** — every spec's first act is `assertScopedStack()`, which refuses the shared container. Its own bootstrap, `sso-setup`, writes `playwright/.auth/sso-tokens.json` and never touches `tokens.json`. One worker, no retries, 180s. See "The sso project" below |
+| `sso` | Sign-in through a fake OpenID provider (in `e2e-upstream`), the password-login toggle and its break-glass recovery. **Only against a scoped stack of its own** — every spec's first act is `assertScopedStack()`, which refuses the shared container. Its own bootstrap, `sso-setup`, writes `playwright/.auth/sso-tokens.json` and never touches `tokens.json`. Ignores `tests/sso/faults/`. One worker, no retries, 180s. See "The sso project" below |
+| `sso-faults` | Each ID-token fault the fake OP can inject, refused through the browser, plus an honest control. Its own project, and its own scoped stack, only because its 19 `oidc` requests do not fit beside `sso`'s 8 in one throttle window. Same scope rule as `sso`; its bootstrap, `sso-faults-setup`, runs `sso.setup.ts` against its stack and writes `sso-faults-tokens.json`. One worker, no retries, 120s. See "The sso-faults project" below |
 
 `frontend` depends on two rules that are not obvious from the config alone:
 
@@ -272,8 +273,13 @@ spec, and refuses unless `DISPATCHARR_E2E_CONTAINER`, `_VOLUME`, `_NETWORK` and
 `E2E_BASE_URL` is set explicitly to a loopback origin on that port.
 `tests/guards/sso-structure.spec.ts` fails, naming the file, unless that call is
 the first statement of the setup test and of a `test.beforeAll` that is the first
-`test` call in every file under `tests/sso/` the two projects load, so a new spec
-cannot forget it. The app
+`test` call in every file under `tests/sso/` the SSO projects load (a top-level
+`test.describe.configure(...)` or `test.use(...)` with no function in it may come
+first), so a new spec cannot forget it. It also refuses what would run before that
+call: any call made while a file under `tests/sso/` is imported (beyond a short list
+of pure ones), a worker-scoped or `auto` fixture there, a file there that is neither a
+support module nor a spec or the setup, and any project other than the four SSO ones
+whose `testDir` can reach `tests/sso/`. The app
 container also needs `MINO_OIDC_ALLOW_HTTP=1`, because the fake OP's issuer is
 plain http on the Docker network: `scripts/e2e_up.sh` passes it only when
 `E2E_OIDC_ALLOW_HTTP=1` is exported, so no other stack gets it. A container
@@ -296,8 +302,9 @@ second stack" above.
 **Tokens.** `sso-setup` (a dependency of `sso`) creates the scoped stack's admin
 with `ensureSuperuser`, refuses to go on if password login is off (a previous run
 died mid-test: `--reset` the stack), and writes the admin pair to
-`playwright/.auth/sso-tokens.json`, reusing a stored refresh token when it still
-works. It also sets `public_base_url` to the stack's origin, which provider
+`playwright/.auth/sso-tokens.json` (`sso-faults-setup`, the same file, writes
+`sso-faults-tokens.json`, so the two stacks' pairs never mix), reusing a stored
+refresh token when it still works. It also sets `public_base_url` to the stack's origin, which provider
 redirect URIs are built from. `tests/sso/fixtures.ts` re-points `api` at that
 pair; nothing in the project reads `tokens.json` or `principals.json`.
 
@@ -308,15 +315,33 @@ its shape, and both projects' `retries: 0`); the recovered login waits out one
 throttle window at most. Two runs inside a minute can therefore exceed the
 3/minute budget; the probe fails naming it rather than retrying.
 
-**SSO request budget: 8 of 20 a run.** Mino's `oidc` throttle allows 20 requests
+**The `sso` project's SSO request budget: 8 of 20 a run.** Mino's `oidc` throttle allows 20 requests
 a minute per client IP across `start`, `link/start`, `callback` and `exchange`
 (`OIDCRateThrottle`, the `oidc` entry in the settings' throttle rates). A sign-in that succeeds spends 3
 (start, callback, exchange); one Mino refuses on the callback spends 2. The three
 specs spend 8: `sign-in` 3, `unmapped` 2, `break-glass` 3. That ceiling, not the
 password budget, is what a new browser sign-in spec runs into: past 20 in a
-minute, `start` answers 429 with raw JSON, and `signInThroughSso` fails naming
-the throttle. A spec that would take the run past 20 has to wait out the window
-itself or run on a stack of its own.
+minute, a leg answers 429, and `signInThroughSso` fails naming the throttle and
+the leg (`start`, `callback` or `exchange`), without retrying.
+
+The budget is a guard, not only a sentence. `tests/sso/budget.ts` declares each
+project's budget (`OIDC_BUDGET`); `tests/sso/fixtures.ts` overrides `context` so
+every browser request to a throttled route is written to a per-project ledger in
+`playwright/.auth/` (keyed by the Playwright runner's pid, so it covers exactly one
+invocation and survives a worker restart), and a test fails, listing every request,
+once the run has spent more than its project declares. The `guards` project's
+`tests/guards/sso-budget.spec.ts` holds the rest: each budget leaves its project's
+headroom of Mino's rate (read from the `oidc` rate in the product's settings module)
+unspent, 3 for `sso` and 1 for `sso-faults`; this README and every spec header
+state the same number; every spec under `tests/sso/` takes `test` from that
+fixtures file; nothing under `tests/sso/` makes a browser context or page except
+through the counted `context` fixture (no `browser.newContext()`, no `newPage()`
+on anything else, no `browser` fixture); and no throttled route appears under
+`tests/sso/` as a string, a template literal or a `+` chain, so nothing reaches
+one except through the counted browser. What it cannot see is a route built through
+a call (`.concat`, `join`, a helper) or in a module outside `tests/sso/`. A spec that would take a
+project past its budget raises the number in all three places, within the
+headroom, or goes to a project and stack of its own, as `sso-faults` did.
 
 **Break-glass.** `break-glass.spec.ts` is the only `sso` spec that takes the
 `instance` fixture (allowlisted in `tests/guards/allowlist.ts`): it runs
@@ -327,6 +352,73 @@ on.
 **Codecs.** The happy path plays a channel over HLS in the floating player, which
 needs H.264 and AAC through MSE: like `tests/frontend/player-hls.spec.ts`, it runs
 in CI's linux/amd64 Chromium and on macOS, not in linux/arm64 Chromium.
+
+## The sso-faults project
+
+The fake OP's ID-token faults, each refused through the browser
+(`tests/sso/faults/id-token-faults.spec.ts`). One case per fault, on a provider
+whose claims map to Admin: the seven ID-token faults (wrong `iss`, wrong `aud`,
+bad nonce, expired, `alg=none`, unknown `kid`, bad signature) must land on
+`/login?sso_error=id_token_invalid` after a token exchange the OP accepted, and
+`missing-iss-param` (against the OP's `/oidc/rfc9207` issuer, which advertises
+RFC 9207's `iss` and then omits it) on `sso_error=issuer_mismatch` before any
+token request. None may store a token pair or create a user. A control case signs
+in through the RFC 9207 issuer honestly, so that refusal is the fault's, not the
+issuer's.
+
+Each fault changes one property of an otherwise honest token, so a product that
+skipped the check it aims at would provision the Admin and the case would redden.
+The checks this pins: the signature (`bad-signature`: the published `kid`, RS256,
+honest claims, another key's signature), the refusal of an unsigned token
+(`alg-none` carries the published `kid`, so key lookup succeeds and the token
+reaches decoding), `aud`, `iss`, the nonce, expiry, RFC 9207's `iss` parameter
+and key lookup (`unknown-kid`). Fix round 1 of this project proved the first two
+by building the product with a check removed: with signature verification off,
+`bad-signature` and `alg-none` (and `wrong-aud` and `expired`, which PyJWT then
+stops checking too) each signed in and provisioned the Admin. It also showed what
+`alg-none` does not pin: a build taking the algorithm from the token header still
+refused it, because PyJWT refuses `none` with a key whatever algorithm list it is
+given. Algorithm pinning is unit-only, in `apps/accounts/tests/test_oidc_flow.py`
+(`test_alg_none_refused`, `test_hs256_signed_with_client_secret_refused`), as are
+`azp` and multiple audiences, required claims and the subject's shape, the Entra
+tenant and issuer, the JWK's own shape (`oct`, wrong family, a disagreeing `alg`,
+private members) and the refetch on an unknown `kid`.
+
+**Why a project of its own.** **The `sso-faults` project's SSO request budget: 19 of 20 a run.**
+Each of the eight fault cases spends 2 (start, callback) and the control 3, which
+cannot share a minute with `sso`'s 8 on one client IP. The headroom is 1, not
+`sso`'s 3: the cases and the control are what the project pins, so none was
+dropped to buy it back. One more case does not fit; it would need a second stack. Pacing sleeps were rejected; instead the
+project has its own scoped stack, and so its own throttle window, locally and in
+CI (its own matrix row, `mino-e2e-sso-faults` on port 9292).
+
+Everything else is `sso`'s: `assertScopedStack()` first, the structure and budget
+guards, one worker, `retries: 0`. Its bootstrap, `sso-faults-setup`, runs the same
+`sso.setup.ts` against its own stack and writes `sso-faults-tokens.json`. It spends
+no password request beyond that setup (one on a cold run, none on a warm one) and
+changes no setting, and each case seeds and retires its own provider, so the cases
+are order-independent.
+
+```bash
+export DISPATCHARR_E2E_CONTAINER=mino-e2e-sso-faults \
+       DISPATCHARR_E2E_VOLUME=mino-e2e-sso-faults-data \
+       DISPATCHARR_E2E_NETWORK=mino-e2e-sso-faults-net \
+       DISPATCHARR_E2E_PORT=39292 \
+       E2E_BASE_URL=http://localhost:39292 \
+       E2E_OIDC_ALLOW_HTTP=1
+./scripts/e2e_up.sh
+cd e2e && npm run test:sso-faults
+```
+
+Both projects can run at once, each against its own stack; with the shared
+provider, each stack's network is attached to it.
+
+**Pacing local re-runs.** The `oidc` throttle counts per stack, per client IP,
+over a sliding minute, so a second run of the same project against the same
+stack spends into the first run's window. Wait at least a minute (65 s leaves
+margin) between two `sso-faults` runs on one stack: 19 + 19 is over 20, and the
+second run's last cases answer 429. `sso` fits two runs in a minute (8 + 8) but
+not three. CI is unaffected: each row boots a fresh stack and runs once.
 
 ## Running against an existing instance
 
@@ -899,10 +991,12 @@ a side effect of the goal or phase that happened to add the third.
 
 `.github/workflows/e2e-tests.yml` builds the AIO image once, then runs
 `pristine`, `seeded`, `streaming`, `streaming-failover`, `streaming-greybox`,
-`streaming-split`, `lifecycle`, `frontend`, `dvr` and `sso` as a matrix, each
-against its own fresh container, each gated on `npm run typecheck` before tests
-run. The `sso` job alone exports a scoped stack (`mino-e2e-sso`, port
-9291) and `E2E_OIDC_ALLOW_HTTP=1` before booting it; see "The sso project".
+`streaming-split`, `lifecycle`, `frontend`, `dvr`, `sso` and `sso-faults` as a
+matrix, each against its own fresh container, each gated on `npm run typecheck`
+before tests run. The `sso` and `sso-faults` jobs alone export a scoped stack
+(`mino-e2e-sso` on port 9291, `mino-e2e-sso-faults` on port 9292) and
+`E2E_OIDC_ALLOW_HTTP=1` before booting it; see "The sso project" and "The
+sso-faults project".
 
 **That project list is no longer hardcoded in the `test` job** — it is built by
 the `changes` job and consumed as `fromJSON(needs.changes.outputs.projects)`,
