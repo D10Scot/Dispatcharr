@@ -216,6 +216,7 @@ func attachWith(t *testing.T, m *Manager, id string, source Source, tuning Tunin
 // the health monitor: each names its Python line, and each is asserted
 // against the number written there.
 func TestTheFailoverLiteralsMatchPython(t *testing.T) {
+	t.Parallel()
 	if retryBackoff(1) != 250*time.Millisecond || retryBackoff(2) != 500*time.Millisecond || retryBackoff(12) != 3*time.Second || retryBackoff(13) != 3*time.Second {
 		t.Errorf("retryBackoff is not min(.25 * failures, 3) (input/manager.py:557): %s %s %s", retryBackoff(1), retryBackoff(2), retryBackoff(13))
 	}
@@ -238,6 +239,7 @@ func TestTheFailoverLiteralsMatchPython(t *testing.T) {
 // because each gap is under the window; a gap over it resets the count.
 // Driven with an injected clock, so it costs nothing and cannot flake.
 func TestTheRetryWindowResetsTheCounterAfterAnIdleGap(t *testing.T) {
+	t.Parallel()
 	var now time.Time
 	clock := func() time.Time { return now }
 	base := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
@@ -273,6 +275,7 @@ func TestTheRetryWindowResetsTheCounterAfterAnIdleGap(t *testing.T) {
 // with connection_failed and attempts 3, one stream_switch), and at the
 // outcome (the alternate runs, the channel is active).
 func TestThreeConnectFailuresExhaustTheSourceAndFailOver(t *testing.T) {
+	t.Parallel()
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})
 	t.Cleanup(m.StopAll)
@@ -345,6 +348,7 @@ func TestThreeConnectFailuresExhaustTheSourceAndFailOver(t *testing.T) {
 // redden. And no connection failure is counted: Python leaves the retry loop
 // on the flag before its failure accounting (:505-507).
 func TestDeadAirOnAYoungConnectionSwitchesStreams(t *testing.T) {
+	t.Parallel()
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})
 	t.Cleanup(m.StopAll)
@@ -414,6 +418,7 @@ func TestDeadAirOnAYoungConnectionSwitchesStreams(t *testing.T) {
 // checked every 200 ms: the check at 400 ms finds it inactive, the one at
 // 600 ms finds data 100 ms old.
 func TestHealthIsRestoredWhenDataResumesBeforeTheThirdCheck(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 	resolver := &fakeResolver{}
@@ -454,6 +459,7 @@ func (s pausingSource) Run(ctx context.Context, sink io.Writer) error {
 // id was tried -- the initial one counts -- and the last attempt's error
 // still reachable through it.
 func TestAnExhaustedChannelEndsInErrorNamingTheCount(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 	ch, release := attachWith(t, m, "exhausted", failingSource{runs: &int32Counter{}}, testTuning(), &fakeResolver{})
@@ -475,6 +481,7 @@ func TestAnExhaustedChannelEndsInErrorNamingTheCount(t *testing.T) {
 // A resolver that names the URL already playing is refused, as update_url
 // refuses it (input/manager.py:1464-1466), and the failover reports failure.
 func TestAFailoverThatNamesTheURLAlreadyPlayingIsRefused(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 	resolver := &fakeResolver{answers: []Resolved{{Source: flowingSource{}, Info: SourceInfo{URL: "http://provider.invalid/primary.ts", StreamID: 7}}}}
@@ -498,6 +505,7 @@ func TestAFailoverThatNamesTheURLAlreadyPlayingIsRefused(t *testing.T) {
 // failing; the alternate's packets must arrive aligned, after the primary's,
 // with the head still climbing.
 func TestTheChunkIndexIsMonotonicAcrossAFailover(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 	alternate := &int32Counter{}
@@ -558,6 +566,7 @@ func (raggedSource) Run(_ context.Context, sink io.Writer) error {
 // switch the control plane answers raises channel_error with
 // reason degraded_failover, once.
 func TestAFailoverFromTheCacheRaisesDegradedFailoverOnRecovery(t *testing.T) {
+	t.Parallel()
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})
 	t.Cleanup(m.StopAll)
@@ -619,6 +628,7 @@ func TestAFailoverFromTheCacheRaisesDegradedFailoverOnRecovery(t *testing.T) {
 // delivering, only slowly. Together the three tests pin the shared counter
 // and the Max/Max+1 asymmetry at the bound, not merely that a bound exists.
 func TestMaxStreamSwitchesBoundsAMainLoopSwitch(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400})
 	t.Cleanup(m.StopAll)
 	alternate := &int32Counter{}
@@ -644,6 +654,7 @@ func TestMaxStreamSwitchesBoundsAMainLoopSwitch(t *testing.T) {
 // returns, with the CURRENT source's ids -- after a failover, the
 // alternate's -- and on a stop as much as on an exhaustion.
 func TestTheSlotIsReleasedOnceWhenTheSourceGoroutineReturns(t *testing.T) {
+	t.Parallel()
 	var mu sync.Mutex
 	var released []SourceInfo
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Release: func(_ string, info SourceInfo) {
@@ -708,7 +719,9 @@ func (s stallingSource) Run(ctx context.Context, sink io.Writer) error {
 	if _, err := sink.Write(payload); err != nil {
 		return err
 	}
-	s.wrote <- struct{}{}
+	if !s.signal(ctx) {
+		return ctx.Err()
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -717,8 +730,22 @@ func (s stallingSource) Run(ctx context.Context, sink io.Writer) error {
 			if _, err := sink.Write(payload[:4*buffer.TSPacketSize]); err != nil {
 				return err
 			}
-			s.wrote <- struct{}{}
+			if !s.signal(ctx) {
+				return ctx.Err()
+			}
 		}
+	}
+}
+
+// signal reports a write to the test without blocking teardown: the last
+// attempt's report is never read, and an unconditional send held the source
+// until stop()'s five-second bound expired, twice.
+func (s stallingSource) signal(ctx context.Context) bool {
+	select {
+	case s.wrote <- struct{}{}:
+		return true
+	case <-ctx.Done():
+		return false
 	}
 }
 
@@ -734,6 +761,7 @@ func (s stallingSource) Run(ctx context.Context, sink io.Writer) error {
 // `reason: health_monitor` shape, which is the outer branch Python cannot
 // reach (Ruling R4).
 func TestASecondStableStallIsActedOnAfterAHealthReconnect(t *testing.T) {
+	t.Parallel()
 	clock := &fakeClock{t: time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)}
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Now: clock.now, Events: events})

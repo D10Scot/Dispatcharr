@@ -83,6 +83,7 @@ func (c *int32Counter) get() int {
 // control plane. Counted at the source, not at the manager, so it fails if
 // Attach starts a second reader however it managed to.
 func TestTwoClientsShareOneSource(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 32})
 	t.Cleanup(m.StopAll)
 
@@ -136,6 +137,7 @@ func TestTwoClientsShareOneSource(t *testing.T) {
 // starts inside this process; this one counts HTTP requests at the provider,
 // which is what parity-matrix row 10 is actually about.
 func TestTwoClientsMakeOneUpstreamRequest(t *testing.T) {
+	t.Parallel()
 	up := relaytest.NewUpstream(relaytest.Config{Rate: 0.05})
 	t.Cleanup(up.Close)
 
@@ -180,6 +182,7 @@ func TestTwoClientsMakeOneUpstreamRequest(t *testing.T) {
 // EOF, which was the honest shape before there was a retry loop to run;
 // this is the Python one.
 func TestACleanUpstreamEndIsRetriedAndThenExhaustsTheSource(t *testing.T) {
+	t.Parallel()
 	payload := relaytest.SyntheticTS(8, 0x100)
 	up := relaytest.NewUpstream(relaytest.Config{Payload: payload, StopAfterBytes: len(payload)})
 	t.Cleanup(up.Close)
@@ -229,6 +232,7 @@ func TestACleanUpstreamEndIsRetriedAndThenExhaustsTheSource(t *testing.T) {
 // mechanism, driven by the ring publishing its first chunk rather than by
 // how many clients have attached.
 func TestAChannelWithFlowingBytesBecomesActive(t *testing.T) {
+	t.Parallel()
 	up := relaytest.NewUpstream(relaytest.Config{Rate: 0.2})
 	t.Cleanup(up.Close)
 
@@ -258,6 +262,7 @@ func TestAChannelWithFlowingBytesBecomesActive(t *testing.T) {
 // A source that fails to start leaves the channel in error, and the failure
 // reaches the caller rather than becoming a channel that streams nothing.
 func TestAnUpstreamFailurePutsTheChannelInError(t *testing.T) {
+	t.Parallel()
 	up := relaytest.NewUpstream(relaytest.Config{Status: 404})
 	t.Cleanup(up.Close)
 
@@ -296,6 +301,7 @@ func TestAnUpstreamFailurePutsTheChannelInError(t *testing.T) {
 // answering 200 while every later Attach blocked forever on a mutex nobody
 // would release.
 func TestAPanickingStartDoesNotWedgeTheManager(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 32})
 	t.Cleanup(m.StopAll)
 
@@ -334,6 +340,7 @@ func TestAPanickingStartDoesNotWedgeTheManager(t *testing.T) {
 // The same property for the channel that panicked: its gate must have been
 // closed, or a second client for THAT id waits on it forever.
 func TestAPanickingStartReleasesItsGate(t *testing.T) {
+	t.Parallel()
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 32})
 	t.Cleanup(m.StopAll)
 
@@ -368,6 +375,7 @@ func TestAPanickingStartReleasesItsGate(t *testing.T) {
 // a channel whose upstream 404'd would answer every later viewer with an empty
 // 200, forever.
 func TestAFinishedChannelIsNotHandedToANewClient(t *testing.T) {
+	t.Parallel()
 	dead := relaytest.NewUpstream(relaytest.Config{Status: 404})
 	t.Cleanup(dead.Close)
 	live := relaytest.NewUpstream(relaytest.Config{Rate: 0.05})
@@ -425,6 +433,7 @@ func TestAFinishedChannelIsNotHandedToANewClient(t *testing.T) {
 // tore down anyway, because its decision was made from a snapshot the
 // arriving client had already invalidated.
 func TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined(t *testing.T) {
+	t.Parallel()
 	const rounds = 20000
 	for round := range rounds {
 		counter := &int32Counter{}
@@ -495,6 +504,7 @@ func TestAReleaseCannotStopAChannelAConcurrentAttachJustJoined(t *testing.T) {
 // only works if the relay passes the identifier through untouched, which is
 // what this pins. The relay holds no rule of its own about identifiers.
 func TestAStreamHashTuneNamesItsHashAsTheEventChannelID(t *testing.T) {
+	t.Parallel()
 	const streamHash = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 400, Events: events})

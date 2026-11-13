@@ -27,6 +27,7 @@ func startCounting(c *sourceCounter, tuning Tuning) func() (Started, error) {
 // until the LAST of them releases. The count is read from inside the source,
 // so it fails whatever route a second reader took to get started.
 func TestNClientsShareOneSourceAndTheChannelOutlivesAllButTheLast(t *testing.T) {
+	t.Parallel()
 	const clients = 6
 	counter := &sourceCounter{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64})
@@ -72,6 +73,7 @@ func TestNClientsShareOneSourceAndTheChannelOutlivesAllButTheLast(t *testing.T) 
 // attach under an id already attached is refused rather than silently
 // overwriting the first (client_manager.py:218-221, whose False becomes a 503).
 func TestASecondAttachUnderAnAttachedClientIDIsRefused(t *testing.T) {
+	t.Parallel()
 	counter := &sourceCounter{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64})
 
@@ -103,6 +105,7 @@ func TestASecondAttachUnderAnAttachedClientIDIsRefused(t *testing.T) {
 // channel and has it torn down underneath it -- a 200 with a few bytes and no
 // re-tune, for as long as clients keep churning.
 func TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel(t *testing.T) {
+	t.Parallel()
 	const rounds = 400
 
 	for round := range rounds {
@@ -154,6 +157,7 @@ func TestAClientArrivingAsTheLastOneLeavesKeepsItsChannel(t *testing.T) {
 // reconnecting client, and the reconnect cancels the stop
 // (ChannelService.cancel_pending_shutdown, channel_service.py:103-127).
 func TestTheShutdownDelayKeepsAChannelForAReconnectingClient(t *testing.T) {
+	t.Parallel()
 	counter := &sourceCounter{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64})
 
@@ -206,6 +210,7 @@ func TestTheShutdownDelayKeepsAChannelForAReconnectingClient(t *testing.T) {
 // finished, claim dropped it, a later tune published a successor. Deleting by
 // id alone strands the successor's clients on a channel nothing can stop.
 func TestADelayedStopNeverEvictsAReplacementChannel(t *testing.T) {
+	t.Parallel()
 	counter := &sourceCounter{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64})
 
@@ -241,6 +246,7 @@ func TestADelayedStopNeverEvictsAReplacementChannel(t *testing.T) {
 // the gate or the release path shows up here as a source goroutine nothing can
 // stop, which -race never reports.
 func TestConcurrentAttachAndReleaseLeaksNoGoroutine(t *testing.T) {
+	t.Parallel()
 	const clients = 8
 	const rounds = 50
 

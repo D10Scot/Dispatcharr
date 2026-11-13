@@ -84,17 +84,20 @@ func buildRealAsset(t *testing.T, ffmpegPath string) []byte {
 const armingFloor = 4 * time.Second
 
 func TestTheCumulativeLeadMustBurnOffBeforeTheDetectorArms(t *testing.T) {
+	t.Parallel()
 	if testing.Short() {
 		t.Skip("real ffmpeg for ~20s; run without -short")
 	}
 	ffmpegPath := requireFFmpeg(t)
 	asset := buildRealAsset(t, ffmpegPath)
 
-	// A quarter of the asset's OWN byte rate, scripts/capture_ffmpeg_stderr
-	// .py:34's slow-trickle setting, expressed in relaytest's units: Rate is
-	// a multiple of NominalByteRate, not of this asset's rate.
+	// Half of the asset's OWN byte rate, expressed in relaytest's units: Rate
+	// is a multiple of NominalByteRate, not of this asset's rate. Half, not
+	// the capture script's quarter: the lead still opens at ~10x and still
+	// has to burn off (measured: armed 10s after the first record at 0.5,
+	// 18.7s at 0.25), and the whole test takes ~20s instead of ~27s.
 	assetRate := float64(len(asset)) / realAssetSeconds
-	up := relaytest.NewUpstream(relaytest.Config{Payload: asset, Rate: 0.25 * assetRate / relaytest.NominalByteRate})
+	up := relaytest.NewUpstream(relaytest.Config{Payload: asset, Rate: 0.5 * assetRate / relaytest.NominalByteRate})
 	t.Cleanup(up.Close)
 
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.ChunkBytes * 16})

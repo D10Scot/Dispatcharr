@@ -18,7 +18,9 @@ import (
 // TestStandIn is the trampoline: the test binary re-executed as the stand-in
 // (see relaytest/standin.go). It returns at once in an ordinary run.
 func TestStandIn(_ *testing.T) {
-	if os.Getenv(relaytest.StandInEnv) != "1" {
+	// Recognised by the "--" the stand-in's argv carries, so no test needs
+	// t.Setenv, which would forbid t.Parallel.
+	if relaytest.StandInArgs() == nil {
 		return
 	}
 	os.Exit(relaytest.RunStandIn(relaytest.StandInArgs()))
@@ -28,7 +30,6 @@ func TestStandIn(_ *testing.T) {
 // every test here exercises the real spawn path.
 func standIn(ctx context.Context, t *testing.T, args ...string) *Process {
 	t.Helper()
-	t.Setenv(relaytest.StandInEnv, "1")
 	command, argv := relaytest.StandInCommand(args...)
 	p, err := Start(ctx, command, argv)
 	if err != nil {
@@ -52,6 +53,7 @@ func assetFile(t *testing.T, packets int) (string, []byte) {
 // The bytes a child writes to fd 1 are what Stdout reads, verbatim, and a
 // child that ends with status 0 after EOF reports nil.
 func TestStdoutIsTheChildsFd1Verbatim(t *testing.T) {
+	t.Parallel()
 	path, payload := assetFile(t, 256)
 	p := standIn(t.Context(), t, "-i", path)
 
@@ -72,8 +74,10 @@ func TestStdoutIsTheChildsFd1Verbatim(t *testing.T) {
 // that split on either alone would miscount (CAPTURE.md). The count is read
 // off the corpus by relaytest.SplitCorpus, not typed.
 func TestReadStderrSplitsOnCROrLFAndSeesEveryRecord(t *testing.T) {
+	t.Parallel()
 	for _, corpus := range relaytest.CorpusNames {
 		t.Run(corpus, func(t *testing.T) {
+			t.Parallel()
 			_, records := relaytest.SplitCorpus(relaytest.Corpus(corpus))
 			path, _ := assetFile(t, 4)
 			p := standIn(t.Context(), t, "-i", path, "--stderr-corpus", relaytest.CorpusPath(corpus), "--stderr-interval", "0")
@@ -123,6 +127,7 @@ func TestReadStderrSplitsOnCROrLFAndSeesEveryRecord(t *testing.T) {
 // which happens to be the same moment here -- so the child STAYS ALIVE
 // (dead air) and the assertion is that the line arrives while it does.
 func TestALongUnterminatedLineIsFlushedWhileTheChildStillRuns(t *testing.T) {
+	t.Parallel()
 	// A corpus file of one 1,500-byte unterminated line, written by the
 	// test: this is a shape the corpus rule forbids for progress lines and
 	// permits for a diagnostic, because it carries no speed=.
@@ -160,6 +165,7 @@ func TestALongUnterminatedLineIsFlushedWhileTheChildStillRuns(t *testing.T) {
 // leave it alive and this test would time out. input/manager.py:1743 sends
 // SIGKILL and nothing else.
 func TestCancelKillsTheChildWithSIGKILL(t *testing.T) {
+	t.Parallel()
 	path, _ := assetFile(t, 4)
 	ctx, cancel := context.WithCancel(t.Context())
 	p := standIn(ctx, t, "-i", path, "--dead-air-after-bytes", "188", "--ignore-sigterm")
@@ -198,6 +204,7 @@ func TestCancelKillsTheChildWithSIGKILL(t *testing.T) {
 // (input/manager.py:842's POSIX_SPAWN_OPEN of /dev/null). A child whose
 // stdin were the relay's own, or a pipe nobody writes, would block here.
 func TestTheChildsStdinIsDevNull(t *testing.T) {
+	t.Parallel()
 	path, _ := assetFile(t, 4)
 	p := standIn(t.Context(), t, "-i", path, "--stdin-probe")
 	var report string
@@ -222,6 +229,7 @@ func TestTheChildsStdinIsDevNull(t *testing.T) {
 // a clean exit after a partial copy reports nil: Wait reports the STATUS,
 // and what a status means is the caller's decision.
 func TestWaitReportsTheChildsExitStatus(t *testing.T) {
+	t.Parallel()
 	path, _ := assetFile(t, 8)
 	for _, code := range []int{0, 1, 3} {
 		t.Run("exit "+strconv.Itoa(code), func(t *testing.T) {
@@ -249,6 +257,7 @@ func TestWaitReportsTheChildsExitStatus(t *testing.T) {
 // prints the command NAME, and a URL there would be the one shape
 // redact.Error cannot strip.
 func TestACommandThatIsAURLIsRefusedBeforeSpawning(t *testing.T) {
+	t.Parallel()
 	_, err := Start(t.Context(), "http://provider.example/live/u/hunter2/1.ts", nil)
 	if !errors.Is(err, ErrCommandIsAURL) {
 		t.Fatalf("Start with a URL command = %v, want ErrCommandIsAURL", err)
@@ -261,6 +270,7 @@ func TestACommandThatIsAURLIsRefusedBeforeSpawning(t *testing.T) {
 // A command that cannot be found fails Start with exec's own error, which
 // names the executable and never the argv.
 func TestAMissingExecutableFailsStartWithoutEchoingArgv(t *testing.T) {
+	t.Parallel()
 	_, err := Start(t.Context(), "relay-no-such-executable-2c4", []string{"-i", "http://provider.example/live/u/hunter2/1.ts"})
 	if err == nil {
 		t.Fatal("Start found an executable that does not exist")
@@ -284,7 +294,7 @@ func TestAMissingExecutableFailsStartWithoutEchoingArgv(t *testing.T) {
 // exits -- which is exactly why CloseStdin exists and why manager.py:159-163's
 // stop() closes it first.
 func TestAPipedProcessCanBeFedOnItsStandardInput(t *testing.T) {
-	t.Setenv(relaytest.StandInEnv, "1")
+	t.Parallel()
 	command, argv := relaytest.StandInCommand("-i", "pipe:0")
 	p, err := StartPiped(t.Context(), command, argv)
 	if err != nil {
@@ -322,6 +332,7 @@ func TestAPipedProcessCanBeFedOnItsStandardInput(t *testing.T) {
 // transcode source that tried to feed its child would be writing somewhere the
 // Python relay does not.
 func TestAnOrdinaryProcessHasNoWritableStandardInput(t *testing.T) {
+	t.Parallel()
 	path, _ := assetFile(t, 8)
 	p := standIn(t.Context(), t, "-i", path)
 	t.Cleanup(p.Kill)
@@ -360,6 +371,7 @@ func TestAnOrdinaryProcessHasNoWritableStandardInput(t *testing.T) {
 // break-check reverts the parent-owned pipe AND slows each read, because the
 // unfixed code loses records on a schedule rather than on every run.
 func TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin(t *testing.T) {
+	t.Parallel()
 	corpus := relaytest.CorpusPath("normal")
 	wantRecords := len(relaytest.CorpusSpeeds("normal"))
 	if wantRecords < 2 {
@@ -410,6 +422,7 @@ func TestEveryStderrLineSurvivesTheWaitThatPrecedesTheJoin(t *testing.T) {
 // in memory the whole way. Driven through ReadStderr itself over an in-memory
 // pipe, no child process, so the only variable is the splitter.
 func TestAnUnterminatedFrameRecordCannotGrowTheReaderWithoutBound(t *testing.T) {
+	t.Parallel()
 	const total = 2 << 20
 	chunk := bytes.Repeat([]byte("frame=  1 "), 4096/10)
 	var input []byte

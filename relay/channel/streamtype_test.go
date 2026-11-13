@@ -6,6 +6,7 @@ import "testing"
 // (apps/proxy/live_proxy/utils.py:31-69), plus the one that reads the path
 // and not the query.
 func TestStreamTypeOfMatchesDetectStreamType(t *testing.T) {
+	t.Parallel()
 	for url, want := range map[string]string{
 		"":                                      "unknown",
 		"udp://239.0.0.1:1234":                  "udp",

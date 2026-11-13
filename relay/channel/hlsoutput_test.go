@@ -58,6 +58,7 @@ func doneWithin(t *testing.T, p *hls.Pipeline, what string) {
 }
 
 func TestOneHLSPipelinePerKeyStopsAtZero(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	starter := &hlsStarter{}
 
@@ -97,6 +98,7 @@ func TestOneHLSPipelinePerKeyStopsAtZero(t *testing.T) {
 // failed and was unregistered, p2 took its key; p1's session releases late,
 // and p2 must not lose a reference to it.
 func TestAStaleHLSReleaseCannotStopAFreshPipeline(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	starter := &hlsStarter{}
 
@@ -129,6 +131,7 @@ func TestAStaleHLSReleaseCannotStopAFreshPipeline(t *testing.T) {
 }
 
 func TestTheMarkRefusesUntilTheNextBoundaryAndTheBoundaryStartsNothing(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	starter := &hlsStarter{}
 
@@ -188,6 +191,7 @@ func TestTheMarkRefusesUntilTheNextBoundaryAndTheBoundaryStartsNothing(t *testin
 // still open (it closes later in run's defers). Both attaches refuse, and
 // nothing is registered.
 func TestAttachHLSRefusesAnEndingChannel(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	starter := &hlsStarter{}
 
@@ -221,6 +225,7 @@ func TestAttachHLSRefusesAnEndingChannel(t *testing.T) {
 // by which time the next boundary may have cleared the mark and a fresh
 // pipeline may be serving) must not re-mark the channel under it.
 func TestAStaleFailHLSCannotReMarkAChannelWithAFreshPipeline(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	starter := &hlsStarter{}
 
@@ -254,6 +259,7 @@ func TestAStaleFailHLSCannotReMarkAChannelWithAFreshPipeline(t *testing.T) {
 }
 
 func TestAnHLSOutputFailedErrorNamesItsReasonAndUnwraps(t *testing.T) {
+	t.Parallel()
 	bare := ErrHLSOutputFailed{}
 	if got := bare.Error(); got != "channel: the HLS output failed" {
 		t.Errorf("a reasonless error reads %q", got)
@@ -270,6 +276,7 @@ func TestAnHLSOutputFailedErrorNamesItsReasonAndUnwraps(t *testing.T) {
 // A start func that fails leaves nothing registered and no refcount held: the
 // next attach starts afresh.
 func TestAFailedHLSStartRegistersNothing(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	boom := errors.New("cannot start")
 	if _, started, release, err := ch.AttachHLS("hls", func(hls.Source) (*hls.Pipeline, error) { return nil, boom }); !errors.Is(err, boom) || started || release != nil {
@@ -290,6 +297,7 @@ func TestAFailedHLSStartRegistersNothing(t *testing.T) {
 // A resume re-attaches only to the very pipeline its session names, and only
 // while it is running.
 func TestAttachHLSExistingRefusesAnUnregisteredOrEndedPipeline(t *testing.T) {
+	t.Parallel()
 	_, ch := hlsChannel(t)
 	starter := &hlsStarter{}
 
@@ -319,6 +327,7 @@ func TestAttachHLSExistingRefusesAnUnregisteredOrEndedPipeline(t *testing.T) {
 }
 
 func TestDroppingNoHLSClientsChangesNothingAndEmitsNothing(t *testing.T) {
+	t.Parallel()
 	events := &eventLog{}
 	m := NewManager(ManagerConfig{BudgetBytes: buffer.TSPacketSize * 64, Events: events})
 	t.Cleanup(m.StopAll)
