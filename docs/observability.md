@@ -329,7 +329,10 @@ needs no configuration to benefit. It is **best effort, not a proof**.
   characters]` marker. If the scrubber itself fails, the record is still emitted with the text
   replaced by a placeholder naming only the exception type.
 - **What it cannot catch:** opaque path tokens in non-Xtream URLs, credentials under other
-  parameter names (`user=`, `pass=`, `key=`), scheme-less `user:pass@host`, bare secrets, handlers
+  parameter names (`user=`, `pass=`, `key=`), scheme-less `user:pass@host`, a credential split by
+  whitespace (`/live/user/my pass/1.ts`), `key: value`, JSON and dict forms, the relative
+  `user/pass/123.ts` route with no leading slash, a bare query string or form body whose first
+  parameter is an equality key (`code=S&state=T` leaks the code), bare secrets, handlers
   that serialise exception objects or `extra=` themselves, plugin code that replaces the record
   factory (the scrubber re-installs itself after plugin discovery), `print` calls, and every line
   that never passes through Python `logging`: the uWSGI and nginx request logs, and the text
