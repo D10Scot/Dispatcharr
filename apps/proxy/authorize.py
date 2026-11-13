@@ -196,6 +196,14 @@ def resolve_xc_user(username, password):
         str(expected).encode("utf-8"), str(password or "").encode("utf-8")
     ):
         return None
+    # A deactivated user's Xtream credentials authorize nothing, like their
+    # JWTs, API key and sessions. Checked only after the compare, never
+    # before it: an inactive user with the right password must cost the
+    # same time and get the same None as a wrong password, so no caller can
+    # tell whether a deactivated account's password was right. is_active is
+    # a column of the row loaded above, so this adds no query.
+    if not user.is_active:
+        return None
     return user
 
 
