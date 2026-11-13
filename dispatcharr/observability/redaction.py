@@ -228,8 +228,9 @@ def _scrub_key_values(text):
     return "".join(out)
 
 
-# A path match, one maximal run of path characters at a time: it starts at the run's first "/" not preceded by [\w/:.-], needs one
-# [A-Za-z0-9_%~-] after it, and always ends at the run's end.
+# A path match, one maximal run of path characters at a time: it starts at the
+# run's first "/" not preceded by [\w/:.-], needs one [A-Za-z0-9_%~-] after it,
+# and always ends at the run's end.
 _PATH_RUN_RE = re.compile(r"[^\s\"'<>,;)\]]+")
 _PATH_NEED_RE = re.compile(r"[A-Za-z0-9_%~-]")
 _PATH_BLOCK_RE = re.compile(r"[\w/:.-]")

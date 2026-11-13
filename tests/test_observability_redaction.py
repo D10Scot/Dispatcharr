@@ -706,6 +706,9 @@ _T8_FIXED = [
     "a" * 60 + "://x",
     "auth." * 10 + "k=v;" + "x" * 10,
     "/(" * 32,
+    # a quoted value followed by the OTHER quote kind; a non-ASCII letter before a path
+    "token=\"a\" 'b",
+    "é/a",
 ]
 
 _T8_SCANNERS = (
@@ -774,6 +777,7 @@ class RedactTextLinearTests(SimpleTestCase):
         # >4x below the cheapest quadratic. The best of three runs is used so a
         # single GC pause or scheduler hiccup on a loaded runner cannot redden it.
         hostile = {
+            # exercises _scrub_urls only because the long-hex pattern masks it first
             "a * 32000": "a" * 32000,
             "a. * 16000": "a." * 16000,
             "auth * 8000": "auth" * 8000,
