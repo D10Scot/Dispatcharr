@@ -219,6 +219,84 @@ class AuthorizeViewTests(TestCase):
                 response = self._get(uri)
                 self.assertEqual(response.status_code, expected_status)
 
+    def test_a_deactivated_users_xc_credentials_are_refused_on_every_xc_uri(self):
+        """Every XC URI shape the hop resolves refuses an inactive user.
+
+        Right password, inactive user: the same status, headers that matter
+        and body as a wrong password, so nginx hands the client nothing that
+        says the password was right. Reactivating restores the 200.
+        """
+        inactive = User.objects.create_user(
+            username="pr5-view-inactive", password="unused",
+            custom_properties={"xc_password": "fake-xc-pass-4"},
+        )
+        inactive.is_active = False
+        inactive.save(update_fields=["is_active"])
+        cid = self.channel.id
+        shapes = [
+            "/live/{u}/{p}/%d" % cid,
+            "/{u}/{p}/%d" % cid,
+            "/timeshift/{u}/{p}/0/0/%d.ts" % cid,
+            "/streaming/timeshift.php?username={u}&password={p}&stream=%d.ts" % cid,
+            "/movie/{u}/{p}/1.mp4",
+            "/series/{u}/{p}/1.mp4",
+        ]
+        for shape in shapes:
+            with self.subTest(uri=shape):
+                wrong = self._get(shape.format(u="pr5-view-inactive", p="not-the-password"))
+                refused = self._get(shape.format(u="pr5-view-inactive", p="fake-xc-pass-4"))
+                ghost = self._get(shape.format(u="no-such-xc-user", p="fake-xc-pass-4"))
+                self.assertEqual(refused.status_code, 401)
+                for other in (wrong, ghost):
+                    self.assertEqual(refused.status_code, other.status_code)
+                    self.assertEqual(refused.content, other.content)
+                    self.assertEqual(
+                        refused["X-Authorize-Status"], other["X-Authorize-Status"]
+                    )
+
+        inactive.is_active = True
+        inactive.save(update_fields=["is_active"])
+        for shape in shapes:
+            with self.subTest(uri=shape, reactivated=True):
+                response = self._get(shape.format(u="pr5-view-inactive", p="fake-xc-pass-4"))
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response["X-Relay-User"], str(inactive.id))
+
+
+    def test_a_deactivated_users_right_password_answers_like_an_active_users_wrong_one(self):
+        """The comparator is an ACTIVE account's wrong password, on every XC
+        URI shape the hop resolves, so a refusal that differs by account
+        state reddens here."""
+        inactive = User.objects.create_user(
+            username="pr5-view-deactivated", password="unused",
+            custom_properties={"xc_password": "fake-xc-pass-9"},
+        )
+        inactive.is_active = False
+        inactive.save(update_fields=["is_active"])
+        active = User.objects.create_user(
+            username="pr5-view-active", password="unused",
+            custom_properties={"xc_password": "fake-xc-pass-10"},
+        )
+        cid = self.channel.id
+        shapes = [
+            "/live/{u}/{p}/%d" % cid,
+            "/{u}/{p}/%d" % cid,
+            "/timeshift/{u}/{p}/0/0/%d.ts" % cid,
+            "/streaming/timeshift.php?username={u}&password={p}&stream=%d.ts" % cid,
+            "/movie/{u}/{p}/1.mp4",
+            "/series/{u}/{p}/1.mp4",
+        ]
+        for shape in shapes:
+            with self.subTest(uri=shape):
+                active_wrong = self._get(shape.format(u=active.username, p="not-the-password"))
+                refused = self._get(shape.format(u=inactive.username, p="fake-xc-pass-9"))
+                self.assertEqual(refused.status_code, 401)
+                self.assertEqual(refused.status_code, active_wrong.status_code)
+                self.assertEqual(refused.content, active_wrong.content)
+                self.assertEqual(
+                    refused["X-Authorize-Status"], active_wrong["X-Authorize-Status"]
+                )
+
 
 class ResolveAuthorizationTests(TestCase):
     @classmethod

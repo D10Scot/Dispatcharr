@@ -259,7 +259,7 @@ const User = ({ user = null, isOpen, onClose }) => {
                 />
                 <Switch
                   label="Active"
-                  description="Inactive users cannot sign in and their tokens stop working; Xtream (XC) credentials keep working until the XC password is cleared."
+                  description="Inactive users cannot sign in, and their tokens, API key and Xtream (XC) credentials stop working. A stream already playing is not stopped; it continues until the player disconnects."
                   {...form.getInputProps('is_active', { type: 'checkbox' })}
                   key={form.key('is_active')}
                 />
