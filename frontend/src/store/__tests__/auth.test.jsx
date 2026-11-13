@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { renderHook, act } from '@testing-library/react';
-import useAuthStore from '../auth';
+import useAuthStore, { REFRESH_ATTEMPTS } from '../auth';
 import useSettingsStore from '../settings';
 import useChannelsStore from '../channels';
 import usePlaylistsStore from '../playlists';
@@ -520,6 +520,206 @@ describe('useAuthStore', () => {
       expect(result.current.superuserExists).toBe(false);
       expect(result.current.setupAllowed).toBe(false);
       expect(result.current.setupClientIp).toBe('203.0.113.50');
+    });
+  });
+
+  describe('getRefreshToken when the admin-floor lock is busy', () => {
+    const busy = (retryAfter = '2') => {
+      const error = new Error('HTTP error! Status: 503');
+      error.status = 503;
+      error.body = { code: 'admin_floor_busy' };
+      error.response = {
+        headers: {
+          get: (name) => (name === 'Retry-After' ? retryAfter : null),
+        },
+      };
+      return error;
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      // Reset, not just clear: a queued Once value must not leak between these tests.
+      API.refreshToken.mockReset();
+      API.logout.mockReset();
+      localStorageMock.getItem.mockReturnValue('refresh-token');
+      API.logout.mockResolvedValue();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('retries after Retry-After and keeps the session on success', async () => {
+      const token = createMockToken();
+      API.refreshToken
+        .mockRejectedValueOnce(busy('2'))
+        .mockResolvedValueOnce({ access: token });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(API.refreshToken).toHaveBeenCalledTimes(2);
+
+      await expect(pending).resolves.toBe(token);
+      expect(API.logout).not.toHaveBeenCalled();
+      expect(localStorageMock.removeItem).not.toHaveBeenCalledWith(
+        'refreshToken'
+      );
+      expect(localStorageMock.setItem).toHaveBeenCalledWith(
+        'accessToken',
+        token
+      );
+    });
+
+    it('waits one second when Retry-After is missing', async () => {
+      const token = createMockToken();
+      API.refreshToken
+        .mockRejectedValueOnce(busy(null))
+        .mockResolvedValueOnce({ access: token });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await expect(pending).resolves.toBe(token);
+    });
+
+    it('logs out as before once the attempts are spent', async () => {
+      API.refreshToken.mockRejectedValue(busy('1'));
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(10000);
+
+      await expect(pending).resolves.toBe(false);
+      expect(API.refreshToken).toHaveBeenCalledTimes(REFRESH_ATTEMPTS);
+      expect(REFRESH_ATTEMPTS).toBe(3);
+      expect(API.logout).toHaveBeenCalledTimes(1);
+      expect(localStorageMock.removeItem).toHaveBeenCalledWith('refreshToken');
+    });
+
+    it('logs out at once on a 401, with no retry', async () => {
+      const error = new Error('HTTP error! Status: 401');
+      error.status = 401;
+      error.body = { code: 'token_not_valid' };
+      API.refreshToken.mockRejectedValue(error);
+
+      await expect(useAuthStore.getState().getRefreshToken()).resolves.toBe(
+        false
+      );
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      expect(API.logout).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('caps a huge Retry-After at ten seconds', async () => {
+      const token = createMockToken();
+      API.refreshToken
+        .mockRejectedValueOnce(busy('3600'))
+        .mockResolvedValueOnce({ access: token });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(9999);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(API.refreshToken).toHaveBeenCalledTimes(2);
+      await expect(pending).resolves.toBe(token);
+    });
+
+    it.each([
+      ['a negative value', '-5'],
+      ['an HTTP-date', 'Wed, 21 Oct 2026 07:28:00 GMT'],
+      ['garbage', 'soon'],
+    ])('waits one second when Retry-After is %s', async (_label, value) => {
+      const token = createMockToken();
+      API.refreshToken
+        .mockRejectedValueOnce(busy(value))
+        .mockResolvedValueOnce({ access: token });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(999);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(API.refreshToken).toHaveBeenCalledTimes(2);
+      await expect(pending).resolves.toBe(token);
+    });
+
+    it.each([400, 500])(
+      'does not retry a %i whose body carries admin_floor_busy',
+      async (status) => {
+        const error = busy('1');
+        error.status = status;
+        error.message = `HTTP error! Status: ${status}`;
+        API.refreshToken.mockRejectedValue(error);
+
+        // Advance past every wait a retry would take, so a retrying build fails on
+        // the call count rather than hanging on a timer nothing advances.
+        const pending = useAuthStore.getState().getRefreshToken();
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(API.refreshToken).toHaveBeenCalledTimes(1);
+        await expect(pending).resolves.toBe(false);
+        expect(API.logout).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+      }
+    );
+
+    it('abandons the retry when the user logged out during the wait', async () => {
+      let stored = 'refresh-token';
+      localStorageMock.getItem.mockImplementation((key) =>
+        key === 'refreshToken' ? stored : null
+      );
+      API.refreshToken.mockRejectedValueOnce(busy('2'));
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(1000);
+      stored = null; // logout() removed the stored pair
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await expect(pending).resolves.toBe(false);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      expect(localStorageMock.setItem).not.toHaveBeenCalledWith(
+        'accessToken',
+        expect.anything()
+      );
+      expect(API.logout).not.toHaveBeenCalled();
+    });
+
+    it('abandons the retry when a new session signed in during the wait', async () => {
+      let stored = 'refresh-token';
+      localStorageMock.getItem.mockImplementation((key) =>
+        key === 'refreshToken' ? stored : null
+      );
+      API.refreshToken
+        .mockRejectedValueOnce(busy('2'))
+        .mockResolvedValueOnce({ access: createMockToken() });
+
+      const pending = useAuthStore.getState().getRefreshToken();
+      await vi.advanceTimersByTimeAsync(1000);
+      stored = 'new-session-refresh-token'; // loginWithTokens stored a new pair
+      await vi.advanceTimersByTimeAsync(1000);
+
+      await expect(pending).resolves.toBe(false);
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      expect(localStorageMock.setItem).not.toHaveBeenCalledWith(
+        'accessToken',
+        expect.anything()
+      );
+      expect(API.logout).not.toHaveBeenCalled();
+      expect(localStorageMock.removeItem).not.toHaveBeenCalledWith(
+        'refreshToken'
+      );
+    });
+
+    it('does not retry a 503 with another code', async () => {
+      const error = busy('1');
+      error.body = { code: 'something_else' };
+      API.refreshToken.mockRejectedValue(error);
+
+      await expect(useAuthStore.getState().getRefreshToken()).resolves.toBe(
+        false
+      );
+      expect(API.refreshToken).toHaveBeenCalledTimes(1);
+      expect(API.logout).toHaveBeenCalledTimes(1);
     });
   });
 

@@ -378,3 +378,33 @@ class AuthorizeInternalViewTests(TestCase):
             self.question(f"/proxy/catchup/{self.plain.uuid}?session_id=abc")
         )
         self.assertIn(native.status_code, (200, 401, 403, 404))
+
+    def test_a_deactivated_users_xc_credentials_are_refused_like_a_wrong_password(self):
+        """The Go relay's nginx-less XC live tune: the decision is Django's.
+
+        An inactive user's right password must get the wrong password's
+        answer, status and body alike, and reactivating restores it.
+        """
+        inactive = User.objects.create_user(
+            username="ai-xc-inactive", password="unused",
+            custom_properties={"xc_password": "fake-xc-pass-5"},
+        )
+        inactive.is_active = False
+        inactive.save(update_fields=["is_active"])
+        uri = "/live/ai-xc-inactive/{p}/%d" % self.plain.id
+
+        wrong = self.post(self.question(uri.format(p="not-the-password")))
+        refused = self.post(self.question(uri.format(p="fake-xc-pass-5")))
+        ghost = self.post(
+            self.question("/live/no-such-xc-user/fake-xc-pass-5/%d" % self.plain.id)
+        )
+        self.assertEqual(refused.status_code, 401)
+        for other in (wrong, ghost):
+            self.assertEqual(refused.status_code, other.status_code)
+            self.assertEqual(refused.content, other.content)
+
+        inactive.is_active = True
+        inactive.save(update_fields=["is_active"])
+        restored = self.post(self.question(uri.format(p="fake-xc-pass-5")))
+        self.assertEqual(restored.status_code, 200)
+        self.assertEqual(restored.headers["X-Relay-User"], str(inactive.id))

@@ -486,8 +486,9 @@ over them, so a test cannot weaken a protocol claim by accident. Only a fault ch
 | `wrong-aud` | `aud` is not the client id |
 | `bad-nonce` | `nonce` is not the one the authorization request carried |
 | `expired` | `exp` is an hour in the past |
-| `alg-none` | An unsigned token (`alg: none`, empty signature) |
-| `unknown-kid` | Signed with a key the JWKS never publishes |
+| `alg-none` | An unsigned token (`alg: none`, empty signature) under the published key's `kid`, so only an algorithm check can refuse it |
+| `unknown-kid` | Signed with a key the JWKS never publishes, under that key's own `kid` |
+| `bad-signature` | Honest claims, `alg: RS256` and the published key's `kid`, signed by a key the JWKS never publishes, so only a signature check can refuse it. A second key rather than flipped bytes: a flipped last base64url character can decode to the same bytes and verify |
 | `missing-iss-param` | On `/oidc/rfc9207`, `iss` is omitted from the authorization response while still advertised |
 
 `DEFAULT_FAULT` in `src/oidc/index.ts` is the fault a login that names none gets; it is
