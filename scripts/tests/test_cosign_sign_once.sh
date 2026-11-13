@@ -30,20 +30,24 @@ esac
 exit 99
 FAKE
 chmod +x "$BIN/cosign"
+# A logging sleep ahead of the real one, so a case can count how often it ran.
+# shellcheck disable=SC2016 # the fake's body must expand when it runs, not now
+printf '#!/usr/bin/env bash\necho "sleep $*" >> "$FAKE_LOG"\n' > "$BIN/sleep"; chmod +x "$BIN/sleep"
 SAFE_PATH="$BIN:/usr/bin:/bin"
 
 # run <name> <want-rc> <sign-rcs> <verify-rc> <out-substring> <want-sign-calls> [log-substring]
 # sign-rcs: space-separated exit codes, one per sign call (the last repeats);
 # a code other than 0 and 1 prints a non-409 error, 1 prints the Rekor 409.
 run() {
-  local codes name="$1" want="$2" srcs="$3" vrc="$4" sub="$5" wsign="$6" logsub="${7:-}" out rc nsign
+  local wsleep="${WANT_SLEEPS:-}" codes name="$1" want="$2" srcs="$3" vrc="$4" sub="$5" wsign="$6" logsub="${7:-}" out rc nsign nsleep nmsg
   : > "$TMP/log"; read -ra codes <<< "$srcs"; printf '%s\n' "${codes[@]}" > "$TMP/signs"; echo "$vrc" > "$TMP/verify"
   [ "$(PATH="$SAFE_PATH" command -v cosign)" = "$BIN/cosign" ] || { echo "ABORT: cosign does not resolve to the fake"; exit 2; }
   out="$(env -i PATH="$SAFE_PATH" HOME="$TMP" FAKE_LOG="$TMP/log" FAKE_SIGNS="$TMP/signs" FAKE_VERIFY="$TMP/verify" \
         SIGN_RETRIES=2 SIGN_SLEEP=0 IMAGE_REF=ghcr.io/o/r@sha256:abc \
         GITHUB_WORKFLOW_REF=acme/widget/.github/workflows/w.yml@refs/heads/main bash "$SCRIPT" 2>&1)"; rc=$?
   nsign=$(grep -c '^sign' "$TMP/log" || true)
-  if [ "$rc" -ne "$want" ] || [[ "$out" != *"$sub"* ]] || [ "$nsign" -ne "$wsign" ] \
+  nsleep=$(grep -c '^sleep' "$TMP/log" || true); nmsg=$(grep -c 're-signing' <<< "$out" || true)
+  if { [ -n "$wsleep" ] && { [ "$nsleep" -ne "$wsleep" ] || [ "$nmsg" -ne "$wsleep" ]; }; } || [ "$rc" -ne "$want" ] || [[ "$out" != *"$sub"* ]] || [ "$nsign" -ne "$wsign" ] \
      || { [ -n "$logsub" ] && ! grep -Fq -- "$logsub" "$TMP/log"; } \
      || grep -q -- '--tlog-upload' "$TMP/log"; then
     echo "FAIL $name: exit $rc (want $want), sign calls $nsign (want $wsign), output: $out"; fail=1
@@ -55,7 +59,7 @@ run() {
 ID='--certificate-identity https://github.com/acme/widget/.github/workflows/w.yml@refs/heads/main'
 run "first sign succeeds, verified"                    0 "0"     0 "Signature verified"          1 "$ID"
 run "self-409 then re-sign succeeds"                   0 "1 0"   0 "re-signing with a fresh"     2 "$ID"
-run "409 on every attempt fails (3 signs, bounded)"    1 "1"     0 "all 3 attempts"              3
+WANT_SLEEPS=2 run "409 on every attempt: 3 signs, 2 sleeps and 2 re-sign messages, none after the last" 1 "1" 0 "all 3 attempts" 3
 run "non-409 error fails without retry"                1 "7"     0 "reason other than"           1
 run "signed but verify fails: fails, shows cosign err" 1 "0"     1 "fake verify error"           1
 
