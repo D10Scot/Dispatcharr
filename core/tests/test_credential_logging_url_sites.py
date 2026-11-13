@@ -33,6 +33,7 @@ from apps.epg import sd_utils
 from apps.plugins import api_views as plugin_api_views
 from apps.plugins.models import PluginRepo
 from core import image_proxy, xtream_codes
+from tests.log_scrub_rig import unscrubbed_logging
 
 TRACE = 5
 SECRETS = ("fakeuser", "fakepass", "faketoken", "fakesecret")
@@ -56,6 +57,10 @@ class capture:
         self.saved = []
 
     def __enter__(self):
+        # The central log scrubber would mask the very strings these tests assert are absent,
+        # so a regressed call site would still pass. Capture the raw call site instead.
+        self._rig = unscrubbed_logging()
+        self._rig.__enter__()
         for lg in self.loggers:
             self.saved.append((lg, lg.level, lg.propagate))
             lg.setLevel(TRACE)
@@ -66,6 +71,7 @@ class capture:
         for lg, level, propagate in self.saved:
             lg.removeHandler(self.handler)
             lg.setLevel(level)
+        self._rig.__exit__(exc_type, exc, tb)
         if exc_type is None:
             assert self.handler.records, "no log record captured: the capture is vacuous"
         return False
