@@ -120,7 +120,11 @@ func TestTheDrainStopsTheChannelEndsTheClientAndFlushesTheEvents(t *testing.T) {
 		done <- err
 	}()
 	select {
-	case <-done:
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("draining the client's response body returned an error, "+
+				"want a clean end of body: %v", err)
+		}
 	case <-time.After(10 * time.Second):
 		t.Fatalf("the client's response never ended after the drain")
 	}
