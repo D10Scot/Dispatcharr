@@ -19,6 +19,7 @@ from django.utils import timezone
 from django.utils.dateparse import parse_datetime
 
 from core.utils import dispatcharr_http_headers
+from dispatcharr.utils import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -609,7 +610,7 @@ def sd_authorized_request(
         "SD source %s: %s %s returned %s; clearing cached token and retrying once",
         getattr(source, 'id', None),
         method_upper,
-        url,
+        redact_url(url),
         response.status_code,
     )
     sd_clear_cached_token(getattr(source, 'id', None))

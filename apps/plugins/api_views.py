@@ -825,7 +825,11 @@ class PluginRepoListCreateAPIView(PluginAuthMixin, APIView):
             key_text = repo.public_key if not repo.is_official else None
             data, verified = _fetch_manifest(repo.url, public_key_text=key_text)
         except Exception as e:
-            logger.warning("Initial manifest fetch failed for %s: %s", repo.url, e)
+            logger.warning(
+                "Initial manifest fetch failed for %s: %s",
+                redact_url(repo.url),
+                type(e).__name__,
+            )
             repo.delete()
             return Response(
                 {"error": "Failed to fetch manifest. Check the URL and try again."},
@@ -995,7 +999,9 @@ class PluginRepoRefreshAPIView(PluginAuthMixin, APIView):
             key_text = repo.public_key if not repo.is_official else None
             data, verified = _fetch_manifest(repo.url, public_key_text=key_text)
         except Exception as e:
-            logger.exception("Manifest fetch failed for %s", repo.url)
+            logger.error(
+                "Manifest fetch failed for %s: %s", redact_url(repo.url), type(e).__name__
+            )
             return Response(
                 {"error": "Failed to fetch manifest. Check the URL and try again."},
                 status=status.HTTP_502_BAD_GATEWAY,

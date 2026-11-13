@@ -1186,7 +1186,7 @@ def _stream_passes_m3u_filters(name, url, group_title, compiled_filters, log_nam
     complete, untruncated name and group; they default to the arguments.
     """
     for pattern, filter_obj in compiled_filters:
-        logger.trace("Checking filter pattern %s", pattern.pattern)
+        logger.trace("Checking a %s filter", filter_obj.filter_type)
         if filter_obj.filter_type == "url":
             target = url
         elif filter_obj.filter_type == "group":
@@ -1196,9 +1196,9 @@ def _stream_passes_m3u_filters(name, url, group_title, compiled_filters, log_nam
 
         if pattern.search(target or ""):
             logger.debug(
-                "Stream %s (group %s) matches filter pattern %s",
+                "Stream %s (group %s) matches a %s filter",
                 log_name or _LoggableText(name), log_group or _LoggableText(group_title),
-                filter_obj.regex_pattern,
+                filter_obj.filter_type,
             )
             return not filter_obj.exclude
     return True
@@ -1470,10 +1470,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
 
     logger.debug(f"Processing batch of {len(batch)} for M3U account {account_id}")
     if compiled_filters:
-        logger.debug(
-            "Using compiled filters: %s",
-            [filter_obj.regex_pattern for _, filter_obj in compiled_filters],
-        )
+        logger.debug("Using %d compiled filters", len(compiled_filters))
     for stream_info in batch:
         # Bound before the try so the failure handler never sees an unbound
         # value (first record) or the previous stream's (a later record)
@@ -1487,7 +1484,7 @@ def process_m3u_batch_direct(account_id, batch, groups, hash_keys, compiled_filt
 
             # Validate URL length - maximum of 4096 characters
             if url and len(url) > 4096:
-                logger.warning("Skipping stream '%s': URL too long (%d characters, max 4096)", log_name, len(url))
+                logger.warning("Skipping stream '%s': URL too long (%d characters, max 4096)", log_name, len(url))  # credential-logging: ignore - only len(url) is logged, never the URL; the name goes through _LoggableText
                 continue
 
             # Truncate name if it exceeds the model field limit
