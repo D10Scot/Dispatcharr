@@ -148,28 +148,120 @@ def _clean_attributes(attributes, rules):
 # Log bodies: best effort, no stronger than stdout (R-Q17).
 # ---------------------------------------------------------------------------
 
-_URL_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^\s\"'<>]+")
 _UUID_ANYWHERE_RE = re.compile(r"\b" + _UUID_PATTERN + r"\b")
 # relay/control/mediasession.go: "v1." + 22-character sid + "." + 43-character MAC.
 _HLS_TOKEN_RE = re.compile(r"\bv1\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b")
 _LONG_HEX_RE = re.compile(r"\b[0-9a-fA-F]{32,}\b")
-_KEY_VALUE_RE = re.compile(
-    r"(?i)\b([\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|credential|auth)[\w.-]*)"
-    r"(\s*[=:]\s*)(\"[^\"]*\"|'[^']*'|[^\s,;&]+)"
-)
-_PATH_RE = re.compile(r"(?<![\w/:.-])/[^\s\"'<>,;)\]]*[A-Za-z0-9_%~-][^\s\"'<>,;)\]]*")
+
+
+# The three patterns that used to be regexes here (an absolute URL, a
+# key/value assignment, a scheme-less path) were super-linear on crafted log
+# text, and this runs inline on the gevent hub. These scanners return exactly
+# what those regexes returned: each reproduces the old leftmost-match semantics
+# over one structural unit and visits each character a bounded number of times.
+# tests/test_observability_redaction.py keeps the old expressions as the oracle.
+
+# A URL match starts at the first ASCII letter of the run of
+# scheme characters directly before "://", and runs to the next delimiter.
+_SCHEME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-")
+_LETTERS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ")
+_URL_TAIL_RE = re.compile(r"[^\s\"'<>]+")
+
+
+def _scrub_urls(text):
+    out, pos = [], 0
+    k = text.find("://")
+    while k != -1:
+        start = k
+        while start > pos and text[start - 1] in _SCHEME_CHARS:
+            start -= 1
+        while start < k and text[start] not in _LETTERS:
+            start += 1
+        tail = _URL_TAIL_RE.match(text, k + 3) if start < k else None
+        if tail is None:
+            k = text.find("://", k + 1)
+            continue
+        out.append(text[pos:start])
+        out.append(REDACTED)
+        pos = tail.end()
+        k = text.find("://", pos)
+    out.append(text[pos:])
+    return "".join(out)
+
+
+# A key/value match, one maximal [\w.-] run at a time: a run whose
+# text from its first word character contains a keyword, followed by the
+# separator and a value, is a match; any other run cannot start one.
+_RUN_RE = re.compile(r"[\w.-]+")
+_WORD_RE = re.compile(r"\w")
+_KEYWORD_RE = re.compile(r"(?i)password|passwd|pwd|secret|token|api[_-]?key|credential|auth")
+_SEPARATOR_RE = re.compile(r"\s*[=:]\s*")
+_BARE_VALUE_RE = re.compile(r"[^\s,;&]+")
+
+
+def _scrub_key_values(text):
+    out, pos = [], 0
+    for run in _RUN_RE.finditer(text):
+        a, b = run.span()
+        if b <= pos:
+            continue
+        word = _WORD_RE.search(text, max(a, pos), b)
+        if word is None or not _KEYWORD_RE.search(text, word.start(), b):
+            continue
+        sep = _SEPARATOR_RE.match(text, b)
+        if sep is None:
+            continue
+        v, end = sep.end(), -1
+        if v < len(text) and text[v] in "\"'":
+            close = text.find(text[v], v + 1)
+            if close != -1:
+                end = close + 1
+        if end == -1:
+            bare = _BARE_VALUE_RE.match(text, v)
+            if bare is None:
+                continue
+            end = bare.end()
+        out.append(text[pos:v])
+        out.append(REDACTED)
+        pos = end
+    out.append(text[pos:])
+    return "".join(out)
+
+
+# A path match, one maximal run of path characters at a time: it starts at the
+# run's first "/" not preceded by [\w/:.-], needs one [A-Za-z0-9_%~-] after it,
+# and always ends at the run's end.
+_PATH_RUN_RE = re.compile(r"[^\s\"'<>,;)\]]+")
+_PATH_NEED_RE = re.compile(r"[A-Za-z0-9_%~-]")
+_PATH_BLOCK_RE = re.compile(r"[\w/:.-]")
+
+
+def _scrub_paths(text):
+    out, pos = [], 0
+    for run in _PATH_RUN_RE.finditer(text):
+        a, b = run.span()
+        i = text.find("/", a, b)
+        while i > 0 and _PATH_BLOCK_RE.match(text, i - 1):
+            i = text.find("/", i + 1, b)
+        if i == -1 or not _PATH_NEED_RE.search(text, i + 1, b):
+            continue
+        out.append(text[pos:i])
+        out.append(REDACTED)
+        pos = b
+    out.append(text[pos:])
+    return "".join(out)
 
 
 def redact_text(text):
     """Remove the pattern classes from a log body. Best effort, not a proof."""
     if not isinstance(text, str) or not text:
         return text
-    text = _URL_RE.sub(REDACTED, text)
+    text = _scrub_urls(text)
     text = _UUID_ANYWHERE_RE.sub(REDACTED, text)
     text = _HLS_TOKEN_RE.sub(REDACTED, text)
     text = _LONG_HEX_RE.sub(REDACTED, text)
-    text = _KEY_VALUE_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}{REDACTED}", text)
-    text = _PATH_RE.sub(REDACTED, text)
+    text = _scrub_key_values(text)
+    text = _scrub_paths(text)
     return text
 
 
