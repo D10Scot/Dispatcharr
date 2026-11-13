@@ -15,6 +15,7 @@ from django.utils.http import http_date
 from core.http_security import validate_outbound_http_url
 from core.models import CoreSettings
 from core.utils import resolve_safe_local_data_path
+from dispatcharr.utils import redact_url
 
 logger = logging.getLogger(__name__)
 
@@ -116,7 +117,11 @@ def _fetch_remote_image(
             validate_outbound_http_url(current_url, allow_private=True, allow_loopback=False)
         except ValueError as exc:
             _remember_fetch_failure(url, failure_cache, fail_ttl)
-            logger.warning("Blocked unsafe remote image URL %s: %s", current_url, exc)
+            logger.warning(
+                "Blocked unsafe remote image URL %s: %s",
+                redact_url(current_url),
+                type(exc).__name__,
+            )
             raise Http404("Remote image not allowed") from exc
 
         remote_response = requests.get(
@@ -193,7 +198,7 @@ def serve_local_or_remote_image(
     if url.startswith("/data"):
         safe_path = resolve_safe_local_data_path(url)
         if safe_path is None or not os.path.exists(safe_path):
-            logger.error("%s file not found or unsafe path: %s", log_label, url)
+            logger.error("%s file not found or unsafe path", log_label)
             raise Http404("Image not found")
 
         try:
@@ -249,5 +254,10 @@ def serve_local_or_remote_image(
         raise
     except requests.exceptions.RequestException as e:
         _remember_fetch_failure(url, failure_cache, fail_ttl)
-        logger.warning("Error fetching remote %s %s: %s", log_label, url, e)
+        logger.warning(
+            "Error fetching remote %s %s: %s",
+            log_label,
+            redact_url(url),
+            type(e).__name__,
+        )
         raise Http404("Error fetching remote image") from e

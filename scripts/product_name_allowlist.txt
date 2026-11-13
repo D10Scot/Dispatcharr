@@ -114,7 +114,7 @@
 1	apps/dashboard/models.py
 2	apps/epg/sd_api.py
 1	apps/epg/sd_tasks.py
-2	apps/epg/sd_utils.py
+3	apps/epg/sd_utils.py
 1	apps/epg/tasks.py
 2	apps/epg/tests/test_property_channel_id_parity.py
 2	apps/epg/tests/test_property_programme_index.py
@@ -207,6 +207,7 @@
 5	core/api_views.py
 1	core/apps.py
 1	core/command_utils.py
+1	core/image_proxy.py
 3	core/models.py
 1	core/relay_events.py
 12	core/tasks.py
@@ -217,7 +218,9 @@
 1	core/tests/test_migrate_without_redis.py
 1	core/tests/test_output_profile_hls_migration.py
 1	core/tests/test_reconcile_provider_slots.py
+1	core/tests/test_ws_auth_and_pubsub_logging.py
 10	core/utils.py
+2	core/xtream_codes.py
 1	dashboard/pages/defects.js
 1	dashboard/pages/story.js
 3	dashboard/tests/defects.test.js
@@ -586,7 +589,7 @@
 6	tests/test_celery_plugin_discovery.py
 24	tests/test_check_product_name.py
 4	tests/test_ci_test_routing.py
-6	tests/test_credential_logging_guard.py
+8	tests/test_credential_logging_guard.py
 9	tests/test_geventpool_conn_lifetime.py
 1	tests/test_m3u_profile_test_logging.py
 1	tests/test_migrations_apply_on_sqlite.py

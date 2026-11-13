@@ -351,21 +351,20 @@ def generate_custom_dummy_programs(
         logger.warning(f"No title_pattern in custom_properties, falling back to default")
         return None
 
-    logger.debug(f"Title pattern from DB: {repr(title_pattern)}")
+    logger.debug("Title pattern loaded from the EPG source")
 
     # Convert PCRE/JavaScript named groups (?<name>) to Python format (?P<name>)
     # This handles patterns created with JavaScript regex syntax
     # Use negative lookahead to avoid matching lookbehind (?<=) and negative lookbehind (?<!)
     title_pattern = regex.sub(r'\(\?<(?![=!])([^>]+)>', r'(?P<\1>', title_pattern)
-    logger.debug(f"Converted title pattern: {repr(title_pattern)}")
+    logger.debug("Title pattern converted to Python named-group syntax")
 
     # Compile regex patterns using the enhanced regex module
     # (supports variable-width lookbehinds like JavaScript)
     try:
         title_regex = regex.compile(title_pattern)
     except Exception as e:
-        logger.error(f"Invalid title regex pattern after conversion: {e}")
-        logger.error(f"Pattern was: {repr(title_pattern)}")
+        logger.error(f"Invalid title regex pattern after conversion: {type(e).__name__}")
         return None
 
     time_regex = None
@@ -373,12 +372,11 @@ def generate_custom_dummy_programs(
         # Convert PCRE/JavaScript named groups to Python format
         # Use negative lookahead to avoid matching lookbehind (?<=) and negative lookbehind (?<!)
         time_pattern = regex.sub(r'\(\?<(?![=!])([^>]+)>', r'(?P<\1>', time_pattern)
-        logger.debug(f"Converted time pattern: {repr(time_pattern)}")
+        logger.debug("Time pattern converted to Python named-group syntax")
         try:
             time_regex = regex.compile(time_pattern)
         except Exception as e:
-            logger.warning(f"Invalid time regex pattern after conversion: {e}")
-            logger.warning(f"Pattern was: {repr(time_pattern)}")
+            logger.warning(f"Invalid time regex pattern after conversion: {type(e).__name__}")
 
     # Compile date regex if provided
     date_regex = None
@@ -386,12 +384,11 @@ def generate_custom_dummy_programs(
         # Convert PCRE/JavaScript named groups to Python format
         # Use negative lookahead to avoid matching lookbehind (?<=) and negative lookbehind (?<!)
         date_pattern = regex.sub(r'\(\?<(?![=!])([^>]+)>', r'(?P<\1>', date_pattern)
-        logger.debug(f"Converted date pattern: {repr(date_pattern)}")
+        logger.debug("Date pattern converted to Python named-group syntax")
         try:
             date_regex = regex.compile(date_pattern)
         except Exception as e:
-            logger.warning(f"Invalid date regex pattern after conversion: {e}")
-            logger.warning(f"Pattern was: {repr(date_pattern)}")
+            logger.warning(f"Invalid date regex pattern after conversion: {type(e).__name__}")
 
     # Try to match the channel name with the title pattern
     # Use search() instead of match() to match JavaScript behavior where .match() searches anywhere in the string
