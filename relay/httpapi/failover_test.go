@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -221,6 +222,15 @@ func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
 	cp.Settings = rigSettings(nil)
 	slow := control.NewHTTPClient()
 	slow.Timeout = 300 * time.Millisecond
+	// The lower bound is read from the CLIENT's side (issue #679): the fake
+	// stamps a request when it ARRIVES, and the client's 300 ms timeout runs
+	// from the start of the attempt (control/nextsource.go post:
+	// httpClient.Timeout, then time.After(RetryDelay)), so the fake's gap is
+	// 400 ms plus the difference of the two attempts' dial and scheduling
+	// delays and fell as low as 337 ms under load. The entry to RoundTrip is
+	// taken in-process, a few microseconds after the timeout starts.
+	rt := &roundTripStamps{next: http.DefaultTransport}
+	slow.Transport = rt
 	r := newRigWithClient(t, cp, relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, 0x100), StopAfterBytes: rigChunkBytes * 2}, slow)
 
 	response := r.tuneAs(t, "c-budget", "client-a")
@@ -234,8 +244,16 @@ func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
 		t.Fatalf("the control plane saw %d next-source calls, want 3: the tune and two failover attempts", len(calls))
 	}
 	first, second := calls[1].At, calls[2].At
-	if gap := second.Sub(first); gap < 400*time.Millisecond {
-		t.Fatalf("the second attempt came %s after the first, under the 300 ms timeout plus the 100 ms retry delay", gap)
+	starts := rt.starts()
+	if len(starts) < 3 {
+		t.Fatalf("the client made %d next-source round trips, want at least 3", len(starts))
+	}
+	// Timers never fire early and time.After starts after the first attempt
+	// failed, so two attempts are at least timeout + RetryDelay apart, less the
+	// in-process slack between starting the timeout and entering RoundTrip.
+	// Without the delay the gap is 300 ms and with a halved timeout 250 ms.
+	if gap := starts[2].Sub(starts[1]); gap < 390*time.Millisecond {
+		t.Fatalf("the second attempt started %s after the first, under the 300 ms timeout plus the 100 ms retry delay", gap)
 	}
 	if gap := second.Sub(first); gap > 3*time.Second {
 		t.Fatalf("the second attempt came %s after the first: the budget was not the client's", gap)
@@ -265,4 +283,26 @@ func TestTheSlotIsReleasedWithTheCurrentStreamWhenTheChannelEnds(t *testing.T) {
 	if release.Header.Get(control.HeaderInternalRequest) == "" {
 		t.Fatal("the release was not signed")
 	}
+}
+
+// roundTripStamps records when the client entered each next-source round trip.
+type roundTripStamps struct {
+	next http.RoundTripper
+	mu   sync.Mutex
+	at   []time.Time
+}
+
+func (r *roundTripStamps) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, "/next-source") {
+		r.mu.Lock()
+		r.at = append(r.at, time.Now())
+		r.mu.Unlock()
+	}
+	return r.next.RoundTrip(req)
+}
+
+func (r *roundTripStamps) starts() []time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]time.Time(nil), r.at...)
 }
