@@ -14,7 +14,7 @@ neighbouring request on the same worker closed while the body-bearing request
 waited for its headers, the deadline is 0 and becomes ``0 + 120``: a 1970
 timestamp. The master then SIGKILLs the whole worker, and every request on
 it, within a second (``core/master_checks.c:199``). So the two API inis drop
-``post-buffering``.
+``post-buffering`` (the debug ini never had it).
 
 Dropping it alone has a cost: a view that answers without reading a large
 body (DRF authenticates before it parses, and Django does not drain an unread
@@ -24,16 +24,17 @@ what post-buffering did for the client, without the harakiri arithmetic.
 
 Gate
 ----
-Active only when ``DISPATCHARR_WSGI_SPOOL_REQUEST_BODY`` is exactly ``"1"``,
-which only ``docker/uwsgi.ini`` and ``docker/uwsgi.modular.ini`` set (with
-``env =``). Anything else, including unset, returns the application callable
-unchanged: the relay and dev inis keep uWSGI's own post-buffering, and
-``runserver``, Daphne and Celery never see the variable.
+Active only when ``MINO_WSGI_SPOOL_REQUEST_BODY`` is exactly ``"1"``, which
+only the uWSGI inis that set ``harakiri`` set, with ``env =``
+(``docker/uwsgi.ini``, ``docker/uwsgi.modular.ini``, ``docker/uwsgi.debug.ini``).
+Anything else, including unset, returns the application callable unchanged:
+the relay and dev inis keep uWSGI's own post-buffering, and ``runserver``,
+Daphne and Celery never see the variable.
 
 Behaviour
 ---------
-* Only a request whose ``CONTENT_LENGTH`` parses as a positive integer is
-  spooled, exactly the requests uWSGI's post-buffering acted on. A request
+* Only a request whose ``CONTENT_LENGTH`` is ASCII digits with a positive
+  value is spooled, exactly the requests uWSGI's post-buffering acted on. A request
   with no, an empty or an unparseable ``CONTENT_LENGTH`` (a chunked body
   reaching the direct ``http`` listener) is passed through untouched, as
   post-buffering passed it through.
@@ -61,7 +62,7 @@ import logging
 import os
 import tempfile
 
-SPOOL_ENV = "DISPATCHARR_WSGI_SPOOL_REQUEST_BODY"
+SPOOL_ENV = "MINO_WSGI_SPOOL_REQUEST_BODY"
 MEMORY_THRESHOLD = 4096
 READ_CHUNK = 65536
 
@@ -69,11 +70,12 @@ logger = logging.getLogger(__name__)
 
 
 def _declared_length(environ):
-    try:
-        length = int(environ.get("CONTENT_LENGTH") or 0)
-    except (TypeError, ValueError):
+    raw = environ.get("CONTENT_LENGTH") or ""
+    # ASCII digits only: int() would also take "5_0", " 50" and non-ASCII
+    # digits, none of which is a Content-Length.
+    if not (isinstance(raw, str) and raw.isascii() and raw.isdigit()):
         return 0
-    return length if length > 0 else 0
+    return int(raw)
 
 
 def _cooperative_yield():

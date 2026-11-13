@@ -1,21 +1,35 @@
-"""dispatcharr/request_body_spool.py: the API process reads a request body before Django.
+"""core/request_body_spool.py: the API process reads a request body before Django.
 
 The two API inis drop uWSGI's ``post-buffering`` because, under gevent, its
 ``inc_harakiri()`` turned a zeroed per-worker harakiri deadline into a 1970
 timestamp and the master killed the whole worker. This middleware takes over
 what post-buffering did for clients: the body is read in full before the app
 runs, so a view that answers without reading it does not leave bytes on the
-socket. These tests pin the gate, the byte-for-byte hand-over, the bounds and
-the cleanup.
+socket. These tests pin the gate, the byte-for-byte hand-over, the bounds,
+the cleanup, the wiring in the WSGI module the API ini loads, and the wrapper
+behind a real socket (the standard library's ``wsgiref`` server).
+
+What only the manual uWSGI runs show, and no test here: the interleave kill
+itself, gevent hub latency during a large spool, and nginx in front.
 """
+import hashlib
 import io
+import json
 import os
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+from pathlib import Path
+from wsgiref.simple_server import WSGIRequestHandler, WSGIServer, make_server
 
 from django.core.handlers.wsgi import WSGIRequest
 from django.test import SimpleTestCase
 
-from dispatcharr import request_body_spool
-from dispatcharr.request_body_spool import (
+from core import request_body_spool
+from core.request_body_spool import (
     MEMORY_THRESHOLD,
     SPOOL_ENV,
     SpoolRequestBody,
@@ -223,6 +237,16 @@ class HandOverTests(SimpleTestCase):
 
 
 class BoundsTests(SimpleTestCase):
+    def test_a_content_length_that_is_not_plain_ascii_digits_passes_through(self):
+        # int() accepts every one of these; none is a Content-Length.
+        for raw in ("5_0", " 50", "50 ", "+50", "\u0665\u0660"):
+            with self.subTest(content_length=raw):
+                source = io.BytesIO(_pattern(50))
+                app = _Recorder(read=lambda s: None)
+                _run(SpoolRequestBody(app), _environ(stream=source, CONTENT_LENGTH=raw))
+                self.assertIs(app.stream, source, f"{raw!r} is not ASCII digits and must not be spooled")
+                self.assertEqual(source.tell(), 0, f"{raw!r}: nothing may be read ahead of the app")
+
     def test_no_or_unusable_content_length_passes_the_request_through_untouched(self):
         for label, extra in (
             ("absent", {}),
@@ -264,7 +288,7 @@ class BoundsTests(SimpleTestCase):
 
     def test_the_truncation_log_line_carries_counts_only(self):
         secret = b"password=hunter2&token=abc"
-        with self.assertLogs("dispatcharr.request_body_spool", level="INFO") as logs:
+        with self.assertLogs(request_body_spool.logger.name, level="INFO") as logs:
             _run(SpoolRequestBody(_Recorder()), _environ(secret, 1000, PATH_INFO="/api/x?token=abc"))
         line = "\n".join(logs.output)
         self.assertIn(f"{len(secret)} of 1000", line)
@@ -357,3 +381,201 @@ class CleanupTests(SimpleTestCase):
         with self.assertRaisesMessage(RuntimeError, "close failed"):
             _run(SpoolRequestBody(app), _environ(b"abc", 3))
         self.assertTrue(made[0].closed)
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+API_INI = REPO_ROOT / "docker" / "uwsgi.ini"
+
+WIRING_CHILD = """
+import importlib, json, sys
+module, attr = sys.argv[1].split(":")
+application = getattr(importlib.import_module(module), attr)
+from core.request_body_spool import SpoolRequestBody
+print(json.dumps({
+    "wrapped": isinstance(application, SpoolRequestBody),
+    "inner": type(getattr(application, "application", application)).__name__,
+}))
+"""
+
+
+def _ini_value(key, pattern):
+    """The value of the first ``key = ...`` line in the API ini matching ``pattern``."""
+    for line in API_INI.read_text().splitlines():
+        match = re.match(rf"^{re.escape(key)}\s*=\s*(\S+)", line)
+        if match and re.search(pattern, match.group(1)):
+            return match.group(1)
+    raise AssertionError(f"{API_INI.name} has no {key} line matching {pattern!r}")
+
+
+class WiringTests(SimpleTestCase):
+    """The module the API ini loads exports the wrapper exactly when its env line is set.
+
+    Imported in a fresh interpreter, so the Django test process is untouched and
+    the import is the same cold one uWSGI's lazy-apps worker performs.
+    """
+
+    def _application(self, extra_env):
+        env = {
+            key: os.environ[key]
+            for key in ("PATH", "HOME", "LANG", "DJANGO_SECRET_KEY", "POSTGRES_HOST", "POSTGRES_DB",
+                        "POSTGRES_USER", "POSTGRES_PASSWORD", "REDIS_HOST", "REDIS_PORT", "REDIS_DB")
+            if key in os.environ
+        }
+        env.update({"PYTHONPATH": str(REPO_ROOT), "PYTHONDONTWRITEBYTECODE": "1",
+                    "DJANGO_SETTINGS_MODULE": os.environ.get("DJANGO_SETTINGS_MODULE", "")})
+        env.update(extra_env)
+        result = subprocess.run(
+            [sys.executable, "-c", WIRING_CHILD, _ini_value("module", ":")],
+            env=env, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=120, check=False,
+        )
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        self.assertTrue(lines, f"child failed:\n{result.stdout}\n{result.stderr[-3000:]}")
+        return json.loads(lines[-1])
+
+    def test_the_api_ini_env_line_makes_the_loaded_application_the_spool(self):
+        key, value = _ini_value("env", rf"^{SPOOL_ENV}=").split("=", 1)
+        seen = self._application({key: value})
+        self.assertTrue(
+            seen["wrapped"],
+            "the WSGI module the API ini loads must apply wrap() to its application: "
+            "with the ini's env line set, it did not export a SpoolRequestBody",
+        )
+        self.assertEqual(seen["inner"], "WSGIHandler", "the spool must wrap Django's own handler")
+
+    def test_without_the_env_line_the_loaded_application_is_django_unwrapped(self):
+        seen = self._application({})
+        self.assertFalse(seen["wrapped"], "with the switch unset the application must not be wrapped")
+        self.assertEqual(seen["inner"], "WSGIHandler")
+
+
+class _QuietHandler(WSGIRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def handle(self):
+        try:
+            super().handle()
+        finally:
+            self.server.handled.release()
+
+
+class _QuietServer(WSGIServer):
+    def handle_error(self, request, client_address):
+        pass  # a client that closed mid-request is the point of one test
+
+
+class RealSocketTests(SimpleTestCase):
+    """The wrapper behind a real socket, served by ``wsgiref``.
+
+    ``wsgiref`` hands the application the socket's own file as ``wsgi.input``
+    and closes the connection after each response, which is the shape that
+    resets a client whose body was left unread.
+    """
+
+    def _serve(self, app):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        previous_tempdir = tempfile.tempdir
+        tempfile.tempdir = self.tmp.name
+        self.addCleanup(setattr, tempfile, "tempdir", previous_tempdir)
+
+        self.spools = []
+        real = request_body_spool.tempfile.SpooledTemporaryFile
+
+        def factory(*args, **kwargs):
+            spool = real(*args, **kwargs)
+            self.spools.append(spool)
+            return spool
+
+        request_body_spool.tempfile.SpooledTemporaryFile = factory
+        self.addCleanup(setattr, request_body_spool.tempfile, "SpooledTemporaryFile", real)
+
+        server = make_server("127.0.0.1", 0, app, server_class=_QuietServer, handler_class=_QuietHandler)
+        server.handled = threading.Semaphore(0)
+        thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.server = server
+        return server.server_address[1]
+
+    def _wait_handled(self):
+        self.assertTrue(self.server.handled.acquire(timeout=30), "the server never finished the request")
+
+    @staticmethod
+    def _request(port, body, declared=None, send=None):
+        """Send a POST over a raw socket and return everything the server sent back."""
+        declared = len(body) if declared is None else declared
+        head = (
+            f"POST /upload HTTP/1.1\r\nHost: 127.0.0.1\r\nContent-Type: application/octet-stream\r\n"
+            f"Content-Length: {declared}\r\n\r\n"
+        ).encode()
+        with socket.create_connection(("127.0.0.1", port), timeout=30) as client:
+            client.sendall(head + (body if send is None else body[:send]))
+            if send is not None:
+                return None
+            chunks = []
+            while True:
+                chunk = client.recv(65536)
+                if not chunk:
+                    return b"".join(chunks)
+                chunks.append(chunk)
+
+    def test_a_body_over_the_memory_threshold_reaches_the_app_byte_for_byte(self):
+        seen = {}
+
+        def echo(environ, start_response):
+            data = environ["wsgi.input"].read()
+            seen["rolled_to_disk"] = getattr(environ["wsgi.input"], "_rolled", None)
+            start_response("200 OK", [("Content-Type", "text/plain")])
+            return [hashlib.sha256(data).hexdigest().encode()]
+
+        port = self._serve(SpoolRequestBody(echo))
+        body = _pattern(MEMORY_THRESHOLD * 256 + 13)
+        response = self._request(port, body)
+        self._wait_handled()
+        self.assertTrue(response.startswith(b"HTTP/1.0 200"), response[:200])
+        self.assertTrue(response.endswith(hashlib.sha256(body).hexdigest().encode()), "the app must read exactly the bytes sent")
+        self.assertTrue(seen["rolled_to_disk"], "a body over the threshold must have rolled over to a file")
+        self.assertEqual(len(self.spools), 1)
+        self.assertTrue(self.spools[0].closed, "the spool must be closed once the server closed the response")
+        self.assertEqual(os.listdir(self.tmp.name), [], "the spool must leave nothing in the temp directory")
+
+    def test_a_view_that_refuses_without_reading_a_large_body_sends_a_complete_response(self):
+        calls = []
+
+        def refuse(environ, start_response):
+            calls.append(True)
+            start_response("403 Forbidden", [("Content-Type", "text/plain"), ("Content-Length", "9")])
+            return [b"forbidden"]
+
+        port = self._serve(SpoolRequestBody(refuse))
+        body = _pattern(8 * 1024 * 1024)
+        try:
+            response = self._request(port, body)
+        except (ConnectionResetError, BrokenPipeError) as exc:
+            self.fail(
+                f"the connection was reset ({type(exc).__name__}): a body the view never read was left "
+                "on the socket, which is what the spool exists to prevent"
+            )
+        self._wait_handled()
+        self.assertEqual(calls, [True])
+        self.assertTrue(response.startswith(b"HTTP/1.0 403"), response[:200])
+        self.assertTrue(response.endswith(b"\r\n\r\nforbidden"), "the client must receive the whole 403")
+
+    def test_a_client_that_closes_mid_body_never_reaches_the_app_and_leaves_nothing(self):
+        calls = []
+
+        def app(environ, start_response):
+            calls.append(True)
+            start_response("200 OK", [])
+            return [b"ok"]
+
+        port = self._serve(SpoolRequestBody(app))
+        body = _pattern(1024 * 1024)
+        self._request(port, body, send=100 * 1024)
+        self._wait_handled()
+        self.assertEqual(calls, [], "a truncated body must not reach the application")
+        self.assertEqual(len(self.spools), 1)
+        self.assertTrue(self.spools[0].closed, "the spool of a truncated body must be closed")
+        self.assertEqual(os.listdir(self.tmp.name), [], "the spool must leave nothing in the temp directory")

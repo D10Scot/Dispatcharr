@@ -42,10 +42,10 @@ else:
 
 from django.core.wsgi import get_wsgi_application
 
-from dispatcharr.request_body_spool import wrap as _spool_request_body
+from core.request_body_spool import wrap as _spool_request_body
 
-# Reads the request body before Django runs, in the API process only (the
-# DISPATCHARR_WSGI_SPOOL_REQUEST_BODY gate, set by docker/uwsgi.ini and
-# docker/uwsgi.modular.ini). It replaces uWSGI's post-buffering there, whose
-# harakiri arithmetic killed whole workers: see dispatcharr/request_body_spool.py.
+# Reads the request body before Django runs, only where the MINO_WSGI_SPOOL_REQUEST_BODY
+# gate is on: the uWSGI inis that set harakiri. It replaces uWSGI's
+# post-buffering there, whose harakiri arithmetic killed whole workers: see
+# core/request_body_spool.py. core/tests/test_request_body_spool.py pins this line.
 application = _spool_request_body(get_wsgi_application())
