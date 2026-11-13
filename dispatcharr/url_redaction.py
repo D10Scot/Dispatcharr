@@ -1,7 +1,7 @@
 """The three constants of URL credential redaction, in a stdlib-only leaf module.
 
-``dispatcharr/utils.py`` imports ``django.http`` and ``core.models``, so the log
-scrubber (``dispatcharr/log_scrub.py``), which is imported before Django settings
+the project's ``utils.py`` imports ``django.http`` and ``core.models``, so the log
+scrubber (``log_scrub.py``), which is imported before Django settings
 exist, cannot import it. ``utils`` re-exports all three names; nothing else moved
 and ``redact_url`` is unchanged. Keep this module free of any non-stdlib import
 (``tests/test_url_redaction_leaf.py`` enforces it).

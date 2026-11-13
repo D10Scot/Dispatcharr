@@ -10,7 +10,7 @@ never leave a carrier ``redact_url`` would mask, and it restores nothing it
 masked. Every scan is linear, and the scan and the output are capped.
 
 It runs at record creation, from a chained ``logging`` record factory that
-``dispatcharr/__init__.py`` installs before anything else in the package.
+the project package's ``__init__.py`` installs before anything else in the package.
 
 This module is a stdlib-only leaf: it is imported before Django settings exist.
 The only logging call in it is the constant-message WARNING in
@@ -27,12 +27,21 @@ from dispatcharr import url_redaction
 
 MASK = url_redaction.REDACTED  # "***"
 SENSITIVE_QUERY_KEYS = frozenset(url_redaction.SENSITIVE_QUERY_KEYS)
-# Names matched by CONTAINMENT in any position (spec 4.3 step 2, "key"). The members of
-# SENSITIVE_QUERY_KEYS beyond these four (the OIDC names, added by the SSO work after the
-# spec was written: "code", "state", ...) are matched by EQUALITY only, and only where
-# redact_url itself would mask them (after "?", "&" or "#"): containment on "code" or
-# "state" would mask status_code=, codec= and a bare state=running in ordinary lines.
+# THE KEY RULE, stated once (spec 4.3 step 2 "key", as amended after the SSO work widened
+# SENSITIVE_QUERY_KEYS):
+#   * CONTAINMENT, anywhere after an "=": a name containing one of exactly these four. Because
+#     it is containment, id_token, access_token and refresh_token are covered by "token".
+#   * EQUALITY, for every other member of SENSITIVE_QUERY_KEYS (derived here, never a second
+#     hand-typed list, so a key added to the set is masked automatically): the name must equal
+#     the key under redact_url's normalisation (raw lower-case, or percent-decoded, stripped,
+#     lower-case) AND start immediately after "?", "&" or "#" in the raw token. Those are the
+#     positions where redact_url itself masks them; containment on "code" or "state" would
+#     mask status_code=, codec= and a bare state=running in ordinary lines.
+# On a match the blunt rule is unchanged: mask from the value to the end of the token.
 _CONTAINED_KEYS = ("username", "password", "token", "api_key")
+_EQUALITY_KEYS = frozenset(
+    k for k in SENSITIVE_QUERY_KEYS if not any(c in k for c in _CONTAINED_KEYS)
+)
 CAP = 16384
 TAIL_CAP = 65536
 RESERVE = 64
@@ -55,7 +64,7 @@ def _sensitive_name(name, before):
         if key in low or key in dec:
             return True
     if before and before in _EQUALITY_BEFORE:
-        if low in SENSITIVE_QUERY_KEYS or unquote(name).strip().lower() in SENSITIVE_QUERY_KEYS:
+        if low in _EQUALITY_KEYS or unquote(name).strip().lower() in _EQUALITY_KEYS:
             return True
     return False
 

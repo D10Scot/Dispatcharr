@@ -317,7 +317,7 @@ needs no configuration to benefit. It is **best effort, not a proof**.
   name, in a query, a fragment or a bare assignment), the segments after `live/`, `movie/`,
   `series/` or `timeshift/`, and the path of a `/<user>/<pass>/<digits>` route. The OIDC parameter
   names (`code`, `state`, `id_token`, `client_secret`, and the other members of
-  `SENSITIVE_QUERY_KEYS`) are masked where they follow `?`, `&` or `#`. It also masks the same
+  `SENSITIVE_QUERY_KEYS`) are masked where they follow `?`, `&` or `#`, by name equality; `id_token`, `access_token` and `refresh_token` are covered by the `token` rule anywhere. A bare `client_secret=abc` or `state=x` in free text is not masked. It also masks the same
   carriers in a traceback and in `stack_info`, which is where a `requests` exception carries the
   provider URL.
 - **It over-masks on purpose.** `Not Found: /api/channels/5/` prints as `Not Found: /***`,

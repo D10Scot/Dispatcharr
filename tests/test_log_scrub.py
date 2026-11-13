@@ -19,6 +19,7 @@ from hypothesis import example, given, settings as hyp_settings, strategies as s
 from dispatcharr import log_scrub
 from dispatcharr import utils as dispatcharr_utils
 from dispatcharr.log_scrub import scrub_tail, scrub_text
+from dispatcharr.url_redaction import SENSITIVE_QUERY_KEYS
 from dispatcharr.utils import redact_url
 from tests.log_scrub_rig import FactoryTestCase
 
@@ -45,6 +46,19 @@ PIECES = [
     "username=", "?password=", "&token=", "#api_key=", "x_token=", "?code=", "&state=", "/live/", "/movie/",
     "live/", "http://", "https://u:", "//u:", "a@", "/a/b/1", "/u/p/3.ts", "?username=", "%20code=",
 ]
+
+
+
+def _spellings(key):
+    """Raw, upper-case and percent-encoded (first letter) spellings of a key name."""
+    return [key, key.upper(), f"%{ord(key[0]):02x}{key[1:]}"]
+
+
+# Every CURRENT key, iterated from the set (never listed by hand), in query and fragment
+# positions, raw, upper-case and percent-encoded.
+for _key in sorted(SENSITIVE_QUERY_KEYS):
+    for _name in _spellings(_key):
+        PIECES.extend([_name, f"?{_name}=", f"&{_name}=", f"#{_name}="])
 
 CARRIER_EXAMPLES = [
     f"http://u:{SENT}@h.invalid/x",
@@ -302,6 +316,54 @@ class IdempotenceSameObjectAndOverMasks(SimpleTestCase):
     def test_the_root_rule_does_not_start_after_a_digit(self):
         # 2026/11/12 cannot catch this: from either slash there are fewer than three segments.
         self.assertEqual(scrub_text("page 1/2/3/4"), "page 1/2/3/4")
+
+
+class KeyRule(SimpleTestCase):
+    """The key rule: containment on four names, equality after ?, & or # for the rest."""
+
+    def test_every_current_key_is_masked_in_query_and_fragment_positions(self):
+        # The guard: fails if a key is added to SENSITIVE_QUERY_KEYS that neither containment
+        # nor the equality rule reaches.
+        self.assertGreaterEqual(len(SENSITIVE_QUERY_KEYS), 13)
+        for key in sorted(SENSITIVE_QUERY_KEYS):
+            for name in _spellings(key):
+                for lead in ("?", "&", "#"):
+                    text = f"/cb{lead}{name}={SENT}"
+                    self.assertNotIn(SENT, scrub_text(text), f"{key!r} as {text!r} survived")
+                    self.assertFalse(leaks(scrub_text, text), text)
+
+    def test_the_equality_keys_are_derived_from_the_shared_set(self):
+        contained = log_scrub._CONTAINED_KEYS
+        self.assertEqual(contained, ("username", "password", "token", "api_key"))
+        self.assertEqual(
+            log_scrub._EQUALITY_KEYS,
+            {k for k in SENSITIVE_QUERY_KEYS if not any(c in k for c in contained)},
+        )
+        self.assertTrue({"code", "state", "client_secret"} <= log_scrub._EQUALITY_KEYS)
+
+    def test_oidc_token_names_are_covered_by_containment_anywhere(self):
+        for name in ("id_token", "access_token", "refresh_token"):
+            for text in (f"{name}={SENT}", f"x/{name}={SENT}", f"?{name}={SENT}"):
+                self.assertNotIn(SENT, scrub_text(text), text)
+
+    def test_exact_rows(self):
+        masked = {
+            "/cb?code=abc&state=xyz": "/cb?code=***",
+            "/cb?a=1&state=xyz&b=2": "/cb?a=1&state=***",
+            "#access_token=abc": "#access_token=***",
+            "?%63ode=abc": "?%63ode=***",
+            "/cb?CODE=abc": "/cb?CODE=***",
+        }
+        for text, expected in masked.items():
+            self.assertEqual(scrub_text(text), expected, text)
+
+    def test_bare_and_look_alike_names_are_unchanged_same_object(self):
+        # client_secret=abc bare is a documented residual (spec 7): it is not preceded by ?, & or #.
+        for text in (
+            "status_code=500", "exit_code=1", "codec=h264", "state=running", "estate=x",
+            "code=5", "client_secret=abc", "a/state=running",
+        ):
+            check_same_object(scrub_text, text)
 
 
 # ---------------------------------------------------------------------------
