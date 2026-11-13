@@ -7,7 +7,6 @@ from urllib.parse import quote_plus
 from django.core.exceptions import ImproperlyConfigured
 
 from dispatcharr.observability.logs import augment_logging
-from core.request_log_redaction import with_request_log_redaction
 from dispatcharr.db.process_label import db_application_name, uses_geventpool_database_backend
 
 
@@ -674,11 +673,6 @@ LOGGING = {
 # logger that has `console`, and switches `console` to the JSON formatter when
 # MINO_LOG_FORMAT=json. With the variable unset, console output is unchanged.
 LOGGING = augment_logging(LOGGING)
-
-# Xtream credentials out of Django's own request log records ("Unauthorized:
-# /movie/<user>/<pass>/..."): a redacting filter on the console and otel
-# handlers and on the fixed-name request loggers. See core/request_log_redaction.py.
-LOGGING = with_request_log_redaction(LOGGING)
 
 # Connect script execution safety settings
 # Allowed base directories for custom scripts; real paths must be inside
