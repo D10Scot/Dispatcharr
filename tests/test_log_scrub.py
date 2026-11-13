@@ -664,7 +664,8 @@ def spaced_records(draw):
     Arguments are spaced slash paths, plain tokens, or long spaceless paths. The
     text after each placeholder is drawn from GLUE_AFTER and T4's tokens, so an
     argument is often glued to what follows it; conversions include %r, a
-    precision and widths; templates are positional or mapping-style. The budget
+    precision and widths; templates are positional, mapping-style, or render a
+    sole mapping whole (one placeholder, no key). The budget
     is the real one or a small one, so the over-budget replacement is exercised
     without generating 16,384-character arguments.
     """
@@ -678,11 +679,12 @@ def spaced_records(draw):
         parts = draw(st.lists(tokens(max_pieces=8), min_size=1, max_size=4))
         lead = draw(st.sampled_from(["/", "/movie/", "/live/u/", ""])) if shape == "spaced" else ""
         args.append(lead + " ".join(parts))
-    mapping = draw(st.booleans())
+    form = draw(st.sampled_from(["positional", "keyed", "whole"]))
+    mapping = form != "positional"
     pieces = []
-    for i in range(count):
+    for i in range(1 if form == "whole" else count):
         before = draw(tokens(max_pieces=6)).replace("%", "%%") if i == 0 else ""
-        key = f"({'k%d' % i})" if mapping else ""
+        key = f"({'k%d' % i})" if form == "keyed" else ""
         conv = draw(st.sampled_from(CONVERSIONS))
         after = draw(st.sampled_from(GLUE_AFTER + [None]))
         after = draw(tokens(max_pieces=4)) if after is None else after
@@ -916,10 +918,11 @@ class WholePathArguments(FactoryTestCase):
                 out = self.scrubbed(msg, args).getMessage()
                 self.assertEqual(out, withheld, "a whole-read argument in an unplaceable conversion was emitted")
 
-    def test_a_mapping_rendered_whole_is_not_read(self):
-        # A nested container (spec 7 item 3): main's behaviour, not withheld.
-        out = self.scrubbed("x: %s", ({"a": "/movie/ab cd/xyz/1.mp4"},)).getMessage()
-        self.assertEqual(out, "x: {'a': '/movie/*** cd/xyz/1.mp4'}")
+    def test_a_mapping_rendered_whole_with_a_masked_value_is_withheld(self):
+        # A sole dict's values are read; rendered whole, its repr escapes the
+        # placement marks, so the masked value cannot be placed: fail closed.
+        out = self.scrubbed("x: %s", ({"a": "/movie/ab cd/xyz/1.mp4", "n": 3},)).getMessage()
+        self.assertEqual(out, self.WITHHELD, "a dict rendered whole printed a credential masked per token only")
 
     def test_a_repeated_key_is_masked_at_every_occurrence(self):
         out = self.scrubbed("%(a)s %(a)s|%(b)s", ({"a": "/movie/ab cd/xyz/1.mp4", "b": "ok"},)).getMessage()
@@ -967,26 +970,19 @@ class WholePathArguments(FactoryTestCase):
             with self.subTest(msg):
                 self.assertEqual(self.scrubbed(msg, ("/movie/ab cd/xyz/1.mp4",)).getMessage(), "/movie/***|")
 
-    def test_a_mapping_rendered_whole_scrubs_exactly_as_the_message_scan(self):
-        # Spec 7 item 3: a dict rendered whole is a nested container, masked per
-        # token only, as on main; the spaced credential's tail survives there.
-        for msg, mapping in (
-            ("%s", {"a": "/movie/ab cd/xyz/1.mp4"}),
-            ("x: %s", {"a": "/movie/ab cd/xyz/1.mp4", "b": "/x/ab cd/e f/1"}),
-            ("%r", {"a": "/movie/ab cd/xyz/1.mp4"}),
-        ):
-            with self.subTest(msg=msg):
-                out = self.scrubbed(msg, (mapping,)).getMessage()
-                self.assertEqual(out, log_scrub.scrub_text(msg % (mapping,)))
-        # The literal origin/main's scrubber (cf40b42e) prints for the first case.
-        self.assertEqual(
-            self.scrubbed("%s", ({"a": "/movie/ab cd/xyz/1.mp4"},)).getMessage(),
-            "{'a': '/movie/*** cd/xyz/1.mp4'}",
-        )
+    def test_control_a_mapping_rendered_whole_with_no_masked_value_is_untouched(self):
+        # Ordinary values, a benign spaced path among them: no whole-read mask, so
+        # the record keeps its msg and its args, the same objects.
+        for msg in ("x: %s", "%r"):
+            with self.subTest(msg):
+                mapping = {"a": "/data/My Recordings/x", "b": "/api/x", "n": 3, "s": "plain text"}
+                record = self.scrubbed(msg, (mapping,))
+                self.assertIs(record.msg, msg)
+                self.assertIs(record.args, mapping)
+                self.assertEqual(record.getMessage(), msg % (mapping,))
 
-    def test_a_template_containing_a_mapping_key_marker_is_read(self):
-        # The test is "%(" in the template, so an escaped "%%(" reads the mapping;
-        # its render is the mapping's repr, which cannot be placed: withheld.
+    def test_a_mapping_rendered_whole_beside_an_escaped_key_marker_is_withheld(self):
+        # An escaped "%%(" changes nothing: the mapping is rendered whole and withheld.
         out = self.scrubbed("%s %%(", ({"a": "/movie/ab cd/xyz/1.mp4"},)).getMessage()
         self.assertEqual(out, self.WITHHELD)
 

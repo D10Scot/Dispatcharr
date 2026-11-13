@@ -330,9 +330,11 @@ def _whole_masks(args):
     but two tokens in the rendered message. A string argument that starts with
     ``/`` is therefore read as one token. One budget covers the record: an
     argument longer than what is left is not read and is masked after its
-    leading ``/`` (fail closed, whitespace or not). A mapping is read only when
-    it is a ``dict`` and the template names its keys (``%(key)s``); a mapping
-    rendered whole is a nested container, and is not read.
+    leading ``/`` (fail closed, whitespace or not). A mapping's top-level values
+    are read when it is a ``dict`` passed as the sole argument, whether the
+    template names its keys (``%(key)s``) or renders it whole (``%s``); rendered
+    whole, its repr escapes the placement marks, so a masked value cannot be
+    placed and the message is withheld.
     """
     if isinstance(args, tuple):
         items = enumerate(args)
@@ -434,7 +436,7 @@ def _scrub_with_whole_reads(record, message):
     applied exactly as ``scrub_text`` applies them.
     """
     args = record.args
-    if not args or (isinstance(args, dict) and "%(" not in str(record.msg)):
+    if not args:
         return None
     masks = _whole_masks(args)
     if masks is None:
