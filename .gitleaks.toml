@@ -44,3 +44,12 @@ regexes = [
   '''^SENTINEL-ROTATED-31d7$''',
   '''^SENTINEL-ROTATED-9c1d$''',
 ]
+
+[[allowlists]]
+description = "Request-log redaction test sentinels: xcpass-sentinel-q7 and xcpass2-sentinel-q7 are made-up Xtream passwords the request-log redaction guard (e2e/tests/guards/request-log-redaction.cases.json) puts in a query string and then asserts are masked in the nginx and uWSGI request logs. They are test literals and valid for nothing. They are allowlisted by exact value (regexTarget = secret) and only for the one rule that fires, never by path, so a real secret in that file is still caught by every rule. The entry lives on main because CI's gitleaks scans every ref with full history, so a branch carrying the literals fails the check for every run whose own config lacks it."
+targetRules = ["generic-api-key"]
+regexTarget = "secret"
+regexes = [
+  '''^xcpass-sentinel-q7$''',
+  '''^xcpass2-sentinel-q7$''',
+]
