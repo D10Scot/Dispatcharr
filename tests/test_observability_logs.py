@@ -10,6 +10,7 @@ from django.conf import settings
 from django.test import SimpleTestCase
 from opentelemetry.sdk.trace import TracerProvider
 
+from core.request_log_redaction import with_request_log_redaction
 from dispatcharr.observability import config, logs
 
 # A literal copy of the seed's LOGGING (dispatcharr/settings.py at 149678aa,
@@ -70,7 +71,12 @@ class LoggingConfigTests(SimpleTestCase):
     def test_the_settings_module_applies_it(self):
         if "MINO_LOG_FORMAT" in os.environ:
             self.skipTest("MINO_LOG_FORMAT is set in this environment")
-        self.assertEqual(settings.LOGGING, seed_plus_inert_otel_handler(settings.LOG_LEVEL))
+        # settings.py applies the request-log credential filter after D8's
+        # change (core/request_log_redaction.py); augment_logging is unchanged.
+        self.assertEqual(
+            settings.LOGGING,
+            with_request_log_redaction(seed_plus_inert_otel_handler(settings.LOG_LEVEL)),
+        )
 
     def test_the_input_dict_is_not_mutated(self):
         original = seed_logging(20)

@@ -1,0 +1,1701 @@
+"""Xtream credentials never reach the output of Django's own request log records.
+
+Django logs ``Unauthorized: <request.path>`` (and ``Not Found``, ``Bad
+Request``, ``Internal Server Error``, ``Not Implemented`` ...) through
+``django.request`` for every 4xx/5xx, ``Forbidden (<reason>): <path>`` through
+``django.security.csrf``, the exception text of a ``SuspiciousOperation``
+through ``django.security.<Name>``, and a request line per request through the
+development servers' loggers. The Xtream routes carry the login in the path or
+the query string, so before ``core/request_log_redaction.py`` the first line
+below was printed verbatim, at WARNING, on the inline (no-nginx) path:
+
+    WARNING django.request Unauthorized: /movie/<username>/<password>/1.mp4
+
+Every test here drives a real request (or, for the two development servers,
+their own logging method) and inspects what the PRODUCTION logging
+configuration's handlers actually receive: the root logger's ``console``
+handler and ``otel`` bridge as ``settings.LOGGING`` builds them (the test
+settings import that dict unchanged), Django's own ``DEFAULT_LOGGING`` console
+on the ``django`` logger under DEBUG, and the ``django.server`` handler. The
+handlers are found by the names ``dictConfig`` gives them and their streams
+swapped for buffers; no handler is replaced and no filter is added by a test,
+so a test cannot pass on a configuration production does not run.
+``RealConfigurationTests`` checks that premise.
+"""
+import copy
+import io
+import random
+import socket
+import logging
+from unittest import mock
+from urllib.parse import quote
+
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.core.exceptions import SuspiciousFileOperation, TooManyFieldsSent
+from django.core.handlers.wsgi import WSGIRequest
+import time
+from django.test import Client, RequestFactory, SimpleTestCase, TestCase, override_settings
+from django.urls import URLPattern, URLResolver, get_resolver, resolve
+
+from core.request_log_redaction import (
+    REDACTED_LOGGER_TREES,
+    RequestLogCredentialFilter,
+    redact_record,
+    redact_text,
+    with_request_log_redaction,
+)
+from dispatcharr.observability import logs as observability_logs
+from dispatcharr.utils import redact_url
+
+# Distinctive, obviously fake, low-entropy values: nothing in a URL, a reason
+# phrase or a traceback contains them by accident.
+USER = "xcuser-sentinel-one"
+PASSWORD = "xcpw-sentinel-two"
+WRONG = "wrongpw-sentinel-three"
+NONASCII_USER = "xcusér-sentinel-ü1"
+NONASCII_PASSWORD = "xcpäss-sentinel-ø2"
+SPECIAL_PASSWORD = "re.*+?(sentinel)[x]$^|7"
+# Built from the imported module so the file spells the old product name only
+# in its imports (scripts/product_name_allowlist.txt).
+OTEL_BRIDGE = observability_logs.__name__ + ".OtelBridgeHandler"
+
+
+def _forms(value):
+    """Every spelling of ``value`` a log line could carry."""
+    return {
+        value,
+        quote(value, safe=""),
+        quote(value),
+        value.encode("unicode_escape").decode("ascii"),
+    }
+
+
+class _Capture(logging.Handler):
+    """Stands in for the OTel SDK handler behind the bridge (``install_inner_handler``)."""
+
+    def __init__(self):
+        super().__init__(level=1)
+        self.records = []
+
+    def emit(self, record):
+        self.records.append(record)
+
+
+def _handler(logger_name, handler_name):
+    for handler in logging.getLogger(logger_name).handlers:
+        if handler.get_name() == handler_name:
+            return handler
+    raise AssertionError(f"logger {logger_name!r} has no handler named {handler_name!r}")
+
+
+def _django_debug_console():
+    # Django's DEFAULT_LOGGING console (re-declared by the fix as
+    # "django.console"): the only plain StreamHandler on the django logger.
+    for handler in logging.getLogger("django").handlers:
+        if type(handler) is logging.StreamHandler:
+            return handler
+    raise AssertionError("the django logger has no DEFAULT_LOGGING console handler")
+
+
+class _ProductionSinks:
+    """Buffers behind the production handlers, restored on exit."""
+
+    def __init__(self, test):
+        self.console = io.StringIO()
+        self.debug_console = io.StringIO()
+        self.server = io.StringIO()
+        self.otel = _Capture()
+        for handler, stream in (
+            (_handler("", "console"), self.console),
+            (_django_debug_console(), self.debug_console),
+            (_handler("django.server", "django.server"), self.server),
+        ):
+            previous = handler.setStream(stream)
+            test.addCleanup(handler.setStream, previous)
+        observability_logs.install_inner_handler(self.otel)
+        test.addCleanup(observability_logs.install_inner_handler, None)
+
+    def otel_text(self):
+        parts = []
+        for record in self.otel.records:
+            parts += [record.getMessage(), repr(record.msg), repr(record.args), repr(vars(record))]
+        return "\n".join(parts)
+
+    def everything(self):
+        return "\n".join(
+            [
+                self.console.getvalue(),
+                self.debug_console.getvalue(),
+                self.server.getvalue(),
+                self.otel_text(),
+            ]
+        )
+
+
+class _SinkAssertions:
+    def assertNoCredential(self, sinks, *values):
+        text = sinks.everything()
+        for value in values:
+            for form in _forms(value):
+                self.assertNotIn(
+                    form,
+                    text,
+                    f"credential form {form!r} reached a production log handler:\n{text}",
+                )
+
+
+@override_settings(DEBUG=True)
+class XtreamRequestLogTests(_SinkAssertions, TestCase):
+    """One real request per Xtream shape and status class.
+
+    DEBUG is on so Django's own ``DEFAULT_LOGGING`` console on the ``django``
+    logger writes too: the handler production gets when DEBUG is switched on,
+    and the one this configuration does not define.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        User = get_user_model()
+        for username, password in (
+            (USER, PASSWORD),
+            (NONASCII_USER, NONASCII_PASSWORD),
+            ("xcuser-special-sentinel", SPECIAL_PASSWORD),
+        ):
+            user = User.objects.create_user(username=username, password="unused-login-pw")
+            user.custom_properties = {"xc_password": password}
+            user.save()
+
+    def setUp(self):
+        self.sinks = _ProductionSinks(self)
+        self.client = Client(raise_request_exception=False)
+        # The timeshift views call close_old_connections(), which closes the
+        # connection a TestCase's transaction runs on; the next test's first
+        # query then fails. apps/timeshift/tests/test_views.py patches it the same way.
+        patcher = mock.patch("apps.timeshift.views.close_old_connections")
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _get(self, path, expected_status, *credentials):
+        response = self.client.get(path)
+        self.assertEqual(response.status_code, expected_status, self.sinks.console.getvalue()[-3000:])
+        self.assertNoCredential(self.sinks, *credentials)
+        return response
+
+    def assertConsoleHas(self, line):
+        self.assertIn(line, self.sinks.console.getvalue())
+        self.assertIn(line, self.sinks.debug_console.getvalue())
+        self.assertIn(line, [r.getMessage() for r in self.sinks.otel.records])
+
+    # -- credentials in the path -------------------------------------------
+
+    def test_movie_401(self):
+        self._get(f"/movie/{USER}/{WRONG}/1.mp4", 401, USER, WRONG)
+        self.assertConsoleHas("Unauthorized: /movie/***/***/1.mp4")
+
+    def test_movie_404_with_the_right_password(self):
+        self._get(f"/movie/{USER}/{PASSWORD}/1.mp4", 404, USER, PASSWORD)
+        self.assertConsoleHas("Not Found: /movie/***/***/1.mp4")
+
+    def test_series_401(self):
+        self._get(f"/series/{USER}/{WRONG}/1.mkv", 401, USER, WRONG)
+        self.assertConsoleHas("Unauthorized: /series/***/***/1.mkv")
+
+    def test_timeshift_path_form(self):
+        path = f"/timeshift/{USER}/{WRONG}/60/2026-01-01:10-00/1.ts"
+        status = self.client.get(path).status_code
+        self.assertGreaterEqual(status, 400, "the case must produce a django.request record")
+        self.assertNoCredential(self.sinks, USER, WRONG)
+        self.assertIn("/timeshift/***/***/60/2026-01-01:10-00/1.ts", self.sinks.console.getvalue())
+
+    def test_live_prefix_501(self):
+        self._get(f"/live/{USER}/{PASSWORD}/1.ts", 501, USER, PASSWORD)
+        self.assertConsoleHas("Not Implemented: /live/***/***/1.ts")
+
+    def test_bare_root_501(self):
+        self._get(f"/{USER}/{PASSWORD}/1.ts", 501, USER, PASSWORD)
+        self.assertConsoleHas("Not Implemented: /***/***/1.ts")
+
+    def test_non_ascii_credentials(self):
+        self._get(f"/movie/{quote(NONASCII_USER)}/{quote(NONASCII_PASSWORD)}/1.mp4", 404,
+                  NONASCII_USER, NONASCII_PASSWORD)
+        # Django escapes a non-ASCII path in its own record ("\\xe9"), and a
+        # path holding a backslash is not read (review round 7): "/***".
+        self.assertConsoleHas("Not Found: /***")
+
+    def test_percent_encoded_and_regex_special_credentials(self):
+        path = f"/movie/xcuser-special-sentinel/{quote(SPECIAL_PASSWORD, safe='')}/1.mp4"
+        self._get(path, 404, "xcuser-special-sentinel", SPECIAL_PASSWORD)
+        self.assertConsoleHas("Not Found: /movie/***/***/1.mp4")
+
+    def test_encoded_space_in_a_credential(self):
+        user = "xcuser sentinel-sp3"
+        self.client.get(f"/movie/{quote(user)}/{quote(user)}/1.mp4")
+        self.assertNoCredential(self.sinks, user, "sentinel-sp3")
+
+    # -- credentials in the query string ------------------------------------
+
+    def test_query_string_endpoints_401(self):
+        for path in (
+            f"/player_api.php?username={USER}&password={WRONG}",
+            f"/get.php?username={USER}&password={WRONG}&type=m3u_plus",
+            f"/xmltv.php?username={USER}&password={WRONG}",
+            f"/streaming/timeshift.php?username={USER}&password={WRONG}"
+            "&stream=1&start=2026-01-01:10-00&duration=60",
+        ):
+            with self.subTest(path=path.split("?")[0]):
+                self._get(path, 401, USER, WRONG)
+        self.assertIn("Unauthorized: /player_api.php", self.sinks.console.getvalue())
+
+    # -- the other status classes -------------------------------------------
+
+    def test_403_csrf_on_an_xtream_path(self):
+        # A non-numeric id matches no XC route, so the request reaches the SPA
+        # catch-all, which (unlike the csrf_exempt XC views) CSRF-checks a POST.
+        client = Client(enforce_csrf_checks=True, raise_request_exception=False)
+        response = client.post(f"/live/{USER}/{PASSWORD}/abc")
+        self.assertEqual(response.status_code, 403)
+        self.assertNoCredential(self.sinks, USER, PASSWORD)
+        self.assertConsoleHas("Forbidden (CSRF cookie not set.): /live/***/***/abc")
+
+    def test_400_suspicious_operation_from_a_dynamic_security_logger(self):
+        path = f"/movie/{USER}/{PASSWORD}/1.mp4"
+        with mock.patch(
+            "apps.proxy.vod_proxy.views.resolve_authorization",
+            side_effect=SuspiciousFileOperation(f"refused {path}"),
+        ):
+            self._get(path, 400, USER, PASSWORD)
+        # Django logs a SuspiciousOperation through the security logger only
+        # (no django.request "Bad Request" line), message and traceback.
+        console = self.sinks.console.getvalue()
+        self.assertIn("django.security.SuspiciousFileOperation refused /movie/***/***/1.mp4", console)
+        self.assertIn("SuspiciousFileOperation: refused /movie/***/***/1.mp4", console)
+
+    def test_500_traceback_carrying_the_path(self):
+        path = f"/movie/{USER}/{PASSWORD}/1.mp4"
+        with mock.patch(
+            "apps.proxy.vod_proxy.views.resolve_authorization",
+            side_effect=RuntimeError(f"lookup failed for {path} as '{USER}'"),
+        ):
+            self._get(path, 500, USER, PASSWORD)
+        console = self.sinks.console.getvalue()
+        self.assertIn("Internal Server Error: /movie/***/***/1.mp4", console)
+        self.assertIn("Traceback (most recent call last)", console)
+        self.assertIn("RuntimeError: lookup failed for /movie/***/***/1.mp4", console)
+
+    # -- the control --------------------------------------------------------
+
+    def test_an_ordinary_path_is_logged_unchanged(self):
+        response = self.client.get("/api/accounts/users/5/")
+        self.assertEqual(response.status_code, 401)
+        self.assertConsoleHas("Unauthorized: /api/accounts/users/5/")
+
+
+class DevelopmentServerLogTests(_SinkAssertions, SimpleTestCase):
+    """The request lines of both development servers, through their own methods."""
+
+    def setUp(self):
+        self.sinks = _ProductionSinks(self)
+
+    def test_django_runserver_request_line(self):
+        from django.core.servers.basehttp import WSGIRequestHandler
+
+        handler = WSGIRequestHandler.__new__(WSGIRequestHandler)
+        handler.request = mock.Mock(spec=socket.socket)  # runserver's is the socket
+        handler.client_address = ("127.0.0.1", 50000)
+        handler.log_message(
+            '"%s" %s %s',
+            f"GET /movie/{USER}/{PASSWORD}/1.mp4?username={USER}&password={PASSWORD} HTTP/1.1",
+            "401",
+            "17",
+        )
+        self.assertNoCredential(self.sinks, USER, PASSWORD)
+        self.assertIn(
+            '"GET /movie/***/***/1.mp4?username=***&password=*** HTTP/1.1" 401 17',
+            self.sinks.server.getvalue(),
+        )
+
+    def test_django_runserver_server_time_is_not_masked(self):
+        # Review round 8, F5: a date is three parts ending in a number, which
+        # the pattern pass reads as the bare-root route ("12/Nov/2026" ->
+        # "***/***/2026"). django.server's date is the record's server_time,
+        # added by the formatter after the filter, so it is never read.
+        from django.core.servers.basehttp import WSGIRequestHandler
+
+        handler = WSGIRequestHandler.__new__(WSGIRequestHandler)
+        handler.request = mock.Mock(spec=socket.socket)
+        handler.client_address = ("127.0.0.1", 50000)
+        with mock.patch.object(WSGIRequestHandler, "log_date_time_string", return_value="12/Nov/2026 23:10:00"):
+            handler.log_message('"%s" %s %s', f"GET /movie/{USER}/{PASSWORD}/1.mp4 HTTP/1.1", "401", "17")
+        self.assertIn(
+            '[12/Nov/2026 23:10:00] "GET /movie/***/***/1.mp4 HTTP/1.1" 401 17',
+            self.sinks.server.getvalue(),
+        )
+
+    def test_daphne_runserver_request_line(self):
+        from daphne.management.commands.runserver import Command
+
+        Command().log_action(
+            "http",
+            "complete",
+            {
+                "method": "GET",
+                "path": f"/live/{USER}/{PASSWORD}/1.ts",
+                "status": 401,
+                "time_taken": 0.01,
+                "client": "127.0.0.1:50000",
+            },
+        )
+        self.assertNoCredential(self.sinks, USER, PASSWORD)
+        self.assertIn("HTTP GET /live/***/***/1.ts 401", self.sinks.console.getvalue())
+
+
+class UrlconfCoverageTests(SimpleTestCase):
+    """Every urlconf route that captures a username and a password is redacted.
+
+    The shapes are defined once, in the project package's ``utils.redact_url``;
+    this walks the live urlconf so a new credential-in-path route that the
+    definition does not cover fails here, without anyone listing it.
+    """
+
+    SAMPLES = {"username": USER, "password": PASSWORD}
+
+    def _credential_routes(self, patterns, prefix=""):
+        for entry in patterns:
+            if isinstance(entry, URLResolver):
+                yield from self._credential_routes(entry.url_patterns, prefix + str(entry.pattern))
+            elif isinstance(entry, URLPattern):
+                groups = set(entry.pattern.regex.groupindex)
+                if {"username", "password"} <= groups:
+                    yield entry, prefix
+
+    def _sample_path(self, entry, prefix):
+        from django.urls import reverse
+
+        kwargs = {name: self.SAMPLES.get(name, "1") for name in entry.pattern.regex.groupindex}
+        self.assertEqual(prefix, "", "credential routes are mounted at the site root")
+        return reverse(entry.name, kwargs=kwargs)
+
+    def test_every_credential_route_is_covered(self):
+        routes = list(self._credential_routes(get_resolver().url_patterns))
+        names = {entry.name for entry, _ in routes}
+        # The walk must actually find the routes, or this test passes empty.
+        self.assertLessEqual(
+            {
+                "xc_live_stream_endpoint",
+                "xc_stream_endpoint",
+                "timeshift_proxy",
+                "stream_xc_movie",
+                "stream_xc_episode",
+            },
+            names,
+        )
+        for entry, prefix in routes:
+            path = self._sample_path(entry, prefix)
+            with self.subTest(route=entry.name, path=path):
+                out = redact_url(path)
+                self.assertNotIn(USER, out)
+                self.assertNotIn(PASSWORD, out)
+
+
+class RealConfigurationTests(SimpleTestCase):
+    """The premise of the tests above, and the property the fix rests on."""
+
+    def test_the_handlers_are_the_ones_settings_logging_defines(self):
+        self.assertIn("console", settings.LOGGING["handlers"])
+        self.assertIn("otel", settings.LOGGING["handlers"])
+        root = logging.getLogger()
+        self.assertIn(_handler("", "console"), root.handlers)
+        self.assertIn(_handler("", "otel"), root.handlers)
+        self.assertEqual(type(_handler("", "otel")).__name__, "OtelBridgeHandler")
+
+    def test_every_handler_a_request_record_can_reach_carries_the_filter(self):
+        # A handler added later on any of these paths, by anyone, fails here.
+        names = [
+            "django.request",
+            "django.security.csrf",
+            "django.security.SomeFutureSuspiciousOperation",
+            "django.server",
+            "django.channels.server",
+        ]
+        for name in names:
+            logger = logging.getLogger(name)
+            reached = []
+            while logger is not None:
+                reached += logger.handlers
+                logger = logger.parent if logger.propagate else None
+            self.assertTrue(reached, name)
+            for handler in reached:
+                with self.subTest(logger=name, handler=handler.get_name()):
+                    self.assertTrue(
+                        any(isinstance(f, RequestLogCredentialFilter) for f in handler.filters),
+                        f"{name} reaches handler {handler.get_name()!r} ({type(handler).__name__}) "
+                        "without the credential filter",
+                    )
+
+
+class FilterUnitTests(SimpleTestCase):
+    def _record(self, name, msg, *args, **extra):
+        record = logging.LogRecord(name, logging.WARNING, __file__, 1, msg, args, None)
+        for key, value in extra.items():
+            setattr(record, key, value)
+        return record
+
+    def test_out_of_scope_records_pass_through_as_the_same_object(self):
+        record = self._record("apps.proxy", "%s", f"/movie/{USER}/{PASSWORD}/1.mp4")
+        self.assertIs(redact_record(record), record)
+
+    def test_every_tree_is_in_scope_including_descendants(self):
+        for tree in REDACTED_LOGGER_TREES:
+            for name in (tree, tree + ".Child"):
+                with self.subTest(name=name):
+                    record = self._record(name, "%s", f"/movie/{USER}/{PASSWORD}/1.mp4")
+                    self.assertEqual(redact_record(record).getMessage(), "/movie/***/***/1.mp4")
+
+    def test_the_original_record_is_never_mutated_and_the_request_is_dropped(self):
+        request = _xc_request(f"/movie/{USER}/{PASSWORD}/1.mp4")
+        record = self._record("django.request", "%s: %s", "Unauthorized", request.path, request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertIsNot(out, record)
+        self.assertEqual(record.args[1], request.path)
+        self.assertIs(record.request, request)
+        self.assertFalse(hasattr(out, "request"))
+        self.assertEqual(out.getMessage(), "Unauthorized: /movie/***/***/1.mp4")
+        self.assertEqual(out.args, ())
+
+    def test_mapping_args(self):
+        record = self._record("django.channels.server", "%(path)s", {"path": f"/{USER}/{PASSWORD}/1.ts"})
+        self.assertEqual(redact_record(record).getMessage(), "/***/***/1.ts")
+
+    def test_a_failure_withholds_the_content_but_not_the_record(self):
+        record = self._record("django.request", "%s", f"/movie/{USER}/{PASSWORD}/1.mp4")
+        with mock.patch("core.request_log_redaction.redact_record", side_effect=ValueError):
+            out = RequestLogCredentialFilter().filter(record)
+        self.assertTrue(out)
+        self.assertNotIn(PASSWORD, out.getMessage())
+        self.assertEqual(out.name, "django.request")
+        self.assertEqual(out.levelno, logging.WARNING)
+
+
+def _xc_request(path, **query):
+    """A real HttpRequest for ``path``, resolved the way the handler resolves it."""
+    request = RequestFactory().get(path, query)
+    request.resolver_match = resolve(request.path_info)
+    return request
+
+
+class ValueScrubTests(SimpleTestCase):
+    """The second pass: the values the attached request names as credentials."""
+
+    def _record(self, msg, *args, request=None, name="django.request"):
+        record = logging.LogRecord(name, logging.WARNING, __file__, 1, msg, args, None)
+        if request is not None:
+            record.request = request
+        return record
+
+    def test_a_form_the_patterns_miss_is_scrubbed_by_value(self):
+        request = _xc_request(f"/movie/{quote(NONASCII_USER)}/{quote(NONASCII_PASSWORD)}/1.mp4")
+        self.assertEqual(request.resolver_match.kwargs["password"], NONASCII_PASSWORD)
+        record = self._record(
+            "lookup failed: user=%s pw=%s raw=%s",
+            NONASCII_USER,
+            quote(NONASCII_PASSWORD, safe=""),
+            f"x{NONASCII_PASSWORD}y",
+            request=request,
+        )
+        # The control: the pattern pass alone leaves all three.
+        patterned = copy.copy(record)
+        patterned.request = None
+        self.assertIn(NONASCII_USER, redact_record(patterned).getMessage())
+        message = RequestLogCredentialFilter().filter(record).getMessage()
+        for value in (NONASCII_USER, NONASCII_PASSWORD):
+            for form in _forms(value):
+                self.assertNotIn(form, message)
+        self.assertEqual(message, "lookup failed: user=*** pw=*** raw=x***y")
+
+    def test_query_string_values_are_scrubbed_by_value(self):
+        request = _xc_request("/player_api.php", username=USER, password=PASSWORD)
+        record = self._record("%s: %s (echo %s)", "Unauthorized", "/player_api.php",
+                              f"login {USER}:{PASSWORD}", request=request)
+        message = RequestLogCredentialFilter().filter(record).getMessage()
+        self.assertNotIn(USER, message)
+        self.assertNotIn(PASSWORD, message)
+        self.assertEqual(message, "Unauthorized: /player_api.php (echo login ***:***)")
+
+    def test_review_round_7_h_with_the_request_attached(self):
+        # Django's own Not Found record carries the decoded request.path; the
+        # password holds "?<sensitive key>=...&", so the path has a "?" that
+        # is not a query. The whole path is read first, so it is masked.
+        password = "pa?username=x&xcpw-sentinel-q8"
+        request = _xc_request(f"/movie/xcuser-sentinel-q7/{quote(password, safe='')}/1.mp4")
+        self.assertEqual(request.resolver_match.kwargs["password"], password)
+        self.assertEqual(request.path, f"/movie/xcuser-sentinel-q7/{password}/1.mp4")
+        record = self._record("%s: %s", "Not Found", request.path, request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "Not Found: /movie/***/***/1.mp4")
+
+    def test_a_value_the_pattern_pass_would_cut_is_masked_whole(self):
+        # A password with a space, in a message template (no arguments, so no
+        # whole-path reading): the token pass reads "/movie/<user>/xcpw" and
+        # "sentinel-q8/1.mp4" as two tokens. The value is found in the text
+        # itself, whole, and its mask is added to the pattern masks (round 8:
+        # the two passes no longer run one after the other).
+        password = "xcpw sentinel-q8"
+        request = _xc_request(f"/movie/xcuser-sentinel-q7/{quote(password, safe='')}/1.mp4")
+        self.assertEqual(request.resolver_match.kwargs["password"], password)
+        record = self._record(f"lookup failed for /movie/xcuser-sentinel-q7/{password}/1.mp4", request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "lookup failed for /movie/***/***/1.mp4")
+
+    def test_a_value_that_is_a_prefix_word_does_not_hide_the_prefix(self):
+        # A user called "live" with a three-character password: had the value
+        # been replaced before the pattern pass, "/live/live/q9z/1.ts" would
+        # read "/***/***/q9z/1.ts", with no prefix left to key on, and "q9z"
+        # is too short to be scrubbed by value. Both passes read the text as
+        # it is, so both are gone.
+        request = _xc_request("/live/live/q9z/1.ts")
+        kwargs = request.resolver_match.kwargs
+        self.assertEqual((kwargs["username"], kwargs["password"]), ("live", "q9z"))
+        record = self._record("fetch /live/live/q9z/1.ts failed", request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "fetch /***/***/***/1.ts failed")
+
+    def test_a_path_argument_is_read_whole(self):
+        # Review round 8: a string argument is read whole, on its own (a
+        # credential holding a space is one segment only there), before the
+        # message is rendered from it. No request is attached, so the value
+        # pass cannot help.
+        path = f"/movie/{Q_USER}/xcpw sentinel-q8/1.mp4"
+        out = RequestLogCredentialFilter().filter(self._record("Not Found: %s", path))
+        self.assertEqual(out.getMessage(), "Not Found: /movie/***/***/1.mp4")
+        daphne = "HTTP %(method)s %(path)s %(status)s [%(time_taken).2f, %(client)s]"
+        out = RequestLogCredentialFilter().filter(self._record(
+            daphne, {"method": "GET", "path": path, "status": 404, "time_taken": 0.01, "client": "127.0.0.1:1"},
+            name="django.channels.server",
+        ))
+        self.assertEqual(out.getMessage(), "HTTP GET /movie/***/***/1.mp4 404 [0.01, 127.0.0.1:1]")
+
+    def test_round_8_shapes_as_arguments_keep_their_masks(self):
+        # Review round 9, N1: an argument is masked first and the rendered
+        # message read again, which is where a round-8 style re-read could
+        # lose a mask. It cannot here: each argument's masks come from its own
+        # text, and the message pass only adds. Django's, the CSRF and
+        # Daphne's templates, no request attached.
+        for path, masked in (
+            (f"/api/vod/series/12/?page=1&next=/x&token={Q_PASS}", "/api/vod/series/***/***/x&token=***"),
+            (f"/proxy/vod/movie/{_UUID}/sess1?x=a/b&token={Q_PASS}", "/proxy/vod/movie/***/***/b&token=***"),
+            (f"/movie/{Q_USER}/{Q_PASS}?password={Q_PASS}/{Q_USER}", "/movie/***/***"),
+            (f"/x/live/a#b=/c/d&access_token={Q_PASS}", "/x/live/***/***/d&access_token=***"),
+            (f"/movie/{Q_USER}/pa?username=x&{Q_PASS}/1.mp4", "/movie/***/***/1.mp4"),
+            (f"/live/{Q_USER}/xcpw sentinel-q8/1.ts", "/live/***/***/1.ts"),
+        ):
+            with self.subTest(path=path):
+                out = RequestLogCredentialFilter().filter(self._record("%s: %s", "Not Found", path))
+                self.assertEqual(out.getMessage(), f"Not Found: {masked}")
+                out = RequestLogCredentialFilter().filter(self._record(
+                    "Forbidden (%s): %s", "CSRF cookie not set.", path, name="django.security.csrf",
+                ))
+                self.assertEqual(out.getMessage(), f"Forbidden (CSRF cookie not set.): {masked}")
+                out = RequestLogCredentialFilter().filter(self._record(
+                    "HTTP %(method)s %(path)s %(status)s", {"method": "GET", "path": path, "status": 404},
+                    name="django.channels.server",
+                ))
+                self.assertEqual(out.getMessage(), f"HTTP GET {masked} 404")
+
+    def test_a_repr_argument_is_masked_before_it_is_rendered(self):
+        # %r renders an argument as other text (quoted, escaped): the string
+        # arguments are masked first and the message masked after.
+        path = f"/movie/{Q_USER}/xcpw sentinel-q8/1.mp4"
+        out = RequestLogCredentialFilter().filter(self._record("lookup %r failed", path))
+        self.assertEqual(out.getMessage(), "lookup '/movie/***/***/1.mp4' failed")
+
+    def test_a_one_character_password_does_not_shred_the_message(self):
+        request = _xc_request("/movie/u/a/1.mp4")
+        self.assertEqual(request.resolver_match.kwargs["password"], "a")
+        record = self._record("%s: %s", "Unauthorized", "a banana at a cafe", request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "Unauthorized: a banana at a cafe")
+        self.assertEqual(out.args, ("Unauthorized", "a banana at a cafe"))
+
+    def test_a_non_string_argument_is_left_alone(self):
+        request = _xc_request(f"/movie/{USER}/{PASSWORD}/1.mp4")
+        record = self._record("%s answered %d after %.1fs", "the view", 401, 0.25, request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.args, ("the view", 401, 0.25))
+        self.assertIs(type(out.args[1]), int)
+        self.assertEqual(out.getMessage(), "the view answered 401 after 0.2s")
+
+    def test_a_template_that_cannot_render_is_withheld_not_raised(self):
+        request = _xc_request(f"/movie/{USER}/{PASSWORD}/1.mp4")
+        record = self._record("%d items for %s", "not-a-number", PASSWORD, request=request)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertTrue(out)
+        self.assertEqual(out.getMessage(), "[request log record withheld: redaction failed]")
+        self.assertNotIn("request", vars(out))
+
+
+Q_USER = "xcuser-sentinel-q7"
+Q_PASS = "xcpw-sentinel-q8"
+
+
+class RoundOneTests(SimpleTestCase):
+    """Review round 1: shapes and records the first pass missed."""
+
+    def _record(self, msg, *args, **extra):
+        record = logging.LogRecord("django.request", logging.WARNING, __file__, 1, msg, args, None)
+        for key, value in extra.items():
+            setattr(record, key, value)
+        return record
+
+    def _assert_masked(self, text):
+        out = redact_text(text)
+        self.assertNotIn(Q_USER, out)
+        self.assertNotIn(Q_PASS, out)
+        self.assertIn("***", out)
+
+    def test_a_path_starting_with_two_slashes_is_masked(self):
+        for text in (
+            f"//timeshift/{Q_USER}/{Q_PASS}/60/2026-01-01:10-00/5.ts",
+            f"//live/{Q_USER}/{Q_PASS}/abc",
+            f"GET //timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts HTTP/1.1",
+            f"///series/{Q_USER}/{Q_PASS}/1.mkv",
+            f"/live//{Q_USER}//{Q_PASS}/abc",
+        ):
+            with self.subTest(text=text):
+                self._assert_masked(text)
+
+    def test_a_double_slash_path_keeps_its_query_masked(self):
+        out = redact_text(f"GET //movie/{Q_USER}/{Q_PASS}/1.mp4?password={Q_PASS} HTTP/1.1")
+        self.assertNotIn(Q_PASS, out)
+        self.assertNotIn(Q_USER, out)
+
+    def test_percent_encoded_prefix_and_slashes_in_a_request_line(self):
+        for text in (
+            f"/%6dovie/{Q_USER}/{Q_PASS}/x",
+            f"/movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4",
+            f'"GET /%6dovie/{Q_USER}/{Q_PASS}/x HTTP/1.1"',
+        ):
+            with self.subTest(text=text):
+                self._assert_masked(text)
+
+    def test_trailing_punctuation_and_a_key_prefix(self):
+        for text in (f"at /{Q_USER}/{Q_PASS}/1.ts.", f"path=/{Q_USER}/{Q_PASS}/1.ts", f"failed: /{Q_USER}/{Q_PASS}/1.ts:"):
+            with self.subTest(text=text):
+                self._assert_masked(text)
+
+    def test_placeholders_in_credential_positions_still_render(self):
+        record = self._record("/movie/%s/%s/1.mp4", Q_USER, Q_PASS)
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "/movie/***/***/1.mp4")
+
+    def test_non_string_arguments_are_rendered_then_masked(self):
+        class Echo:
+            def __str__(self):
+                return f"/movie/{Q_USER}/{Q_PASS}/1.mp4"
+
+        for arg in (ValueError(f"bad /movie/{Q_USER}/{Q_PASS}/1.mp4"), Echo()):
+            with self.subTest(arg=type(arg).__name__):
+                out = RequestLogCredentialFilter().filter(self._record("%s", arg))
+                self.assertNotIn(Q_USER, out.getMessage())
+                self.assertNotIn(Q_PASS, out.getMessage())
+
+    def test_a_request_whose_query_cannot_be_parsed_still_logs_its_text(self):
+        request = RequestFactory().get(f"/movie/{Q_USER}/{Q_PASS}/1.mp4")
+        record = self._record("Bad request: %s", request.path, request=request)
+        with mock.patch.object(WSGIRequest, "GET", new_callable=mock.PropertyMock, side_effect=TooManyFieldsSent):
+            out = RequestLogCredentialFilter().filter(record)
+        self.assertEqual(out.getMessage(), "Bad request: /movie/***/***/1.mp4")
+
+    def test_stack_info_is_masked(self):
+        record = self._record("x", stack_info=f"Stack at /movie/{Q_USER}/{Q_PASS}/1.mp4")
+        out = RequestLogCredentialFilter().filter(record)
+        self.assertNotIn(Q_USER, out.stack_info)
+        self.assertEqual(record.stack_info, f"Stack at /movie/{Q_USER}/{Q_PASS}/1.mp4")
+
+    def test_a_query_shaped_fragment_is_masked(self):
+        for text in (
+            f"GET /player_api.php#password={Q_PASS} HTTP/1.1",
+            f"GET /x?a=1#username={Q_USER}&password={Q_PASS} HTTP/1.1",
+            f"GET //x#password={Q_PASS} HTTP/1.1",
+        ):
+            with self.subTest(text=text):
+                out = redact_text(text)
+                self.assertNotIn(Q_PASS, out)
+                self.assertNotIn(Q_USER, out)
+        self.assertEqual(redact_text("GET /x?a=1#section HTTP/1.1"), "GET /x?a=1#section HTTP/1.1")
+
+    def test_a_bare_root_path_after_a_quoted_key_or_inside_a_url_value(self):
+        for text in (
+            f'{{"path":"/{Q_USER}/{Q_PASS}/1.ts"}}',
+            f'path="/{Q_USER}/{Q_PASS}/1.ts"',
+            f"url=http://h/{Q_USER}/{Q_PASS}/1.ts",
+        ):
+            with self.subTest(text=text):
+                self._assert_masked(text)
+
+    def test_cost_grows_linearly_on_hostile_input(self):
+        # One shape per code path, so a quadratic edit to any of them reddens
+        # at least one shape: the whole-path mask (1, 2), the unread path (4),
+        # redact_url on a token with no leading slash (3, 5), the per-token
+        # loop (6), the key prefix (7), the query/fragment split (8), the
+        # "//" userinfo and after-host reading (9, 10), the path of a
+        # scheme:// URL (11) and the search for a query start outside the
+        # masked segments (12).
+        shapes = (
+            lambda n: "/" * n,
+            lambda n: "/movie/" + "a/" * (n // 2),
+            lambda n: "%" * n,
+            lambda n: "/" + "%2F" * (n // 3),
+            lambda n: "&password=x" * (n // 11),
+            lambda n: "a " * (n // 2),
+            lambda n: "k" * n + "=/",
+            lambda n: "/?" + "#=" * (n // 2),
+            lambda n: "//" + "a@" * (n // 2) + "/x",
+            lambda n: "//h" + "/a" * (n // 2),
+            lambda n: "http://h" + "/a?" * (n // 3),
+            # round 8: many "?" inside one masked segment (the second query start)
+            lambda n: "/live/" + "a?" * (n // 2) + "/b/1",
+        )
+        # The small run is grown until it takes at least this long, so it is
+        # well clear of timer noise and the ratio below means something for
+        # every shape (a fixed 20,000 characters ran in under 0.1 ms for some).
+        floor_seconds = 0.005
+        # The loop stops at the first doubling at or above this, so the
+        # small run can reach 5,120,000 characters and the large one
+        # 51,200,000 (about 50 MB, briefly).
+        max_small = 4_000_000
+
+        def best_of(text, runs=3):
+            best = float("inf")
+            for _ in range(runs):
+                started = time.perf_counter()
+                redact_text(text)
+                best = min(best, time.perf_counter() - started)
+            return best
+
+        for index, shape in enumerate(shapes):
+            with self.subTest(shape=index):
+                n = 20_000
+                while best_of(shape(n), runs=1) < floor_seconds and n < max_small:
+                    n *= 2
+                small = best_of(shape(n))
+                large = best_of(shape(n * 10))
+                # 10x the input: linear is ~10x, quadratic ~100x. Allow 40x.
+                self.assertLess(large, small * 40, f"n={n}: {small:.4f}s -> {large:.4f}s")
+
+
+    def test_never_raises_on_random_hostile_tokens(self):
+        # Round 7: separators, escapes, quotes, control characters, a lone
+        # surrogate and non-ASCII, in random runs. Seeded, so a failure repeats.
+        rng = random.Random(20261112)
+        alphabet = "/?#@%:=&;.\\ \t\"'<>()[]{},*2Fa3Fu-~\ud800\x00\x1bé"
+        for _ in range(20000):
+            text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 40)))
+            out = redact_text(text)
+            self.assertIsInstance(out, str, repr(text))
+
+# Review round 3: one literal expectation per input, covering every input the
+# three review rounds and the PR body quote. Each expected value is what the
+# reviews said is correct, written out, never computed by the code under test.
+# Rows marked "over-masked" are the bare-root rule's accepted false positives.
+REDACT_TEXT_TABLE = (
+    # path forms
+    (f"/movie/{Q_USER}/{Q_PASS}/1.mp4", "/movie/***/***/1.mp4"),
+    (f"/live/{Q_USER}/{Q_PASS}/1.ts", "/live/***/***/1.ts"),
+    (f"/series/{Q_USER}/{Q_PASS}/1.mkv", "/series/***/***/1.mkv"),
+    (f"/timeshift/{Q_USER}/{Q_PASS}/60/2026-01-01:10-00/5.ts", "/timeshift/***/***/60/2026-01-01:10-00/5.ts"),
+    (f"/{Q_USER}/{Q_PASS}/1.ts", "/***/***/1.ts"),
+    (f"/MOVIE/{Q_USER}/{Q_PASS}/1.mp4", "/MOVIE/***/***/1.mp4"),
+    (f"/live//{Q_USER}//{Q_PASS}/abc", "/live//***//***/abc"),
+    (f"/movie/{Q_USER}/{Q_PASS}", "/movie/***/***"),
+    # double-slash forms
+    (f"//timeshift/{Q_USER}/{Q_PASS}/60/2026-01-01:10-00/5.ts", "//timeshift/***/***/60/2026-01-01:10-00/5.ts"),
+    (f"//live/{Q_USER}/{Q_PASS}/abc", "//live/***/***/abc"),
+    (f"GET //timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts HTTP/1.1", "GET //timeshift/***/***/60/x/5.ts HTTP/1.1"),
+    (f"//movie/{Q_USER}/{Q_PASS}/1.mp4", "//movie/***/***/1.mp4"),
+    (f"///series/{Q_USER}/{Q_PASS}/1.mkv", "///series/***/***/1.mkv"),
+    (f"////live//{Q_USER}//{Q_PASS}//abc", "////live//***//***//abc"),
+    (f"//{Q_USER}/{Q_PASS}/1.ts", "//***/***/1.ts"),
+    (f"GET //movie/{Q_USER}/{Q_PASS}/1.mp4?password={Q_PASS} HTTP/1.1",
+     "GET //movie/***/***/1.mp4?password=*** HTTP/1.1"),
+    (f"GET //x#password={Q_PASS} HTTP/1.1", "GET //x#password=*** HTTP/1.1"),
+    (f"path=//timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts", "path=//timeshift/***/***/60/x/5.ts"),
+    (f'"path"://timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts', '"path"://timeshift/***/***/60/x/5.ts'),
+    # percent-encoded forms (review round 7): a path holding "%" or a
+    # backslash is not read, it is logged as "/***" (fail closed), so nothing
+    # decoded is ever written
+    (f"/%6dovie/{Q_USER}/{Q_PASS}/x", "/***"),
+    (f"/%4DOVIE/{Q_USER}/{Q_PASS}/x", "/***"),
+    (f"/movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4", "/***"),
+    (f"/movie%2f{Q_USER}%2f{Q_PASS}%2f1.mp4", "/***"),
+    (f'"GET /%6dovie/{Q_USER}/{Q_PASS}/x HTTP/1.1"', '"GET /*** HTTP/1.1"'),
+    (f"/movie/a/b/%6cive/{Q_USER}/{Q_PASS}/1", "/***"),
+    (f"/movie%252F{Q_USER}%252F{Q_PASS}%252F1", "/***"),
+    (f"/movie/{Q_USER}/{Q_PASS}\\1.mp4", "/***"),
+    (f"GET /live\\{Q_USER}\\{Q_PASS}\\1.ts HTTP/1.1", "GET /*** HTTP/1.1"),
+    # over-masked: every percent-encoded path, credential or not
+    ("/a%20b/c", "/***"),
+    ("/a%2Fb", "/***"),
+    ("/x/%41", "/***"),
+    ("/a%zz/b%", "/***"),
+    (f"/a%20b?password={Q_PASS}", "/***"),
+    # request lines
+    (f"GET /movie/{Q_USER}/{Q_PASS}/1.mp4?username={Q_USER}&password={Q_PASS} HTTP/1.1",
+     "GET /movie/***/***/1.mp4?username=***&password=*** HTTP/1.1"),
+    (f'"GET /movie/{Q_USER}/{Q_PASS}/1.mp4 HTTP/1.1" 401 17', '"GET /movie/***/***/1.mp4 HTTP/1.1" 401 17'),
+    (f"HTTP GET /live/{Q_USER}/{Q_PASS}/1.ts 401", "HTTP GET /live/***/***/1.ts 401"),
+    # query forms
+    (f"/player_api.php?username={Q_USER}&password={Q_PASS}", "/player_api.php?username=***&password=***"),
+    (f"/get.php?username={Q_USER}&password={Q_PASS}&type=m3u_plus",
+     "/get.php?username=***&password=***&type=m3u_plus"),
+    (f"/x?PASSWORD={Q_PASS}", "/x?PASSWORD=***"),
+    (f"/x?pass%77ord={Q_PASS}", "/***"),
+    (f"/x?password={Q_PASS}&a=1&password={Q_PASS}", "/x?password=***&a=1&password=***"),
+    # fragments
+    (f"GET /player_api.php#password={Q_PASS} HTTP/1.1", "GET /player_api.php#password=*** HTTP/1.1"),
+    (f"GET /x?a=1#username={Q_USER}&password={Q_PASS} HTTP/1.1",
+     "GET /x?a=1#username=***&password=*** HTTP/1.1"),
+    ("GET /x?a=1#section HTTP/1.1", "GET /x?a=1#section HTTP/1.1"),
+    # quoted, bracketed and keyed forms
+    (f'{{"path":"/{Q_USER}/{Q_PASS}/1.ts"}}', '{"path":"/***/***/1.ts"}'),
+    (f'path="/{Q_USER}/{Q_PASS}/1.ts"', 'path="/***/***/1.ts"'),
+    (f"path='/{Q_USER}/{Q_PASS}/1.ts'", "path='/***/***/1.ts'"),
+    (f"path=/{Q_USER}/{Q_PASS}/1.ts", "path=/***/***/1.ts"),
+    (f"{{'path': '/{Q_USER}/{Q_PASS}/1.ts'}}", "{'path': '/***/***/1.ts'}"),
+    (f"url=http://h/{Q_USER}/{Q_PASS}/1.ts", "url=http://h/***/***/1.ts"),
+    (f'"url":"http://h/{Q_USER}/{Q_PASS}/1.ts"', '"url":"http://h/***/***/1.ts"'),
+    (f"url:http://h/{Q_USER}/{Q_PASS}/1.ts", "url:http://h/***/***/1.ts"),
+    (f"url=http://h/movie/{Q_USER}/{Q_PASS}/1", "url=http://h/movie/***/***/1"),
+    (f'url="http://{Q_USER}:{Q_PASS}@h/x"', 'url="http://***@h/x"'),
+    (f"at /{Q_USER}/{Q_PASS}/1.ts.", "at /***/***/1.ts."),
+    (f"failed: /{Q_USER}/{Q_PASS}/1.ts:", "failed: /***/***/1.ts:"),
+    (f"error:/{Q_USER}/{Q_PASS}/1.ts", "error:/***/***/1.ts"),
+    (f"'/movie/{Q_USER}/{Q_PASS}/1.mp4'", "'/movie/***/***/1.mp4'"),
+    (f"(/movie/{Q_USER}/{Q_PASS}/1.mp4)", "(/movie/***/***/1.mp4)"),
+    (f"<http://h/{Q_USER}/{Q_PASS}/1.ts>", "<http://h/***/***/1.ts>"),
+    # absolute URLs, with and without userinfo and ports (review round 3, E)
+    (f"http://h/{Q_USER}/{Q_PASS}/1.ts", "http://h/***/***/1.ts"),
+    (f"https://h:8080/{Q_USER}/{Q_PASS}/1.ts", "https://h:8080/***/***/1.ts"),
+    (f"GET http://h/{Q_USER}/{Q_PASS}/1.ts HTTP/1.1", "GET http://h/***/***/1.ts HTTP/1.1"),
+    (f"http://{Q_USER}:{Q_PASS}@h/x", "http://***@h/x"),
+    (f"https://{Q_USER}:{Q_PASS}@h:8080/live/{Q_USER}/{Q_PASS}/1.ts", "https://***@h:8080/live/***/***/1.ts"),
+    (f"http://h/movie/{Q_USER}/{Q_PASS}/1.mp4", "http://h/movie/***/***/1.mp4"),
+    (f"http://h/player_api.php?username={Q_USER}&password={Q_PASS}",
+     "http://h/player_api.php?username=***&password=***"),
+    (f"http://h/x#password={Q_PASS}", "http://h/x#password=***"),
+    (f'"http://h/{Q_USER}/{Q_PASS}/1.ts"', '"http://h/***/***/1.ts"'),
+    (f"http://h/{Q_USER}/{Q_PASS}/1.ts.", "http://h/***/***/1.ts."),
+    (f"RuntimeError: fetch http://h/{Q_USER}/{Q_PASS}/1.ts failed",
+     "RuntimeError: fetch http://h/***/***/1.ts failed"),
+    # non-HTTP schemes
+    (f"rtsp://h/{Q_USER}/{Q_PASS}/1", "rtsp://h/***/***/1"),
+    (f"ftp://{Q_USER}:{Q_PASS}@h/", "ftp://***@h/"),
+    (f"rtmp://h/live/{Q_USER}/{Q_PASS}/1", "rtmp://h/live/***/***/1"),
+    # given up (round 7, "prefix-word host"): an unquoted word, "://", then
+    # an Xtream prefix, which redact_url and this module read as a host; was
+    # masked at 1f7eb88e and from a6b991ab to a24d58c1, not at 2e83e395
+    (f"path://timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts", f"path://timeshift/{Q_USER}/{Q_PASS}/60/x/5.ts"),
+    (f"error://live/{Q_USER}/{Q_PASS}/abc", f"error://live/{Q_USER}/{Q_PASS}/abc"),
+    (f"Forbidden://live/{Q_USER}/{Q_PASS}/abc", f"Forbidden://live/{Q_USER}/{Q_PASS}/abc"),
+    # still masked: the bare-root rule reads the path after the host
+    (f"uri://movie/{Q_USER}/{Q_PASS}/1.mp4", "uri://movie/***/***/1.mp4"),
+    (f"http://h/%6dovie/{Q_USER}/{Q_PASS}/1.mp4", "http://h/***"),
+    (f"http://h/movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4", "http://h/***"),
+    (f"http://{Q_USER}:{Q_PASS}@h/%6dovie/a/b?token={Q_PASS}", "http://***@h/***"),
+    (f"http://h\\live\\{Q_USER}\\{Q_PASS}\\1.ts", "http://h/***"),
+    (f"word:///%6dovie/{Q_USER}/{Q_PASS}/1.mp4", "word:///***"),
+    # given up (round 7, "percent-encoded host"): a host holding an encoded
+    # "/" is a host to redact_url and here, so the route text after it is not
+    # read; redact_url leaves it too
+    (f"word://movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4", f"word://movie%2F{Q_USER}%2F{Q_PASS}%2F1.mp4"),
+    (f"word://%2F{Q_USER}%2F{Q_PASS}%2F1.ts", f"word://%2F{Q_USER}%2F{Q_PASS}%2F1.ts"),
+    # given up (round 4, class c): spelled exactly like http://h/a/5, a URL
+    # whose host is the first segment; masked at 1f7eb88e only
+    (f"path://{Q_USER}/{Q_PASS}/1.ts", f"path://{Q_USER}/{Q_PASS}/1.ts"),
+    # given up (round 4): a host glued to the username; the path is two
+    # segments after a real-looking host, as in http://h/a/5
+    (f"http://h{Q_USER}/{Q_PASS}/1.ts", f"http://h{Q_USER}/{Q_PASS}/1.ts"),
+    # near-misses that stay unchanged
+    ("http://h/a/b", "http://h/a/b"),
+    ("http://h/a/5", "http://h/a/5"),
+    ("url=http://h/a/5", "url=http://h/a/5"),
+    ("https://h:8080/a/5", "https://h:8080/a/5"),
+    ("http://h", "http://h"),
+    ("status: ok", "status: ok"),
+    ("time: 12:30:45", "time: 12:30:45"),
+    ("key: /api/channels/", "key: /api/channels/"),
+    ("key: a/b/c", "key: a/b/c"),
+    ('"detail": "/static/x"', '"detail": "/static/x"'),
+    ("/api/accounts/users/5/", "/api/accounts/users/5/"),
+    ("Unauthorized: /player_api.php", "Unauthorized: /player_api.php"),
+    ("the quick brown fox jumps over the lazy dog", "the quick brown fox jumps over the lazy dog"),
+    ("ratio 3:1 at 10:00", "ratio 3:1 at 10:00"),
+    # over-masked: three segments ending in a stream id look like the bare
+    # root route; masked at every earlier head too (stated in the PR body)
+    ("/static/js/1.js", "/***/***/1.js"),
+    ("/output/m3u/3", "/***/***/3"),
+    ('"detail":"/static/js/1.js"', '"detail":"/***/***/1.js"'),
+    ("status: /api/channels/5", "status: /***/***/5"),
+    ("C:/x/y/1", "C:/***/***/1"),
+    # given up (round 7, "prefix-word host"): no longer read as a path
+    ("http://live/a/b", "http://live/a/b"),
+    ("http://h/a%2Fb/5", "http://h/***"),
+    # review round 5, B: the userinfo stays masked; the host is a host
+    # (given up, "percent-encoded host": no credential is in these paths)
+    (f"http://{Q_USER}:{Q_PASS}@h%2Flive/a/b/c", "http://***@h%2Flive/a/b/c"),
+    (f"rtsp://{Q_USER}:{Q_PASS}@cam%2Flive/ch/main/av", "rtsp://***@cam%2Flive/ch/main/av"),
+    (f"http://{Q_USER}:{Q_PASS}@h%2Fmovie%2Fa%2Fb", "http://***@h%2Fmovie%2Fa%2Fb"),
+    (f"http://{Q_USER}:{Q_PASS}@%2Flive/a/b", "http://***@%2Flive/a/b"),
+    # review round 5, C: a "%" anywhere makes the whole path, query and
+    # fragment included, "/***" (round 7 addendum: no step depends on what
+    # follows the first "?" or "#")
+    (f"http://h/%6dovie/a/b/c%3Fd?token={Q_PASS}", "http://h/***"),
+    (f"http://h/%6dovie/a/b/c%3Fd?username={Q_USER}&password={Q_PASS}", "http://h/***"),
+    (f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}", "http://h/***"),
+    (f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}", "http://h/***"),
+    (f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}", "http://h/***"),
+    # review round 6, D: likewise for a whole path
+    (f"/%6cive/a/b/c%3Fd?password={Q_PASS}", "/***"),
+    (f"/%6dovie/a/b/c%23d?username={Q_USER}&password={Q_PASS}", "/***"),
+    (f"/get.php%3Fx/%6cive/a/b/c?username={Q_USER}&password={Q_PASS}", "/***"),
+    # review round 6, E: userinfo in a token that starts "//"
+    (f"//{Q_USER}:{Q_PASS}@h/x", "//***@h/x"),
+    (f'"//{Q_USER}:{Q_PASS}@cdn.example/app.js"', '"//***@cdn.example/app.js"'),
+    (f"//{Q_USER}:{Q_PASS}@h/live/a/b/1.ts", "//***@h/live/***/***/1.ts"),
+    (f"url=//{Q_USER}:{Q_PASS}@h/a/b", "url=//***@h/a/b"),
+    # review round 6, the accepted-ambiguity class: //<host>/<user>/<pass>/<id>
+    (f"//h/{Q_USER}/{Q_PASS}/1.ts", "//h/***/***/1.ts"),
+    # given up (round 7, "final segment of only sentence punctuation"): the
+    # "." is stripped as the end of a sentence, as at 2e83e395, so the
+    # password position is empty; masked at dc436dfa and a24d58c1. Stripping it is
+    # what keeps a sentence ending in "/<user>/<pass>/1/." masked.
+    (f"http://h/live/{Q_USER}/.", f"http://h/live/{Q_USER}/."),
+    (f"http://h/live/{Q_USER}/...", f"http://h/live/{Q_USER}/..."),
+    (f"/{Q_USER}/{Q_PASS}/1/.", "/***/***/1/."),
+    # review round 6, F(2): a second pair behind an encoded prefix (now "/***")
+    (f"http://h/live/a/b/%6dovie/{Q_USER}/{Q_PASS}/1", "http://h/***"),
+    # review round 7, H: Django's own record of a decoded request.path whose
+    # password holds "?<key>=...&" (or "#"); the whole path is read first
+    (f"/movie/{Q_USER}/pa?username=x&{Q_PASS}/1.mp4", "/movie/***/***/1.mp4"),
+    (f"/movie/{Q_USER}/pa#password=x&{Q_PASS}/1.mp4", "/movie/***/***/1.mp4"),
+    (f"Not Found: /movie/{Q_USER}/pa?username=x&{Q_PASS}/1.mp4", "Not Found: /movie/***/***/1.mp4"),
+    (f"/movie/{Q_USER}/pa?{Q_PASS}/1.mp4", "/movie/***/***/1.mp4"),
+    # the same reading masks a credential as the last segment before a query
+    (f"/live/{Q_USER}/{Q_PASS}?token={Q_PASS}", "/live/***/***"),
+    (f"/live/{Q_USER}/{Q_PASS}/1.ts?token={Q_PASS}", "/live/***/***/1.ts?token=***"),
+    # review round 7, M (addendum): a pair nested in the query of a whole-path
+    # string is masked whether or not the query also has a sensitive key; the
+    # whole text is always read as a path (dc436dfa..7fe0a903 agree, a24d58c1
+    # left the pair when the key was present)
+    (f"/x?a=1/live/{Q_USER}/{Q_PASS}/1.ts&password=z", "/x?a=1/live/***/***/1.ts&password=***"),
+    (f"/live/a/b/1?next=/movie/{Q_USER}/{Q_PASS}/2&password=p", "/live/***/***/1?next=/movie/***/***/2&password=***"),
+    (f"/x?a=1/live/{Q_USER}/{Q_PASS}/1.ts&b=z", "/x?a=1/live/***/***/1.ts&b=z"),
+    (f"/live/a/b/1?next=/movie/{Q_USER}/{Q_PASS}/2&b=p", "/live/***/***/1?next=/movie/***/***/2&b=p"),
+    # review round 8, F1: a "?" or "#" inside a masked segment; the query is
+    # located on the raw text, so a sensitive key after the next "/" is masked
+    (f'"GET /api/vod/series/12/?page=1&next=/x&token={Q_PASS} HTTP/1.1" 200 12',
+     '"GET /api/vod/series/***/***/x&token=*** HTTP/1.1" 200 12'),
+    (f"GET /proxy/vod/movie/0b5c3f9e-1d2a-4c6b-9e8f-7a6b5c4d3e2f/sess1?x=a/b&token={Q_PASS} HTTP/1.1",
+     "GET /proxy/vod/movie/***/***/b&token=*** HTTP/1.1"),
+    (f"GET /movie/{Q_USER}/{Q_PASS}?password={Q_PASS}/{Q_USER} HTTP/1.1", "GET /movie/***/*** HTTP/1.1"),
+    (f"Not Found: /api/vod/series/12/?search=a/b&token={Q_PASS}", "Not Found: /api/vod/series/***/***/b&token=***"),
+    (f"/x/live/a#b=/c/d&access_token={Q_PASS}", "/x/live/***/***/d&access_token=***"),
+    # review round 8, F2: the path of a scheme URL is read from the input, not
+    # from redact_url's output, whose query mask had already removed the route
+    (f"http://h/live/{Q_USER}?token={Q_PASS}/{Q_PASS}b/1", "http://h/live/***"),
+    (f"http://h/live/{Q_USER}?password={Q_PASS}/{Q_PASS}b/1.ts", "http://h/live/***"),
+    # review round 8, F3: the keyed prefix-word host (given up, "prefix-word
+    # host"); dc436dfa and 2e83e395 masked it by accident, the key read as a segment
+    (f"url=word://live/{Q_USER}/{Q_PASS}/x", f"url=word://live/{Q_USER}/{Q_PASS}/x"),
+    # review round 7, I: a prefix-word host with a path that only matches
+    # decoded; the encoded path is "/***"
+    (f"//u@movie/%6cive/{Q_USER}/{Q_PASS}/1.ts", "/***"),
+    (f"//u@movie/live%2F{Q_USER}%2F{Q_PASS}%2F1.ts", "/***"),
+    (f"//movie/%6cive/{Q_USER}/{Q_PASS}/1.ts", "/***"),
+    # review round 7, J: prose that starts "//" keeps its e-mail address
+    ("// see user@example.com for help", "// see user@example.com for help"),
+    ("// TODO(alice@example.com): fix", "// TODO(alice@example.com): fix"),
+    ("x = a //b@c", "x = a //***@c"),
+    # review round 7, L: a decoded control character is never written
+    ("GET /%6cive/a/b/%1B[2J%07 HTTP/1.1", "GET /*** HTTP/1.1"),
+)
+
+
+class RedactTextTableTests(SimpleTestCase):
+    """Every row of REDACT_TEXT_TABLE, compared exactly."""
+
+    def test_the_table_is_large_enough_to_mean_something(self):
+        self.assertGreaterEqual(len(REDACT_TEXT_TABLE), 60)
+        self.assertEqual(len({text for text, _ in REDACT_TEXT_TABLE}), len(REDACT_TEXT_TABLE))
+
+    def test_every_row(self):
+        for text, expected in REDACT_TEXT_TABLE:
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), expected)
+
+    def test_an_absolute_url_is_never_split_at_its_scheme(self):
+        # Review round 3, finding E: the key prefix took "http:" as a key and
+        # masked the URL as a path, so the host became a segment.
+        for text, expected in (
+            (f"http://h/{Q_USER}/{Q_PASS}/1.ts", "http://h/***/***/1.ts"),
+            (f"GET http://h/{Q_USER}/{Q_PASS}/1.ts HTTP/1.1", "GET http://h/***/***/1.ts HTTP/1.1"),
+            (f"http://{Q_USER}:{Q_PASS}@h/x", "http://***@h/x"),
+            ("http://h/a/5", "http://h/a/5"),
+        ):
+            with self.subTest(text=text):
+                out = redact_text(text)
+                self.assertNotIn(Q_USER, out, f"{Q_USER} survived in {out!r}")
+                self.assertNotIn(Q_PASS, out, f"{Q_PASS} survived in {out!r}")
+                self.assertEqual(out, expected)
+
+
+# Review round 7: ordinary log text, pinned as literals so that any change in
+# what is over-masked shows in a diff. Unchanged first, then every string the
+# filter changes although it carries no credential, with what it becomes.
+ORDINARY_UNCHANGED = (
+    'the quick brown fox jumps over the lazy dog',
+    'Not Found: /favicon.ico',
+    'Not Found: /robots.txt',
+    'Not Found: /api/channels/streams/',
+    'Not Found: //favicon.ico',
+    'Unauthorized: /api/accounts/token/',
+    'Unauthorized: /player_api.php',
+    'Forbidden (CSRF cookie not set.): /api/accounts/token/',
+    'Bad Request: /api/channels/channels/42/',
+    'Internal Server Error: /api/epg/sources/3/refresh/',
+    '"GET /api/core/settings/ HTTP/1.1" 200 1532',
+    '"GET /static/js/app.4f2a.js HTTP/1.1" 304 0',
+    '"POST /api/accounts/token/refresh/ HTTP/1.1" 401 58',
+    '"GET /output/m3u HTTP/1.1" 200 10422',
+    '"GET /output/epg?days=3 HTTP/1.1" 200 88211',
+    '"GET /hdhr/discover.json HTTP/1.1" 200 312',
+    '"GET /api/channels/logos/12/cache/ HTTP/1.1" 200 4096',
+    '"GET /proxy/ts/stream/1b4e28ba-2fa1-11d2-883f-0016d3cca427 HTTP/1.1" 200 0',
+    '"GET /api/vod/movies/?page=2&page_size=50 HTTP/1.1" 200 9001',
+    '/api/accounts/users/5/',
+    '/api/channels/channels/',
+    '/static/js/app.js',
+    '/assets/index-4f2a9c.css',
+    '/proxy/vod/movie/7a2c/',
+    '/hls/abc123/index.m3u8',
+    'see https://example.com/docs/setup for details',
+    'https://example.com/',
+    'https://example.com/a/b/c',
+    'http://localhost:9191/api/core/version/',
+    'http://127.0.0.1:5656/proxy/ts/status/1b4e28ba-2fa1-11d2-883f-0016d3cca427',
+    'http://[::1]:8080/healthz',
+    '//cdn.example/app.js',
+    '//cdn.example/static/js/app.js',
+    '//server/share/dir/file.txt',
+    '// see user@example.com for help',
+    '// TODO(alice@example.com): fix',
+    'x = a // b',
+    'contact alice@example.com or bob@example.org',
+    'mailto:alice@example.com',
+    '  File "/app/apps/proxy/views.py", line 42, in get',
+    '  File "/usr/lib/python3.13/logging/__init__.py", line 1160, in emit',
+    'Traceback (most recent call last):',
+    "ValueError: invalid literal for int() with base 10: 'abc'",
+    "KeyError: 'username'",
+    'password reset requested for user 5',
+    'token expired at 2026-11-12T10:15:30Z',
+    '2026-11-12 10:15:30,123 WARNING django.request Not Found: /x',
+    'time: 12:30:45',
+    'ratio 3:1 at 10:00',
+    'status: ok',
+    'key: /api/channels/',
+    'key: a/b/c',
+    'path=/tmp/upload/abc.ts',
+    'url=https://example.com/a?b=1',
+    'next=/api/channels/?page=2',
+    'redirect_to=/login?next=/dashboard',
+    'C:\\Users\\me\\file.txt',
+    '\\\\server\\share\\file.txt',
+    '/data/recordings/2026/11/12/news.ts',
+    '/data/cache/rewind/boot-1/seg-00001.m4s',
+    '/app/data/plugins/demo/plugin.py',
+    '/dev/null',
+    '/',
+    '//',
+    '///',
+    '?a=1&b=2',
+    '#section',
+    'size=10.5MB time=00:01:02.03 bitrate=1350.2kbits/s speed=1.01x',
+    'ffmpeg -i pipe:0 -c copy -f mpegts pipe:1',
+    '[h264 @ 0x55d4c] non-existing PPS 0 referenced',
+    'Stream #0:0: Video: h264 (High), yuv420p, 1920x1080, 25 fps',
+    '{"detail": "Authentication credentials were not provided."}',
+    '{"path": "/api/channels/", "status": 404}',
+    "{'url': 'https://example.com/a/b/c'}",
+    'SELECT * FROM channels WHERE id = 5',
+    'GET /live HTTP/1.1',
+    '/live',
+    '/live/',
+    '/live/a',
+    '/movie/a/',
+    '/timeshift/',
+)
+ORDINARY_OVER_MASKED = (
+    # review round 8, F3: a readable path whose query holds "%" or a backslash
+    ('/redirect?next=/a%20b/c', '/***'),
+    ('/index.php?s=/Index/\\think\\app/invokefunction', '/***'),
+    ('GET /api/x?q=a%20b HTTP/1.1', 'GET /*** HTTP/1.1'),
+    # review round 9, F7: a scheme URL keeps its host, a "//" token does not
+    # (it is read as a path from its first "/")
+    ('http://h/x?q=a%20b', 'http://h/***'),
+    ('//h/x?q=a%20b', '/***'),
+    # review round 8, F5: a relative three-part token ending in a number is
+    # read as the bare-root route, as redact_url reads it (every head)
+    ('12/Nov/2026', '***/***/2026'),
+    ('ratio 10/5/2', 'ratio ***/***/2'),
+    # a "%" in the query makes the whole token "/***" (round 7 addendum)
+    ('/search?q=live%20tv', '/***'),
+    ('/search?q=a%2Fb', '/***'),
+    ('Not Found: //a/b/c/5', 'Not Found: //a/***/***/5'),
+    ('"GET //admin/a/b/3 HTTP/1.1" 404 9', '"GET //admin/***/***/3 HTTP/1.1" 404 9'),
+    ('/static/js/1.js', '/***/***/1.js'),
+    ('/output/m3u/3', '/***/***/3'),
+    ('/a%20b/c', '/***'),
+    ('/media/My%20Show/S01E01.mkv', '/***'),
+    ('https://example.com/a/b/5', 'https://example.com/***/***/5'),
+    ('https://example.com/path%20with%20space', 'https://example.com/***'),
+    ('https://cdn.example/static/js/1.js', 'https://cdn.example/***/***/1.js'),
+    ('http://user@example.com/', 'http://***@example.com/'),
+    ('//cdn.example/static/js/1.js', '//cdn.example/***/***/1.js'),
+    ('<script src="//cdn.example/lib/v2/3.js">', '<script src="//cdn.example/***/***/3.js">'),
+    ('//user@example.com', '//***@example.com'),
+    ('//h/a/b@c/5', '//h/***/***/5'),
+    ('x = a //b@c', 'x = a //***@c'),
+    ('  File "//share/host/dir/1.py", line 3', '  File "//share/***/***/1.py", line 3'),
+    ('status: /api/channels/5', 'status: /***/***/5'),
+    ('path=/tmp/a/1.ts', 'path=/***/***/1.ts'),
+    ('C:/x/y/1', 'C:/***/***/1'),
+    ('/series/x/y', '/series/***/***'),
+)
+
+
+class OrdinaryStringsTests(SimpleTestCase):
+    """What the filter does to text that carries no credential."""
+
+    def test_unchanged(self):
+        for text in ORDINARY_UNCHANGED:
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), text)
+
+    def test_over_masked(self):
+        for text, expected in ORDINARY_OVER_MASKED:
+            with self.subTest(text=text):
+                self.assertEqual(redact_text(text), expected)
+
+    def test_the_lists_are_large_enough_and_distinct(self):
+        texts = list(ORDINARY_UNCHANGED) + [text for text, _ in ORDINARY_OVER_MASKED]
+        self.assertGreaterEqual(len(texts), 100)
+        self.assertEqual(len(set(texts)), len(texts))
+
+
+_GRID_USERINFOS = (
+    ("", ()),
+    ("s-ui-user:s-ui-pass@", ("s-ui-user", "s-ui-pass")),
+    ("s-ui-user%3Ax:s-ui-pass%40y@", ("s-ui-user", "s-ui-pass")),
+)
+_GRID_HOSTS = (
+    "h", "h.example:8080", "[::1]", "live", "Movie", "timeshift", "%6cive",
+    "h%2Flive", "cam%2Fmovie", "%2Flive", "h%2Fx", "",
+)
+_GRID_PATHS = (
+    ("/live/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+    ("/%6cive/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+    ("/live%2Fs-p-user%2Fs-p-pass%2F1.ts", ("s-p-user", "s-p-pass")),
+    ("/s-p-user/s-p-pass/1.ts", ("s-p-user", "s-p-pass")),
+    ("/s-p-user/s-p-pass/%31.ts", ("s-p-user", "s-p-pass")),
+    ("/timeshift/s-p-user/s-p-pass/60/x/5.ts", ("s-p-user", "s-p-pass")),
+    ("/%6dovie/a/b/c%3Fd", ()),
+    ("/%6dovie/a/b/c%23d", ()),
+    ("/%6cive/a/b/1%3F.ts", ()),
+    ("/%6dovie/a/b/c%40d", ()),
+    ("/%6dovie/a/b/c%2F%2Fd", ()),
+    ("/get.php%3Fx/%6cive/a/b/c", ()),
+    ("/a/b/c", ()),
+    ("/a/b/5", ()),
+    # review round 8, F1: short prefix paths of this project's own routes
+    ("/api/vod/series/12/", ()),
+    ("/proxy/vod/movie/u-u-i-d/sess1", ()),
+    ("", ()),
+)
+_GRID_TAILS = (
+    ("", ()),
+    ("?token=s-q-token", ("s-q-token",)),
+    ("?username=s-q-user&password=s-q-pass", ("s-q-user", "s-q-pass")),
+    ("?password=s-q-pass#token=s-f-token", ("s-q-pass", "s-f-token")),
+    ("#token=s-f-token", ("s-f-token",)),
+    ("?a=1", ()),
+    # review round 8, F1: a query value holding "/" before a sensitive key
+    ("?next=/x&token=s-q-token", ("s-q-token",)),
+    ("?a=b/c&password=s-q-pass", ("s-q-pass",)),
+    ("#b=/c/d&token=s-f-token", ("s-f-token",)),
+)
+# How a token reaches redact_text: alone, in a request line, after a key, in
+# message text. Each is applied to the scheme-less forms.
+_GRID_WRAPPERS = (
+    ("bare", "{}"),
+    ("request line", "GET {} HTTP/1.1"),
+    ("key=", "path={}"),
+    ("key: ", "path: {}"),
+    ("quoted key", '{{"path":"{}"}}'),
+    ("message", "Not Found: {}"),
+)
+
+
+def _token_grid():
+    """Tokens built from components, each credential a distinct sentinel.
+
+    Yields (text, token, sentinels, form): the text handed to redact_text,
+    the token in it that redact_url is asked about, every sentinel the token
+    carries (so a survivor can be named), and the token's form. The forms are
+    every one redact_text reads differently: ``scheme://...`` URLs, scheme-less
+    ``//host/...`` tokens with and without userinfo, and bare ``/path...``
+    tokens. The last two are also wrapped in each of _GRID_WRAPPERS. Deterministic.
+    """
+    for scheme in ("http", "https", "rtsp", "word"):
+        for userinfo, ui in _GRID_USERINFOS:
+            for host in _GRID_HOSTS:
+                for path, ps in _GRID_PATHS:
+                    for tail, ts in _GRID_TAILS:
+                        token = f"{scheme}://{userinfo}{host}{path}{tail}"
+                        yield token, token, ui + ps + ts, "scheme://"
+    for userinfo, ui in _GRID_USERINFOS:
+        for host in _GRID_HOSTS:
+            if not host:
+                continue  # "///..." is a bare path, below
+            for path, ps in _GRID_PATHS:
+                for tail, ts in _GRID_TAILS:
+                    token = f"//{userinfo}{host}{path}{tail}"
+                    for name, wrapper in _GRID_WRAPPERS:
+                        yield wrapper.format(token), token, ui + ps + ts, f"//host, {name}"
+    for path, ps in _GRID_PATHS:
+        for lead in ("", "/"):
+            if not path:
+                continue
+            for tail, ts in _GRID_TAILS:
+                token = f"{lead}{path}{tail}"
+                for name, wrapper in _GRID_WRAPPERS:
+                    yield wrapper.format(token), token, ps + ts, f"/path, {name}"
+
+
+class NeverLessThanRedactUrlTests(SimpleTestCase):
+    """redact_text never leaves a credential that redact_url masks in the same token.
+
+    The oracle is ``redact_url`` from the project package, applied to the
+    token alone, which this PR does not change. The grid covers every form
+    redact_text reads differently (``scheme://`` URLs, scheme-less ``//host``
+    tokens, bare ``/path`` tokens with a query or fragment), each also inside a
+    request line, after a key and in message text. What it proves: for each
+    of these inputs, every sentinel redact_url masks in the token is masked in
+    the output too. It says nothing about token shapes outside the grid.
+    """
+
+    QUOTED = (
+        # review round 5, B and C, verbatim
+        f"http://{Q_USER}:{Q_PASS}@h%2Flive/a/b/c",
+        f"rtsp://{Q_USER}:{Q_PASS}@cam%2Flive/ch/main/av",
+        f"http://{Q_USER}:{Q_PASS}@h%2Fmovie%2Fa%2Fb",
+        f"http://{Q_USER}:{Q_PASS}@%2Flive/a/b",
+        f"http://h/%6dovie/a/b/c%3Fd?token={Q_PASS}",
+        f"http://h/%6dovie/a/b/c%3Fd?username={Q_USER}&password={Q_PASS}",
+        f"http://h/%6dovie/a/b/c%23d?password={Q_PASS}",
+        f"http://h/%6dovie/a/b/c%23d#token={Q_PASS}",
+        f"http://h/%6cive/a/b/1%3F.ts?password={Q_PASS}",
+        # review round 6, D and E, verbatim
+        f"/%6cive/a/b/c%3Fd?password={Q_PASS}",
+        f"/%6dovie/a/b/c%23d?username={Q_USER}&password={Q_PASS}",
+        f"/get.php%3Fx/%6cive/a/b/c?username={Q_USER}&password={Q_PASS}",
+        f"//{Q_USER}:{Q_PASS}@h/x",
+        f"//{Q_USER}:{Q_PASS}@cdn.example/app.js",
+        f"//{Q_USER}:{Q_PASS}@h/live/a/b/1.ts",
+        f"url=//{Q_USER}:{Q_PASS}@h/a/b",
+        # review round 7, H and I, verbatim
+        f"/movie/{Q_USER}/pa?username=x&{Q_PASS}/1.mp4",
+        f"/movie/{Q_USER}/pa#password=x&{Q_PASS}/1.mp4",
+        f"//u@movie/%6cive/{Q_USER}/{Q_PASS}/1.ts",
+        f"//u@movie/live%2F{Q_USER}%2F{Q_PASS}%2F1.ts",
+        f"//movie/%6cive/{Q_USER}/{Q_PASS}/1.ts",
+    )
+
+    # The oracle must keep masking, or the invariant would hold vacuously:
+    # the share of the grid's sentinels redact_url itself masks. The counts
+    # are asserted exactly (review round 8, F4), so the numbers quoted here
+    # and in the PR are the ones the test checks.
+    MIN_ORACLE_MASKED = 0.80
+    ORACLE_SENTINELS = 162096
+    ORACLE_MASKED = 142864
+
+    # The one class where two raw readings genuinely differ: a scheme-less
+    # "//<host>/<user>/<pass>/<id>" token, which redact_url reads as a host and
+    # a bare-root path, and the server (round 1) as a path whose first segment
+    # is not a host. It has no exception: the masks of both are added, so its
+    # count of survivors is asserted to be zero, by name, before the rest.
+    AMBIGUOUS_HOST_PATH_SURVIVORS = 0
+
+    def _cases(self):
+        cases = list(_token_grid())
+        for text in self.QUOTED:
+            token = text.split("=", 1)[1] if text.startswith("url=") else text
+            cases.append((text, token, (Q_USER, Q_PASS), "quoted"))
+        return cases
+
+    def test_no_credential_redact_url_masks_survives(self):
+        cases = self._cases()
+        forms = {form.split(",")[0] for _, _, _, form in cases}
+        self.assertEqual(forms, {"scheme://", "//host", "/path", "quoted"})
+        self.assertGreater(len(cases), 20000)
+        self.assertEqual(len(cases), 54075)
+        survivors = []
+        sentinels_total = sentinels_masked = 0
+        for text, token, sentinels, form in cases:
+            baseline = redact_url(token)
+            out = redact_text(text)
+            for sentinel in sentinels:
+                sentinels_total += 1
+                if sentinel not in baseline:
+                    sentinels_masked += 1
+                    if sentinel in out:
+                        survivors.append(f"[{form}] {sentinel} in {out!r} (redact_url: {baseline!r})")
+        self.assertEqual((sentinels_masked, sentinels_total), (self.ORACLE_MASKED, self.ORACLE_SENTINELS))
+        self.assertGreaterEqual(
+            sentinels_masked / sentinels_total, self.MIN_ORACLE_MASKED,
+            f"the oracle masked only {sentinels_masked} of {sentinels_total} sentinels",
+        )
+        ambiguous = [
+            line for line in survivors
+            if line.startswith("[//host") and line[line.index("] ") + 2:].startswith("s-p-")
+        ]
+        self.assertEqual(
+            len(ambiguous), self.AMBIGUOUS_HOST_PATH_SURVIVORS,
+            f"//<host>/<user>/<pass>/<id> class: {ambiguous[:3]}",
+        )
+        by_class = {}
+        for line in survivors:
+            form = line[1:line.index("]")].split(",")[0]
+            kind = line[line.index("] ") + 2:].split(" ")[0]
+            by_class.setdefault(f"{form} {kind}", []).append(line)
+        self.assertFalse(
+            survivors,
+            f"{len(survivors)} credential(s) of {len(cases)} inputs survive that redact_url masks; by class: "
+            + "; ".join(f"{key}: {len(lines)}, e.g. {lines[0]}" for key, lines in sorted(by_class.items())),
+        )
+
+
+# Review round 7: the Xtream route forms themselves. Each credential is two
+# distinct sentinels around a character the pattern pass could misread, and
+# the form is spelled raw or with any one segment or path separator
+# percent-encoded. No sentinel may survive, in any container or wrapper.
+_ROUTE_SPECIALS = (
+    "", "?", "#", "&", "=", "@", ";", "%", "?username=x&", "#password=x&",
+    # review round 8, F2: a sensitive key with no "&" after it
+    "?token=", "?password=",
+)
+_PATH_ROUTES = (
+    "/live/{u}/{p}/1.ts",
+    "/live/{u}/{p}/1.m3u8",
+    "/movie/{u}/{p}/1.mp4",
+    "/series/{u}/{p}/1.mkv",
+    "/timeshift/{u}/{p}/60/2026-01-01:10-00/1.ts",
+    "/{u}/{p}/1",
+    "/{u}/{p}/1.ts",
+)
+_QUERY_ROUTES = (
+    "/player_api.php?username={u}&password={p}",
+    "/get.php?username={u}&password={p}&type=m3u_plus",
+    "/xmltv.php?username={u}&password={p}",
+    "/streaming/timeshift.php?username={u}&password={p}&stream=1&duration=60",
+)
+_ROUTE_CONTAINERS = (
+    ("", ()),
+    ("//h", ()),
+    ("http://h", ()),
+    ("http://s-r-ui:s-r-uj@h", ("s-r-ui", "s-r-uj")),
+)
+_ROUTE_TAILS = (("", ()), ("?token=s-r-tk", ("s-r-tk",)))
+_ROUTE_WRAPPERS = _GRID_WRAPPERS + (
+    ("quoted request line", '"GET {} HTTP/1.1" 401 0'),
+    ("csrf", "Forbidden (CSRF cookie not set.): {}"),
+)
+# A raw "&" or "#" in a query value is where the server itself ends the
+# value, so the text after it is not part of the credential it reads; these
+# are generated (encoded) but not raw.
+_QUERY_RAW_EXCLUDED = ("&", "#", "?username=x&", "#password=x&")
+
+
+def _encode_first(segment):
+    return f"%{ord(segment[0]):02X}{segment[1:]}" if segment else segment
+
+
+def _route_spellings(form, user, password):
+    """``form`` filled in, raw and with each one segment or separator encoded."""
+    spellings = set()
+    for u, p in ((user, password), (quote(user, safe=""), quote(password, safe=""))):
+        path = form.format(u=u, p=p)
+        spellings.add(path)
+        if "?" in form:
+            # the query keys percent-encoded (redact_url decodes a key name)
+            keyed = form.replace("username=", "user%6Eame=").replace("password=", "pass%77ord=")
+            spellings.add(keyed.format(u=u, p=p))
+            continue
+        segments = path.split("/")
+        for i in range(1, len(segments)):
+            encoded = list(segments)
+            encoded[i] = _encode_first(encoded[i])
+            spellings.add("/".join(encoded))
+        for i in range(2, len(segments)):
+            spellings.add("/".join(segments[:i]) + "%2F" + "/".join(segments[i:]))
+    return spellings
+
+
+def _route_grid():
+    """Returns ([(text, sentinels, label)], {excluded class: count})."""
+    excluded = {"query route, raw '&' or '#' credential": 0, "bare root route, raw '?' or '#' credential, query": 0}
+    cases = []
+    for special in _ROUTE_SPECIALS:
+        user = f"s-r-ua{special}s-r-ub" if special else "s-r-ua"
+        password = f"s-r-pa{special}s-r-pb" if special else "s-r-pa"
+        credentials = ("s-r-ua", "s-r-ub", "s-r-pa", "s-r-pb") if special else ("s-r-ua", "s-r-pa")
+        for form in _PATH_ROUTES + _QUERY_ROUTES:
+            for path in sorted(_route_spellings(form, user, password)):
+                if "?" in form and special in _QUERY_RAW_EXCLUDED and user in path:
+                    excluded["query route, raw '&' or '#' credential"] += 1
+                    continue
+                for container, cs in _ROUTE_CONTAINERS:
+                    tails = _ROUTE_TAILS if "?" not in form else (("", ()),)
+                    for tail, ts in tails:
+                        token = f"{container}{path}{tail}"
+                        for name, wrapper in _ROUTE_WRAPPERS:
+                            if tail and form.startswith("/{u}") and special[:1] in ("?", "#") and (
+                                path == form.format(u=user, p=password)
+                            ):
+                                # Read whole, the last segment is "1?token=...", not
+                                # a stream id. Not a spelling Django logs: request.path
+                                # has no query, and get_full_path() encodes the path.
+                                excluded["bare root route, raw '?' or '#' credential, query"] += 1
+                                continue
+                            label = f"{form} special={special!r} container={container!r} {name}"
+                            cases.append((wrapper.format(token), credentials + cs + ts, label))
+    return cases, excluded
+
+
+class XtreamRouteGridTests(SimpleTestCase):
+    """No credential in an Xtream route form survives redact_text, however it is spelled."""
+
+    # The classes left out, by name and count (see _route_grid):
+    # 4 specials x 4 query routes x 2 key spellings; and 6 specials (every
+    # one starting "?" or "#") x 2 bare root routes x 4 containers x 8
+    # wrappers, with the query tail only.
+    EXCLUDED = {
+        "query route, raw '&' or '#' credential": 32,
+        "bare root route, raw '?' or '#' credential, query": 384,
+    }
+
+    def test_no_sentinel_survives(self):
+        cases, excluded = _route_grid()
+        self.assertEqual(excluded, self.EXCLUDED)
+        self.assertGreater(len(cases), 50000)
+        survivors = {}
+        for text, sentinels, label in cases:
+            out = redact_text(text)
+            leaked = [sentinel for sentinel in sentinels if sentinel in out]
+            if leaked:
+                survivors.setdefault(label.split(" container=")[0], []).append(f"{leaked} in {text!r} -> {out!r}")
+        self.assertFalse(
+            survivors,
+            f"{sum(len(v) for v in survivors.values())} case(s) of {len(cases)} leak a sentinel; by form: "
+            + "; ".join(f"{key}: {len(lines)}, e.g. {lines[0]}" for key, lines in sorted(survivors.items())),
+        )
+
+
+# Review round 8, F1: a query (or query-shaped fragment) whose first value
+# holds "/", after a short prefix path, with a sensitive key later in the same
+# query. The prefixes are this project's own routes (and the Xtream ones with a
+# credential pair that is masked only when the query is read as part of the
+# path). No sentinel may survive, in any container or wrapper.
+_UUID = "0b5c3f9e-1d2a-4c6b-9e8f-7a6b5c4d3e2f"
+_SLASH_QUERY_PREFIXES = (
+    ("/api/vod/series/12/", ()),
+    ("/api/vod/series/12", ()),
+    ("/api/vod/movies/7/", ()),
+    (f"/proxy/vod/movie/{_UUID}/sess1", ()),
+    (f"/proxy/vod/series/{_UUID}/sess1", ()),
+    (f"/proxy/vod/episode/{_UUID}/sess1", ()),
+    ("/x/live/a", ()),
+    ("/live/a/b/1", ()),
+    ("/movie/s-s-ua/s-s-pa", ("s-s-ua", "s-s-pa")),
+    ("/s-s-ua/s-s-pa/1", ("s-s-ua", "s-s-pa")),
+    ("/a", ()),
+    ("/a/b", ()),
+)
+_SLASH_QUERY_FIRST = ("next=/x", "search=a/b", "x=a/b/c", "b=/c/d", "next=/a/b/1.ts", "r=//h/p")
+_SLASH_QUERY_SENSITIVE = tuple(
+    (f"{key}={value}", sentinels)
+    for key in ("token", "password", "access_token")
+    for value, sentinels in (("s-s-qa", ("s-s-qa",)), ("s-s-qa/s-s-qb", ("s-s-qa", "s-s-qb")))
+)
+_SLASH_QUERY_CONTAINERS = (
+    ("", ()),
+    ("//h", ()),
+    ("http://h", ()),
+    ("http://s-s-ui:s-s-uj@h", ("s-s-ui", "s-s-uj")),
+)
+
+
+def _slash_query_grid():
+    cases = []
+    for prefix, ps in _SLASH_QUERY_PREFIXES:
+        for lead in ("?", "#"):
+            for first in _SLASH_QUERY_FIRST:
+                for pair, qs in _SLASH_QUERY_SENSITIVE:
+                    for container, cs in _SLASH_QUERY_CONTAINERS:
+                        token = f"{container}{prefix}{lead}{first}&{pair}"
+                        for name, wrapper in _ROUTE_WRAPPERS:
+                            label = f"{prefix}{lead}{first}&{pair.split('=')[0]}= container={container!r} {name}"
+                            cases.append((wrapper.format(token), ps + qs + cs, label))
+    return cases
+
+
+class SlashInQueryGridTests(SimpleTestCase):
+    """A sensitive query value survives no "/" in an earlier query value."""
+
+    def test_no_sentinel_survives(self):
+        cases = _slash_query_grid()
+        self.assertEqual(len(cases), 27648)
+        survivors = {}
+        for text, sentinels, label in cases:
+            out = redact_text(text)
+            leaked = [sentinel for sentinel in sentinels if sentinel in out]
+            if leaked:
+                survivors.setdefault(label.split(" container=")[0].split("?")[0].split("#")[0], []).append(
+                    f"{leaked} in {text!r} -> {out!r}"
+                )
+        self.assertFalse(
+            survivors,
+            f"{sum(len(v) for v in survivors.values())} case(s) of {len(cases)} leak a sentinel; by prefix: "
+            + "; ".join(f"{key}: {len(lines)}, e.g. {lines[0]}" for key, lines in sorted(survivors.items())),
+        )
+
+
+class PlacementTests(_SinkAssertions, SimpleTestCase):
+    """The filter sits on HANDLERS, so a child logger and the OTel bridge cannot miss it.
+
+    A filter on a logger applies only to records logged on that exact logger;
+    django.security.DisallowedHost (and every other per-exception
+    django.security.<Name>) is a descendant, and a record propagating up the
+    tree never passes a parent logger's filters. Every handler such a record
+    reaches carries the filter instead (RealConfigurationTests checks that
+    structurally).
+    """
+
+    def setUp(self):
+        self.sinks = _ProductionSinks(self)
+
+    def test_a_child_logger_record_reaching_the_otel_bridge(self):
+        request = _xc_request("/player_api.php", username=USER, password=PASSWORD)
+        logging.getLogger("django.security.DisallowedHost").error(
+            "Invalid host for %s", f"/live/{USER}/{PASSWORD}/1.ts", extra={"request": request}
+        )
+        self.assertNoCredential(self.sinks, USER, PASSWORD)
+        self.assertIn(
+            "django.security.DisallowedHost Invalid host for /live/***/***/1.ts",
+            self.sinks.console.getvalue(),
+        )
+        [bridged] = [r for r in self.sinks.otel.records if r.name == "django.security.DisallowedHost"]
+        self.assertEqual(bridged.getMessage(), "Invalid host for /live/***/***/1.ts")
+        self.assertNotIn("request", vars(bridged))
+
+    def test_the_configured_console_filter_drops_the_request(self):
+        request = _xc_request("/player_api.php", username=USER, password=PASSWORD)
+        self.assertIn(PASSWORD, repr(request))
+        record = logging.LogRecord(
+            "django.request", logging.WARNING, __file__, 1, "%s: %s",
+            ("Unauthorized", "/player_api.php"), None,
+        )
+        record.request = request
+        out = _handler("", "console").filter(record)
+        self.assertNotIn("request", vars(out))
+        self.assertNotIn(PASSWORD, repr(vars(out)))
+        self.assertIs(record.request, request)
+
+
+class CompositionTests(SimpleTestCase):
+    """What with_request_log_redaction adds, pinned exactly.
+
+    tests/test_observability_logs.py pins settings.LOGGING as this function
+    applied to the D8 configuration; this pins the function itself, so a
+    change to either side reddens one of the two.
+    """
+
+    BASE = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "formatters": {"verbose": {"format": "{message}", "style": "{"}},
+        "handlers": {
+            "console": {"class": "logging.StreamHandler", "formatter": "verbose", "level": 5},
+            "otel": {"class": OTEL_BRIDGE, "level": 5},
+        },
+        "loggers": {"apps": {"handlers": ["console", "otel"], "level": 20, "propagate": False}},
+        "root": {"handlers": ["console", "otel"], "level": 20},
+    }
+
+    EXPECTED = {
+        "version": 1,
+        "disable_existing_loggers": False,
+        "filters": {
+            "request_log_credentials": {"()": "core.request_log_redaction.RequestLogCredentialFilter"},
+            "require_debug_true": {"()": "django.utils.log.RequireDebugTrue"},
+            "require_debug_false": {"()": "django.utils.log.RequireDebugFalse"},
+        },
+        "formatters": {
+            "verbose": {"format": "{message}", "style": "{"},
+            "django.server": {
+                "()": "django.utils.log.ServerFormatter",
+                "format": "[{server_time}] {message}",
+                "style": "{",
+            },
+        },
+        "handlers": {
+            "console": {
+                "class": "logging.StreamHandler", "formatter": "verbose", "level": 5,
+                "filters": ["request_log_credentials"],
+            },
+            "otel": {
+                "class": OTEL_BRIDGE, "level": 5,
+                "filters": ["request_log_credentials"],
+            },
+            "django.console": {
+                "class": "logging.StreamHandler", "level": "INFO",
+                "filters": ["require_debug_true", "request_log_credentials"],
+            },
+            "django.mail_admins": {
+                "class": "django.utils.log.AdminEmailHandler", "level": "ERROR",
+                "filters": ["require_debug_false", "request_log_credentials"],
+            },
+            "django.server": {
+                "class": "logging.StreamHandler", "formatter": "django.server", "level": "INFO",
+                "filters": ["request_log_credentials"],
+            },
+        },
+        "loggers": {
+            "apps": {"handlers": ["console", "otel"], "level": 20, "propagate": False},
+            "django": {"handlers": ["django.console", "django.mail_admins"], "level": "INFO"},
+            "django.server": {"handlers": ["django.server"], "level": "INFO", "propagate": False},
+        },
+        "root": {"handlers": ["console", "otel"], "level": 20},
+    }
+
+    def test_exactly_what_it_adds(self):
+        self.assertEqual(with_request_log_redaction(self.BASE), self.EXPECTED)
+
+    def test_the_input_is_not_mutated(self):
+        base = copy.deepcopy(self.BASE)
+        with_request_log_redaction(base)
+        self.assertEqual(base, self.BASE)
+
+    def test_applying_it_twice_adds_nothing_more(self):
+        once = with_request_log_redaction(self.BASE)
+        self.assertEqual(with_request_log_redaction(once), once)
