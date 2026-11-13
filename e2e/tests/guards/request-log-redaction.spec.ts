@@ -79,20 +79,31 @@ const API_PARAMS = (() => {
   return `docker/${found[0]}`;
 })();
 
-/** The project package's utils module, the one that defines redact_url's key list. */
+/**
+ * The module that defines redact_url's key list: the one top-level package
+ * module assigning SENSITIVE_QUERY_KEYS a literal set (another module may
+ * hold a derived copy, `frozenset(<module>.SENSITIVE_QUERY_KEYS)`). The project
+ * package's utils.py only re-exports it (the definition lives in the
+ * stdlib-only leaf module the log scrubber imports), so the file name is
+ * found, not assumed.
+ */
 const UTILS = (() => {
   const found = readdirSync(REPO_ROOT, { withFileTypes: true })
-    .filter((d) => d.isDirectory() && !d.name.startsWith('.'))
-    .map((d) => `${d.name}/utils.py`)
+    .filter((d) => d.isDirectory() && !d.name.startsWith('.') && d.name !== 'node_modules')
+    .flatMap((d) =>
+      readdirSync(path.join(REPO_ROOT, d.name))
+        .filter((f) => f.endsWith('.py'))
+        .map((f) => `${d.name}/${f}`)
+    )
     .filter((rel) => {
       try {
-        return /^SENSITIVE_QUERY_KEYS\s*=/m.test(read(rel));
+        return /^SENSITIVE_QUERY_KEYS\s*=\s*frozenset\(\s*\{/m.test(read(rel));
       } catch {
         return false;
       }
     });
   if (found.length !== 1) {
-    throw new Error(`expected one top-level */utils.py defining SENSITIVE_QUERY_KEYS, found ${found.length}`);
+    throw new Error(`expected one top-level */*.py defining SENSITIVE_QUERY_KEYS as a literal set, found ${found.join(', ') || 'none'}`);
   }
   return found[0];
 })();
