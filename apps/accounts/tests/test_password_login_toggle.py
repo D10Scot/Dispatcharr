@@ -26,10 +26,11 @@ from django.core.management.base import CommandError
 from django.test import TestCase, override_settings
 from rest_framework.test import APIClient
 
-from apps.accounts.models import OIDCProvider, User
-from apps.accounts.oidc import auth_settings, guard
+from apps.accounts.models import OIDCIdentity, OIDCProvider, User
+from apps.accounts.oidc import auth_settings, flow, guard
+from apps.accounts.oidc import refresh as refresh_mod
 from apps.accounts.oidc import secrets as oidc_secrets
-from apps.accounts.oidc.serializers import OIDCProviderSerializer
+from apps.accounts.oidc.serializers import ENTRA_ISSUER, OIDCProviderSerializer
 from core.models import AUTH_SETTINGS_KEY, CoreSettings, SystemEvent
 
 from .oidc_flow_support import (
@@ -944,6 +945,145 @@ class LockoutGuardConcurrencyTests(_GuardMixin, FlowTransactionTestCase):
             "a locked Entra PATCH wrote an issuer derived from the stale tenant over the "
             "row's current tenant",
         )
+
+    # ---- the version bump when the locked write re-derives an Entra column ----------------
+    # _rederive_entra() recomputes issuer and client_assertion_alg under the provider lock
+    # from the row's final kind and tenant. Both are security-relevant, so a write that
+    # changes either must bump version by exactly one (refresh re-evaluation and the
+    # discovery and JWKS cache keys hang off it), and one that leaves both as the row has
+    # them must not. kind itself is not security-relevant, so a held PATCH {kind: entra}
+    # whose only other change is a re-derived column isolates that column's bump.
+
+    def _generic_with_tenant(self, slug, **overrides):
+        fields = dict(
+            slug=slug,
+            kind="generic",
+            entra_tenant_id=NEW_TENANT,
+            issuer=ENTRA_ISSUER.format(tenant=NEW_TENANT),
+            client_auth_method="client_secret_post",
+            client_assertion_alg="PS256",
+        )
+        fields.update(overrides)
+        return make_provider(**fields)
+
+    def _held_kind_change_to_entra(self, provider, meanwhile, before_release=None):
+        """Hold a PATCH {kind: entra} of ``provider`` before the lock, apply the PATCH
+        ``meanwhile`` from another admin, call ``before_release`` if given, release.
+        Returns (version before release, row)."""
+        entered, release = self.hold_at_lock("held-rederive")
+        client = self.admin_client
+        worker = Worker(
+            lambda: client.patch(f"{PROVIDERS}{provider.pk}/", {"kind": "entra"}, format="json"),
+            "held-rederive",
+        )
+        try:
+            run_threads(worker)
+            self.assertTrue(entered.wait(WAIT_TIMEOUT), "the PATCH never reached the lock")
+            response = client.patch(f"{PROVIDERS}{provider.pk}/", meanwhile, format="json")
+            self.assertEqual(response.status_code, 200, response.content)
+            before = OIDCProvider.objects.get(pk=provider.pk).version
+            if before_release is not None:
+                before_release()
+            release.set()
+        finally:
+            release.set()
+            join_all([worker], [release])
+        self.assertIsNone(worker.error, repr(worker.error))
+        self.assertEqual(worker.result.status_code, 200, worker.result.content)
+        return before, OIDCProvider.objects.get(pk=provider.pk)
+
+    def test_locked_rederived_issuer_bumps_version_once(self):
+        # Meanwhile another admin moves the generic provider's issuer away from the Entra one.
+        # Released, re-derivation writes the Entra issuer back: the only security-relevant
+        # change in the write.
+        generic = self._generic_with_tenant("gen-iss")
+        before, row = self._held_kind_change_to_entra(
+            generic, {"issuer": "https://idp.example/realms/moved"}
+        )
+        self.assertEqual(
+            (row.kind, row.issuer), ("entra", ENTRA_ISSUER.format(tenant=NEW_TENANT))
+        )
+        self.assertEqual(
+            row.version,
+            before + 1,
+            "a locked write whose re-derived issuer changed did not bump version by exactly "
+            "one (issuer must count toward the bump)",
+        )
+
+    def test_locked_rederived_assertion_alg_bumps_version_once(self):
+        # Meanwhile another admin sets the generic provider's alg to RS256. Released,
+        # re-derivation writes PS256: the only security-relevant change in the write.
+        generic = self._generic_with_tenant("gen-alg")
+        before, row = self._held_kind_change_to_entra(generic, {"client_assertion_alg": "RS256"})
+        self.assertEqual((row.kind, row.client_assertion_alg), ("entra", "PS256"))
+        self.assertEqual(
+            row.version,
+            before + 1,
+            "a locked write whose re-derived client_assertion_alg changed did not bump "
+            "version by exactly one (client_assertion_alg must count toward the bump)",
+        )
+
+    def test_locked_rederivation_equal_to_the_row_does_not_bump_version(self):
+        # Meanwhile another admin renames the provider (not security-relevant). Released,
+        # both re-derived columns equal the row's, so the write is kind alone: no bump.
+        generic = self._generic_with_tenant("gen-same")
+        before, row = self._held_kind_change_to_entra(generic, {"display_name": "Renamed"})
+        self.assertEqual(
+            (row.kind, row.issuer, row.client_assertion_alg, row.display_name),
+            ("entra", ENTRA_ISSUER.format(tenant=NEW_TENANT), "PS256", "Renamed"),
+        )
+        self.assertEqual(
+            row.version,
+            before,
+            "a locked write whose re-derived Entra columns equal the row's bumped version",
+        )
+
+    def test_refresh_minted_before_a_rederived_bump_is_reevaluated(self):
+        # An OIDC refresh token minted at the provider's version is decided without a
+        # recompute; after a locked write bumps version through a re-derived column alone,
+        # the same token must be re-evaluated (spec 5.4, D17). The token is minted after
+        # the meanwhile PATCH (itself a security-relevant write that bumps version) and
+        # before the held PATCH is released, so the re-derived bump is the only difference
+        # between the token's version and the row's.
+        generic = self._generic_with_tenant("gen-refresh", enabled=True)
+        user = User.objects.create_user(username="sso-u", user_level=User.UserLevel.ADMIN)
+        identity = OIDCIdentity.objects.create(
+            user=user,
+            provider=generic,
+            issuer=generic.issuer,
+            subject="subject-rederive",
+            mapping_claim_path="roles",
+            mapping_claim_values=["admins"],
+        )
+        minted = {}
+
+        def mint_at_current_version():
+            current = OIDCProvider.objects.get(pk=generic.pk)
+            _, minted["token"] = flow.mint(user, current, identity, User.UserLevel.ADMIN)
+            minted["version"] = current.version
+            with mock.patch.object(
+                refresh_mod, "_recompute", wraps=refresh_mod._recompute
+            ) as recompute:
+                self.assertEqual(self.refresh(minted["token"]).status_code, 200)
+            recompute.assert_not_called()
+
+        before, row = self._held_kind_change_to_entra(
+            generic, {"client_assertion_alg": "RS256"}, before_release=mint_at_current_version
+        )
+        self.assertEqual(minted["version"], before)
+        with mock.patch.object(
+            refresh_mod, "_recompute", wraps=refresh_mod._recompute
+        ) as recompute:
+            response = self.refresh(minted["token"])
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(
+            recompute.call_count,
+            1,
+            f"a refresh token minted at version {minted['version']} was not re-evaluated "
+            f"after the locked write left the row at version {row.version}: the re-derived "
+            "client_assertion_alg did not bump version",
+        )
+        self.assertEqual(row.version, before + 1)
 
     def test_concurrent_disables_of_last_two_providers_one_wins(self):
         set_password_login(False)

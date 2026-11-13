@@ -132,6 +132,8 @@ gh attestation verify oci://ghcr.io/d10scot/dispatcharr:latest \
   --owner D10Scot
 ```
 
+Signing goes through `scripts/cosign_sign_once.sh` (#682). `cosign sign` can time out posting its Rekor entry after the entry landed, and its retry is then answered `409 an equivalent entry already exists` by the job's own entry, before any signature is pushed. On exactly that 409 the script signs again (a new ephemeral key cannot conflict), at most twice more, with the transparency log on, and finishes with a `cosign verify` pinned to the job's own workflow identity. Any other error fails at once.
+
 ## Registry & distribution
 
 - **Canonical registry:** `ghcr.io/d10scot/dispatcharr`. This fork does not

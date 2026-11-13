@@ -45,6 +45,7 @@ export const OIDC_FAULTS = [
   'expired',
   'alg-none',
   'unknown-kid',
+  'bad-signature',
   'missing-iss-param',
 ] as const;
 export type OidcFault = (typeof OIDC_FAULTS)[number];
@@ -309,8 +310,14 @@ function idTokenFor(issued: IssuedCode): string {
     iat: fault === 'expired' ? now - 2 * 3600 : now,
     exp: fault === 'expired' ? now - 3600 : now + ID_TOKEN_TTL_S,
   };
-  if (fault === 'alg-none') return unsigned(payload);
-  return signRs256(payload, fault === 'unknown-kid' ? rogueKey() : publishedKey());
+  if (fault === 'alg-none') return unsigned(payload, publishedKey().kid);
+  if (fault === 'unknown-kid') return signRs256(payload, rogueKey());
+  // A second key's signature under the published kid, rather than the published key's
+  // signature with bytes flipped: an edit to the last base64url character can leave the
+  // decoded bytes unchanged (its low bits are padding a lenient decoder ignores), and then
+  // the "bad" signature verifies. A signature by a different RSA key cannot.
+  if (fault === 'bad-signature') return signRs256(payload, rogueKey(), publishedKey().kid);
+  return signRs256(payload, publishedKey());
 }
 
 /** RFC 6749 4.1.3, with `client_secret_post` client authentication and PKCE required. */

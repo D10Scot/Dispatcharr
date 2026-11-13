@@ -38,13 +38,53 @@ relay records its own spans (section 6).
 OTLP is enabled in a process if and only if `OTEL_EXPORTER_OTLP_ENDPOINT` is set and non-empty and
 `OTEL_SDK_DISABLED` is not `true`. Only OTLP over HTTP with protobuf is supported.
 
-> **Before you enable OTLP in production, the K2 gevent soak is owed.** The spec requires one soak
-> before OTLP is turned on anywhere that matters: a uWSGI worker under the project's own
-> `gevent = 400`, polled for ten minutes with OTLP on, showing no hung worker. **That soak has not
-> been run.** O5 ran the gevent context-propagation test only. Upstream has open reports of
-> deadlocks in the Python metric reader under gevent (opentelemetry-python #4345, #5788). If a
-> worker hangs, set `OTEL_METRICS_EXPORTER=none` and report it. Until the soak is done, treat
-> OTLP on the Python processes as experimental. The relay is Go and is not affected.
+> **The K2 gevent soak has been run once, on a shared machine, and no worker hung.** The spec's
+> risk K2 asks for one soak before OTLP is turned on anywhere that matters: a uWSGI worker under
+> the project's own `gevent = 400`, polled for ten minutes with OTLP on, showing no hung worker.
+> Upstream has open reports of deadlocks in the Python metric reader under gevent
+> (opentelemetry-python #4345, #5788).
+>
+> The soak ran on 2026-11-13 against the published image built from `cf40b42e`, digest
+> `sha256:38bd0cc633ff8a39d7cdea0c2773065d4313cf3fa3babb1483e06a0d98f4f9bf` (SDK 1.45.2, instrumentations 0.66b2, gevent 26.7.0, uWSGI 2.0.31). It used the
+> all-in-one image with `docker/uwsgi.ini` unchanged: four workers and `gevent = 400`. Traces,
+> metrics and logs all went to an OpenTelemetry Collector 0.165.0 over OTLP/HTTP. The settings
+> were `OTEL_METRIC_EXPORT_INTERVAL=1000` (one export a second rather than one a minute), every
+> trace sampled, and the API's `max-requests` raised so that a recycle could not hide a hang.
+> The load was 100 concurrent clients through nginx, for 11 minutes, run twice. That is about 25
+> requests in flight per worker, not 400: uWSGI's default listen backlog of 100 capped the load,
+> and a pilot at 120 clients drew 9,071 502s from nginx. The clients
+> requested `/api/core/version/`, an authenticated `/api/core/settings/` and, for one request
+> in ten, a 404 that writes a log record.
+>
+> | | Run 1 | Run 2 |
+> |---|---|---|
+> | Requests (errors) | 1,153,361 (0) at 1,744/s | 543,052 (0) at 823/s |
+> | Collector accepted: spans, metric points, log records (refused) | 2,924,650, 18,721, 115,327 (0) | 1,377,644, 16,661, 54,273 (0) |
+> | 1 s poll: p50, p99, max | 0.046 s, 2.1 s, 6.5 s | 0.079 s, 3.6 s, 7.6 s |
+> | Longest gap between one worker's metric exports | 6.5 s | 19.8 s |
+>
+> In both runs the four workers had the same PIDs before and after, with no harakiri and no
+> respawn. Every worker exported metrics and served requests in every minute of the run, and the
+> collector's counters for all three signals rose in every 30-second scrape. At the end,
+> `py-spy dump` showed each worker idle in `Hub.run`, with no thread in the SDK.
+>
+> **The latency bounds set beforehand were missed.** There were three:
+>
+> - every poll answers within 5 seconds: missed in both runs (6.5 s and 7.6 s);
+> - no gap between polls exceeds 6 seconds: missed in both runs (6.5 s and 7.6 s);
+> - no gap between one worker's metric exports exceeds 10 seconds: met in run 1 (6.5 s), missed
+>   in run 2 (19.8 s).
+>
+> The host was saturated by work outside the soak during both runs. Its load-average readings
+> were unreliable (macOS's figure wrapped near 1024) and are not quoted. The evidence for
+> saturation is how the slowdown spread. All four workers slowed evenly, and so did
+> `celery-beat`, which serves no requests. The Go relay's exports kept to time. That fits CPU
+> starvation and does not fit a lock, but this soak cannot rule out an SDK stall hidden inside
+> it. Repeat it on a quiet machine before OTLP goes on in production. Record CPU idle as well as
+> load, and raise uWSGI's `listen` so that each worker carries more greenlets.
+>
+> Until then, treat OTLP on the Python processes as experimental. If a worker hangs, set
+> `OTEL_METRICS_EXPORTER=none` and report it. The relay is Go and is not affected.
 
 | Variable | Behaviour |
 |---|---|

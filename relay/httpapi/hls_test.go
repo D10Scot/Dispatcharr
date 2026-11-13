@@ -973,10 +973,17 @@ func TestADepartedSessionResumesOnItsRunningPipeline(t *testing.T) {
 	if status, _, _ := r.getHLS(t, b.path("video.m3u8")); status != http.StatusOK {
 		t.Fatalf("B's GET answered %d", status)
 	}
-	r.tick(t)
-	waitFor(t, "A's departure", 10*time.Second, func() bool {
-		return sameIDs(clientIDs(r.listedClients(t, "c-resume2")), "client-ts", "client-b")
-	})
+	// Sweep here and run each departure to completion, as departAfter does
+	// (issue #566): Departure.Run releases the registry entry BEFORE the
+	// table settles the session, so a wait on the registry alone can let
+	// A's GET land between the two and answer 503 "settling". The rig's
+	// sweeper is idle: it sweeps only when a test sends it a tick.
+	for _, d := range r.Sessions.Sweep() {
+		d.Run()
+	}
+	if got := clientIDs(r.listedClients(t, "c-resume2")); !sameIDs(got, "client-ts", "client-b") {
+		t.Fatalf("after A's departure ran the registry lists %v, want the TS client and B", got)
+	}
 
 	status, _, body := r.getHLS(t, a.path("video.m3u8"))
 	if status != http.StatusOK || !strings.Contains(string(body), "#EXT-X-TARGETDURATION") {

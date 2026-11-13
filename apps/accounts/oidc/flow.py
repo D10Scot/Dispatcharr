@@ -466,6 +466,8 @@ def callback(request, provider, base_url):
             # abort, answers a fixed code rather than a 500 that would put the callback's
             # query in the 5xx log. The character checks in validate and provisioning refuse
             # or strip what is known; this keeps the redirect promise when they miss one.
+            # admin_floor.AdminFloorBusy is a DatabaseError too: the admin-floor lock was not
+            # granted within its bound, logged as AdminFloorBusy sqlstate=55P03.
             logger.warning(
                 "OIDC provisioning failed: %s sqlstate=%s", type(exc).__name__, sqlstate(exc)
             )
