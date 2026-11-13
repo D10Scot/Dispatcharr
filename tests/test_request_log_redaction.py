@@ -560,11 +560,11 @@ class ValueScrubTests(SimpleTestCase):
         out = RequestLogCredentialFilter().filter(record)
         self.assertEqual(out.getMessage(), "fetch /***/***/***/1.ts failed")
 
-    def test_a_path_argument_is_read_whole_where_it_sits(self):
-        # Review round 8: a %s string argument is also read whole, on its own
-        # (a credential holding a space is one segment only there), and its
-        # masks are placed where it sits in the rendered message. No request
-        # is attached, so the value pass cannot help.
+    def test_a_path_argument_is_read_whole(self):
+        # Review round 8: a string argument is read whole, on its own (a
+        # credential holding a space is one segment only there), before the
+        # message is rendered from it. No request is attached, so the value
+        # pass cannot help.
         path = f"/movie/{Q_USER}/xcpw sentinel-q8/1.mp4"
         out = RequestLogCredentialFilter().filter(self._record("Not Found: %s", path))
         self.assertEqual(out.getMessage(), "Not Found: /movie/***/***/1.mp4")
@@ -575,9 +575,36 @@ class ValueScrubTests(SimpleTestCase):
         ))
         self.assertEqual(out.getMessage(), "HTTP GET /movie/***/***/1.mp4 404 [0.01, 127.0.0.1:1]")
 
-    def test_a_template_whose_arguments_cannot_be_placed_masks_them_first(self):
-        # %r renders an argument as other text, so it cannot be placed: the
-        # string arguments are masked first and the message masked after.
+    def test_round_8_shapes_as_arguments_keep_their_masks(self):
+        # Review round 9, N1: an argument is masked first and the rendered
+        # message read again, which is where a round-8 style re-read could
+        # lose a mask. It cannot here: each argument's masks come from its own
+        # text, and the message pass only adds. Django's, the CSRF and
+        # Daphne's templates, no request attached.
+        for path, masked in (
+            (f"/api/vod/series/12/?page=1&next=/x&token={Q_PASS}", "/api/vod/series/***/***/x&token=***"),
+            (f"/proxy/vod/movie/{_UUID}/sess1?x=a/b&token={Q_PASS}", "/proxy/vod/movie/***/***/b&token=***"),
+            (f"/movie/{Q_USER}/{Q_PASS}?password={Q_PASS}/{Q_USER}", "/movie/***/***"),
+            (f"/x/live/a#b=/c/d&access_token={Q_PASS}", "/x/live/***/***/d&access_token=***"),
+            (f"/movie/{Q_USER}/pa?username=x&{Q_PASS}/1.mp4", "/movie/***/***/1.mp4"),
+            (f"/live/{Q_USER}/xcpw sentinel-q8/1.ts", "/live/***/***/1.ts"),
+        ):
+            with self.subTest(path=path):
+                out = RequestLogCredentialFilter().filter(self._record("%s: %s", "Not Found", path))
+                self.assertEqual(out.getMessage(), f"Not Found: {masked}")
+                out = RequestLogCredentialFilter().filter(self._record(
+                    "Forbidden (%s): %s", "CSRF cookie not set.", path, name="django.security.csrf",
+                ))
+                self.assertEqual(out.getMessage(), f"Forbidden (CSRF cookie not set.): {masked}")
+                out = RequestLogCredentialFilter().filter(self._record(
+                    "HTTP %(method)s %(path)s %(status)s", {"method": "GET", "path": path, "status": 404},
+                    name="django.channels.server",
+                ))
+                self.assertEqual(out.getMessage(), f"HTTP GET {masked} 404")
+
+    def test_a_repr_argument_is_masked_before_it_is_rendered(self):
+        # %r renders an argument as other text (quoted, escaped): the string
+        # arguments are masked first and the message masked after.
         path = f"/movie/{Q_USER}/xcpw sentinel-q8/1.mp4"
         out = RequestLogCredentialFilter().filter(self._record("lookup %r failed", path))
         self.assertEqual(out.getMessage(), "lookup '/movie/***/***/1.mp4' failed")
@@ -1113,6 +1140,10 @@ ORDINARY_OVER_MASKED = (
     ('/redirect?next=/a%20b/c', '/***'),
     ('/index.php?s=/Index/\\think\\app/invokefunction', '/***'),
     ('GET /api/x?q=a%20b HTTP/1.1', 'GET /*** HTTP/1.1'),
+    # review round 9, F7: a scheme URL keeps its host, a "//" token does not
+    # (it is read as a path from its first "/")
+    ('http://h/x?q=a%20b', 'http://h/***'),
+    ('//h/x?q=a%20b', '/***'),
     # review round 8, F5: a relative three-part token ending in a number is
     # read as the bare-root route, as redact_url reads it (every head)
     ('12/Nov/2026', '***/***/2026'),

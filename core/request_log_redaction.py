@@ -23,8 +23,8 @@ least ``MIN_SCRUBBED_VALUE_LENGTH`` characters long), so a credential in a
 form or position the patterns miss is still removed. Both passes read the
 text as it is, never decoded and never another pass's output: each mask is a
 range of that text, and the union of the ranges is applied once
-(``_render``). The one exception is a message template whose string
-arguments cannot be placed in the rendered text (``_redact_message``). A
+(``_render``). The one exception is a message and its string arguments:
+the arguments are masked first, then the rendered message (``_redact_message``). A
 path the pattern pass cannot read plainly (one holding ``%`` or a
 backslash) is logged as ``/***``. The original record is never mutated (a
 filter returning a record replaces it for that handler only, Python 3.12+). Records
@@ -428,74 +428,19 @@ def _redact(text, values):
     return _render(text, _pattern_ranges(text) + _value_ranges(text, values))
 
 
-# A printf conversion of a logging template.
-_CONVERSION_RE = re.compile(r"%(?:\(([^()]*)\))?[-#0 +]*(?:\*|\d+)?(?:\.(?:\*|\d*))?[hlL]?([diouxXeEfFgGcrsa%])")
-
-
-def _rendered_arguments(record):
-    """The record's message and where each plain ``%s`` string argument sits in it.
-
-    Returns (message, [(offset, argument)]), or None when the template is not
-    one this can render exactly as ``getMessage`` does (``*`` widths, a
-    non-string template, a string argument under any conversion but a plain
-    ``%s``, a mismatch). Django's own request records (``%s`` with a tuple)
-    and Daphne's (``%(name)s`` with a mapping) are rendered here.
-    """
-    msg, args = record.msg, record.args
-    if not args:
-        return str(msg), []
-    if not isinstance(msg, str):
-        return None
-    out, placed, pos, length, index = [], [], 0, 0, 0
-    for match in _CONVERSION_RE.finditer(msg):
-        if "*" in match.group(0):
-            return None
-        literal = msg[pos:match.start()]
-        out.append(literal)
-        length += len(literal)
-        key, conversion = match.group(1), match.group(2)
-        if conversion == "%":
-            piece = "%"
-        else:
-            if key is not None:
-                value = args[key]
-                spec = "%" + match.group(0)[len(key) + 3:]
-            else:
-                value = args[index]
-                index += 1
-                spec = match.group(0)
-            if isinstance(value, str):
-                if spec != "%s":
-                    return None  # %r, %a or a width: the argument is not its own text
-                placed.append((length, value))
-            piece = spec % (value,)
-        out.append(piece)
-        length += len(piece)
-        pos = match.end()
-    out.append(msg[pos:])
-    return "".join(out), placed
-
-
 def _redact_message(record, values):
-    """The rendered message with its masks applied.
+    """The rendered message with its masks applied: (original, redacted).
 
-    The masks are those of the rendered text, plus, for each plain ``%s``
-    string argument, those of the argument read whole on its own (a path whose
-    credential holds a space is one segment only there), placed where the
-    argument sits. All are ranges of the rendered text. A template this cannot
-    place arguments in is rendered with its string arguments masked first and
-    then masked as a whole: the one place one mask pass reads another's output.
+    Each string argument is masked first, read whole and token by token on
+    its own (a path whose credential holds a space is one segment only
+    there), and the message rendered from the masked arguments is masked
+    again as a whole, which adds the masks of text a template glues to an
+    argument. This is the one place one pass reads another's output. It can
+    only add masks: every credential inside an argument is masked from the
+    argument's own text before the message is read, and a mask (``***``)
+    holds no character the message pass keys on.
     """
     original = record.getMessage()
-    try:
-        rendered = _rendered_arguments(record)
-    except Exception:  # noqa: BLE001 - getMessage rendered it; fall back below
-        rendered = None
-    if rendered is not None and rendered[0] == original:
-        ranges = _pattern_ranges(original) + _value_ranges(original, values)
-        for offset, argument in rendered[1]:
-            ranges += [(offset + a, offset + b, opaque) for a, b, opaque in _pattern_ranges(argument)]
-        return original, _render(original, ranges)
     probe = copy.copy(record)
     if isinstance(record.args, dict):
         probe.args = {key: _redact(value, values) for key, value in record.args.items()}
