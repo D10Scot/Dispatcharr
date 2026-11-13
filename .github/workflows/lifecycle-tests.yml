@@ -187,7 +187,11 @@ jobs:
           REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           REPO_OWNER="$(echo "$REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')"
-          docker build -f docker/Dockerfile --build-arg REPO_OWNER="$REPO_OWNER" -t dispatcharr-e2e:local .
+          # REPO_NAME from this repository's own name, so the image builds on
+          # <owner>/<this repo>:base before and after a repository rename;
+          # docker/Dockerfile's default would otherwise pin the old name.
+          REPO_NAME="$(basename "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')"
+          docker build -f docker/Dockerfile --build-arg REPO_OWNER="$REPO_OWNER" --build-arg REPO_NAME="$REPO_NAME" -t dispatcharr-e2e:local .
 
       # Neither lifecycle spec uses the provider, but scripts/e2e_up.sh starts
       # it unconditionally and waits for /scenarios before starting
@@ -426,9 +430,18 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PUSH_BEFORE: ${{ github.event.before }}
-          IMAGE_REPO: ghcr.io/d10scot/dispatcharr
+          # The name images were published under before the repository was
+          # renamed. After the rename the nearest ancestors with an image exist
+          # only under it, so each commit is tried under this repository's own
+          # name first and then under this one.
+          LEGACY_IMAGE_REPO: ghcr.io/d10scot/dispatcharr
         run: |
           set -euo pipefail
+
+          image_repos=("ghcr.io/$(echo "$GITHUB_REPOSITORY" | tr '[:upper:]' '[:lower:]')")
+          if [ "${image_repos[0]}" != "$LEGACY_IMAGE_REPO" ]; then
+            image_repos+=("$LEGACY_IMAGE_REPO")
+          fi
 
           case "$EVENT_NAME" in
             pull_request) start="$PR_BASE_SHA" ;;
@@ -451,22 +464,26 @@ jobs:
           fi
 
           resolved=""
+          resolved_repo=""
           checked=0
           for sha in $(git rev-list --max-count=50 "$start"); do
             checked=$((checked + 1))
-            if docker manifest inspect "${IMAGE_REPO}:${sha}" >/dev/null 2>&1; then
-              resolved="$sha"
-              break
-            fi
+            for repo in "${image_repos[@]}"; do
+              if docker manifest inspect "${repo}:${sha}" >/dev/null 2>&1; then
+                resolved="$sha"
+                resolved_repo="$repo"
+                break 2
+              fi
+            done
           done
 
           if [ -z "$resolved" ]; then
-            echo "::error::No published image found in the $checked commits before ${start}. docker-build.yml is path-filtered, so a long run of docs-only merges can produce this — widen fetch-depth, or investigate whether docker-build.yml is failing. Refusing to fall back to :latest, which on a push to main can be the commit under test."
+            echo "::error::No published image found under ${image_repos[*]} in the $checked commits before ${start}. docker-build.yml is path-filtered, so a long run of docs-only merges can produce this — widen fetch-depth, or investigate whether docker-build.yml is failing. Refusing to fall back to :latest, which on a push to main can be the commit under test."
             exit 1
           fi
 
-          echo "Baseline resolved to ${IMAGE_REPO}:${resolved} after checking ${checked} commit(s) back from ${start}."
-          echo "DISPATCHARR_E2E_BASELINE_IMAGE=${IMAGE_REPO}:${resolved}" >> "$GITHUB_ENV"
+          echo "Baseline resolved to ${resolved_repo}:${resolved} after checking ${checked} commit(s) back from ${start}."
+          echo "DISPATCHARR_E2E_BASELINE_IMAGE=${resolved_repo}:${resolved}" >> "$GITHUB_ENV"
 
       # DISPATCHARR_E2E_BASELINE_IMAGE comes from the step above via $GITHUB_ENV.
       # The spec additionally refuses to fall back to `:latest` when CI is set,
