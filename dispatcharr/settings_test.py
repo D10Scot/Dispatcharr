@@ -26,6 +26,10 @@ from dispatcharr.settings import *  # noqa: F401,F403
 # is chosen below. The marker describes the live database only; tests set it with
 # override_settings.
 RUNTIME_SQLITE = False
+# Likewise the break-glass switch (SSO spec 5.6): a test process that inherits
+# MINO_PASSWORD_LOGIN_FORCE=1 would silently open every password gate under test. Tests that
+# need it set it with override_settings.
+PASSWORD_LOGIN_FORCE = False
 
 TEST_RUNNER = "dispatcharr.test_runner.DispatcharrDiscoverRunner"
 

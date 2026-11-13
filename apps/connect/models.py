@@ -19,6 +19,7 @@ SUPPORTED_EVENTS = {
     "m3u_blocked": "M3U Blocked",
     "vod_start": "VOD Started",
     "vod_stop": "VOD Stopped",
+    "auth_config_changed": "Authentication Configuration Changed",
 }
 
 class Integration(models.Model):

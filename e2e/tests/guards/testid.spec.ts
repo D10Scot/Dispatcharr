@@ -30,6 +30,7 @@ import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { REPO_ROOT } from './ast';
 import { SURFACES } from '../frontend/helpers';
+import { SSO_TESTIDS, SSO_TESTID_PREFIXES } from '../sso/testids';
 
 const FRONTEND_SRC = path.join(REPO_ROOT, 'frontend', 'src');
 
@@ -76,5 +77,51 @@ test('every surface testId the suite drives exists in frontend/src', { tag: '@ch
     'A surface testId in tests/frontend/helpers.ts has no matching data-testid in ' +
       'frontend/src. Either the frontend renamed it — restore it, or update SURFACES in ' +
       'the same PR — or the handle was never added. See docs/adr/0003.',
+  ).toEqual([]);
+});
+
+/** Matches a JSX template-literal testId, `data-testid={`prefix-${x}`}`, capturing the literal head. */
+const TESTID_TEMPLATE_PATTERN = /data-testid\s*=\s*\{\s*`([^`$]*)\$\{/g;
+
+async function collectTestIdPrefixes(dir: string): Promise<Set<string>> {
+  const found = new Set<string>();
+  for (const entry of await readdir(dir, { withFileTypes: true })) {
+    if (entry.name === 'node_modules' || entry.name.startsWith('.')) continue;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      for (const id of await collectTestIdPrefixes(full)) found.add(id);
+    } else if (/\.(jsx?|tsx?)$/.test(entry.name)) {
+      const src = await readFile(full, 'utf8');
+      for (const match of src.matchAll(TESTID_TEMPLATE_PATTERN)) found.add(match[1]);
+    }
+  }
+  return found;
+}
+
+// SSO spec PR S5: the `sso` project's testIds, from `tests/sso/testids.ts`. The login
+// button's id is completed with a provider slug at run time, so its prefix is checked
+// against the template literal that renders it.
+test('every testId the sso project drives exists in frontend/src', { tag: '@characterization' }, async () => {
+  const inFrontend = await collectTestIds(FRONTEND_SRC);
+  const prefixes = await collectTestIdPrefixes(FRONTEND_SRC);
+  expect(
+    prefixes.size,
+    `No template-literal data-testid found anywhere under ${FRONTEND_SRC}. That is this ` +
+      'guard being broken, not the frontend being wrong — check TESTID_TEMPLATE_PATTERN.',
+  ).toBeGreaterThan(0);
+
+  const missing = [
+    ...Object.values(SSO_TESTIDS)
+      .filter((id) => !inFrontend.has(id))
+      .map((id) => `data-testid="${id}"`),
+    ...Object.values(SSO_TESTID_PREFIXES)
+      .filter((prefix) => !prefixes.has(prefix))
+      .map((prefix) => `data-testid={\`${prefix}\${…}\`}`),
+  ];
+  expect(
+    missing,
+    'A testId in tests/sso/testids.ts has no matching data-testid in frontend/src. Either ' +
+      'the frontend renamed it — restore it, or update testids.ts in the same PR — or the ' +
+      'handle was never added. See docs/adr/0003.',
   ).toEqual([]);
 });

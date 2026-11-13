@@ -2,7 +2,7 @@ from django.contrib.auth import authenticate, login, logout
 import logging
 from django.contrib.auth.models import Group, Permission
 from django.conf import settings
-from django.db import transaction
+from django.db import IntegrityError, transaction
 from django.http import Http404, JsonResponse, HttpResponse
 from rest_framework.exceptions import APIException
 from django.views.decorators.csrf import csrf_exempt
@@ -22,12 +22,16 @@ from dispatcharr.utils import (
     setup_ip_allowed,
 )
 
-from .models import User
+from .models import OIDCProvider, User
 from . import serializers as account_serializers
 from .admin_floor import admin_floor_lock
 from .serializers import UserSerializer, GroupSerializer, PermissionSerializer
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
-from rest_framework_simplejwt.exceptions import InvalidToken
+from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+from rest_framework_simplejwt.serializers import TokenRefreshSerializer
+from rest_framework_simplejwt.tokens import RefreshToken
+from .oidc import refresh as oidc_refresh
+from . import password_login
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +91,21 @@ class TokenObtainPairView(TokenObtainPairView):
         client_ip = get_client_ip(request) or "unknown"
         user_agent = request.META.get('HTTP_USER_AGENT', 'unknown')
 
+        # SSO spec 5.3: while password login is off (and break-glass is not on) no password
+        # is checked at all. Read fresh from Postgres on every request (spec 5.1).
+        forced = password_login.forced()
+        if not (forced or password_login.stored_enabled()):
+            log_system_event(
+                event_type='login_failed',
+                user=username or 'unknown',
+                client_ip=client_ip,
+                user_agent=user_agent,
+                reason=password_login.DISABLED_CODE,
+            )
+            return Response(
+                {"code": password_login.DISABLED_CODE}, status=status.HTTP_403_FORBIDDEN
+            )
+
         try:
             logger.debug(f"Attempting JWT login for user={username}")
             response = super().post(request, *args, **kwargs)
@@ -100,12 +119,15 @@ class TokenObtainPairView(TokenObtainPairView):
                         user.last_login = timezone.now()
                         user.save(update_fields=['last_login'])
 
-                        # Log successful login
+                        # Log successful login. Under break-glass every password
+                        # login says so (spec 5.6).
+                        extra = {"break_glass": True} if forced else {}
                         log_system_event(
                             event_type='login_success',
                             user=username,
                             client_ip=client_ip,
                             user_agent=user_agent,
+                            **extra,
                         )
                         logger.info(f"Login success: user={username} ip={client_ip}")
                     except User.DoesNotExist:
@@ -136,7 +158,50 @@ class TokenObtainPairView(TokenObtainPairView):
             raise  # Re-raise the exception to maintain normal error flow
 
 
+class OIDCAwareTokenRefreshSerializer(TokenRefreshSerializer):
+    """simplejwt's refresh, preceded by the OIDC rules of SSO spec 5.4.
+
+    A refresh token carrying ``auth_method == "oidc"`` is refused when its provider is
+    disabled or deleted, and is re-evaluated against the provider's current mappings when the
+    provider's version has moved since the token was minted (D17). A password-issued token
+    (any token without that claim) is refused while password login is off and break-glass is
+    not on (D13, spec 5.3). The token's claims are never rewritten.
+    """
+
+    def validate(self, attrs):
+        try:
+            token = RefreshToken(attrs["refresh"])
+        except TokenError:
+            # simplejwt's own validate raises the same error; the view maps it to 401.
+            return super().validate(attrs)
+        if token.payload.get("auth_method") != "oidc":
+            # D13: a password-issued pair stops refreshing once password login is off, so
+            # only its access-token tail (at most 30 minutes) survives the switch. The
+            # break-glass override turns this refusal off (spec 5.6).
+            if not password_login.allowed():
+                raise InvalidToken()
+        else:
+            try:
+                oidc_refresh.check(token.payload)
+            except oidc_refresh.LastAdminRefused as exc:
+                from core.utils import log_system_event
+
+                request = self.context.get("request")
+                log_system_event(
+                    event_type="login_failed",
+                    user=exc.username,
+                    client_ip=(get_client_ip(request) if request else None) or "unknown",
+                    user_agent=(request.META.get("HTTP_USER_AGENT", "unknown") if request else "unknown"),
+                    reason="last_admin",
+                    provider=exc.provider_slug,
+                )
+                raise InvalidToken() from None
+        return super().validate(attrs)
+
+
 class TokenRefreshView(TokenRefreshView):
+    serializer_class = OIDCAwareTokenRefreshSerializer
+
     def post(self, request, *args, **kwargs):
         # Custom logic here
         if not network_access_allowed(request, "UI"):
@@ -165,8 +230,10 @@ class TokenRefreshView(TokenRefreshView):
 
 @csrf_exempt  # Bootstrap only; POST is IP-gated and closes once an admin exists.
 def initialize_superuser(request):
-    # If an admin-level user already exists, the system is configured
-    if User.objects.filter(user_level__gte=10).exists():
+    # If an admin-level user already exists, the system is configured. So is an instance
+    # with an SSO provider: it holds an IdP credential and SSO-provisioned users and must
+    # not be claimable from the LAN whatever emptied its admin set (SSO spec 4.4).
+    if User.objects.filter(user_level__gte=10).exists() or OIDCProvider.objects.exists():
         return JsonResponse(_setup_status_payload(request, superuser_exists=True))
 
     if request.method == "POST":
@@ -334,7 +401,17 @@ class UserViewSet(viewsets.ModelViewSet):
 
     @extend_schema(description="Delete a user")
     def destroy(self, request, *args, **kwargs):
-        return super().destroy(request, *args, **kwargs)
+        # Django's CASCADE is collected in Python: an SSO link committed while this delete
+        # waited for the user row leaves an identity the collector never saw, and the
+        # foreign key refuses the delete at commit. Answer 409 and let the admin retry; the
+        # second attempt sees the identity and removes it with the user (SSO spec 4.4).
+        try:
+            with transaction.atomic():
+                return super().destroy(request, *args, **kwargs)
+        except IntegrityError:
+            return Response(
+                {"code": "user_changed_during_delete"}, status=status.HTTP_409_CONFLICT
+            )
 
     @extend_schema(
         description="Get or update active user information. PATCH updates custom_properties with merge semantics.",
@@ -358,6 +435,22 @@ class UserViewSet(viewsets.ModelViewSet):
             if isinstance(cp, dict):
                 for key in ADMIN_ONLY_PROPS:
                     cp.pop(key, None)
+
+            # An SSO-provisioned user has no usable password, and must not give themselves
+            # one: a local password would bypass the IdP and its MFA (SSO spec 5.4, T12). An
+            # admin can still set one through users/<id>/, a deliberate local decision.
+            if "password" in request.data and not user.has_usable_password():
+                return Response(
+                    {"code": "password_not_allowed"}, status=status.HTTP_400_BAD_REQUEST
+                )
+            # While password login is off nobody sets a password here, whoever they are
+            # (SSO spec 5.3, T12): a password set now would be one more credential nothing
+            # accepts, until break-glass turns it into a way round the IdP.
+            if "password" in request.data and not password_login.allowed():
+                return Response(
+                    {"code": password_login.DISABLED_CODE},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
 
             serializer = UserSerializer(user, data=request.data, partial=True)
             serializer.is_valid(raise_exception=True)

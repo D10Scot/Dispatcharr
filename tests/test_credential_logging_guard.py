@@ -416,3 +416,259 @@ class CredentialLoggingGuardTests(SimpleTestCase):
         ]
         result = self.run_guard(*targets)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+
+# The bare-name and TRACE rules. Each source is (name, source, reported lines).
+HEADER = "import logging\nfrom dispatcharr.utils import redact_url, redact_text\nlogger = logging.getLogger(__name__)\n"
+
+NAME_CASES = (
+    ("bare url, percent form", 'logger.debug("fetch %s", url)', True),
+    ("bare url, f-string", 'logger.debug(f"fetch {url}")', True),
+    ("bare url, attribute", 'logger.info("fetch %s", repo.url)', True),
+    ("bare url, redact_url", 'logger.debug("fetch %s", redact_url(url))', False),
+    ("bare url, f-string redact_url", 'logger.debug(f"fetch {redact_url(url)}")', False),
+    ("bare url, redact_text", 'logger.debug("fetch %s", redact_text(url))', False),
+    ("url only in message text", 'logger.info(f"Generated stream url: {redact_url(u)}")', False),
+    ("pattern, percent form", 'logger.debug("using %s", search_pattern)', True),
+    ("pattern, f-string", 'logger.debug(f"using {replace_pattern!r}")', True),
+    ("bare pattern, attribute", 'logger.warning("using %s", flt.pattern)', True),
+    ("pattern, redact_text", 'logger.debug("using %s", redact_text(search_pattern))', False),
+    ("pattern only in message text", 'logger.info(f"Custom pattern did not match {name}")', False),
+    ("trace, bare url", 'logger.trace("fetch %s", url)', True),
+    ("trace, f-string url", 'logger.trace(f"fetch {stream_url}")', True),
+    ("trace, pattern", 'logger.trace("using %s", search_pattern)', True),
+    ("trace, redacted", 'logger.trace("fetch %s", redact_url(url))', False),
+    ("format field attribute", 'logger.info("{0.search_pattern}".format(profile))', True),
+    ("format field with conversion", 'logger.info("{0.url!s}".format(obj))', True),
+    ("format named field", 'logger.info("{o.url}".format(o=obj))', True),
+    ("format of a redacted value", 'logger.info("{}".format(redact_url(url)))', False),
+    ("format fields naming nothing", 'logger.info("{0.name} {1}".format(obj, n))', False),
+    ("lazy mapping template", 'logger.info("%(url)s", row)', True),
+    ("lazy mapping template, other key", 'logger.info("%(name)s", row)', False),
+    ("lazy mapping, escaped percent", 'logger.info("%%(url)s", row)', False),
+    ("escaped percent then a real key", 'logger.info("%%%(url)s" % row)', True),
+    ("inline dict, redacted value", 'logger.info("%(url)s", {"url": redact_url(u)})', False),
+    ("inline dict, raw value", 'logger.info("%(url)s", {"url": u})', True),
+    ("inline dict, innocent-looking raw value", 'logger.info("%(url)s", {"url": value})', True),
+    ("inline dict, one redacted one raw", 'logger.info("%(url)s %(search_pattern)s", {"url": redact_url(u), "search_pattern": p})', True),
+    ("inline dict, both redacted", 'logger.info("%(url)s %(search_pattern)s", {"url": redact_url(u), "search_pattern": redact_text(p)})', False),
+    ("inline dict, key not selected", 'logger.info("%(name)s", {"name": n, "url": redact_url(u)})', False),
+    # DOCUMENTED CONSERVATIVE FALSE POSITIVE (see the checker's KNOWN GAPS): a
+    # keyword-supplied .format field is not traced to its redacted value. Pinned
+    # so a change in this behaviour is deliberate; the safe form passes the
+    # redacted value positionally.
+    ("format keyword field, redacted value (known false positive)", 'logger.info("{search_pattern}".format(search_pattern=redact_text(p)))', True),
+    ("format positional field, redacted value", 'logger.info("{}".format(redact_text(p)))', False),
+    ("inline dict spread", 'logger.info("%(url)s", {**row})', True),
+    ("eager inline dict, redacted", 'logger.info("%(url)s" % {"url": redact_url(u)})', False),
+    ("eager inline dict, raw", 'logger.info("%(url)s" % {"url": u})', True),
+    ("eager inline dict, one redacted one raw", 'logger.info("%(url)s %(search_pattern)s" % {"url": redact_url(u), "search_pattern": p})', True),
+    ("eager non-inline mapping", 'logger.info("%(url)s" % row)', True),
+    ("escaped percent is text", 'logger.info("%%(url)s %s" % name)', False),
+    ("percent mapping key applied", 'logger.info("%(url)s" % row)', True),
+    ("getattr literal", 'logger.info("%s", getattr(obj, "url"))', True),
+    ("getattr literal pattern", 'logger.info("%s", getattr(obj, "search_pattern", None))', True),
+    ("getattr redacted", 'logger.info("%s", redact_url(getattr(obj, "url")))', False),
+    ("getattr other name", 'logger.info("%s", getattr(obj, "name"))', False),
+    ("subscript literal", 'logger.info("%s", row["url"])', True),
+    ("dict get literal", 'logger.info("%s", row.get("search_pattern"))', True),
+    ("dict get other key", 'logger.info("%s", row.get("name"))', False),
+    ("extra mapping value", 'logger.info("fetch", extra={"value": url})', True),
+    ("extra mapping redacted", 'logger.info("fetch", extra={"value": redact_url(url)})', False),
+    ("extra mapping key only", 'logger.info("fetch", extra={"url": name})', False),
+    ("trace, nothing credential-like", 'logger.trace("started %s", name)', False),
+)
+
+
+class WidenedNameRuleTests(SimpleTestCase):
+    """Bare `url`, `pattern`/`*_pattern` and `logger.trace` (R15)."""
+
+    setUp = CredentialLoggingGuardTests.setUp
+    write = CredentialLoggingGuardTests.write
+    run_guard = CredentialLoggingGuardTests.run_guard
+
+    def run_case(self, source):
+        path = self.write("case.py", HEADER + "def go():\n    " + source + "\n")
+        return self.run_guard(path)
+
+    def test_each_name_and_trace_case(self):
+        for label, source, reported in NAME_CASES:
+            with self.subTest(label):
+                result = self.run_case(source)
+                detail = (
+                    f"{label}: {source}\nreturncode={result.returncode}\n"
+                    f"stdout={result.stdout!r}\nstderr={result.stderr!r}"
+                )
+                if reported:
+                    self.assertEqual(result.returncode, 1, f"not reported\n{detail}")
+                    self.assertEqual(
+                        len(result.stdout.splitlines()), 1, f"expected one finding\n{detail}"
+                    )
+                else:
+                    self.assertEqual(result.returncode, 0, f"wrongly reported\n{detail}")
+                    self.assertEqual(result.stderr, "", f"unexpected stderr\n{detail}")
+
+    def test_a_marker_with_a_reason_clears_a_bare_name(self):
+        result = self.run_case(
+            'logger.debug("using %s", search_pattern)  # credential-logging: ignore - presence only'
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_marker_without_a_reason_does_not_clear_a_bare_name(self):
+        result = self.run_case(
+            'logger.trace("using %s", search_pattern)  # credential-logging: ignore'
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("needs a reason", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_the_source_tree_is_clean_under_the_widened_rule(self):
+        # A live ratchet over every backend source file, not a fixture.
+        repo = GUARD.resolve().parent.parent
+        targets = sorted(
+            p
+            for top in ("apps", "core", "dispatcharr")
+            for p in (repo / top).rglob("*.py")
+        )
+        self.assertGreater(len(targets), 100)
+        result = self.run_guard(*targets)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # The CLI only warns about a file it cannot read or parse and still
+        # exits 0, so a skipped file would pass the line above unseen.
+        self.assertEqual(result.stderr, "", "a file was not scanned")
+
+    def test_a_marker_inside_a_string_does_not_clear_a_call(self):
+        for label, source in (
+            ("message string", 'logger.info("credential-logging: ignore - demo %s", url)'),
+            (
+                "multiline string",
+                'logger.info("""\ncredential-logging: ignore - demo\n%s""", url)',
+            ),
+            (
+                "docstring beside the call",
+                '"""credential-logging: ignore - demo"""\n    logger.info("%s", url)',
+            ),
+        ):
+            with self.subTest(label):
+                result = self.run_case(source)
+                self.assertEqual(result.returncode, 1, f"{label} cleared the call")
+                self.assertIn("case.py:", result.stdout, f"{label}: no finding line")
+                self.assertEqual(result.stderr, "", f"{label}: the checker crashed")
+
+    def test_a_marker_in_a_real_comment_on_any_spanned_line_clears_a_call(self):
+        result = self.run_case(
+            'logger.info(\n        "%s",  # credential-logging: ignore - demo reason\n        url,\n    )'
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+    def test_a_marker_on_a_line_the_call_does_not_span_clears_nothing(self):
+        result = self.run_case(
+            '# credential-logging: ignore - demo reason\n    logger.info("%s", url)'
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("case.py:", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_one_marker_cannot_clear_two_calls_on_one_line(self):
+        result = self.run_case(
+            'logger.info("%s", url); logger.info("%d", len(name))'
+            '  # credential-logging: ignore - length only'
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ambiguous", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_one_marker_cannot_clear_a_nested_logging_call(self):
+        result = self.run_case(
+            'logger.info("%s", [logger.debug("%s", url)])'
+            '  # credential-logging: ignore - demo reason'
+        )
+        self.assertEqual(result.returncode, 1, result.stdout)
+        self.assertIn("ambiguous", result.stdout)
+        self.assertEqual(result.stderr, "")
+
+    def test_a_marker_on_its_own_single_call_line_still_clears(self):
+        result = self.run_case(
+            'logger.info("%s", url)  # credential-logging: ignore - demo reason\n'
+            '    logger.info("%s", url)  # credential-logging: ignore - demo reason'
+        )
+        self.assertEqual(result.returncode, 0, result.stdout)
+
+
+OIDC_CREDENTIAL_NAMES = (
+    "client_secret",
+    "client_assertion",
+    "client_key",
+    "id_token",
+    "access_token",
+    "refresh_token",
+    "code_verifier",
+    "nonce",
+)
+
+
+class OidcCredentialNamesTests(SimpleTestCase):
+    """SSO spec 3.3, T16: CREDENTIAL_RE knows the OIDC flow's secrets, one case per name."""
+
+    setUp = CredentialLoggingGuardTests.setUp
+    write = CredentialLoggingGuardTests.write
+    run_guard = CredentialLoggingGuardTests.run_guard
+
+    def assertReported(self, name, source):
+        path = self.write(f"{name}.py", source)
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 1, f"{name}: {result.stdout + result.stderr}")
+        self.assertIn(name, result.stdout)
+
+    def test_client_secret(self):
+        self.assertReported("client_secret", 'logger.info("secret %s", client_secret)\n')
+
+    def test_client_assertion(self):
+        self.assertReported("client_assertion", 'logger.debug("assertion %s", client_assertion)\n')
+
+    def test_client_key(self):
+        self.assertReported("client_key", 'logger.warning(f"key {provider.client_key_encrypted}")\n')
+
+    def test_id_token(self):
+        self.assertReported("id_token", 'logger.info("token %s", id_token)\n')
+
+    def test_access_token(self):
+        self.assertReported("access_token", 'logger.error("got %s", body["access_token"])\n')
+
+    def test_refresh_token(self):
+        self.assertReported("refresh_token", 'logger.debug("refresh %s", refresh_token)\n')
+
+    def test_code_verifier(self):
+        self.assertReported("code_verifier", 'logger.info("pkce %s", code_verifier)\n')
+
+    def test_nonce(self):
+        self.assertReported("nonce", 'logger.info("nonce %s", nonce)\n')
+
+    def test_nonce_is_matched_as_a_word(self):
+        path = self.write("nonces.py", 'logger.info("count %s", nonces_seen)\n')
+        result = self.run_guard(path)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_id_token_inside_a_longer_name(self):
+        self.assertReported("raw_id_token", 'logger.info("token %s", raw_id_token)\n')
+
+    def test_id_token_is_not_matched_inside_valid_token(self):
+        for name in ("valid_token", "invalid_token"):
+            with self.subTest(name=name):
+                path = self.write(f"{name}.py", f'logger.info("x %s", {name})\n')
+                result = self.run_guard(path)
+                self.assertEqual(
+                    result.returncode, 0,
+                    f"{name} was reported as an ID token: {result.stdout + result.stderr}",
+                )
+
+    def test_every_name_is_covered(self):
+        tested = {n[len("test_"):] for n in dir(self) if n.startswith("test_")}
+        self.assertLessEqual(set(OIDC_CREDENTIAL_NAMES), tested)
+
+    def test_the_oidc_package_is_clean(self):
+        repo = GUARD.resolve().parent.parent
+        targets = sorted((repo / "apps" / "accounts" / "oidc").glob("*.py"))
+        targets.append(repo / "apps" / "accounts" / "api_views.py")
+        result = self.run_guard(*targets)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

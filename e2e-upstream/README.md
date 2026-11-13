@@ -443,6 +443,56 @@ The `range-unsupported` fault (see the fault table above) makes this route ignor
 and answer `200` with the whole asset and no `Accept-Ranges` — a provider that will not serve `206`
 does not advertise that it will.
 
+## Fake OpenID provider
+
+A minimal OpenID provider for the SSO e2e tests (`e2e/tests/sso/`, SSO spec PR S5), in
+`src/oidc/`. It is shaped like Microsoft Entra where that matters to a relying party: discovery
+advertises neither `code_challenge_methods_supported` nor
+`authorization_response_iss_parameter_supported`, JWKS entries carry no `alg`, ID tokens are RS256
+only, and the token endpoint authenticates the client from the form body (`client_secret_post`).
+It is strict where a real provider is: the token endpoint **requires** a PKCE `code_verifier` that
+matches the S256 challenge, although discovery does not advertise PKCE.
+
+Its keys are generated with `generateKeyPairSync` when the process starts and are never written to
+disk, so nothing in the repository is shaped like a credential; a recreated provider has a new
+`kid`. Clients, queued logins and codes are in memory, like scenarios.
+
+**Two issuers.** `/oidc` is the Entra-shaped one. `/oidc/rfc9207` is identical except that it
+advertises `authorization_response_iss_parameter_supported: true` and returns `iss` on the
+authorization response, which is what the `missing-iss-param` fault breaks.
+
+**Two origins**, as for scenarios. The issuer, `token_endpoint` and `jwks_uri` use
+`UPSTREAM_INTERNAL_ORIGIN` (Mino's server reaches them inside the Docker network);
+`authorization_endpoint` uses `UPSTREAM_CONTROL_ORIGIN` (default `http://127.0.0.1:9402`), the
+host-published origin the Playwright browser is sent to. `scripts/e2e_up.sh` sets both.
+
+| Route | Purpose |
+|---|---|
+| `POST /oidc/clients` | Register `{client_id, client_secret, redirect_uris}`; answers `201` with both issuers |
+| `POST /oidc/clients/<id>/logins` | Queue the next login `{claims, fault?}`; `claims.sub` is required |
+| `GET /oidc/clients/<id>/log` | What `authorize` and `token` accepted or refused, with a fixed reason |
+| `DELETE /oidc/clients/<id>` | Forget a client |
+| `GET <issuer>/.well-known/openid-configuration` | Discovery |
+| `GET <issuer>/authorize` | Auto-approves, consuming the next queued login; with none queued, redirects `error=access_denied` |
+| `POST <issuer>/token` | Redeems a code (single use, 60 s) for an ID token |
+| `GET <issuer>/jwks` | The published key |
+
+A login's claims are copied into the ID token, then `iss`, `aud`, `nonce`, `iat` and `exp` are set
+over them, so a test cannot weaken a protocol claim by accident. Only a fault changes one:
+
+| Fault | Effect |
+|---|---|
+| `wrong-iss` | `iss` is not the issuer |
+| `wrong-aud` | `aud` is not the client id |
+| `bad-nonce` | `nonce` is not the one the authorization request carried |
+| `expired` | `exp` is an hour in the past |
+| `alg-none` | An unsigned token (`alg: none`, empty signature) |
+| `unknown-kid` | Signed with a key the JWKS never publishes |
+| `missing-iss-param` | On `/oidc/rfc9207`, `iss` is omitted from the authorization response while still advertised |
+
+`DEFAULT_FAULT` in `src/oidc/index.ts` is the fault a login that names none gets; it is
+`undefined`, and `test/oidc.test.ts` pins that.
+
 ## Development
 
 ```bash

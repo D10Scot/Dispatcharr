@@ -257,6 +257,24 @@ POSTGRES_SSL_CA_CERT = os.environ.get("POSTGRES_SSL_CA_CERT", "")
 POSTGRES_SSL_CERT = os.environ.get("POSTGRES_SSL_CERT", "")
 POSTGRES_SSL_KEY = os.environ.get("POSTGRES_SSL_KEY", "")
 
+# Deployment-level switch (SSO spec 3.5): allows http OIDC issuers and loopback addresses for
+# the e2e stack and local development. Read once here; it is not a database setting, so it
+# cannot be enabled from the web.
+OIDC_ALLOW_HTTP = os.environ.get("MINO_OIDC_ALLOW_HTTP") == "1"
+
+# Break-glass (SSO spec 5.6): MINO_PASSWORD_LOGIN_FORCE=1 turns password login on whatever the
+# database says. Exactly "1"; any other value is ignored with one WARNING. Read once here from
+# the deployment's environment, so nothing reachable from the web can set it.
+_password_login_force_raw = os.environ.get("MINO_PASSWORD_LOGIN_FORCE")
+PASSWORD_LOGIN_FORCE = _password_login_force_raw == "1"
+if _password_login_force_raw is not None and not PASSWORD_LOGIN_FORCE:
+    import logging as _logging
+
+    # The value is not echoed: it is the operator's, and only "1" means anything.
+    _logging.getLogger("mino.settings").warning(
+        "MINO_PASSWORD_LOGIN_FORCE is set to a value other than 1 and is ignored"
+    )
+
 # True only when the LIVE database is SQLite (DB_ENGINE=sqlite). Writes that depend on
 # the PostgreSQL advisory-lock floor (apps/accounts/admin_floor.py) are refused with
 # 400 requires_postgresql when it is set. settings_test.py resets it to False.
@@ -348,6 +366,9 @@ REST_FRAMEWORK = {
     "DEFAULT_THROTTLE_CLASSES": [],
     "DEFAULT_THROTTLE_RATES": {
         "login": "3/minute",
+        # OIDC start, link/start, callback and exchange (SSO spec 3.1). Not the shared
+        # login scope: one SSO login costs three requests.
+        "oidc": "20/minute",
     },
 }
 
@@ -501,6 +522,11 @@ SIMPLE_JWT = {
     "ROTATE_REFRESH_TOKENS": False,  # Optional: Whether to rotate refresh tokens
     "BLACKLIST_AFTER_ROTATION": True,  # Optional: Whether to blacklist refresh tokens
 }
+
+# An SSO-issued refresh token lives 12 hours (SSO spec 3.3 step 9, ruling B3). It is stamped
+# at mint with set_exp; refresh enforces the token's own exp, and ROTATE_REFRESH_TOKENS must
+# stay off or a rotation would re-stamp it with the class lifetime above.
+OIDC_REFRESH_TOKEN_LIFETIME = timedelta(hours=12)
 
 # Redis connection settings — _default_redis_url uses rediss:// when REDIS_SSL is enabled
 REDIS_URL = os.environ.get("REDIS_URL", _default_redis_url)

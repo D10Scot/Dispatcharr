@@ -413,5 +413,40 @@ export default defineConfig({
       timeout: 900_000,
       retries: 0,
     },
+    {
+      // The `sso` project's own bootstrap (SSO spec PR S5). Never the shared
+      // `bootstrap`: that one writes `tokens.json` for the shared stack, and
+      // `sso` runs only against a scoped stack of its own (`tests/sso/scope.ts`).
+      // `retries: 0` because a retry could spend a second password login, and
+      // the whole `sso` run's budget is 3 (`e2e/README.md`, "The sso project").
+      name: 'sso-setup',
+      testDir: './tests/sso',
+      testMatch: /sso\.setup\.ts$/,
+      // One throttle window (`MAX_LOGIN_WAIT_MS`) on top of a cold
+      // `ensureSuperuser`.
+      timeout: MAX_LOGIN_WAIT_MS + 60_000,
+      retries: 0,
+    },
+    {
+      // Sign-in through a fake OpenID provider, and the password-login toggle
+      // with its break-glass recovery (SSO spec PR S5). Turning password login
+      // off is instance-wide, so this runs only against a scoped stack of its
+      // own: every spec's first act is `assertScopedStack()`. No storageState:
+      // each test signs in through the browser, and the API half uses the
+      // pair `sso-setup` wrote (`tests/sso/fixtures.ts`).
+      //
+      // One worker and no parallelism, so no two password requests overlap,
+      // and 180s, which allows the break-glass spec's positive probe one 60s
+      // throttle window. `retries: 0`: a retry would re-send the password-off
+      // probe and the recovered login, past the 3-a-run budget.
+      name: 'sso',
+      testDir: './tests/sso',
+      testMatch: /\.spec\.ts$/,
+      dependencies: ['sso-setup'],
+      workers: 1,
+      fullyParallel: false,
+      timeout: 180_000,
+      retries: 0,
+    },
   ],
 });
