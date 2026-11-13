@@ -120,9 +120,12 @@ vi.mock('@mantine/core', () => ({
     </div>
   ),
   Stack: ({ children }) => <div>{children}</div>,
-  Switch: ({ label }) => (
+  Switch: ({ label, description }) => (
     <div>
       <label>{label}</label>
+      {description ? (
+        <span data-testid={`switch-description-${label}`}>{description}</span>
+      ) : null}
       <input type="checkbox" />
     </div>
   ),
@@ -286,6 +289,20 @@ describe('User', () => {
       setupMocks({ authUser: admin });
       render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
       expect(screen.getByText('Active')).toBeInTheDocument();
+    });
+
+    it('active switch says Xtream credentials stop working and running streams continue', () => {
+      const admin = makeAdminUser();
+      setupMocks({ authUser: admin });
+      render(<User isOpen={true} onClose={vi.fn()} user={makeRegularUser()} />);
+      const description = screen.getByTestId('switch-description-Active');
+      expect(description).toHaveTextContent(
+        'Inactive users cannot sign in, and their tokens, API key and Xtream (XC) credentials stop working.'
+      );
+      expect(description).toHaveTextContent(
+        'A stream already playing is not stopped; it continues until the player disconnects.'
+      );
+      expect(description).not.toHaveTextContent('keep working');
     });
 
     it('hides Permissions tab for non-admin user', () => {

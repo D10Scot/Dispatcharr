@@ -11,6 +11,7 @@ from unittest import mock
 
 from rest_framework.test import APIClient
 
+from apps.accounts import admin_floor
 from apps.accounts import api_views as accounts_api_views
 from apps.accounts.models import OIDCIdentity, OIDCProvider, User
 from apps.accounts.oidc import provisioning
@@ -29,6 +30,14 @@ from .oidc_flow_support import (
 from .oidc_support import admin_client
 
 BARRIER_TIMEOUT = 2
+# The two barrier interleavings below hold the admin-floor lock for up to BARRIER_TIMEOUT
+# while the other caller queues on it. What they prove is that the lock serialises the two
+# callers so exactly one wins, not how long a caller may wait for it (that is
+# test_admin_floor_bounded_wait.py's subject), so they run with a bound far above the
+# barrier: under load a queued caller must not reach the shipped 5 s bound and answer
+# admin_floor_busy instead of being serialised. The join ceiling (JOIN_TIMEOUT) still
+# fails a hung run.
+SERIALISATION_LOCK_WAIT_SECONDS = 30
 
 
 def thread_name():
@@ -115,8 +124,14 @@ class LastAdminTests(FlowTransactionTestCase):
 
     # ---- interleavings --------------------------------------------------------------------
 
+    def serialise_with_a_long_lock_bound(self):
+        patcher = mock.patch.object(admin_floor, "LOCK_WAIT_SECONDS", SERIALISATION_LOCK_WAIT_SECONDS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
     def test_concurrent_demotions_of_two_admins_one_wins(self):
         self.require_postgresql()
+        self.serialise_with_a_long_lock_bound()
         self.sso_user("a")
         self.sso_user("b")
         barrier = threading.Barrier(2, timeout=BARRIER_TIMEOUT)
@@ -150,6 +165,7 @@ class LastAdminTests(FlowTransactionTestCase):
 
     def test_demotion_racing_deactivation_one_wins(self):
         self.require_postgresql()
+        self.serialise_with_a_long_lock_bound()
         b_client = APIClient()
         _, a = self.sso_user("a")
         _, b = self.sso_user("b")

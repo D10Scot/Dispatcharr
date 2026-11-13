@@ -324,6 +324,17 @@ export function listTsFiles(absDir: string, relPrefix = ''): Promise<string[]> {
   return listFiles(absDir, relPrefix, (n) => n.endsWith('.ts'));
 }
 
+/**
+ * Every file Node or Playwright could load as code: TypeScript and JavaScript in every
+ * module flavour. A guard that scans for what a file DOES uses this rather than
+ * `listTsFiles`, or a `.js`/`.mjs` module beside the specs would escape it.
+ */
+export const SOURCE_FILE = /\.(?:[cm]?[jt]s|[jt]sx)$/;
+
+export function listSourceFiles(absDir: string, relPrefix = ''): Promise<string[]> {
+  return listFiles(absDir, relPrefix, (n) => SOURCE_FILE.test(n));
+}
+
 export async function readSpec(rel: string): Promise<string> {
   return readFile(path.join(E2E_ROOT, rel), 'utf8');
 }

@@ -1,8 +1,12 @@
 /**
- * The `sso-setup` project: the `sso` project's own bootstrap (SSO spec PR S5).
+ * The `sso-setup` and `sso-faults-setup` projects: the own bootstrap of the `sso` and
+ * `sso-faults` projects (SSO spec PR S5), one file run by both, each against its own
+ * scoped stack.
  *
  * It never reads the shared `playwright/.auth/tokens.json` or `principals.json`; the
- * pair it mints is the scoped stack's, in `sso-tokens.json`. Password-request budget:
+ * pair it mints is the scoped stack's, in the file `ssoTokensFile` names for the running
+ * project (`sso-tokens.json` or `sso-faults-tokens.json`), so neither project ever reads
+ * the other stack's pair. Password-request budget:
  * **0** on a warm run (the stored refresh token is renewed through the unthrottled
  * refresh endpoint), **1** on a cold one.
  */
@@ -15,13 +19,13 @@ import type { TokenPair } from '../../setup/login';
 import { ensureSuperuser } from '../../setup/provision-admin';
 import { writeAuthFileAtomically } from '../../setup/auth-files';
 import { assertScopedStack } from './scope';
-import { SSO_TOKENS_FILE } from './helpers';
+import { ssoTokensFile } from './helpers';
 
 /** The stored pair, renewed, if it still names the admin; otherwise null. Spends no login. */
-async function reusablePair(request: APIRequestContext): Promise<TokenPair | null> {
+async function reusablePair(request: APIRequestContext, tokensFile: string): Promise<TokenPair | null> {
   let stored: TokenPair | undefined;
   try {
-    stored = tokenPairOf(JSON.parse(fs.readFileSync(SSO_TOKENS_FILE, 'utf8')));
+    stored = tokenPairOf(JSON.parse(fs.readFileSync(tokensFile, 'utf8')));
   } catch {
     return null;
   }
@@ -38,6 +42,7 @@ setup('create the scoped stack admin and persist its pair', async ({ request, ba
   // First statement: nothing below may reach a stack that is not this project's own.
   assertScopedStack();
 
+  const tokensFile = ssoTokensFile(setup.info().project.name);
   await ensureSuperuser(request, baseURL!);
 
   const providers = await request.get('/api/accounts/oidc/providers/');
@@ -58,8 +63,8 @@ setup('create the scoped stack admin and persist its pair', async ({ request, ba
     );
   }
 
-  const pair = (await reusablePair(request)) ?? (await loginWithThrottleBackoff(request, ADMIN));
-  writeAuthFileAtomically(SSO_TOKENS_FILE, JSON.stringify(pair, null, 2));
+  const pair = (await reusablePair(request, tokensFile)) ?? (await loginWithThrottleBackoff(request, ADMIN));
+  writeAuthFileAtomically(tokensFile, JSON.stringify(pair, null, 2));
 
   // A provider's redirect URI is built from public_base_url, which a fresh stack leaves
   // unset. The stack's own loopback origin is accepted without MINO_OIDC_ALLOW_HTTP
