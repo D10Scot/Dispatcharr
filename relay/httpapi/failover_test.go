@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -209,9 +210,9 @@ func TestARefusedFailoverNeverUsesTheCache(t *testing.T) {
 // call" (CLAUDE.md § Operationally) is two attempts of (ConnectTimeout,
 // ReadTimeout) plus the retry delay, spent before the cache is read. Here the
 // client's transport times out at 300 ms and the control plane answers after
-// 400 ms, so each attempt is a transport failure; the fake's own request log
-// shows the second attempt at least 400 ms after the first (timeout plus the
-// 100 ms retry delay), and the alternate is not contacted until after both.
+// 400 ms, so each attempt is a transport failure; the client's own deadlines
+// for the two attempts are at least 400 ms apart (timeout plus the 100 ms
+// retry delay), and the alternate is not contacted until after both.
 // A client that skipped the retry, or one that read the cache before its
 // first attempt failed, reddens this.
 func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
@@ -221,6 +222,14 @@ func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
 	cp.Settings = rigSettings(nil)
 	slow := control.NewHTTPClient()
 	slow.Timeout = 300 * time.Millisecond
+	// The lower bound is read from the CLIENT's side (issue #679): the fake
+	// stamps a request when it ARRIVES, so its gap is 400 ms plus the
+	// difference of the two attempts' dial and scheduling delays and fell as
+	// low as 337 ms under load. The transport records each attempt's context
+	// deadline instead: Client.Do sets it to its own start plus the 300 ms
+	// timeout.
+	rt := &roundTripStamps{next: http.DefaultTransport}
+	slow.Transport = rt
 	r := newRigWithClient(t, cp, relaytest.Config{Payload: relaytest.SyntheticTS(rigAssetPackets, 0x100), StopAfterBytes: rigChunkBytes * 2}, slow)
 
 	response := r.tuneAs(t, "c-budget", "client-a")
@@ -234,8 +243,17 @@ func TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst(t *testing.T) {
 		t.Fatalf("the control plane saw %d next-source calls, want 3: the tune and two failover attempts", len(calls))
 	}
 	first, second := calls[1].At, calls[2].At
-	if gap := second.Sub(first); gap < 400*time.Millisecond {
-		t.Fatalf("the second attempt came %s after the first, under the 300 ms timeout plus the 100 ms retry delay", gap)
+	deadlines := rt.deadlines()
+	if len(deadlines) < 3 {
+		t.Fatalf("the client made %d next-source round trips, want at least 3", len(deadlines))
+	}
+	// Attempt two's Do starts only after attempt one failed (its deadline at
+	// the earliest) and the RetryDelay wait that follows (control/nextsource.go
+	// :484-492, the Do at :529), and timers never fire early, so the deadlines
+	// are at least timeout-gap + RetryDelay apart exactly, with no slack.
+	// Without the delay the gap is 300 ms, with a halved timeout 250 ms.
+	if gap := deadlines[2].Sub(deadlines[1]); gap < 400*time.Millisecond {
+		t.Fatalf("the second attempt's deadline was %s after the first's, under the 300 ms timeout plus the 100 ms retry delay", gap)
 	}
 	if gap := second.Sub(first); gap > 3*time.Second {
 		t.Fatalf("the second attempt came %s after the first: the budget was not the client's", gap)
@@ -265,4 +283,30 @@ func TestTheSlotIsReleasedWithTheCurrentStreamWhenTheChannelEnds(t *testing.T) {
 	if release.Header.Get(control.HeaderInternalRequest) == "" {
 		t.Fatal("the release was not signed")
 	}
+}
+
+// roundTripStamps records the context deadline of each next-source attempt.
+type roundTripStamps struct {
+	next http.RoundTripper
+	mu   sync.Mutex
+	dl   []time.Time
+}
+
+func (r *roundTripStamps) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.HasSuffix(req.URL.Path, "/next-source") {
+		d, ok := req.Context().Deadline()
+		if !ok {
+			return nil, errors.New("roundTripStamps: the attempt carries no deadline")
+		}
+		r.mu.Lock()
+		r.dl = append(r.dl, d)
+		r.mu.Unlock()
+	}
+	return r.next.RoundTrip(req)
+}
+
+func (r *roundTripStamps) deadlines() []time.Time {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]time.Time(nil), r.dl...)
 }
