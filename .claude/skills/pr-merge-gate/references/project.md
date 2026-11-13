@@ -1,4 +1,4 @@
-# Project specifics: Dispatcharr (D10Scot/Dispatcharr)
+# Project specifics: Mino (D10Scot/Dispatcharr)
 
 Rewrite this file when porting the skill. `SKILL.md` is generic; this file names this repository.
 

@@ -1,6 +1,6 @@
-# Dispatcharr Plugins
+# Mino Plugins
 
-This document explains how to build, install, and use Python plugins in Dispatcharr. It covers discovery, the plugin interface, settings, actions, how to access application APIs, and examples.
+This document explains how to build, install, and use Python plugins in Mino. It covers discovery, the plugin interface, settings, actions, how to access application APIs, and examples.
 
 ---
 
@@ -130,7 +130,7 @@ Backend code:
 
 ## Plugin Manifest (`plugin.json`)
 
-`plugin.json` lets Dispatcharr list your plugin safely without executing code. It should live next to `plugin.py`.
+`plugin.json` lets Mino list your plugin safely without executing code. It should live next to `plugin.py`.
 
 Example:
 ```
@@ -179,7 +179,7 @@ Export a `Plugin` class. Supported attributes and behavior:
 - `fields` (list): Settings schema used by the UI to render controls.
 - `actions` (list): Available actions; the UI renders a button for each (defaults to Run).
 - `run(action, params, context)` (callable): Invoked when a user clicks an action.
-- `stop(context)` (optional callable): Invoked when the plugin is disabled, deleted, or reloaded so you can gracefully shut down any processes you started. If `stop()` is not defined but you have an action with id `stop`, Dispatcharr will call `run("stop", {}, context)` as a fallback.
+- `stop(context)` (optional callable): Invoked when the plugin is disabled, deleted, or reloaded so you can gracefully shut down any processes you started. If `stop()` is not defined but you have an action with id `stop`, Mino will call `run("stop", {}, context)` as a fallback.
 
 ### Settings Schema
 Supported field `type`s:
@@ -263,7 +263,7 @@ actions = [
 
 ---
 
-## Accessing Dispatcharr APIs from Plugins
+## Accessing Mino APIs from Plugins
 
 Plugins are server-side Python code running within the Django application. You can:
 
@@ -309,7 +309,7 @@ Prefer Celery tasks (`.delay()`) to keep `run` fast and non-blocking.
 
 ### Database connections
 
-Dispatcharr uses `django-db-geventpool` with a bounded per-uWSGI-worker pool (`MAX_CONNS=8`). Each greenlet or OS thread that runs ORM code checks out a connection until Django closes it.
+Mino uses `django-db-geventpool` with a bounded per-uWSGI-worker pool (`MAX_CONNS=8`). Each greenlet or OS thread that runs ORM code checks out a connection until Django closes it.
 
 `PluginManager.run_action()` and `stop_plugin()` always call `close_old_connections()` in a `finally` block after your plugin returns (success or error). That returns the current greenlet's checkout to the pool. **You do not need to call `close_old_connections()` yourself for normal inline ORM inside `run()` or `stop()`.**
 
@@ -320,8 +320,8 @@ Still follow these rules:
 - **Connect event hooks:** actions with an `"events"` list are dispatched from `log_system_event()` on a separate gevent when uWSGI has an active hub (otherwise synchronously, e.g. Celery). Keep handlers short or defer heavy work to Celery.
 
 ### Important: Don’t Ask Users for URL/User/Password
-Dispatcharr plugins run **inside** the Dispatcharr backend process. That means they already have direct access to the app’s models, tasks, and internal utilities.  
-Plugins **should not** ask users for “Dispatcharr URL”, “Admin Username”, or “Admin Password” just to call the API. That is unnecessary and unsafe because:
+Mino plugins run **inside** the Mino backend process. That means they already have direct access to the app’s models, tasks, and internal utilities.  
+Plugins **should not** ask users for “Mino URL”, “Admin Username”, or “Admin Password” just to call the API. That is unnecessary and unsafe because:
 
 - It encourages users to enter privileged credentials.
 - Malicious plugins could exfiltrate credentials.
@@ -330,7 +330,7 @@ Plugins **should not** ask users for “Dispatcharr URL”, “Admin Username”
 If you are writing a plugin, **use internal Python APIs** (models/tasks/utils) instead of making HTTP calls with user credentials.
 
 ### When You Do Need HTTP
-In rare cases you may need to call a Dispatcharr HTTP endpoint (for example, to reuse an existing API response serializer). In that case:
+In rare cases you may need to call a Mino HTTP endpoint (for example, to reuse an existing API response serializer). In that case:
 
 1. **Do not ask the user for credentials.**  
    Use the backend’s internal access where possible.
@@ -457,7 +457,7 @@ Notes:
 - The first time a plugin is enabled, the UI shows a trust warning modal explaining that plugins can run arbitrary server-side code.
 - The Plugins page shows a toggle in the card header. Turning it off dims the card and disables the Run button.
 - Backend enforcement: Attempts to run an action for a disabled plugin return HTTP 403.
-- Dispatcharr will not import or execute plugin code unless the plugin is enabled.
+- Mino will not import or execute plugin code unless the plugin is enabled.
 
 ---
 
