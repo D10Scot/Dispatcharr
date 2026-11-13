@@ -44,13 +44,12 @@ OTLP is enabled in a process if and only if `OTEL_EXPORTER_OTLP_ENDPOINT` is set
 > Upstream has open reports of deadlocks in the Python metric reader under gevent
 > (opentelemetry-python #4345, #5788).
 >
-> The soak ran on 2026-11-13 against the image `ghcr.io/d10scot/dispatcharr@sha256:38bd0cc633ff8a39d7cdea0c2773065d4313cf3fa3babb1483e06a0d98f4f9bf`,
-> built from `cf40b42e` (SDK 1.45.2, instrumentations 0.66b2, gevent 26.7.0, uWSGI 2.0.31). It used the
+> The soak ran on 2026-11-13 against the published image built from `cf40b42e`, digest
+> `sha256:38bd0cc633ff8a39d7cdea0c2773065d4313cf3fa3babb1483e06a0d98f4f9bf` (SDK 1.45.2, instrumentations 0.66b2, gevent 26.7.0, uWSGI 2.0.31). It used the
 > all-in-one image with `docker/uwsgi.ini` unchanged: four workers and `gevent = 400`. Traces,
 > metrics and logs all went to an OpenTelemetry Collector 0.165.0 over OTLP/HTTP. The settings
 > were `OTEL_METRIC_EXPORT_INTERVAL=1000` (one export a second rather than one a minute), every
-> trace sampled, and `DISPATCHARR_API_MAX_REQUESTS` raised so that a recycle could not hide a
-> hang. The load was 100 concurrent clients through nginx, for 11 minutes, run twice. They
+> trace sampled, and the API's `max-requests` raised so that a recycle could not hide a hang. The load was 100 concurrent clients through nginx, for 11 minutes, run twice. They
 > requested `/api/core/version/`, an authenticated `/api/core/settings/` and, for one request
 > in ten, a 404 that writes a log record.
 >
