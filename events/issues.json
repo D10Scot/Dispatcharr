@@ -1,10 +1,148 @@
 {
  "detail": null,
- "fetched_at": "2026-11-13T14:03:02+00:00",
+ "fetched_at": "2026-11-14T13:03:17+00:00",
  "kind": "issues",
  "records": [
   {
    "closed_at": null,
+   "created_at": "2026-11-13T21:41:07Z",
+   "id": 693,
+   "label_events": [
+    {
+     "at": "2026-11-13T21:41:08Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "relay/hls: TestAConnectionTooShortToProbeIsSkipped flakes (\"1 encoders spawned, want generations 0 and 2 only\")",
+   "updated_at": "2026-11-13T21:41:07Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-13T21:05:08Z",
+   "id": 692,
+   "label_events": [
+    {
+     "at": "2026-11-13T21:05:09Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-11-13T21:05:10Z",
+     "event": "labeled",
+     "label": "priority:p3"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p3"
+   ],
+   "state": "open",
+   "title": "docker-build: the app image inherits :base's OCI labels, so its revision label is stale",
+   "updated_at": "2026-11-13T21:05:08Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-13T21:05:07Z",
+   "id": 691,
+   "label_events": [
+    {
+     "at": "2026-11-13T21:05:09Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    },
+    {
+     "at": "2026-11-13T21:05:09Z",
+     "event": "labeled",
+     "label": "priority:p3"
+    }
+   ],
+   "labels": [
+    "needs-triage",
+    "priority:p3"
+   ],
+   "state": "open",
+   "title": "docker: API uWSGI's default listen backlog of 100 makes nginx answer 502 above about 100 in-flight requests",
+   "updated_at": "2026-11-13T21:05:07Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-13T20:58:26Z",
+   "id": 690,
+   "label_events": [
+    {
+     "at": "2026-11-13T20:58:28Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "open",
+   "title": "relay/httpapi: TestAnFMP4ClientOnAnUnhealthyStallIsDroppedAtTheKeepaliveCap can see the channel already unhealthy at its first look under load",
+   "updated_at": "2026-11-13T20:58:26Z"
+  },
+  {
+   "closed_at": "2026-11-13T21:07:41Z",
+   "created_at": "2026-11-13T17:34:08Z",
+   "id": 682,
+   "label_events": [
+    {
+     "at": "2026-11-13T17:34:10Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "closed",
+   "title": "docker-build: keyless signing fails with Rekor 409 when a merge rebuilds an identical image digest",
+   "updated_at": "2026-11-13T21:07:41Z"
+  },
+  {
+   "closed_at": "2026-11-13T22:21:29Z",
+   "created_at": "2026-11-13T16:33:56Z",
+   "id": 679,
+   "label_events": [
+    {
+     "at": "2026-11-13T16:33:57Z",
+     "event": "labeled",
+     "label": "needs-triage"
+    }
+   ],
+   "labels": [
+    "needs-triage"
+   ],
+   "state": "closed",
+   "title": "relay/httpapi: TestTheDegradedFallbackSpendsTheClientsRetryBudgetFirst flakes 1.6 ms under its exact 400 ms lower bound",
+   "updated_at": "2026-11-13T22:21:29Z"
+  },
+  {
+   "closed_at": null,
+   "created_at": "2026-11-13T16:00:32Z",
+   "id": 678,
+   "label_events": [
+    {
+     "at": "2026-11-13T16:00:34Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] Pull request review hit engine rate limit (HTTP 429)",
+   "updated_at": "2026-11-13T22:28:38Z"
+  },
+  {
+   "closed_at": "2026-11-13T16:41:41Z",
    "created_at": "2026-11-12T20:40:23Z",
    "id": 669,
    "label_events": [
@@ -17,9 +155,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "test(relay): pin that a trusted traceparent with trace flags 03 is inherited",
-   "updated_at": "2026-11-12T20:40:23Z"
+   "updated_at": "2026-11-13T16:41:41Z"
   },
   {
    "closed_at": null,
@@ -55,7 +193,7 @@
    ],
    "state": "open",
    "title": "[aw] Pull request review hit engine rate limit (HTTP 429)",
-   "updated_at": "2026-11-13T13:16:52Z"
+   "updated_at": "2026-11-13T15:52:34Z"
   },
   {
    "closed_at": null,
@@ -76,7 +214,7 @@
    "updated_at": "2026-11-12T14:36:06Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-11-13T16:55:47Z",
    "created_at": "2026-11-12T04:50:04Z",
    "id": 650,
    "label_events": [
@@ -89,12 +227,12 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "apps.m3u: SlotScriptFakeParityProperties flaked once in CI (step 0 release reads '1' from Lua)",
-   "updated_at": "2026-11-12T04:50:04Z"
+   "updated_at": "2026-11-13T16:55:47Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-11-13T17:17:30Z",
    "created_at": "2026-11-12T03:48:43Z",
    "id": 648,
    "label_events": [
@@ -107,9 +245,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "relay/httpapi: TestAnAutomaticSessionTakesItsPipelinesTargetDuration flakes off-by-one (clock vs sweeper tick)",
-   "updated_at": "2026-11-12T03:48:43Z"
+   "updated_at": "2026-11-13T17:17:30Z"
   },
   {
    "closed_at": null,
@@ -130,7 +268,7 @@
    "updated_at": "2026-11-11T22:05:44Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-11-13T15:53:14Z",
    "created_at": "2026-11-11T20:49:07Z",
    "id": 643,
    "label_events": [
@@ -143,9 +281,9 @@
    "labels": [
     "needs-triage"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "golangci-lint v2.15.0 reports errcheck at relay/httpapi/drain_test.go:123",
-   "updated_at": "2026-11-11T20:49:07Z"
+   "updated_at": "2026-11-13T15:53:14Z"
   },
   {
    "closed_at": null,
@@ -1448,7 +1586,7 @@
    "updated_at": "2026-09-30T20:55:17Z"
   },
   {
-   "closed_at": null,
+   "closed_at": "2026-11-13T22:21:27Z",
    "created_at": "2026-09-30T20:51:22Z",
    "id": 566,
    "label_events": [
@@ -1467,9 +1605,9 @@
     "bug",
     "type:test-gap"
    ],
-   "state": "open",
+   "state": "closed",
    "title": "relay/httpapi: two session-timing tests flake under load (registry released before settle; departure on its own goroutine)",
-   "updated_at": "2026-09-30T20:51:22Z"
+   "updated_at": "2026-11-13T22:21:27Z"
   },
   {
    "closed_at": "2026-09-30T21:05:23Z",

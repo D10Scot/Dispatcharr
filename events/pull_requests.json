@@ -1,14 +1,312 @@
 {
  "detail": null,
- "fetched_at": "2026-11-13T13:58:32+00:00",
+ "fetched_at": "2026-11-14T13:00:01+00:00",
  "kind": "pull_requests",
  "records": [
+  {
+   "additions": 47,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 1,
+   "closed_at": "2026-11-13T21:12:29Z",
+   "created_at": "2026-11-13T20:56:09Z",
+   "deletions": 7,
+   "files": [
+    "docs/observability.md"
+   ],
+   "head_ref": "docs/observability-k2-soak",
+   "id": 689,
+   "merged_at": "2026-11-13T21:12:29Z",
+   "title": "docs(observability): record the K2 gevent soak",
+   "updated_at": "2026-11-13T21:12:31Z"
+  },
+  {
+   "additions": 60,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 2,
+   "closed_at": "2026-11-13T22:21:25Z",
+   "created_at": "2026-11-13T20:27:34Z",
+   "deletions": 9,
+   "files": [
+    "relay/httpapi/failover_test.go",
+    "relay/httpapi/hls_test.go"
+   ],
+   "head_ref": "fix/relay-httpapi-settle-and-retry-bound",
+   "id": 688,
+   "merged_at": "2026-11-13T22:21:25Z",
+   "title": "test(relay/httpapi): settle departure before resume; time the retry bound from the client (#566, #679)",
+   "updated_at": "2026-11-13T22:21:27Z"
+  },
+  {
+   "additions": 185,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 8,
+   "closed_at": "2026-11-13T21:07:39Z",
+   "created_at": "2026-11-13T19:52:19Z",
+   "deletions": 4,
+   "files": [
+    ".github/workflows/base-image.yml",
+    ".github/workflows/ci.yml",
+    ".github/workflows/docker-build.yml",
+    ".github/workflows/lint.yml",
+    ".github/workflows/release.yml",
+    "docs/supply-chain.md",
+    "scripts/cosign_sign_once.sh",
+    "scripts/tests/test_cosign_sign_once.sh"
+   ],
+   "head_ref": "fix/cosign-sign-idempotent",
+   "id": 687,
+   "merged_at": "2026-11-13T21:07:39Z",
+   "title": "fix(ci): sign an image digest once, tolerating Rekor's duplicate entry",
+   "updated_at": "2026-11-13T21:07:40Z"
+  },
+  {
+   "additions": 627,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 3,
+   "closed_at": "2026-11-13T22:33:15Z",
+   "created_at": "2026-11-13T19:47:45Z",
+   "deletions": 20,
+   "files": [
+    "dispatcharr/log_scrub.py",
+    "docs/superpowers/specs/2026-11-12-log-scrubber-design.md",
+    "tests/test_log_scrub.py"
+   ],
+   "head_ref": "fix/log-scrub-whole-path-arguments",
+   "id": 686,
+   "merged_at": "2026-11-13T22:33:15Z",
+   "title": "fix(logging): the scrubber reads a spaced path argument whole",
+   "updated_at": "2026-11-13T22:33:18Z"
+  },
+  {
+   "additions": 58,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 4,
+   "closed_at": "2026-11-13T19:36:49Z",
+   "created_at": "2026-11-13T19:23:29Z",
+   "deletions": 12,
+   "files": [
+    ".github/workflows/e2e-tests.yml",
+    ".github/workflows/lifecycle-tests.yml",
+    "docker/tests/test-puid-pgid.sh",
+    "docker/tests/test-tls-postgres.sh"
+   ],
+   "head_ref": "ci/mino-name-agnostic",
+   "id": 685,
+   "merged_at": "2026-11-13T19:36:49Z",
+   "title": "ci: derive the base image and upgrade baseline from the repository name (Mino D1)",
+   "updated_at": "2026-11-13T19:36:51Z"
+  },
+  {
+   "additions": 4733,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 56,
+   "closed_at": "2026-11-13T19:57:19Z",
+   "created_at": "2026-11-13T19:22:13Z",
+   "deletions": 291,
+   "files": [
+    ".github/workflows/e2e-tests.yml",
+    "CLAUDE.md",
+    "apps/accounts/admin_floor.py",
+    "apps/accounts/api_views.py",
+    "apps/accounts/oidc/client_auth.py",
+    "apps/accounts/oidc/discovery.py",
+    "apps/accounts/oidc/flow.py",
+    "apps/accounts/tests/test_admin_floor_bounded_wait.py",
+    "apps/accounts/tests/test_oidc_flow.py",
+    "apps/accounts/tests/test_oidc_jwks_cache_binding.py",
+    "apps/accounts/tests/test_oidc_last_admin.py",
+    "apps/accounts/tests/test_oidc_outbound_deadline.py",
+    "apps/accounts/tests/test_password_login_toggle.py",
+    "apps/output/tests/test_xc_auth.py",
+    "apps/proxy/authorize.py",
+    "apps/proxy/tests/test_authorize.py",
+    "apps/proxy/tests/test_authorize_internal_view.py",
+    "apps/proxy/tests/test_authorize_view.py",
+    "apps/proxy/vod_proxy/tests/test_xc_inactive_user.py",
+    "apps/timeshift/tests/test_xc_inactive_user.py",
+    "core/request_body_spool.py",
+    "core/tests/test_request_body_spool.py",
+    "dispatcharr/wsgi.py",
+    "docker/uwsgi.debug.ini",
+    "docker/uwsgi.ini",
+    "docker/uwsgi.modular.ini",
+    "docs/sso-recovery.md",
+    "docs/superpowers/specs/2026-10-31-sso-oidc-design.md",
+    "e2e-upstream/CONTRACT.md",
+    "e2e-upstream/README.md",
+    "e2e-upstream/package-lock.json",
+    "e2e-upstream/package.json",
+    "e2e-upstream/src/oidc/index.ts",
+    "e2e-upstream/src/oidc/jwt.ts",
+    "e2e-upstream/test/oidc.test.ts",
+    "e2e-upstream/test/server.test.ts",
+    "e2e-upstream/test/stream.test.ts",
+    "e2e/COVERAGE.md",
+    "e2e/README.md",
+    "e2e/package.json",
+    "e2e/playwright.config.ts",
+    "e2e/tests/guards/ast.ts",
+    "e2e/tests/guards/global-mutation.spec.ts",
+    "e2e/tests/guards/sso-budget.spec.ts",
+    "e2e/tests/guards/sso-structure.spec.ts",
+    "e2e/tests/guards/uwsgi-harakiri-post-buffering.spec.ts",
+    "e2e/tests/sso/budget.ts",
+    "e2e/tests/sso/faults/id-token-faults.spec.ts",
+    "e2e/tests/sso/fixtures.ts",
+    "e2e/tests/sso/helpers.ts",
+    "e2e/tests/sso/sso.setup.ts",
+    "frontend/src/components/forms/User.jsx",
+    "frontend/src/components/forms/__tests__/User.test.jsx",
+    "frontend/src/store/__tests__/auth.test.jsx",
+    "frontend/src/store/auth.jsx",
+    "scripts/product_name_allowlist.txt"
+   ],
+   "head_ref": "chore/rollup-sso-follow-ups",
+   "id": 684,
+   "merged_at": "2026-11-13T19:57:19Z",
+   "title": "fix: roll-up of five approved SSO, Xtream and uWSGI follow-ups (#661 #662 #664 #666 #675)",
+   "updated_at": "2026-11-13T19:57:22Z"
+  },
+  {
+   "additions": 266,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 5,
+   "closed_at": "2026-11-13T19:05:57Z",
+   "created_at": "2026-11-13T18:50:17Z",
+   "deletions": 24,
+   "files": [
+    "apps/timeshift/tests/test_upstream_peek_logging.py",
+    "apps/timeshift/tests/test_views.py",
+    "apps/timeshift/views.py",
+    "scripts/check_credential_logging.py",
+    "tests/test_credential_logging_guard.py"
+   ],
+   "head_ref": "fix/timeshift-peek-logging-and-checker-mapping-keys",
+   "id": 683,
+   "merged_at": "2026-11-13T19:05:57Z",
+   "title": "fix(logging): catch-up upstream diagnostics log facts, not provider text; checker judges mapping keys",
+   "updated_at": "2026-11-13T19:05:59Z"
+  },
+  {
+   "additions": 2087,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 24,
+   "closed_at": "2026-11-13T18:41:07Z",
+   "created_at": "2026-11-13T17:26:20Z",
+   "deletions": 58,
+   "files": [
+    "CLAUDE.md",
+    "apps/accounts/tests/oidc_flow_support.py",
+    "apps/plugins/loader.py",
+    "apps/proxy/tests/test_control_plane_client.py",
+    "apps/proxy/tests/test_profile_pattern_logging.py",
+    "apps/timeshift/tests/test_views.py",
+    "core/tests/test_credential_logging_url_sites.py",
+    "dispatcharr/__init__.py",
+    "dispatcharr/celery.py",
+    "dispatcharr/log_scrub.py",
+    "dispatcharr/url_redaction.py",
+    "dispatcharr/utils.py",
+    "docs/observability.md",
+    "docs/superpowers/specs/2026-11-12-log-scrubber-design.md",
+    "scripts/product_name_allowlist.txt",
+    "tests/log_scrub_rig.py",
+    "tests/test_celery_suppress_filter.py",
+    "tests/test_log_scrub.py",
+    "tests/test_log_scrub_classes.py",
+    "tests/test_log_scrub_install.py",
+    "tests/test_log_scrub_sinks.py",
+    "tests/test_observability_logs.py",
+    "tests/test_observability_redaction.py",
+    "tests/test_url_redaction_leaf.py"
+   ],
+   "head_ref": "feat/log-scrubber",
+   "id": 681,
+   "merged_at": "2026-11-13T18:41:07Z",
+   "title": "feat(logging): central log scrubber for provider-supplied text",
+   "updated_at": "2026-11-13T18:41:10Z"
+  },
+  {
+   "additions": 277,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 3,
+   "closed_at": "2026-11-13T17:07:31Z",
+   "created_at": "2026-11-13T16:34:41Z",
+   "deletions": 11,
+   "files": [
+    "dispatcharr/observability/redaction.py",
+    "scripts/product_name_allowlist.txt",
+    "tests/test_observability_redaction.py"
+   ],
+   "head_ref": "fix/redact-text-linear",
+   "id": 680,
+   "merged_at": "2026-11-13T17:07:31Z",
+   "title": "fix(observability): redact_text scans in linear time",
+   "updated_at": "2026-11-13T17:07:32Z"
+  },
+  {
+   "additions": 4,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 2,
+   "closed_at": "2026-11-13T16:18:59Z",
+   "created_at": "2026-11-13T15:52:34Z",
+   "deletions": 4,
+   "files": [
+    ".claude/skills/worktree-per-change/references/project.md",
+    ".github/pull_request_template.md"
+   ],
+   "head_ref": "docs/drop-upstream-dev-branch-refs",
+   "id": 677,
+   "merged_at": "2026-11-13T16:18:59Z",
+   "title": "docs: point the PR template at main and drop the upstream remote line",
+   "updated_at": "2026-11-13T16:19:01Z"
+  },
+  {
+   "additions": 177,
+   "author": "Dionmm",
+   "author_type": "User",
+   "changed_files": 14,
+   "closed_at": "2026-11-13T16:05:44Z",
+   "created_at": "2026-11-13T15:44:29Z",
+   "deletions": 138,
+   "files": [
+    ".claude/skills/implement-review-escalate/references/project.md",
+    ".claude/skills/plan-review-fix/references/project.md",
+    ".claude/skills/pr-merge-gate/references/project.md",
+    ".claude/skills/worktree-per-change/references/project.md",
+    ".github/FUNDING.yml",
+    "CONTEXT.md",
+    "CONTRIBUTING.md",
+    "Plugin_repo.md",
+    "Plugins.md",
+    "README.md",
+    "SECURITY.md",
+    "e2e/COVERAGE.md",
+    "e2e/README.md",
+    "scripts/product_name_allowlist.txt"
+   ],
+   "head_ref": "docs/mino-living-docs",
+   "id": 676,
+   "merged_at": "2026-11-13T16:05:44Z",
+   "title": "docs: rename the product to Mino in the living docs (Mino rename C2)",
+   "updated_at": "2026-11-13T16:05:45Z"
+  },
   {
    "additions": 945,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 8,
-   "closed_at": null,
+   "closed_at": "2026-11-13T19:57:50Z",
    "created_at": "2026-11-13T01:11:11Z",
    "deletions": 3,
    "files": [
@@ -25,14 +323,14 @@
    "id": 675,
    "merged_at": null,
    "title": "fix(docker): stop uWSGI harakiri killing an API worker when a request body is buffered",
-   "updated_at": "2026-11-13T02:39:32Z"
+   "updated_at": "2026-11-13T19:57:50Z"
   },
   {
    "additions": 9,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-11-13T15:42:26Z",
    "created_at": "2026-11-12T21:12:59Z",
    "deletions": 0,
    "files": [
@@ -40,16 +338,16 @@
    ],
    "head_ref": "chore/gitleaks-allow-request-log-sentinels",
    "id": 674,
-   "merged_at": null,
+   "merged_at": "2026-11-13T15:42:26Z",
    "title": "chore(gitleaks): allowlist the request-log redaction test sentinels",
-   "updated_at": "2026-11-12T21:12:59Z"
+   "updated_at": "2026-11-13T15:42:29Z"
   },
   {
-   "additions": 654,
+   "additions": 665,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 11,
-   "closed_at": null,
+   "closed_at": "2026-11-13T20:09:20Z",
    "created_at": "2026-11-12T21:02:24Z",
    "deletions": 5,
    "files": [
@@ -67,16 +365,16 @@
    ],
    "head_ref": "fix/redact-credentials-in-server-request-logs",
    "id": 673,
-   "merged_at": null,
+   "merged_at": "2026-11-13T20:09:20Z",
    "title": "fix(logging): keep Xtream credentials out of the uWSGI and nginx request logs",
-   "updated_at": "2026-11-12T21:29:58Z"
+   "updated_at": "2026-11-13T20:09:23Z"
   },
   {
    "additions": 11,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-11-13T17:17:28Z",
    "created_at": "2026-11-12T21:00:36Z",
    "deletions": 4,
    "files": [
@@ -84,16 +382,16 @@
    ],
    "head_ref": "fix/hls-automatic-test-sweeper-sync",
    "id": 672,
-   "merged_at": null,
+   "merged_at": "2026-11-13T17:17:28Z",
    "title": "test(relay/httpapi): run the idle departure before reading the registry (#648)",
-   "updated_at": "2026-11-12T21:00:36Z"
+   "updated_at": "2026-11-13T17:17:30Z"
   },
   {
    "additions": 37,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-11-13T16:55:45Z",
    "created_at": "2026-11-12T20:47:13Z",
    "deletions": 3,
    "files": [
@@ -101,16 +399,16 @@
    ],
    "head_ref": "fix/slot-parity-property-flake",
    "id": 671,
-   "merged_at": null,
+   "merged_at": "2026-11-13T16:55:45Z",
    "title": "test(m3u): stop the slot-script tests leaking per-profile keys into the parity property (#650)",
-   "updated_at": "2026-11-12T21:05:34Z"
+   "updated_at": "2026-11-13T16:55:47Z"
   },
   {
    "additions": 50,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 2,
-   "closed_at": null,
+   "closed_at": "2026-11-13T16:41:39Z",
    "created_at": "2026-11-12T20:40:49Z",
    "deletions": 1,
    "files": [
@@ -119,16 +417,16 @@
    ],
    "head_ref": "test/relay-traceparent-flags-03",
    "id": 670,
-   "merged_at": null,
+   "merged_at": "2026-11-13T16:41:39Z",
    "title": "test(relay): trusted traceparent with trace flags 03 is inherited",
-   "updated_at": "2026-11-12T21:08:55Z"
+   "updated_at": "2026-11-13T16:41:41Z"
   },
   {
    "additions": 9,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 3,
-   "closed_at": null,
+   "closed_at": "2026-11-13T15:53:12Z",
    "created_at": "2026-11-12T20:36:16Z",
    "deletions": 5,
    "files": [
@@ -138,16 +436,16 @@
    ],
    "head_ref": "fix/golangci-lint-2.15-errcheck",
    "id": 668,
-   "merged_at": null,
+   "merged_at": "2026-11-13T15:53:12Z",
    "title": "fix(relay): check drained body error; pin golangci-lint v2.15.0",
-   "updated_at": "2026-11-12T20:47:00Z"
+   "updated_at": "2026-11-13T15:53:13Z"
   },
   {
    "additions": 252,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 5,
-   "closed_at": null,
+   "closed_at": "2026-11-13T19:57:48Z",
    "created_at": "2026-11-12T18:38:15Z",
    "deletions": 25,
    "files": [
@@ -161,7 +459,7 @@
    "id": 666,
    "merged_at": null,
    "title": "test(accounts): SSO follow-ups \u2014 three test and doc gaps, and two flaky fake-provider tests",
-   "updated_at": "2026-11-12T20:47:51Z"
+   "updated_at": "2026-11-13T19:57:48Z"
   },
   {
    "additions": 2292,
@@ -189,7 +487,7 @@
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 22,
-   "closed_at": null,
+   "closed_at": "2026-11-13T19:57:45Z",
    "created_at": "2026-11-12T15:59:39Z",
    "deletions": 163,
    "files": [
@@ -220,14 +518,14 @@
    "id": 664,
    "merged_at": null,
    "title": "test(e2e): ID-token fault refusals through the browser, and tighter SSO guards",
-   "updated_at": "2026-11-12T20:42:03Z"
+   "updated_at": "2026-11-13T19:57:45Z"
   },
   {
    "additions": 423,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 10,
-   "closed_at": null,
+   "closed_at": "2026-11-13T19:57:40Z",
    "created_at": "2026-11-12T15:27:05Z",
    "deletions": 2,
    "files": [
@@ -246,14 +544,14 @@
    "id": 662,
    "merged_at": null,
    "title": "fix(proxy): a deactivated user's Xtream credentials no longer authorize anything",
-   "updated_at": "2026-11-12T20:40:15Z"
+   "updated_at": "2026-11-13T19:57:40Z"
   },
   {
    "additions": 1586,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 12,
-   "closed_at": null,
+   "closed_at": "2026-11-13T19:57:43Z",
    "created_at": "2026-11-12T15:15:38Z",
    "deletions": 98,
    "files": [
@@ -274,7 +572,7 @@
    "id": 661,
    "merged_at": null,
    "title": "fix(accounts): bound the admin-floor lock wait and the whole OIDC outbound fetch",
-   "updated_at": "2026-11-12T20:43:02Z"
+   "updated_at": "2026-11-13T19:57:43Z"
   },
   {
    "additions": 2939,
@@ -416,7 +714,7 @@
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 1,
-   "closed_at": null,
+   "closed_at": "2026-11-13T16:20:16Z",
    "created_at": "2026-11-12T13:56:45Z",
    "deletions": 0,
    "files": [
@@ -424,16 +722,16 @@
    ],
    "head_ref": "docs/log-scrubber-spec",
    "id": 656,
-   "merged_at": null,
+   "merged_at": "2026-11-13T16:20:16Z",
    "title": "docs(spec): central log scrubber for provider-supplied text",
-   "updated_at": "2026-11-12T14:58:50Z"
+   "updated_at": "2026-11-13T16:20:18Z"
   },
   {
    "additions": 1289,
    "author": "Dionmm",
    "author_type": "User",
    "changed_files": 19,
-   "closed_at": null,
+   "closed_at": "2026-11-13T16:15:51Z",
    "created_at": "2026-11-12T13:53:15Z",
    "deletions": 122,
    "files": [
@@ -459,9 +757,9 @@
    ],
    "head_ref": "fix/credential-checker-url-pattern-trace",
    "id": 655,
-   "merged_at": null,
+   "merged_at": "2026-11-13T16:15:51Z",
    "title": "fix(lint): credential-logging check covers bare url, *_pattern and logger.trace",
-   "updated_at": "2026-11-12T15:19:20Z"
+   "updated_at": "2026-11-13T16:15:53Z"
   },
   {
    "additions": 4009,
