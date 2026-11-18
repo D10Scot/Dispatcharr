@@ -1,8 +1,26 @@
 {
  "detail": null,
- "fetched_at": "2026-11-17T15:32:32+00:00",
+ "fetched_at": "2026-11-18T15:13:22+00:00",
  "kind": "issues",
  "records": [
+  {
+   "closed_at": null,
+   "created_at": "2026-11-18T13:01:02Z",
+   "id": 699,
+   "label_events": [
+    {
+     "at": "2026-11-18T13:01:03Z",
+     "event": "labeled",
+     "label": "agentic-workflows"
+    }
+   ],
+   "labels": [
+    "agentic-workflows"
+   ],
+   "state": "open",
+   "title": "[aw] CLAUDE.md maintenance hit engine rate limit (HTTP 429)",
+   "updated_at": "2026-11-18T13:01:02Z"
+  },
   {
    "closed_at": null,
    "created_at": "2026-11-16T19:54:43Z",
