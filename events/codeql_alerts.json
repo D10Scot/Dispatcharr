@@ -1,6 +1,6 @@
 {
  "detail": null,
- "fetched_at": "2026-11-20T14:56:25+00:00",
+ "fetched_at": "2026-11-21T14:15:55+00:00",
  "kind": "codeql_alerts",
  "records": [
   {
@@ -3271,12 +3271,12 @@
    "created_at": "2026-08-23T16:00:55Z",
    "dismissed_at": null,
    "dismissed_reason": null,
-   "fixed_at": null,
+   "fixed_at": "2026-11-21T08:29:15Z",
    "id": 9,
    "path": "no file associated with this alert",
    "rule_id": "MaintainedID",
    "severity": "high",
-   "state": "open",
+   "state": "fixed",
    "tool": "Scorecard"
   },
   {
